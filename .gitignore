@@ -1,0 +1,33 @@
+# SolidWorks / CAD binaries — never commit user models
+*.SLDPRT
+*.SLDASM
+*.SLDDRW
+*.sldprt
+*.sldasm
+*.slddrw
+*.bmp
+*.step
+*.stp
+*.x_t
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# OS / editors
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# Local env / secrets
+.env
+*.token
+
+# Local handover materials (contains its own git repo; not published)
+recolor-GitHub-交接/

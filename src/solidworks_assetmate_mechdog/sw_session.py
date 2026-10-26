@@ -1,0 +1,106 @@
+"""Shared SolidWorks COM session layer.
+
+Rules baked in from real debugging (see docs/com-quirks.md):
+- OpenDoc6 Errors/Warnings must be byref VARIANTs.
+- Reuse the already-active document; never reopen blindly (memory vs disk).
+- GetComponents is slow: callers fetch once, then group in memory.
+
+pywin32 is imported lazily so the package stays importable off-Windows.
+"""
+from __future__ import annotations
+
+import os
+
+SW_DOC_PART = 1
+SW_DOC_ASSEMBLY = 2
+SW_OPEN_SILENT = 1
+
+_SW = None
+
+
+def _com():
+    try:
+        import pythoncom
+        import win32com.client as win
+        from win32com.client import VARIANT
+    except ImportError as exc:  # non-Windows or pywin32 missing
+        raise RuntimeError(
+            "pywin32 is required and SolidWorks must run on this Windows machine. "
+            "Install with: pip install pywin32"
+        ) from exc
+    return pythoncom, win, VARIANT
+
+
+def get_sw():
+    """Connect to the running SolidWorks instance, or start one. Cached."""
+    global _SW
+    if _SW is not None:
+        return _SW
+    _, win, _ = _com()
+    try:
+        _SW = win.GetActiveObject("SldWorks.Application")
+    except Exception:
+        _SW = win.Dispatch("SldWorks.Application")
+    return _SW
+
+
+def variant(value, vartype):
+    pythoncom, _, VARIANT = _com()
+    return VARIANT(vartype, value)
+
+
+def double_array(values):
+    """VT_ARRAY | VT_R8 — a plain Python list silently fails for many SW APIs."""
+    pythoncom, _, _ = _com()
+    return variant(list(values), pythoncom.VT_ARRAY | pythoncom.VT_R8)
+
+
+def open_document(path, doc_type=SW_DOC_ASSEMBLY):
+    """Open path silently, reusing the active document when it is the same file."""
+    path = os.path.abspath(path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    sw = get_sw()
+    doc = sw.ActiveDoc
+    if doc is not None and os.path.normcase(doc.GetPathName) == os.path.normcase(path):
+        return doc
+    pythoncom, _, _ = _com()
+    errors = variant(0, pythoncom.VT_BYREF | pythoncom.VT_I4)
+    warnings = variant(0, pythoncom.VT_BYREF | pythoncom.VT_I4)
+    doc = sw.OpenDoc6(path, doc_type, SW_OPEN_SILENT, "", errors, warnings)
+    if doc is None:
+        raise RuntimeError(
+            "SolidWorks could not open the document. It may be open read-only "
+            "elsewhere, or another file with the same name is already open "
+            "(see docs/com-quirks.md, section 2)."
+        )
+    return doc
+
+
+def get_components(doc):
+    """Fetch once. Do not call this in a loop (quirks section 4)."""
+    return list(doc.GetComponents(False) or [])
+
+
+def part_name(component_name):
+    """'C Linkage-6' -> 'C Linkage' (instance suffix stripped)."""
+    head, sep, tail = component_name.rpartition("-")
+    return head if sep and tail.isdigit() else component_name
+
+
+def rgb_of(values):
+    if not values:
+        return None
+    return [round(float(v), 4) for v in values[:3]]
+
+
+def ok(**payload):
+    payload["ok"] = True
+    return payload
+
+
+def error(code, message, hint=None):
+    payload = {"ok": False, "error": code, "message": message}
+    if hint:
+        payload["hint"] = hint
+    return payload
