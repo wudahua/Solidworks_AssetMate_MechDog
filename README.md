@@ -76,6 +76,8 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 
 实体分色走面级外观（SolidWorks 的实体级 API 实测不可靠），会覆盖原有面外观，请在副本上操作。
 
+![Body-level recolor: 8 solid bodies, 8 colors](docs/images/recolor-bodies.png)
+
 ## 设计原则
 
 1. **统一会话层**：所有工具共用 `sw_session`，慢调用（如 `GetComponents`）只取一次、内存分组。
