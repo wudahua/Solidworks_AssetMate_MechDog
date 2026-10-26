@@ -16,6 +16,10 @@ SW_DOC_ASSEMBLY = 2
 SW_OPEN_SILENT = 1
 
 _SW = None
+# Measured: GetComponents costs ~130 s on a 46-component assembly (2026-10-26).
+# Cache per document path so tree -> dry-run -> apply -> tree stays interactive.
+# Pass refresh=True after the user adds/removes components outside this server.
+_COMPONENTS_CACHE = {}
 
 
 def _com():
@@ -77,9 +81,32 @@ def open_document(path, doc_type=SW_DOC_ASSEMBLY):
     return doc
 
 
-def get_components(doc):
-    """Fetch once. Do not call this in a loop (quirks section 4)."""
-    return list(doc.GetComponents(False) or [])
+def get_components(doc, refresh=False):
+    """Fetch once per document and cache. Never call this in a loop (quirks section 4).
+
+    The cached COM pointers are validated with a cheap property read; if the
+    document was closed they raise and the entry is dropped.
+    """
+    key = os.path.normcase(doc.GetPathName)
+    if not refresh:
+        cached = _COMPONENTS_CACHE.get(key)
+        if cached:
+            try:
+                cached[0].Name2
+                return cached
+            except Exception:
+                _COMPONENTS_CACHE.pop(key, None)
+    components = list(doc.GetComponents(False) or [])
+    if components:
+        _COMPONENTS_CACHE[key] = components
+    return components
+
+
+def invalidate_components(path=None):
+    if path is None:
+        _COMPONENTS_CACHE.clear()
+    else:
+        _COMPONENTS_CACHE.pop(os.path.normcase(os.path.abspath(path)), None)
 
 
 def part_name(component_name):

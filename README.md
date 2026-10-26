@@ -69,6 +69,10 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 3. **不编造结果**：COM 不可用时返回结构化错误和坑文档指引，绝不假装成功。
 4. **每个工具配一篇坑笔记**：新增工具必须同步更新 [docs/com-quirks.md](docs/com-quirks.md)。
 
+## 性能
+
+首次读取装配要付 SolidWorks 加载成本：46 组件实测 `GetComponents` 单次约 130 秒。组件列表按文档缓存，`get_assembly_tree → recolor_assembly → get_assembly_tree` 只在第一次付这个成本；外部增删组件后给 `get_assembly_tree` 传 `refresh=true`。
+
 ## 当前局限
 
 - 只改组件外观，不改材质/密度；不含面级、特征级外观。

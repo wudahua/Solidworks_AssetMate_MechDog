@@ -73,9 +73,11 @@ ext.SelectByID2(name, "COMPONENT", 0,0,0, False, 0, None, 0)  # ❌ 末位参数
 
 ## 四、性能
 
-- `asm.GetComponents(False)` 在 80 组件装配上要**数秒**。放进循环（每组调一次）会把会话拖到工具超时被杀。**只调一次，在内存里分组**。
+- `asm.GetComponents(False)` 在 80 组件装配上要**数秒**；2026-10-26 在 46 组件的监视器支架上实测单次 **约 130 秒**（含首次打开零件的加载）。放进循环（每组调一次）会把会话拖到工具超时被杀。**只调一次，在内存里分组**。
+- 本项目的做法：按文档路径缓存组件列表，`tree → dry-run → apply → tree` 只付一次 `GetComponents` 成本；用户外部增删组件后传 `refresh=true`。
 - `SaveBMP(path, w, h)` 在 1400×1000 下约 5–10 s。
 - 重开 80 组件装配 1–3 分钟，验证要挑时机。
+- **关闭文档前必须先保存**。对未保存文档调 `CloseDoc` 会弹模态保存提示，自动化进程会被永久阻塞（无 UI 可点）。判断用 `GetSaveFlag`，保存用裸访问 `doc.SaveSilent`。
 
 ## 五、几个不可用的成员（本机实测）
 
@@ -97,7 +99,22 @@ doc.SaveBMP(path, w, h)   # ✅ 但无论扩展名写 .png 还是 .bmp，实际�
 
 要 PNG：改名成 .bmp 再用图像库转，或用纯 Python 读 BMP + `zlib` 手写 PNG（无 Pillow 环境下的可行路径，约 30 行）。
 
-## 七、一条通用原则
+## 七、保存文档（2026-10-26 实测新增）
+
+`SaveSilent` 与 `GetSaveFlag` 在 pywin32 动态绑定下都是**属性**，不是可调用方法：
+
+```python
+doc.SaveSilent          # ✅ 访问即执行保存，返回 0/1（返回值不代表成功）
+doc.SaveSilent()        # ❌ TypeError: 'int' object is not callable
+doc.GetSaveFlag         # ✅ bool：True = 有未保存修改
+doc.GetSaveFlag()       # ❌ TypeError: 'bool' object is not callable
+```
+
+返回值不可靠：实测保存成功后 `SaveSilent` 仍返回 `0`，应以 `GetSaveFlag` 在保存后变为 `False` 作为判据。
+
+**重开后组件顺序会变。** 验证"颜色是否落盘"不能比对 `GetComponents()[0]`，必须按组件名（如 `P19-3`）查找同一实例。只关闭当前文档用 `sw.CloseDoc(title)`，不要为了验证而 `CloseAllDocuments`——会关掉用户正在编辑的其他文档。
+
+## 八、一条通用原则
 
 > **先读现值，再改。**
 > 凡是"多层属性"（外观、显示状态、配置、材质），第一步读一次目标对象的现值，它会直接告诉你该改哪一层。跳过这一步，靠猜 API 语义，返工成本是它的 10 倍。

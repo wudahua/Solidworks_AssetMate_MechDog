@@ -90,7 +90,9 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
         except Exception:
             doc.EditRebuild3()
         if save:
-            doc.SaveSilent()
+            # pywin32 exposes SaveSilent as a property: bare access performs the
+            # save and returns 0/1. Calling it raises "'int' object is not callable".
+            doc.SaveSilent
 
         base.update({
             "applied": True,

@@ -28,11 +28,11 @@ def _component_info(comp):
     }
 
 
-def assembly_tree(assembly_path, max_depth=1):
+def assembly_tree(assembly_path, max_depth=1, refresh=False):
     """Component tree. max_depth=1 is flat (fast); deeper levels use GetChildren."""
     try:
         doc = open_document(assembly_path, SW_DOC_ASSEMBLY)
-        components = get_components(doc)  # one slow call, then memory only
+        components = get_components(doc, refresh=refresh)  # one slow call, then memory only
         nodes = []
         for comp in components:
             info = _component_info(comp)

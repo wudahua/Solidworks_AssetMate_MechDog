@@ -36,12 +36,14 @@ def recolor_assembly(
 
 
 @mcp.tool()
-def get_assembly_tree(assembly_path: str, max_depth: int = 1) -> str:
+def get_assembly_tree(assembly_path: str, max_depth: int = 1, refresh: bool = False) -> str:
     """List assembly components with part names, paths, colors and instance info.
 
     max_depth=1 is flat and fast; higher values recurse into subassemblies.
+    The component list is cached per document; set refresh=true after editing
+    the assembly's structure outside this server.
     """
-    return _json(assembly.assembly_tree(assembly_path, max_depth=max_depth))
+    return _json(assembly.assembly_tree(assembly_path, max_depth=max_depth, refresh=refresh))
 
 
 @mcp.tool()
