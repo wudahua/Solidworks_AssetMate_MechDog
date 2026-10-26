@@ -1,5 +1,7 @@
 # Solidworks_AssetMate_MechDog
 
+![Before: all parts white / After: 19 part types in distinct colors](docs/images/recolor-before-after.png)
+
 SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub 仓库名与 MCP 注册名统一为 **`Solidworks_AssetMate_MechDog`**。
 
 第一个能力来自真实项目：给装配体按零件类型批量上色，让整个装配体五颜六色、一眼可分。核心 COM 逻辑已在 SolidWorks 2024 实测验证。
@@ -72,6 +74,18 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 ## 性能
 
 首次读取装配要付 SolidWorks 加载成本：46 组件实测 `GetComponents` 单次约 130 秒。组件列表按文档缓存，`get_assembly_tree → recolor_assembly → get_assembly_tree` 只在第一次付这个成本；外部增删组件后给 `get_assembly_tree` 传 `refresh=true`。
+
+实测数据（2026-10-26，监视器固定支架，46 组件 / 19 种零件，SolidWorks 2024 SP4 / Py3.13）：
+
+| 操作 | 耗时 |
+|---|---|
+| `get_assembly_tree` 首次（含零件加载） | 163 s |
+| `recolor_assembly` dry-run（缓存命中） | 64 s |
+| `recolor_assembly` apply（46 件上色 + 保存） | 121 s |
+| `export_preview` 1600×1200 | 4 s |
+| 全流程 tree → dry-run → apply → 复核 → 预览 | 7 m 35 s（未加缓存时 10 m 33 s） |
+
+结论：慢在 SolidWorks 的 COM 往返和文件加载，不在 Python 侧。单个装配首次操作请预留 2–3 分钟，不要用默认 30–60 秒的工具超时。
 
 ## 当前局限
 
