@@ -13,6 +13,8 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | 工具 | 作用 | 写入？ |
 |---|---|---|
 | `recolor_assembly` | 按零件类型批量上色；默认 dry-run，`apply=true` 才修改；返回原色值可回退 | 可选 |
+| `list_bodies` | 列出零件的实体（名称、面/边/顶点数） | 否 |
+| `recolor_bodies` | 多实体零件按实体分色；逐面上色保证生效；默认 dry-run | 可选 |
 | `get_assembly_tree` | 组件树：零件名、路径、当前颜色、子装配递归 | 否 |
 | `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位；实验性，失败返回结构化错误） | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
@@ -64,6 +66,16 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 
 确认 dry-run 返回的零件与匹配数无误后，再以 `apply=true` 执行。
 
+多实体零件按实体分色（先查实体名，再用实体名作 palette 键）：
+
+```json
+{ "part_path": "D:/models/hull.SLDPRT",
+  "palette": { "Hull": [0.33, 0.49, 0.95], "Deck": [0.95, 0.8, 0.33] },
+  "apply": false }
+```
+
+实体分色走面级外观（SolidWorks 的实体级 API 实测不可靠），会覆盖原有面外观，请在副本上操作。
+
 ## 设计原则
 
 1. **统一会话层**：所有工具共用 `sw_session`，慢调用（如 `GetComponents`）只取一次、内存分组。
@@ -82,6 +94,7 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 | `get_assembly_tree` 首次（含零件加载） | 163 s |
 | `recolor_assembly` dry-run（缓存命中） | 64 s |
 | `recolor_assembly` apply（46 件上色 + 保存） | 121 s |
+| `recolor_bodies` apply（899 面 / 8 实体，含保存） | 76 s |
 | `export_preview` 1600×1200 | 4 s |
 | 全流程 tree → dry-run → apply → 复核 → 预览 | 7 m 35 s（未加缓存时 10 m 33 s） |
 
@@ -90,6 +103,7 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 ## 当前局限
 
 - 只改组件外观，不改材质/密度；不含面级、特征级外观。
+- 实体分色为整块上色，不提供单个面单独配色的工具；面级外观会覆盖原贴图。
 - 不做配置/显示状态切换；子装配递归仅 `get_assembly_tree` 支持。
 - 读到的外观可能来自内存文档而非磁盘；核对文件真实状态需先 `CloseAllDocuments`（见坑清单第三节）。
 

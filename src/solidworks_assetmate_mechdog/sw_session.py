@@ -59,6 +59,16 @@ def double_array(values):
     return variant(list(values), pythoncom.VT_ARRAY | pythoncom.VT_R8)
 
 
+def byref_dispatch_null():
+    """Null Callout argument for SelectByID2 (byref IDispatch).
+
+    SelectByID2 fails with '类型不匹配' unless the Callout argument is passed
+    this way (docs/com-quirks.md, section 3).
+    """
+    pythoncom, _, _ = _com()
+    return variant(None, pythoncom.VT_BYREF | pythoncom.VT_DISPATCH)
+
+
 def open_document(path, doc_type=SW_DOC_ASSEMBLY):
     """Open path silently, reusing the active document when it is the same file."""
     path = os.path.abspath(path)

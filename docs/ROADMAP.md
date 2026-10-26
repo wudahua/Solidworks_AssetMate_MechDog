@@ -26,6 +26,7 @@
 | `get_assembly_tree` 组件树 | 已发布 | 46 组件，支持子装配递归 |
 | `get_mass_properties` | 已发布（实验性） | 0.1266 kg，SI 单位 |
 | `export_preview` | 已发布 | 1600×1200 BMP，4 s |
+| `list_bodies` / `recolor_bodies` 实体级分色 | v0.1.1 | 8 实体 / 899 面，保存重开后保留；面级实现，76 s |
 | 文档 | 已发布 | `docs/com-quirks.md` + 前后对比图 |
 | 分发 | 已发布 | tag `v0.1.0` + Release 附件 |
 

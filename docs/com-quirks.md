@@ -114,7 +114,30 @@ doc.GetSaveFlag()       # ❌ TypeError: 'bool' object is not callable
 
 **重开后组件顺序会变。** 验证"颜色是否落盘"不能比对 `GetComponents()[0]`，必须按组件名（如 `P19-3`）查找同一实例。只关闭当前文档用 `sw.CloseDoc(title)`，不要为了验证而 `CloseAllDocuments`——会关掉用户正在编辑的其他文档。
 
-## 八、一条通用原则
+## 八、实体级外观（2026-10-26 实测新增）
+
+多实体零件按实体分色，官方文档推荐的两种写法在本机都不可靠：
+
+| 写法 | 结果 |
+|---|---|
+| `body.MaterialPropertyValues = VARIANT(...)` | ❌ 不报错，回读永远是 `None`，颜色不变 |
+| 选中实体 + `Extension.SetMaterialPropertyValues(color, 1)` | ⚠️ 小实体生效，758 面的主壳无效 |
+| **逐面 `face.MaterialPropertyValues = VARIANT(...)`** | ✅ 全部生效，可回读，可靠 |
+
+选择实体本身也有坑：`IBody2.Select2` 在晚绑定下报 `Python instance can not be converted to a COM object`，`SelectByID2` 的 Callout 参数必须传 `VARIANT(VT_BYREF | VT_DISPATCH, None)`：
+
+```python
+callout = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_DISPATCH, None)
+doc.Extension.SelectByID2(name, "SOLIDBODY", 0, 0, 0, False, 0, callout, 0)
+```
+
+**结论：实体分色走面级。** 代价与注意点：
+
+- 758 面约 12 秒；899 面的零件整体 apply 约 76 秒（含重建与保存）。
+- 面级外观优先级最高，会覆盖原有的面外观/贴图，操作前务必用副本。
+- `GetBodies2` 返回的实体**顺序不稳定**，跨调用必须按实体名匹配，不能用索引。
+
+## 九、一条通用原则
 
 > **先读现值，再改。**
 > 凡是"多层属性"（外观、显示状态、配置、材质），第一步读一次目标对象的现值，它会直接告诉你该改哪一层。跳过这一步，靠猜 API 语义，返工成本是它的 10 倍。

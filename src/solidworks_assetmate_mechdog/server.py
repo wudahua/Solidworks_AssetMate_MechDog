@@ -9,7 +9,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME
-from .tools import assembly, recolor
+from .tools import assembly, bodies, recolor
 
 mcp = FastMCP(SERVER_NAME)
 
@@ -33,6 +33,32 @@ def recolor_assembly(
     only, not material/density. Returns previous colors for undo.
     """
     return _json(recolor.recolor_assembly(assembly_path, palette, apply=apply, save=save))
+
+
+@mcp.tool()
+def list_bodies(part_path: str) -> str:
+    """List solid bodies in a part: name, faces, edges, vertices.
+
+    Use body names as palette keys — the returned order can change between calls.
+    """
+    return _json(bodies.list_bodies(part_path))
+
+
+@mcp.tool()
+def recolor_bodies(
+    part_path: str,
+    palette: dict,
+    apply: bool = False,
+    save: bool = True,
+) -> str:
+    """Recolor each solid body of a multibody PART a different color.
+
+    Palette keys are body names from list_bodies, e.g. {"Hull": [0.8,0.2,0.2]}.
+    SAFE DEFAULT: apply=false lists bodies and matched names without changing
+    anything. Each paint is applied only after verifying exactly one body is
+    selected (guards against a document-wide recolor).
+    """
+    return _json(bodies.recolor_bodies(part_path, palette, apply=apply, save=save))
 
 
 @mcp.tool()
