@@ -137,7 +137,34 @@ doc.Extension.SelectByID2(name, "SOLIDBODY", 0, 0, 0, False, 0, callout, 0)
 - 面级外观优先级最高，会覆盖原有的面外观/贴图，操作前务必用副本。
 - `GetBodies2` 返回的实体**顺序不稳定**，跨调用必须按实体名匹配，不能用索引。
 
-## 九、一条通用原则
+## 九、BOM 与重命名（2026-10-26 实测新增）
+
+### 轻化组件读不到质量
+
+装配默认轻化加载时，`comp.GetModelDoc2` 返回 `None`，`CreateMassProperty` 无从调用，19 个零件只能读到 1 个的质量。先一次性解析：
+
+```python
+doc.ResolveAllLightweightComponents(True)   # 返回值可能是 0，但文档确实加载了
+```
+
+之后 46/46 组件全部有 `GetModelDoc2`，总质量 0.126567 kg，与整机 `GetMassProperties` 一致。`CreateMassProperty` 只对**已加载**的文档有效，对未加载文档不会自动加载。
+
+材料用 `GetMaterialPropertyName2("", VARIANT(VT_BYREF | VT_BSTR, ""))` 读取；未指定材料时返回**空字符串**，不是 `None`——判断时要 `strip()`。
+
+### 重命名：实例名改不了，文件名可以
+
+| 目标 | 结果 |
+|---|---|
+| `comp.Name = "x"` | ❌ `Property 'Name' can not be set` |
+| `comp.Name2 = "x"` | ❌ 不报错，读回仍是旧名，`GetSaveFlag` 不变 |
+| `doc.Extension.RenameDocument("x.SLDPRT")` | ❌ 返回 `2`，文件未改名（非 PDM 工作区） |
+| **文件系统 `os.rename`** | ✅ 可用，但打开中的文件会失败 |
+
+`IAssemblyDoc` 没有 `RenameComponent` / `RenameComponent2` 成员（用 `_oleobj_.GetIDsOfNames` 可直接探测成员是否存在，比 `dir()` 可靠，`dir()` 在 SldWorks 对象上会抛"找不到元素"）。
+
+**结论：实例名只能 UI 改；工具只做文件级重命名，并明确返回 `instance_rename_unsupported`，不造假。** 文件重命名后装配引用会断，必须先关闭文档，并在工具里报告受影响的组件。
+
+## 十、一条通用原则
 
 > **先读现值，再改。**
 > 凡是"多层属性"（外观、显示状态、配置、材质），第一步读一次目标对象的现值，它会直接告诉你该改哪一层。跳过这一步，靠猜 API 语义，返工成本是它的 10 倍。

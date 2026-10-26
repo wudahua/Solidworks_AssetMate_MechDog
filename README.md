@@ -15,6 +15,8 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `recolor_assembly` | 按零件类型批量上色；默认 dry-run，`apply=true` 才修改；返回原色值可回退 | 可选 |
 | `list_bodies` | 列出零件的实体（名称、面/边/顶点数） | 否 |
 | `recolor_bodies` | 多实体零件按实体分色；逐面上色保证生效；默认 dry-run | 可选 |
+| `export_bom` | 导出 BOM：零件聚合、数量、材料、单件/总质量，可写 CSV | 仅 CSV |
+| `rename_components` | 按映射/前后缀重命名零件文件；冲突检测、失败回滚 | 是 |
 | `get_assembly_tree` | 组件树：零件名、路径、当前颜色、子装配递归 | 否 |
 | `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位；实验性，失败返回结构化错误） | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
@@ -78,6 +80,22 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 
 ![Body-level recolor: 8 solid bodies, 8 colors](docs/images/recolor-bodies.png)
 
+导出 BOM（只读，可同时写 CSV）：
+
+```json
+{ "assembly_path": "D:/models/beam.SLDASM", "csv_path": "D:/out/bom.csv" }
+```
+
+返回按零件聚合的行：`part`、`qty`、`material`、`mass_each_kg`、`mass_total_kg`、`path`，以及 `total_mass_kg` 和 `warnings`（缺失值逐条列出，不猜）。
+
+重命名零件文件（默认 dry-run）：
+
+```json
+{ "part_paths": ["D:/parts/P01.SLDPRT", "D:/parts/P02.SLDPRT"], "prefix": "RN_" }
+```
+
+支持 `mapping` / `prefix` / `suffix`；目标已存在、非法字符、未变化都会进 `conflicts` 而不执行。`apply=true` 后失败会自动回滚。若传 `assembly_path`，会额外报告哪些组件仍引用旧文件名。
+
 ## 设计原则
 
 1. **统一会话层**：所有工具共用 `sw_session`，慢调用（如 `GetComponents`）只取一次、内存分组。
@@ -106,6 +124,7 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 
 - 只改组件外观，不改材质/密度；不含面级、特征级外观。
 - 实体分色为整块上色，不提供单个面单独配色的工具；面级外观会覆盖原贴图。
+- 组件**实例名**无法通过 API 修改（`IComponent2.Name` 只读、`Name2` 赋值静默无效），`rename_components` 只做文件重命名；实例名请在 FeatureManager 树中手动改。
 - 不做配置/显示状态切换；子装配递归仅 `get_assembly_tree` 支持。
 - 读到的外观可能来自内存文档而非磁盘；核对文件真实状态需先 `CloseAllDocuments`（见坑清单第三节）。
 

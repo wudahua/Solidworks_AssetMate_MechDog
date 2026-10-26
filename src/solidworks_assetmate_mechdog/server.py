@@ -9,7 +9,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME
-from .tools import assembly, bodies, recolor
+from .tools import assembly, bodies, bom, recolor, rename
 
 mcp = FastMCP(SERVER_NAME)
 
@@ -59,6 +59,49 @@ def recolor_bodies(
     selected (guards against a document-wide recolor).
     """
     return _json(bodies.recolor_bodies(part_path, palette, apply=apply, save=save))
+
+
+@mcp.tool()
+def export_bom(
+    assembly_path: str,
+    include_mass: bool = True,
+    include_material: bool = True,
+    csv_path: str | None = None,
+    refresh: bool = False,
+) -> str:
+    """Export a BOM: one row per part type with qty, material, unit and total mass.
+
+    Read-only. Lightweight components are resolved first, otherwise mass/material
+    come back null. Missing values are reported in `warnings`, never guessed.
+    Optionally writes a UTF-8 CSV for Excel.
+    """
+    return _json(bom.export_bom(
+        assembly_path, include_mass=include_mass, include_material=include_material,
+        csv_path=csv_path, refresh=refresh,
+    ))
+
+
+@mcp.tool()
+def rename_components(
+    part_paths: list[str],
+    mapping: dict | None = None,
+    prefix: str | None = None,
+    suffix: str | None = None,
+    apply: bool = False,
+    assembly_path: str | None = None,
+    mode: str = "file",
+) -> str:
+    """Rename part/assembly FILES by mapping or prefix/suffix. Dry-run by default.
+
+    mode="file" is supported and rolls back on failure. mode="instance" returns
+    instance_rename_unsupported: SolidWorks has no writable instance-name API
+    (IComponent2.Name is read-only, Name2 ignores assignment).
+    Pass assembly_path to get a report of components that still reference old names.
+    """
+    return _json(rename.rename_components(
+        part_paths=part_paths, mapping=mapping, prefix=prefix, suffix=suffix,
+        apply=apply, assembly_path=assembly_path, mode=mode,
+    ))
 
 
 @mcp.tool()

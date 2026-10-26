@@ -27,6 +27,8 @@
 | `get_mass_properties` | 已发布（实验性） | 0.1266 kg，SI 单位 |
 | `export_preview` | 已发布 | 1600×1200 BMP，4 s |
 | `list_bodies` / `recolor_bodies` 实体级分色 | v0.1.1 | 8 实体 / 899 面，保存重开后保留；面级实现，76 s |
+| `export_bom` | v0.1.2 | 19 零件 / 46 组件，总质量与整机一致；材料缺失逐条报告 |
+| `rename_components` | v0.1.2 | 文件级：dry-run / 冲突检测 / 失败回滚；实例名 API 不支持，如实返回 |
 | 文档 | 已发布 | `docs/com-quirks.md` + 前后对比图 |
 | 分发 | 已发布 | tag `v0.1.0` + Release 附件 |
 
@@ -45,7 +47,7 @@
 
 | 版本 | 主题 | 新增工具/能力 | 验收标准 |
 |---|---|---|---|
-| **v0.2** | 工程师日常批处理 | `export_bom`（层级 BOM + 数量/材料）、`batch_export`（STEP/PDF/DXF）、`rename_components`、`check_interference` | 在 20+ 组件装配上导出结果与 SW 界面一致；改名后引用不断裂；干涉数与界面一致 |
+| **v0.2** | 工程师日常批处理 | `batch_export`（STEP/PDF/DXF）、`check_interference`；`export_bom` 与文件级重命名已完成于 0.1.2 | 在 20+ 组件装配上导出结果与 SW 界面一致；干涉数与界面一致 |
 | **v0.3** | 结构与配合读取 | `get_feature_tree`、`get_mates`、`get_component_transforms`、`list_configurations` | 与 `analyze_model` 拓扑比对一致；配合类型/引用件可完整还原 |
 | **v0.4** | 安全与可运维 | `snapshot` / `restore_appearance`、操作日志、批量作业队列、超时与重连 | 任意写操作可一键回退；进程被杀后可恢复会话；日志含耗时与错误码 |
 | **v1.0** | 稳定接口 | 工具签名冻结、版本协商、多配置/显示状态、面级外观（可选） | 连续 10 次真机回归全绿；语义化版本 + 升级说明 |
