@@ -16,7 +16,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `list_bodies` | 列出零件的实体（名称、面/边/顶点数） | 否 |
 | `recolor_bodies` | 多实体零件按实体分色；逐面上色保证生效；默认 dry-run | 可选 |
 | `export_bom` | 导出 BOM：零件聚合、数量、材料、单件/总质量，可写 CSV | 仅 CSV |
-| `rename_components` | 按映射/前后缀重命名零件文件；冲突检测、失败回滚 | 是 |
+| `rename_components` | 重命名零件：`file` 只改磁盘，`auto` 另存新文件并重定向装配引用 | 是 |
 | `get_assembly_tree` | 组件树：零件名、路径、当前颜色、子装配递归 | 否 |
 | `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位；实验性，失败返回结构化错误） | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
@@ -95,6 +95,15 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
 ```
 
 支持 `mapping` / `prefix` / `suffix`；目标已存在、非法字符、未变化都会进 `conflicts` 而不执行。`apply=true` 后失败会自动回滚。若传 `assembly_path`，会额外报告哪些组件仍引用旧文件名。
+
+自动模式（改名 + 更新装配引用 + 保存，一次完成）：
+
+```json
+{ "part_paths": ["D:/parts/P01.SLDPRT"], "prefix": "RN_",
+  "assembly_path": "D:/parts/beam.SLDASM", "mode": "auto" }
+```
+
+装配打开时会锁住组件文件，无法直接改名，因此 `auto` 采用「静默另存新文件 → 重定向引用 → 保存装配」：原文件保留、可回退；实例名会跟随新文件名（`P01-1` → `RN_P01-1`）。
 
 ## 设计原则
 

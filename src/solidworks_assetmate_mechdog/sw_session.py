@@ -88,6 +88,8 @@ def open_document(path, doc_type=SW_DOC_ASSEMBLY):
             "elsewhere, or another file with the same name is already open "
             "(see docs/com-quirks.md, section 2)."
         )
+    # A reopened document means previously cached component pointers are stale.
+    invalidate_components(path)
     return doc
 
 

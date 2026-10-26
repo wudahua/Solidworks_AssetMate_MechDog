@@ -28,7 +28,7 @@
 | `export_preview` | 已发布 | 1600×1200 BMP，4 s |
 | `list_bodies` / `recolor_bodies` 实体级分色 | v0.1.1 | 8 实体 / 899 面，保存重开后保留；面级实现，76 s |
 | `export_bom` | v0.1.2 | 19 零件 / 46 组件，总质量与整机一致；材料缺失逐条报告 |
-| `rename_components` | v0.1.2 | 文件级：dry-run / 冲突检测 / 失败回滚；实例名 API 不支持，如实返回 |
+| `rename_components` | v0.1.2 / v0.1.3 | 文件级 dry-run + 回滚；`auto` 模式另存新文件并重定向装配引用，重开验证通过；实例名 API 不支持，如实返回 |
 | 文档 | 已发布 | `docs/com-quirks.md` + 前后对比图 |
 | 分发 | 已发布 | tag `v0.1.0` + Release 附件 |
 

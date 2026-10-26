@@ -162,7 +162,27 @@ doc.ResolveAllLightweightComponents(True)   # 返回值可能是 0，但文档�
 
 `IAssemblyDoc` 没有 `RenameComponent` / `RenameComponent2` 成员（用 `_oleobj_.GetIDsOfNames` 可直接探测成员是否存在，比 `dir()` 可靠，`dir()` 在 SldWorks 对象上会抛"找不到元素"）。
 
-**结论：实例名只能 UI 改；工具只做文件级重命名，并明确返回 `instance_rename_unsupported`，不造假。** 文件重命名后装配引用会断，必须先关闭文档，并在工具里报告受影响的组件。
+**结论：实例名只能 UI 改；工具用「另存 + 重定向」实现文件级重命名，并明确返回 `instance_rename_unsupported`，不造假。** `mode="file"` 会断装配引用，`mode="auto"` 会同步重定向引用。
+
+### 装配打开时改不了零件文件名
+
+装配会锁住组件文件，`os.rename` 直接报 `WinError 32 另一个程序正在使用此文件`。而"先关装配再改名"走不通——改名后装配找不到旧文件，直接断链。
+
+可行路径是**另存 + 重定向**：
+
+```python
+part = open_document(old_path, SW_DOC_PART)
+part.SaveAsSilent(new_path, False)      # ✅ 静默生成新文件（返回 0，文件已存在）
+comp.ReplaceReference(new_path)         # ✅ 返回 1，单个组件立即改指向
+doc.SaveSilent                          # 保存装配
+```
+
+实测：
+
+- `SaveAsSilent` 会顺带更新已打开装配里指向该文档的引用；`ReplaceReference` 用于显式补刀，多实例要逐个调用。
+- 保存并重开后路径与实例名都已更新，实例名按新文件名重排（`P01-1` → `RN_P01-1`）。
+- 原文件保留，回退只需把引用改回去并删掉新文件。
+- 关闭被装配引用的零件文档再改名无效（文件锁不释放），不要在这条路上浪费时间。
 
 ## 十、一条通用原则
 

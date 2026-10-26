@@ -90,17 +90,18 @@ def rename_components(
     apply: bool = False,
     assembly_path: str | None = None,
     mode: str = "file",
+    save: bool = True,
 ) -> str:
     """Rename part/assembly FILES by mapping or prefix/suffix. Dry-run by default.
 
-    mode="file" is supported and rolls back on failure. mode="instance" returns
-    instance_rename_unsupported: SolidWorks has no writable instance-name API
-    (IComponent2.Name is read-only, Name2 ignores assignment).
-    Pass assembly_path to get a report of components that still reference old names.
+    mode="file"  rename on disk only.
+    mode="auto"  rename + retarget assembly references (ReplaceReference) + save.
+                 Requires assembly_path. Instance names follow the new file name.
+    mode="instance" is unsupported: SolidWorks has no writable instance-name API.
     """
     return _json(rename.rename_components(
         part_paths=part_paths, mapping=mapping, prefix=prefix, suffix=suffix,
-        apply=apply, assembly_path=assembly_path, mode=mode,
+        apply=apply, assembly_path=assembly_path, mode=mode, save=save,
     ))
 
 
