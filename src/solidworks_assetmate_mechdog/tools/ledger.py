@@ -100,6 +100,23 @@ def _cylindrical_faces(feature):
     return holes
 
 
+def _unused_is_inner_cylinder(face, params):
+    """True when the cylindrical face faces its own axis (a bore), False for a boss or a
+    bend fillet. Without this filter every R2.54 bend reads as a Ø5.1 hole."""
+    try:
+        normal = list(face.Normal)
+        box = list(face.GetBox)
+        centre = [(box[0] + box[3]) / 2, (box[1] + box[4]) / 2, (box[2] + box[5]) / 2]
+        origin = params[0:3]
+        axis = params[3:6]
+        v = [centre[i] - origin[i] for i in range(3)]
+        along = sum(v[i] * axis[i] for i in range(3))
+        radial = [v[i] - along * axis[i] for i in range(3)]
+        return sum(radial[i] * normal[i] for i in range(3)) < 0
+    except Exception:
+        return True  # keep it when we cannot tell; better an extra candidate than a miss
+
+
 def _body_cylinders(model):
     """Every cylindrical face on the solid bodies → holes, regardless of which feature
     made it (formed tools and imported geometry included, which feature-scoped scanning
@@ -121,7 +138,10 @@ def _body_cylinders(model):
                 continue
             try:
                 body = win.Dispatch(item)
-                faces = body.GetFaces
+                # IBody2.GetFaces is a METHOD (IComponent2/IFeature use properties) —
+                # calling it as a property silently yields the bound method and the scan
+                # finds nothing.
+                faces = body.GetFaces()
             except Exception:
                 continue
             face_items = faces if isinstance(faces, (tuple, list)) else (faces,)
@@ -262,9 +282,17 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
             doubts.append({"kind": "suppressed_features", "detail": suppressed})
 
         # Feature-scoped holes miss formed/imported ones, so merge a body-wide scan.
+        # Cylindrical faces include bores, bosses and bend fillets; only `inner` ones are
+        # reported as holes, the rest are counted so nothing disappears silently.
+        cylinders_total, inner_count = 0, 0
         if include_faces:
             seen = {_hole_key(h) for h in holes}
-            for hole in _body_cylinders(model):
+            scanned = _body_cylinders(model)
+            cylinders_total = len(scanned)
+            # Keep every cylindrical face. Deciding bore vs boss vs bend fillet from the
+            # face normal proved unreliable here (all 80 faces classified the same way,
+            # contradicting the known holes), so no pre-filtering is applied.
+            for hole in scanned:
                 key = _hole_key(hole)
                 if key in seen:
                     continue
@@ -291,10 +319,13 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
                 "driving_dimensions": driving,
                 "hole_candidates": len(holes),
                 "patterns": sum(v for k, v in types.items() if "Pattern" in k),
+                "cylinder_faces": cylinders_total,
                 "feature_types": types,
             },
             notes=[
-                "圆柱面只是孔的候选，不是孔的证据；需结合入口面与轴线确认。",
+                "holes 是**全模型圆柱面清单**（直径/轴线/中心），不是孔清单：孔、凸台、"
+                "折弯圆角都在其中。判「是否孔」需结合入口面与轴线，工具不做推断。",
+                "非圆柱孔（异形孔、成型工具做的百叶窗、导入体上的孔）不在本表中，需人工核对。",
                 "驱动尺寸来自特征，草图内部尺寸与基准面偏移未计入。",
             ],
         )
