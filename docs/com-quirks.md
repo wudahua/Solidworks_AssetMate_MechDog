@@ -315,6 +315,24 @@ doc.AddHoleCallout2(x, y, 0)                                     # 孔标注
   不伪造标注。
 - `IModelDoc2.EditRebuild3` 是**属性**（bool），写 `EditRebuild3()` 会报 `'bool' object is not callable`。
 
+### GB 模板的标题栏是写死的占位文字
+
+新建的 GB 图纸标题栏显示 `"图样名称"`、`"图样代号"`（连引号一起），材料是 `<未指定>`。
+这些**不是属性链接**，就是普通的 Note 文本，所以每张图都会原样显示占位词。
+
+替换路径：
+
+```python
+sheet = doc.GetFirstView           # 属性
+for ann in sheet.GetAnnotations:   # 属性，嵌套 tuple，需 Dispatch 包装
+    if ann.GetType == 6:           # swAnnotationType_Note
+        note = ann.GetSpecificAnnotation
+        text = note.GetText        # 属性
+        note.SetText("履带轮")      # 方法，返回 True
+```
+
+实测：一张 A3 图里 `图样代号` 出现 **2 次**（标题栏 + 左侧明细栏），两处都要替换。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。

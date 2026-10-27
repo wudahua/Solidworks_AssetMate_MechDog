@@ -715,3 +715,109 @@ def add_hole_callout(drawing_path, x, y, view_name=None):
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("hole_callout_failed", str(exc))
+
+
+def _sheet_notes(sheet):
+    """All INote objects on the sheet (annotations whose type is 6)."""
+    import win32com.client as win
+
+    flat = []
+
+    def collect(obj):
+        if isinstance(obj, (tuple, list)):
+            for item in obj:
+                collect(item)
+        elif obj is not None:
+            flat.append(win.Dispatch(obj))
+
+    try:
+        collect(sheet.GetAnnotations)
+    except Exception:
+        return []
+    notes = []
+    for ann in flat:
+        try:
+            if ann.GetType != 6:  # swAnnotationType_Note
+                continue
+            notes.append(ann.GetSpecificAnnotation)
+        except Exception:
+            continue
+    return notes
+
+
+def set_title_block(drawing_path, name=None, code=None, material=None, apply=False):
+    """Fill title-block placeholders such as the literal text “图样名称” / “图样代号”.
+
+    GB templates ship these as plain note text with quotes, so nothing is linked to
+    the model and every drawing shows the placeholder. Dry-run by default; only the
+    fields you pass are touched, unknown fields are reported, never invented.
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        sheet = doc.GetFirstView
+        notes = _sheet_notes(sheet)
+        planned, unmatched = [], []
+
+        wants = []
+        if name is not None:
+            wants.append(("name", "图样名称", str(name)))
+        if code is not None:
+            wants.append(("code", "图样代号", str(code)))
+        if material is not None:
+            wants.append(("material", "材质", str(material)))
+
+        for field, marker, new_value in wants:
+            hits = 0
+            for note in notes:
+                try:
+                    text = note.GetText
+                except Exception:
+                    continue
+                if not isinstance(text, str) or marker not in text:
+                    continue
+                if field == "material":
+                    before = text
+                    after = text.replace("<未指定>", new_value).replace("<未指定 >", new_value)
+                    if after == before:
+                        after = "材质 %s" % new_value if "<" not in text else text.replace(
+                            text[text.find("<"):text.find(">") + 1], new_value)
+                else:
+                    before = text
+                    after = new_value
+                planned.append({
+                    "field": field, "before": before, "after": after, "note": note,
+                })
+                hits += 1
+            if hits == 0:
+                unmatched.append({"field": field, "marker": marker})
+
+        result = {
+            "drawing": doc.GetTitle,
+            "planned": [{k: v for k, v in p.items() if k != "note"} for p in planned],
+            "unmatched": unmatched,
+            "applied": False,
+        }
+        if not apply:
+            result["dry_run"] = True
+            result["message"] = "Nothing changed. apply=true writes these title-block fields."
+            return ok(**result)
+
+        written = []
+        for item in planned:
+            try:
+                item["note"].SetText(item["after"])
+                written.append({"field": item["field"], "before": item["before"],
+                                "after": item["after"], "ok": True})
+            except Exception as exc:
+                written.append({"field": item["field"], "ok": False, "error": str(exc)})
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        doc.SaveSilent
+        result.update(applied=True, written=written, saved=True)
+        return ok(**result)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("title_block_failed", str(exc))

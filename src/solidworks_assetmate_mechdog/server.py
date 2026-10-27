@@ -215,6 +215,25 @@ def add_hole_callout(drawing_path: str, x: float, y: float, view_name: str | Non
 
 
 @mcp.tool()
+def set_title_block(
+    drawing_path: str,
+    name: str | None = None,
+    code: str | None = None,
+    material: str | None = None,
+    apply: bool = False,
+) -> str:
+    """Fill title-block placeholders (图样名称 / 图样代号 / 材质) in a drawing.
+
+    GB templates store these as literal quoted text, so nothing is linked to the
+    model. Dry-run by default; only the fields you pass are changed, and fields
+    that cannot be found are reported instead of invented.
+    """
+    return _json(drawing.set_title_block(
+        drawing_path, name=name, code=code, material=material, apply=apply,
+    ))
+
+
+@mcp.tool()
 def drawing_audit(drawing_path: str) -> str:
     """Audit a drawing: views, scales, blank views, dimension and annotation counts.
 
