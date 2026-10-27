@@ -1098,10 +1098,12 @@ def template_safe_area(sheet, sheet_w, sheet_h):
     if not horizontals or not verticals:
         return fallback
 
-    frame_left = min(min(s[0], s[2]) for s in verticals)
-    frame_right = max(max(s[0], s[2]) for s in verticals)
-    frame_bottom = min(min(s[1], s[3]) for s in horizontals)
-    frame_top = max(max(s[1], s[3]) for s in horizontals)
+    # Use the outermost extent of ALL segments: larger sheets carry centre lines that
+    # would otherwise be mistaken for the frame edge (A2 measured right=0.30 instead of 0.59).
+    frame_left = min(min(s[0], s[2]) for s in segments)
+    frame_right = max(max(s[0], s[2]) for s in segments)
+    frame_bottom = min(min(s[1], s[3]) for s in segments)
+    frame_top = max(max(s[1], s[3]) for s in segments)
 
     # Title block: the highest horizontal line sitting in the bottom-right corner.
     title_candidates = [
