@@ -141,6 +141,8 @@ def main():
         bom_data.update(require(bom.export_bom(asm_copy, csv_path=os.path.join(workdir, "bom.csv"))))
         assert bom_data["part_types"] > 0
         assert os.path.exists(os.path.join(workdir, "bom.csv")), "csv not written"
+        assert bom_data.get("mass_complete") is True, "mass incomplete: %s" % (
+            bom_data.get("warnings") or [])[:3]
         basis = "default-density" if "default density" in (bom_data.get("mass_basis") or "") else "material"
         return "%d rows, mass=%s (%s), warnings=%d" % (
             bom_data["part_types"], bom_data.get("total_mass_kg"), basis, len(bom_data.get("warnings") or []))

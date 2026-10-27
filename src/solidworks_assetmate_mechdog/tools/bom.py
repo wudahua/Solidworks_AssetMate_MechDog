@@ -81,7 +81,14 @@ def export_bom(
             try:
                 doc.ResolveAllLightweightComponents(True)
             except Exception:
-                pass  # read-only fallback: report per-row warnings instead
+                pass
+            # ResolveAllLightweightComponents can return 2 while components stay
+            # lightweight (GetModelDoc2 None, mass/material null). A forced rebuild
+            # is what actually loads them — measured 1/46 -> 46/46.
+            try:
+                doc.ForceRebuild3(False)
+            except Exception:
+                pass
         components = get_components(doc, refresh=refresh)
         if not components:
             return error("empty_assembly", "No components found in %s" % doc.GetTitle)
