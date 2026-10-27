@@ -122,21 +122,34 @@ def open_document(path, doc_type=SW_DOC_ASSEMBLY):
 def get_components(doc, refresh=False):
     """Fetch once per document and cache. Never call this in a loop (quirks section 4).
 
-    The cached COM pointers are validated with a cheap property read; if the
-    document was closed they raise and the entry is dropped.
+    Cache validity is checked two ways because a stale IComponent2 does NOT always
+    raise after the document is closed and reopened from outside: it may silently
+    return empty strings (Name2 == ""). So we require (a) the same COM document
+    identity and (b) a non-empty first component name.
     """
     key = os.path.normcase(doc.GetPathName)
     if not refresh:
-        cached = _COMPONENTS_CACHE.get(key)
-        if cached:
+        entry = _COMPONENTS_CACHE.get(key)
+        if entry:
+            entry_ole, cached = entry
+            same_doc = False
             try:
-                cached[0].Name2
-                return cached
+                same_doc = entry_ole == doc._oleobj_
             except Exception:
-                _COMPONENTS_CACHE.pop(key, None)
+                same_doc = False
+            if same_doc and cached:
+                try:
+                    if str(cached[0].Name2 or "").strip():
+                        return cached
+                except Exception:
+                    pass
+            _COMPONENTS_CACHE.pop(key, None)
     components = list(doc.GetComponents(False) or [])
     if components:
-        _COMPONENTS_CACHE[key] = components
+        try:
+            _COMPONENTS_CACHE[key] = (doc._oleobj_, components)
+        except Exception:
+            pass
     return components
 
 

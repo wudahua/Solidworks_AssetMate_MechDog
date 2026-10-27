@@ -78,6 +78,10 @@ ext.SelectByID2(name, "COMPONENT", 0,0,0, False, 0, None, 0)  # ❌ 末位参数
 - `SaveBMP(path, w, h)` 在 1400×1000 下约 5–10 s。
 - 重开 80 组件装配 1–3 分钟，验证要挑时机。
 - **关闭文档前必须先保存**。对未保存文档调 `CloseDoc` 会弹模态保存提示，自动化进程会被永久阻塞（无 UI 可点）。判断用 `GetSaveFlag`，保存用裸访问 `doc.SaveSilent`。
+- **缓存不能只靠"读属性会抛异常"来判失效**。文档被外部关闭重开后，陈旧的 `IComponent2` 指针**不抛异常**，而是静默返回空串（`Name2=""`、`GetPathName=""`、`GetModelDoc2=None`）。此时任何依赖组件列表的读操作都会返回"成功但全空"的数据。校验必须同时满足：
+  1. 缓存的 COM 文档身份与当前一致（`cached_ole == doc._oleobj_`，实测同对象返回 `True`、重开后为 `False`）；
+  2. 首个组件的 `Name2` 非空。
+  只做其中一条都会漏。
 
 ## 五、几个不可用的成员（本机实测）
 
@@ -221,8 +225,10 @@ _SW = dyn.Dispatch(win.GetActiveObject("SldWorks.Application"))
 
 对策：
 
-- `recolor_assembly` 会抽样 3 个组件做读回校验，返回 `readback_sample` 与 `readback_verified`；为 `false` 时附 warning。
-- 此时**不要用 `previous_colors` 回退**——拿到的可能是白色。验收请用 `export_preview` 看图。
+- `recolor_assembly` 会**按 palette 每个零件键各抽 1 个实例**（最多 8 个）做读回校验，返回 `readback_sample` 与 `readback_verified`；为 `false` 时附 warning。
+- 失真有两种形态：读回恒白 `[1, 1, 1]`，以及读回 `None`。**`None` 不能当作"该组件没有颜色"**，也不代表未设置外观。
+- 失真按组件/会话随机分布，不是全文档属性，所以抽样必须覆盖每个零件类型，不能只取前 3 个组件。
+- 此时**不要用 `previous_colors` 回退**——拿到可能是白色或 `None`。验收请用 `export_preview` 看图。
 - `get_assembly_tree` 的 `rgb` 在这种环境下不可信，只看结构、路径、实例数。
 
 另：`recolor_bodies` 的面级颜色在装配中会被**组件级颜色覆盖**（视口优先级：组件级 > 面级）。零件文件内颜色正确，但装配里看到的是组件色；工具已在 `note` 中提示。

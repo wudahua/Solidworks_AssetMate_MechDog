@@ -73,16 +73,17 @@ def export_bom(
     include_material: bool = True,
     csv_path: str | None = None,
     refresh: bool = False,
+    resolve_lightweight: bool = True,
 ) -> str:
     """Export a BOM: one row per part type with qty, material, unit and total mass.
 
-    Read-only. Lightweight components are resolved first, otherwise mass/material
-    come back null. Missing values are reported in `warnings`, never guessed.
-    Optionally writes a UTF-8 CSV for Excel.
+    Read-only. Lightweight components are resolved first (resolve_lightweight=false
+    skips that, at the cost of null mass/material). Missing values are reported in
+    `warnings`, never guessed. Optionally writes a UTF-8 CSV for Excel.
     """
     return _json(bom.export_bom(
         assembly_path, include_mass=include_mass, include_material=include_material,
-        csv_path=csv_path, refresh=refresh,
+        csv_path=csv_path, refresh=refresh, resolve_lightweight=resolve_lightweight,
     ))
 
 

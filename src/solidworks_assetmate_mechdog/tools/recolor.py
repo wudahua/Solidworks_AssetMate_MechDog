@@ -71,6 +71,12 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
             "palette_keys_not_found": missing,
             "applied": False,
         }
+        if not matched:
+            return error(
+                "no_match",
+                "No component matches palette keys: %s" % ", ".join(sorted(palette)),
+                "Run a dry-run first and use part names without the '-N' instance suffix.",
+            )
         if not apply:
             base["dry_run"] = True
             base["message"] = "Nothing changed. Call again with apply=true to paint."
@@ -89,17 +95,25 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
             doc.ForceRebuild3(False)
         except Exception:
             doc.EditRebuild3()
-        if save:
+        if painted and save:
             # pywin32 exposes SaveSilent as a property: bare access performs the
             # save and returns 0/1. Calling it raises "'int' object is not callable".
             doc.SaveSilent
 
-        # Read-back check on a small sample. On some bindings (SolidWorks 2026 with a
-        # gen_py cache present) MaterialPropertyValues reads back as white even though
-        # the render and the saved file are correct — do not let callers trust
-        # previous_colors blindly in that case.
+        # Read-back check, one instance per palette key (up to 8). On some bindings
+        # (SolidWorks 2026 with a gen_py cache) the getter returns white or None even
+        # though the render and the saved file are correct — never trust it blindly.
+        sample_components, seen_keys = [], set()
+        for comp in matched:
+            name = part_name(comp.Name2)
+            if name in seen_keys:
+                continue
+            seen_keys.add(name)
+            sample_components.append(comp)
+            if len(sample_components) >= 8:
+                break
         readback = []
-        for comp in matched[:3]:
+        for comp in sample_components:
             name = part_name(comp.Name2)
             expected = palette[name]
             actual = rgb_of(comp.MaterialPropertyValues)
@@ -112,12 +126,12 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
                 "readback": actual,
                 "matches": matched_ok,
             })
-        readback_ok = all(item["matches"] for item in readback)
+        readback_ok = bool(readback) and all(item["matches"] for item in readback)
 
         base.update({
             "applied": True,
             "painted_components": painted,
-            "saved": bool(save),
+            "saved": bool(painted and save),
             "previous_colors": {
                 name: rgb_of(values) for name, values in previous.items()
             },
@@ -127,9 +141,10 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
         if not readback_ok:
             base["warning"] = (
                 "MaterialPropertyValues does not read back the color just written, although "
-                "the model renders and saves correctly (known on some bindings). Treat "
-                "get_assembly_tree rgb and previous_colors as unreliable here; verify visually "
-                "with export_preview instead of restoring colors from previous_colors."
+                "the model renders and saves correctly (known on some bindings: the getter "
+                "returns white [1,1,1] or null). Treat get_assembly_tree rgb and "
+                "previous_colors as unreliable here; verify visually with export_preview "
+                "instead of restoring colors from previous_colors."
             )
         return ok(**base)
     except (FileNotFoundError, ValueError) as exc:
