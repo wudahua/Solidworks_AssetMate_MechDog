@@ -21,6 +21,11 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位），含 `mass_basis` 密度披露 | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
 | `batch_export` | 批量导出 STEP（零件/装配）；默认 dry-run，不覆盖已有文件 | 仅新文件 |
+| `set_part_material` | 给零件指定材质（dry-run，回读材质与质量变化） | 零件 |
+| `assign_materials` | 按名称关键词智能分配材质（标准件→碳钢，结构件→铝） | 零件 |
+| `material_library` | 列出本地材质库可用名称 | 否 |
+| `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径） | 工程图 |
+| `add_hole_callouts` | 批量孔标注（同直径标一次 + 回读） | 工程图 |
 | `delivery_check` | 交付判定：可制造/待设计审核/仅供参考 + 缺项清单 | 否 |
 | `verify_dimension_attachments` | 校验每个尺寸挂在边/面/草图段还是没挂 | 否 |
 | `list_drawing_annotations` | 读出全部注释：尺寸(含公差)/注释/形位公差框格/中心标记 | 否 |

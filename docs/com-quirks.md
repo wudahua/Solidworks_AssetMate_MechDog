@@ -572,6 +572,29 @@ ann.GetAttachedEntityTypes    # (11, 11)  11 = EDGE
 
 所以不能拿它一票否决：默认只报 warning，需要严格判定时传 `strict_attachments=True`。
 
+### 材料：SetMaterialPropertyName2 与本地名称（2026-10-27 实测）
+
+```python
+part.SetMaterialPropertyName2("", "SolidWorks Materials.sldmat", "普通碳钢")
+part.MaterialIdName     # -> 'solidworks materials|普通碳钢|9'
+```
+
+- 数据库名固定 `SolidWorks Materials.sldmat`；**材料名必须与本地材质库完全一致**。
+  实测「普通碳钢」有效，「铝合金 6061」「不锈钢 304」写入后 `MaterialIdName` 为空 —— 名称不对。
+- 写入后要 `EditRebuild3` 才会更新质量；没有材料时 SolidWorks 按 1000 kg/m³ 算，BOM 重量只是体积代理。
+- 材质库 XML 在 `C:/ProgramData/SOLIDWORKS/SOLIDWORKS 2024\` 下能找到 `*.sldmat`，但
+  `<material name="...">` 正则解析不出条目（格式/编码不符），自动列名称暂不可用。
+
+### 圆边识别：GetCurve 必须 Dispatch
+
+```python
+curve = win32com.client.Dispatch(edge.GetCurve)   # 少了这一步 IsCircle 恒失败
+if curve.IsCircle: ...
+```
+
+配电箱侧视图 260 条可见边里有 **82 条是圆**，之前"找不到圆"纯粹是没包 Dispatch。
+但逐边取曲线在大视图上很慢（260 边 > 300 s），批量孔标注要先按直径/位置过滤再取。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。

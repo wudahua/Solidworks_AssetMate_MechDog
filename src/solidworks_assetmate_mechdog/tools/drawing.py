@@ -2293,3 +2293,153 @@ def verify_dimension_attachments(drawing_path, view_name=None):
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("attachment_check_failed", str(exc))
+
+
+def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
+    """Circular edges of a view, with sheet position and diameter.
+
+    `edge.GetCurve` returns a dispatch pointer that must be wrapped before reading
+    IsCircle — calling it on the raw pointer fails silently and made an earlier version
+    report "no circles" on a view holding 82 of them.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        out = []
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name and view.Name != view_name:
+                continue
+            edges = [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]
+            # Model-space centre must come from ALL visible edges: using only the circular
+            # ones biases the origin and every computed sheet point lands off the hole.
+            all_pts = []
+            for edge in edges:
+                try:
+                    a, b = edge.GetStartVertex, edge.GetEndVertex
+                    if a is not None and b is not None:
+                        all_pts.append(a.GetPoint)
+                        all_pts.append(b.GetPoint)
+                except Exception:
+                    continue
+            rows = []
+            for edge in edges:
+                try:
+                    curve = win.Dispatch(edge.GetCurve)
+                    if curve is None or not curve.IsCircle:
+                        continue
+                    params = list(curve.CircleParams)
+                    diameter = round(float(params[6]) * 2000, 2)
+                    if diameter < float(min_diameter_mm):
+                        continue
+                    start = edge.GetStartVertex
+                    if start is None:
+                        continue
+                    rows.append((edge, start.GetPoint, diameter))
+                except Exception:
+                    continue
+            if not rows:
+                continue
+            axes = _projection_axes(view, [r[0] for r in rows])
+            pos = list(view.Position)
+            scale = float(view.ScaleDecimal)
+            pts = all_pts or [r[1] for r in rows]
+            lo = [min(p[i] for p in pts) for i in range(3)]
+            hi = [max(p[i] for p in pts) for i in range(3)]
+            for edge, point, diameter in rows:
+                out.append({
+                    "view": view.Name,
+                    "diameter_mm": diameter,
+                    "x": pos[0] + (point[axes[0]] - (lo[axes[0]] + hi[axes[0]]) / 2) * scale,
+                    "y": pos[1] + (point[axes[1]] - (lo[axes[1]] + hi[axes[1]]) / 2) * scale,
+                })
+        return drawing_ok(drawing=doc.GetTitle, count=len(out), circles=out)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("circle_scan_failed", str(exc))
+
+
+def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
+                      one_per_diameter=True, model_path=None, save=True):
+    """Insert native hole callouts on circular edges, then read each one back.
+
+    one_per_diameter=True is the drafting convention for repeated holes: call out one
+    hole per diameter and let the quantity live in the callout, instead of annotating
+    every copy. model_path adds a diameter cross-check against the model.
+    """
+    try:
+        found = list_circular_edges(drawing_path, view_name=view_name,
+                                    min_diameter_mm=min_diameter_mm)
+        if not found.get("ok"):
+            return found
+        circles = found.get("circles") or []
+        if not circles:
+            return error("no_circles", "No circular edges found%s"
+                         % (" in %r" % view_name if view_name else ""))
+
+        targets = []
+        if one_per_diameter:
+            seen = set()
+            for row in sorted(circles, key=lambda r: -r["diameter_mm"]):
+                key = (row["view"], row["diameter_mm"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                targets.append(row)
+        else:
+            targets = circles
+
+        created, failed = [], []
+        for row in targets:
+            # No per-callout model_path: it rebuilds the feature ledger every time and
+            # made a 9-hole batch time out. The cross-check runs once, after the loop.
+            r = add_hole_callout(drawing_path, row["x"], row["y"], view_name=row["view"],
+                                 save=False)
+            entry = {
+                "diameter_mm": row["diameter_mm"], "view": row["view"],
+                "x": round(row["x"], 4), "y": round(row["y"], 4),
+            }
+            if r.get("ok"):
+                entry["readback"] = (r.get("readback") or {}).get("value_mm")
+                created.append(entry)
+            else:
+                entry["error"] = r.get("error")
+                failed.append(entry)
+
+        if model_path and created:
+            try:
+                from . import ledger as _ledger
+
+                led = _ledger.build_feature_ledger(model_path, include_faces=True)
+                diameters = sorted({round(h["diameter_mm"], 1) for h in (led.get("holes") or [])})
+                for entry in created:
+                    got = entry.get("readback")
+                    if got is None or not diameters:
+                        continue
+                    nearest = min(diameters, key=lambda d: abs(d - got))
+                    entry["nearest_model_mm"] = nearest
+                    entry["model_match_ok"] = abs(got - nearest) <= max(0.2, nearest * 0.02)
+            except Exception:
+                pass
+
+        doc = _open_drawing(drawing_path)
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(
+            drawing=doc.GetTitle,
+            circles_found=len(circles),
+            targets=len(targets),
+            created=created,
+            created_count=len(created),
+            failed=failed,
+            one_per_diameter=bool(one_per_diameter),
+            saved=bool(save),
+            note="readback 为回读的尺寸值；model_match_ok=False 说明该处孔径与模型对不上。",
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("hole_callouts_failed", str(exc))

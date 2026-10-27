@@ -141,6 +141,36 @@ def verify_dimension_attachments(drawing_path: str, view_name: str | None = None
 
 
 @mcp.tool()
+def list_circular_edges(
+    drawing_path: str,
+    view_name: str | None = None,
+    min_diameter_mm: float = 0.0,
+) -> str:
+    """List circular edges of a view: sheet position + diameter. Use before callouts."""
+    return _json(drawing.list_circular_edges(
+        drawing_path, view_name=view_name, min_diameter_mm=min_diameter_mm))
+
+
+@mcp.tool()
+def add_hole_callouts(
+    drawing_path: str,
+    view_name: str | None = None,
+    min_diameter_mm: float = 0.0,
+    one_per_diameter: bool = True,
+    model_path: str | None = None,
+    save: bool = True,
+) -> str:
+    """Batch native hole callouts on circular edges, reading each one back.
+
+    one_per_diameter=True follows the drafting convention for repeated holes.
+    model_path cross-checks the read-back diameter against the model.
+    """
+    return _json(drawing.add_hole_callouts(
+        drawing_path, view_name=view_name, min_diameter_mm=min_diameter_mm,
+        one_per_diameter=one_per_diameter, model_path=model_path, save=save))
+
+
+@mcp.tool()
 def delivery_check(
     model_path: str,
     drawing_path: str,
@@ -189,6 +219,50 @@ def add_dimension_tolerance(
     return _json(drawing.add_dimension_tolerance(
         drawing_path, value_mm, tolerance_type=tolerance_type, upper=upper,
         lower=lower, view_name=view_name, apply=apply,
+    ))
+
+
+@mcp.tool()
+def material_library(database: str = "SolidWorks Materials.sldmat") -> str:
+    """List material names available in the installed SolidWorks material library."""
+    return _json(material.material_library(database=database))
+
+
+@mcp.tool()
+def set_part_material(
+    paths: list[str],
+    material: str,
+    database: str = "SolidWorks Materials.sldmat",
+    config: str = "",
+    save: bool = True,
+    apply: bool = False,
+) -> str:
+    """Assign a material to one or more parts; returns previous material and mass.
+
+    Dry-run by default. Without a material SolidWorks uses 1000 kg/m³, so BOM masses are
+    wrong until this is set.
+    """
+    return _json(material.set_part_material(
+        paths, material, database=database, config=config, save=save, apply=apply,
+    ))
+
+
+@mcp.tool()
+def assign_materials(
+    paths: list[str],
+    rules: list | None = None,
+    database: str = "SolidWorks Materials.sldmat",
+    config: str = "",
+    save: bool = True,
+    apply: bool = False,
+) -> str:
+    """Pick a material per part from name keywords (标准件→碳钢, 结构件→铝合金), then assign.
+
+    The chosen material is an AI-supplied value: it is reported per part with its reason
+    and should be listed as pending confirmation in the delivery record.
+    """
+    return _json(material.assign_materials(
+        paths, rules=rules, database=database, config=config, save=save, apply=apply,
     ))
 
 
