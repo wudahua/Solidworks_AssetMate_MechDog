@@ -692,12 +692,14 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True):
         return error("center_marks_failed", str(exc))
 
 
-def add_hole_callout(drawing_path, x, y, view_name=None):
-    """Insert a native hole callout at a sheet point (meters) that lies on a hole edge.
+def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
+                     save=True):
+    """Insert a NATIVE hole callout at a sheet point (meters) on a hole edge, then read
+    it back (process §4.5: the tool's success flag is not evidence).
 
-    Returns created + the annotation count delta in the target view. If the point is
-    not on a hole's projected circle, SolidWorks returns null — we report that
-    instead of pretending a callout exists.
+    Read-back returns the callout text and the dimensioned value. When model_path is
+    given, the value is matched against the model's cylinder inventory so a wrong edge
+    (callout on a Ø6 hole that should be Ø30) is reported instead of silently accepted.
     """
     try:
         doc = _open_drawing(drawing_path)
@@ -729,6 +731,48 @@ def add_hole_callout(drawing_path, x, y, view_name=None):
                 "Point at a hole's projected circle in a model view; use drawing_audit "
                 "view outlines to locate one, or pass view_name.",
             )
+
+        readback = {}
+        try:
+            readback["text"] = str(callout.GetText)
+        except Exception:
+            try:
+                readback["text"] = str(callout.GetText())
+            except Exception:
+                readback["text"] = None
+        try:
+            dim = callout.GetDimension2(0)
+            if dim is not None:
+                readback["value_mm"] = round(float(dim.SystemValue) * 1000, 3)
+        except Exception:
+            pass
+        if not readback.get("value_mm"):
+            # A callout may hang off a display dimension rather than a plain dimension.
+            try:
+                readback["value_mm"] = round(float(callout.SystemValue) * 1000, 3)
+            except Exception:
+                pass
+
+        match = None
+        if model_path:
+            try:
+                from . import ledger as _ledger
+
+                led = _ledger.build_feature_ledger(model_path, include_faces=True)
+                values = sorted({round(h["diameter_mm"], 1) for h in (led.get("holes") or [])})
+                got = readback.get("value_mm")
+                if got is not None and values:
+                    nearest = min(values, key=lambda v: abs(v - got))
+                    match = {
+                        "read_mm": got,
+                        "nearest_model_diameter_mm": nearest,
+                        "delta_mm": round(got - nearest, 3),
+                        "ok": abs(got - nearest) <= max(0.2, nearest * 0.02),
+                        "model_diameters_mm": values[:20],
+                    }
+            except Exception as exc:
+                match = {"error": str(exc)[:120]}
+
         after = 0
         if target is not None:
             try:
@@ -739,13 +783,18 @@ def add_hole_callout(drawing_path, x, y, view_name=None):
             doc.GraphicsRedraw2()
         except Exception:
             pass
-        return ok(
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(
             drawing=doc.GetTitle,
             created=True,
             view=target.Name if target is not None else None,
             annotations_before=before,
             annotations_after=after,
-            note="Read the resulting text in the view to confirm diameter/depth/quantity.",
+            readback=readback,
+            model_match=match,
+            saved=bool(save),
+            note="比对 model_match.ok；false 表示标注落在别处或模型无对应孔径。",
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -2001,3 +2050,218 @@ def list_drawing_annotations(drawing_path, view_name=None):
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("annotations_failed", str(exc))
+
+
+def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False):
+    """Aggregate model ledger + drawing audit + annotation inventory into a verdict.
+
+    Process §7 asks for exactly three outcomes, and forbids calling a drawing
+    "manufacturable" without evidence:
+
+      可制造        關鍵尺寸/孔/公差齐全，双重自检通过
+      待设计审核     图纸对象正确，但含调用方声明为「AI 拟定」的关键值
+      仅供参考/未完成 有越界/重叠/空视图、无尺寸、模型疑点未解、缺孔标注等阻塞项
+
+    ai_supplied: list of field names whose values the caller supplied (materials,
+    tolerances, fits) — anything listed here downgrades the verdict and is reported.
+    """
+    try:
+        from . import ledger as _ledger
+
+        blockers, pending, passed, checks = [], [], [], {}
+
+        def record(name, ok, detail=None, blocking=True):
+            checks[name] = {"ok": bool(ok), "detail": detail}
+            if ok:
+                passed.append(name)
+            elif blocking:
+                blockers.append({"check": name, "detail": detail})
+            else:
+                pending.append({"check": name, "detail": detail})
+
+        # ---- model side -------------------------------------------------------
+        # Faces are needed to count hole candidates; the extra scan costs a few seconds.
+        led = _ledger.build_feature_ledger(model_path, include_faces=True)
+        if not led.get("ok"):
+            return error("model_unreadable", led.get("message") or "ledger failed",
+                         "Check the model opens and rebuilds before delivering a drawing.")
+        model_stats = led.get("stats") or {}
+        record("model_readable", True, "类别 %s" % led.get("category"))
+        doubts = led.get("doubts") or []
+        record("model_clean", not doubts,
+               "; ".join(str(d.get("kind")) for d in doubts) or None)
+
+        # ---- drawing side -----------------------------------------------------
+        audit = drawing_audit(drawing_path)
+        if not audit.get("ok"):
+            return error("drawing_unreadable",
+                         audit.get("message") or "audit failed",
+                         "The drawing must open and rebuild.")
+        warnings = [w.get("issue") for w in (audit.get("warnings") or [])]
+        view_count = audit.get("view_count") or 0
+        dim_total = audit.get("total_dimensions") or 0
+
+        record("views_present", view_count > 0, "%d 个视图" % view_count)
+        record("no_view_outside_sheet", "view_outside_sheet" not in warnings,
+               "有视图超出图纸" if "view_outside_sheet" in warnings else None)
+        record("no_view_overlap", "views_overlap" not in warnings,
+               "有视图互相重叠" if "views_overlap" in warnings else None)
+        record("no_blank_view", "blank_view" not in warnings,
+               "存在空白视图" if "blank_view" in warnings else None)
+        record("dimensions_present", dim_total > 0, "%d 个尺寸" % dim_total)
+
+        # ---- annotations -----------------------------------------------------
+        anns = list_drawing_annotations(drawing_path)
+        if not anns.get("ok"):
+            return error("annotations_unreadable", anns.get("message") or "failed")
+        totals = anns.get("totals") or {}
+        holes_in_drawing = int(totals.get("hole_callout", 0))
+        toleranced = 0
+        for row in anns.get("annotations") or []:
+            if row.get("kind") == "dimension" and row.get("tolerance_type"):
+                toleranced += 1
+        gtols = int(totals.get("geometric_tolerance", 0))
+
+        hole_candidates = len(led.get("holes") or [])
+        if hole_candidates:
+            record("hole_callouts", holes_in_drawing > 0,
+                   "图纸 %d 处孔标注 / 模型 %d 个圆柱面候选"
+                   % (holes_in_drawing, hole_candidates))
+        record("tolerances_present", toleranced > 0,
+               "%d 个尺寸带公差" % toleranced, blocking=False)
+        if require_gdt:
+            record("gdt_present", gtols > 0, "%d 处形位公差" % gtols)
+        else:
+            checks["gdt_present"] = {
+                "ok": gtols > 0, "detail": "%d 处形位公差" % gtols,
+                "required": False,
+            }
+
+        # ---- caller-declared assumptions -------------------------------------
+        if ai_supplied:
+            for field in ai_supplied:
+                pending.append({"check": "ai_supplied", "detail": str(field)})
+
+        if blockers:
+            verdict = "仅供参考/未完成"
+        elif pending:
+            verdict = "待设计审核"
+        else:
+            verdict = "可制造"
+
+        return drawing_ok(
+            verdict=verdict,
+            drawing=audit.get("drawing"),
+            model=led.get("part"),
+            category=led.get("category"),
+            checks=checks,
+            passed=passed,
+            blockers=blockers,
+            pending=pending,
+            facts={
+                "views": view_count,
+                "dimensions": dim_total,
+                "dimensions_with_tolerance": toleranced,
+                "hole_callouts": holes_in_drawing,
+                "geometric_tolerances": gtols,
+                "cylinder_faces_in_model": hole_candidates,
+                "features": model_stats.get("features"),
+                "model_doubts": [d.get("kind") for d in doubts],
+            },
+            note="verdict 依据流程 §7；blockers 非空即不可宣称可制造，"
+                 "ai_supplied 非空则只能算待设计审核。",
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("delivery_check_failed", str(exc))
+
+
+SELECT_TYPE_NAMES = {
+    10: "vertex", 11: "edge", 12: "face", 13: "sketch_segment",
+    14: "sketch_point", 20: "component", 2: "body",
+}
+
+
+def verify_dimension_attachments(drawing_path, view_name=None):
+    """Report what each dimension is actually attached to (process §6.1).
+
+    A dimension with no attached entity — or attached only to a sketch segment instead
+    of a model edge — is not traceable to geometry and must not be counted as complete.
+    Attachment is read through IAnnotation.GetAttachedEntities2 / GetAttachedEntityTypes.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        rows, counts = [], {}
+        orphans = []
+
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name and view.Name != view_name:
+                continue
+            try:
+                raw = view.GetAnnotations
+            except Exception:
+                continue
+            items = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+            for item in items:
+                if item is None:
+                    continue
+                try:
+                    ann = win.Dispatch(item)
+                    if ann.GetType != 4:
+                        continue
+                    dim = ann.GetSpecificAnnotation.GetDimension2(0)
+                except Exception:
+                    continue
+                if dim is None:
+                    continue
+                row = {"view": view.Name}
+                try:
+                    row["name"] = str(ann.GetName)
+                except Exception:
+                    row["name"] = None
+                try:
+                    row["value_mm"] = round(float(dim.SystemValue) * 1000, 3)
+                except Exception:
+                    pass
+                try:
+                    row["is_reference"] = bool(dim.IsReference)
+                except Exception:
+                    pass
+                types = []
+                try:
+                    raw_types = ann.GetAttachedEntityTypes
+                    if isinstance(raw_types, (tuple, list)):
+                        types = [int(t) for t in raw_types]
+                    elif raw_types is not None:
+                        types = [int(raw_types)]
+                except Exception:
+                    pass
+                row["attached_count"] = len(types)
+                row["attached_kinds"] = [SELECT_TYPE_NAMES.get(t, "type_%d" % t) for t in types]
+                for kind in row["attached_kinds"]:
+                    counts[kind] = counts.get(kind, 0) + 1
+                if not types:
+                    orphans.append({"view": view.Name, "name": row["name"],
+                                    "value_mm": row.get("value_mm")})
+                rows.append(row)
+
+        total = len(rows)
+        return drawing_ok(
+            drawing=doc.GetTitle,
+            dimension_count=total,
+            attachment_summary=counts,
+            orphan_count=len(orphans),
+            orphans=orphans,
+            dimensions=rows,
+            note="orphan_count > 0 表示有尺寸没有关联到任何实体，"
+                 "按流程 §6.1 属于未完成；只挂在 sketch_segment 上的也应复核。",
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("attachment_check_failed", str(exc))

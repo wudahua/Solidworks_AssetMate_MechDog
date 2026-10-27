@@ -21,6 +21,8 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位），含 `mass_basis` 密度披露 | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
 | `batch_export` | 批量导出 STEP（零件/装配）；默认 dry-run，不覆盖已有文件 | 仅新文件 |
+| `delivery_check` | 交付判定：可制造/待设计审核/仅供参考 + 缺项清单 | 否 |
+| `verify_dimension_attachments` | 校验每个尺寸挂在边/面/草图段还是没挂 | 否 |
 | `list_drawing_annotations` | 读出全部注释：尺寸(含公差)/注释/形位公差框格/中心标记 | 否 |
 | `add_dimension_tolerance` | 按值给已有尺寸加原生公差（双边/对称/极限…），dry-run | 工程图 |
 | `build_feature_ledger` | 特征台账：特征/驱动尺寸/孔候选/模型疑点，出图与自检的依据（只读） | 否 |

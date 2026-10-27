@@ -132,6 +132,33 @@ def batch_export(
 
 
 @mcp.tool()
+def verify_dimension_attachments(drawing_path: str, view_name: str | None = None) -> str:
+    """Report what each dimension is attached to (edge / face / sketch segment / nothing).
+
+    Dimensions with no attachment are untraceable and count as incomplete (process §6.1).
+    """
+    return _json(drawing.verify_dimension_attachments(drawing_path, view_name=view_name))
+
+
+@mcp.tool()
+def delivery_check(
+    model_path: str,
+    drawing_path: str,
+    ai_supplied: list[str] | None = None,
+    require_gdt: bool = False,
+) -> str:
+    """Aggregate ledger + audit + annotations into a delivery verdict (process §7).
+
+    Returns 可制造 / 待设计审核 / 仅供参考·未完成 plus the blockers and open items.
+    ai_supplied lists values the caller supplied (material, tolerance, fit) — anything
+    listed downgrades the verdict to 待设计审核.
+    """
+    return _json(drawing.delivery_check(
+        model_path, drawing_path, ai_supplied=ai_supplied, require_gdt=require_gdt,
+    ))
+
+
+@mcp.tool()
 def list_drawing_annotations(drawing_path: str, view_name: str | None = None) -> str:
     """Inventory every annotation: dimensions (with value + tolerance), notes,
     geometric tolerances (frame content), center marks, hole callouts.
@@ -369,7 +396,9 @@ def add_hole_callout(drawing_path: str, x: float, y: float, view_name: str | Non
     Returns callout_failed when the point is not on a hole's projected circle —
     a missing callout is reported, never faked.
     """
-    return _json(drawing.add_hole_callout(drawing_path, x, y, view_name=view_name))
+    return _json(drawing.add_hole_callout(
+        drawing_path, x, y, view_name=view_name, model_path=model_path, save=save,
+    ))
 
 
 @mcp.tool()

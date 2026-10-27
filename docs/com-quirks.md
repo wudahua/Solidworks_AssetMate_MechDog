@@ -542,6 +542,19 @@ gtol.GetFrameValues(1)                        # ('0.01','','','','') 公差值 +
 
 `list_drawing_annotations` 因此定位为**自检工具**：证明图上有没有形位公差、内容对不对。
 
+### 读尺寸挂在什么上（§6.1 关联校验）
+
+```python
+ann.GetAttachedEntities2      # (entity, entity) —— 通常两条边
+ann.GetAttachedEntityTypes    # (11, 11)  11 = EDGE
+```
+
+- 类型码：10 vertex / 11 edge / 12 face / 13 sketch_segment / 14 sketch_point。
+- **没有关联实体的尺寸无法追溯**，按流程 §6.1 属于未完成；只挂在 sketch_segment 上的也要复核。
+- 实测配电箱图 44 个尺寸：24 处挂边、7 处挂顶点、8 个 `type_1`、1 个 `type_0`、
+  **21 个无关联**。孤儿比例这么高说明 `InsertModelAnnotations3` 导入的尺寸不一定绑到几何上，
+  这正是「导入成功 ≠ 图纸正确」的实证。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。
