@@ -369,6 +369,27 @@ doc.AddDimension2(x, y - 0.015, 0).GetDimension2(0).SystemValue = 0.11
 - `IEdge.Select4` 传 callout 会报"无效的参数数目"，用 `Select2(False, 0)`。
 - `AddDimension2` 的 x/y 只是**尺寸文字位置**，与选中哪条边无关。
 
+### 模板安全区要从模板自己量
+
+把边距写死成 A3 数值（左 34mm / 下 60mm）在 A2 上会直接失败，不同模板的标题栏、
+明细栏尺寸也不一样。正确做法是在**加任何模型视图之前**，从图纸的 `GetLines3` 量出来：
+
+```python
+sheet = doc.GetFirstView
+segments = _template_lines(sheet, w, h)   # 必须在加视图前，否则会混入视图线
+```
+
+两个必须知道的细节：
+
+1. **`GetLines3` 每条线是 12 个数**：前 6 个是元数据，后 6 个才是 `x1,y1,z1,x2,y2,z2`。
+   按 stride 6 读，每隔一条就会读到 `(0, 2, 1, 1)` 这种垃圾，坐标范围会跑到几十万。
+   用「坐标必须落在图纸范围内」过滤比猜偏移量可靠。
+2. **明细栏右边界会把图框的行列编号带进来**（A3 量出 0.12 m），按它留边会吃掉 30% 宽度。
+   实测 A3 合理值是左 0.0588 / 下 0.065 / 右 0.004 / 上 0.004，所以量到的带宽要按比例截断
+   （左 ≤ 14% 纸宽、下 ≤ 24% 纸高）。
+
+量出的安全区会随结果返回（`safe_area.source` 为 `template` 表示实测，`ratio` 表示回退）。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。

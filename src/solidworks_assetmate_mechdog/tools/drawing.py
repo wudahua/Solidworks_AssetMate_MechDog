@@ -114,8 +114,7 @@ def _iter_views(drawing):
     return flat
 
 
-def _place_views(views, sheet_w, sheet_h, gap=0.022,
-                 left=0.034, right=0.020, top=0.020, bottom=0.060):
+def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None):
     """Repack views using their REAL projected outlines so nothing overlaps.
 
     The bounding-box estimate used before creation is only good enough to pick a
@@ -126,6 +125,15 @@ def _place_views(views, sheet_w, sheet_h, gap=0.022,
     """
     import pythoncom
     from win32com.client import VARIANT
+
+    if safety:
+        left = float(safety.get("left", sheet_w * 0.08))
+        right = float(safety.get("right", sheet_w * 0.03))
+        top = float(safety.get("top", sheet_h * 0.03))
+        bottom = float(safety.get("bottom", sheet_h * 0.20))
+    else:
+        left, right = sheet_w * 0.08, sheet_w * 0.03
+        top, bottom = sheet_h * 0.03, sheet_h * 0.20
 
     boxes = []
     for view in views:
@@ -198,7 +206,8 @@ def _relayout(doc):
         return None
     try:
         o = list(sheets[0].GetOutline)
-        result = _place_views(views, o[2] - o[0], o[3] - o[1])
+        w, h = o[2] - o[0], o[3] - o[1]
+        result = _place_views(views, w, h, safety=template_safe_area(sheets[0], w, h))
         try:
             doc.GraphicsRedraw2()
         except Exception:
@@ -276,6 +285,9 @@ def create_drawing(
         outline = list(sheet.GetOutline or [])
         sheet_w = (outline[2] - outline[0]) if outline else 0.42
         sheet_h = (outline[3] - outline[1]) if outline else 0.297
+        # Must be measured now: after views exist, GetLines3 also returns their
+        # geometry and the title-block / parts-list detection breaks down.
+        safety = template_safe_area(sheet, sheet_w, sheet_h)
 
         # Size the model from its bounding box so the scale is known BEFORE the first
         # view is inserted — a brand-new view reports no outline, so measuring it and
@@ -340,7 +352,7 @@ def create_drawing(
                             "scale": per_view_scale, "outline": box_m})
             view_objects.append(view)
 
-        layout = _place_views(view_objects, sheet_w, sheet_h)
+        layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
         try:
             drw.GraphicsRedraw2()
         except Exception:
@@ -370,6 +382,7 @@ def create_drawing(
             "views": created,
             "skipped_views": skipped,
             "layout": layout,
+            "safe_area": safety,
             "saved": False,
         }
         if not created:
@@ -1031,3 +1044,95 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("add_dimension_failed", str(exc))
+
+
+def _template_lines(sheet, sheet_w=None, sheet_h=None):
+    """Template geometry as (x1, y1, x2, y2) sheet-space segments.
+
+    GetLines3 returns 12 numbers per line: 6 of metadata then x1,y1,z1,x2,y2,z2.
+    (Read naively with a stride of 6 it looks like garbage every other record.)
+    """
+    try:
+        raw = sheet.GetLines3
+    except Exception:
+        return []
+    if not raw:
+        return []
+    values = list(raw)
+    limit_x = (sheet_w or 0.6) * 1.05
+    limit_y = (sheet_h or 0.45) * 1.05
+    segments = []
+    for base in range(0, len(values) - 5, 6):
+        try:
+            x1, y1, x2, y2 = values[base], values[base + 1], values[base + 3], values[base + 4]
+        except Exception:
+            continue
+        # Each record carries 6 metadata values before the coordinates, so a naive
+        # stride-6 read also yields junk like (0, 2, 1, 1); drop anything outside
+        # the sheet instead of guessing the record layout.
+        if not (-1e-6 <= x1 <= limit_x and -1e-6 <= y1 <= limit_y):
+            continue
+        if not (-1e-6 <= x2 <= limit_x and -1e-6 <= y2 <= limit_y):
+            continue
+        segments.append((x1, y1, x2, y2))
+    return segments
+
+
+def template_safe_area(sheet, sheet_w, sheet_h):
+    """Usable region of a sheet: inside the frame, clear of the title block / parts list.
+
+    GB templates vary with paper size, so the margins are measured from the template's
+    own lines instead of being hard-coded for A3 (which is why A2 layouts overflowed).
+    """
+    segments = _template_lines(sheet, sheet_w, sheet_h)
+    fallback = {
+        "left": sheet_w * 0.14, "right": sheet_w * 0.01,
+        "top": sheet_h * 0.012, "bottom": sheet_h * 0.22,
+        "source": "ratio",
+    }
+    if len(segments) < 8:
+        return fallback
+
+    horizontals = [s for s in segments if abs(s[1] - s[3]) < 1e-5 and abs(s[2] - s[0]) > 0.004]
+    verticals = [s for s in segments if abs(s[0] - s[2]) < 1e-5 and abs(s[3] - s[1]) > 0.004]
+    if not horizontals or not verticals:
+        return fallback
+
+    frame_left = min(min(s[0], s[2]) for s in verticals)
+    frame_right = max(max(s[0], s[2]) for s in verticals)
+    frame_bottom = min(min(s[1], s[3]) for s in horizontals)
+    frame_top = max(max(s[1], s[3]) for s in horizontals)
+
+    # Title block: the highest horizontal line sitting in the bottom-right corner.
+    title_candidates = [
+        s for s in horizontals
+        if min(s[0], s[2]) > frame_left + (frame_right - frame_left) * 0.45
+        and s[1] < frame_bottom + (frame_top - frame_bottom) * 0.30
+    ]
+    title_top = max((s[1] for s in title_candidates), default=frame_bottom)
+
+    # Parts list / addendum column: the right-most vertical line in the left margin.
+    # Its right edge is drawn as many short row separators, so the length threshold
+    # must stay small or the column looks absent.
+    list_candidates = [
+        s for s in verticals
+        if s[0] < frame_left + (frame_right - frame_left) * 0.30
+        and max(s[1], s[3]) > frame_bottom + (frame_top - frame_bottom) * 0.30
+    ]
+    list_right = max((s[0] for s in list_candidates), default=frame_left)
+
+    margin = 0.004
+    # The measured left edge also catches the frame's row/column index strip, which is
+    # ~30% of the sheet width on A3 — leaving that much empty would starve the views.
+    # Cap the reserved band by ratio so the template still adapts across paper sizes.
+    left_band = min(list_right - frame_left + margin, sheet_w * 0.14)
+    bottom_band = min(title_top - frame_bottom + margin, sheet_h * 0.24)
+    return {
+        "left": frame_left + left_band,
+        "right": sheet_w - frame_right + margin,
+        "top": sheet_h - frame_top + margin,
+        "bottom": bottom_band,
+        "source": "template",
+        "title_block_top": round(title_top, 4),
+        "parts_list_right": round(list_right, 4),
+    }
