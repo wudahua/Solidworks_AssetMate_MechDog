@@ -72,10 +72,23 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
             "applied": False,
         }
         if not matched:
+            available = sorted(present)
+            # dry-run is read-only: keep it exploratory so the caller can fix the keys
+            # from `parts` instead of paying an extra get_assembly_tree round trip.
+            if not apply:
+                base["dry_run"] = True
+                base["matched_components"] = 0
+                base["available_parts"] = available
+                base["message"] = (
+                    "No palette key matches this assembly; nothing would change. "
+                    "Use `parts` / available_parts to correct the names, then call again."
+                )
+                return ok(**base)
             return error(
                 "no_match",
                 "No component matches palette keys: %s" % ", ".join(sorted(palette)),
                 "Run a dry-run first and use part names without the '-N' instance suffix.",
+                available_parts=available,
             )
         if not apply:
             base["dry_run"] = True

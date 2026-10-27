@@ -34,8 +34,11 @@ def recolor_assembly(
 
     Palette keys are component names without the '-N' instance suffix; RGB is 0..1.
     SAFE DEFAULT: apply=false is a dry run listing parts, current colors and
-    matched components. Set apply=true to paint. Changes component appearance
-    only, not material/density. Returns previous colors for undo.
+    matched components — with zero matches it still returns the part list so you
+    can fix the keys. apply=true with zero matches returns no_match plus
+    available_parts. Changes component appearance only, not material/density.
+    Returns previous colors for undo; readback covers at most 8 part types
+    (1 instance per palette key) and flags when the getter is unreliable.
     """
     return _json(recolor.recolor_assembly(assembly_path, palette, apply=apply, save=save))
 

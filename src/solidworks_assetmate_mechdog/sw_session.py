@@ -177,8 +177,10 @@ def ok(**payload):
     return payload
 
 
-def error(code, message, hint=None):
+def error(code, message, hint=None, **extra):
     payload = {"ok": False, "error": code, "message": message}
     if hint:
         payload["hint"] = hint
+    if extra:
+        payload.update(extra)
     return payload
