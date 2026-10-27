@@ -424,6 +424,23 @@ segments = _template_lines(sheet, w, h)   # 必须在加视图前，否则会混
 
 量出的安全区会随结果返回（`safe_area.source` 为 `template` 表示实测，`ratio` 表示回退）。
 
+### 局部放大视图：12 个参数，最后一个不能是 0（2026-10-27 实测）
+
+```python
+doc.CreateDetailViewAt4(X, Y, Z, Style, Scale1, Scale2, Label, ShowLabel, Flip,
+                        NoOutline, Shape, NumCircleSegments)
+```
+
+- **必须传满 12 个参数**，第 12 个是边界圆的分段数。传 0 会报 `非选择性的参数`
+  （DISP_E_PARAMNOTOPTIONAL），不创建任何东西——这就是它一开始看起来"不支持"的原因。传 32 正常。
+- 和剖视一样，要先在**源视图草图**里画边界圆并选中：
+  `sk → CreateCircleByRadius(sx, sy, 0, r)`，坐标用 `(paper - view.Position) / scale`。
+- 圆心必须落在**有几何的地方**（角部孔、折弯、圆角）；落在空白处会得到一个空的局部视图。
+- **比例锁在父视图**：新建的局部视图 `UseParentScale = True`，此时写 `ScaleDecimal` 无效
+  （读回仍是父比例），`Scale1/Scale2` 参数也不生效。顺序必须是
+  `UseParentScale = False` → `ScaleDecimal = 2.0`，而且**新建视图要保存一次之后才吃得进去**。
+  实测：创建后立即设置无效；`SaveSilent` 之后再设，`ScaleRatio` 从 `(1,2)` 变成 `(2,1)`。
+
 ### 剖视图：剖切线必须画在视图草图里（2026-10-27 实测）
 
 `CreateSectionViewAt5(X, Y, Z, Label, Options, ExcludedComponents, Depth)` —— **7 个参数**，

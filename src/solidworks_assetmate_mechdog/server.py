@@ -197,6 +197,34 @@ def add_section_view(
 
 
 @mcp.tool()
+def add_detail_view(
+    drawing_path: str,
+    view_name: str | None = None,
+    center: list[float] | None = None,
+    radius_m: float = 0.02,
+    position: list[float] | None = None,
+    scale: float = 2.0,
+    label: str = "A",
+    style: int = 0,
+    shape: int = 0,
+    flip: bool = False,
+    show_label: bool = True,
+    circle_segments: int = 32,
+) -> str:
+    """Add a DETAIL (enlarged) view around a circular area of a model view.
+
+    center/radius_m are sheet metres (default: the view centre, 20 mm radius).
+    scale is the detail's own scale (2.0 = 2:1). circle_segments must be > 0 —
+    passing 0 is what makes SolidWorks reject the call.
+    """
+    return _json(drawing.add_detail_view(
+        drawing_path, view_name=view_name, center=center, radius_m=radius_m,
+        position=position, scale=scale, label=label, style=style, shape=shape,
+        flip=flip, show_label=show_label, circle_segments=circle_segments,
+    ))
+
+
+@mcp.tool()
 def add_flat_pattern_view(
     drawing_path: str,
     model_path: str,

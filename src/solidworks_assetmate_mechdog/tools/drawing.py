@@ -1550,3 +1550,161 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("section_failed", str(exc))
+
+
+def _apply_detail_scale(doc, detail, scale):
+    """Set a detail view's scale, clearing the parent-scale lock first. Returns readback."""
+    applied = None
+    try:
+        doc.ActivateView(detail.Name)
+    except Exception:
+        pass
+    for _ in range(4):
+        try:
+            detail.UseParentScale = False
+        except Exception:
+            pass
+        try:
+            detail.ScaleDecimal = float(scale)
+        except Exception:
+            pass
+        try:
+            applied = float(detail.ScaleDecimal)
+        except Exception:
+            applied = None
+        if applied is not None and abs(applied - float(scale)) < 0.01:
+            return applied
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+    return applied
+
+
+def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
+                    position=None, scale=2.0, label="A", style=0, shape=0,
+                    flip=False, show_label=True, circle_segments=32):
+    """Add a DETAIL (enlarged) view around a circular area of a model view.
+
+    CreateDetailViewAt4 takes TWELVE arguments — the last one is the circle's segment
+    count. Passing 0 there raises "non-optional parameter" and no view is created, which
+    is what made this look unsupported. 32 works.
+
+    center/radius_m are SHEET metres — point the boundary at real detail (a hole, a
+    corner, a bend), otherwise the enlarged view comes out empty. The circle is drawn in
+    the source view's sketch
+    (coordinates = (paper - view.Position) / view.ScaleDecimal) and selected before the
+    call — otherwise SolidWorks has no boundary to enlarge.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
+        if not views:
+            return error("no_views", "The drawing has no model view to enlarge")
+        target = None
+        for candidate in views:
+            if view_name is None or candidate.Name == view_name:
+                target = candidate
+                break
+        if target is None:
+            return error("view_not_found", "No view named %r" % view_name,
+                         "Use drawing_audit to list view names.")
+
+        doc.ActivateView(target.Name)
+        pos = list(target.Position)
+        scale = float(target.ScaleDecimal)
+        outline = list(target.GetOutline)
+        if center:
+            sheet_x, sheet_y = float(center[0]), float(center[1])
+        else:
+            sheet_x = (outline[0] + outline[2]) / 2
+            sheet_y = (outline[1] + outline[3]) / 2
+        sketch_x = (sheet_x - pos[0]) / scale
+        sketch_y = (sheet_y - pos[1]) / scale
+        sketch_r = float(radius_m) / scale
+
+        sm = doc.SketchManager
+        sm.InsertSketch(True)
+        try:
+            sm.CreateCircleByRadius(sketch_x, sketch_y, 0.0, sketch_r)
+        except Exception as exc:
+            try:
+                sm.InsertSketch(True)
+            except Exception:
+                pass
+            return error("boundary_failed", str(exc),
+                         "Could not draw the detail boundary circle in the view sketch.")
+
+        raw = sm.ActiveSketch.GetSketchSegments
+        segments = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+        segments = [s for s in segments if s is not None]
+        selected = False
+        for segment in segments:
+            try:
+                seg = win.Dispatch(segment)
+                if seg.Select2(False, 0) and doc.SelectionManager.GetSelectedObjectCount2(-1):
+                    selected = True
+                    break
+            except Exception:
+                continue
+        sm.InsertSketch(True)
+        if not selected:
+            return error("boundary_not_selected",
+                         "Drew the detail circle but could not select it",
+                         "SolidWorks needs the circle selected as the detail boundary.")
+
+        if position:
+            place_x, place_y = float(position[0]), float(position[1])
+        else:
+            sheet_box = list(doc.GetFirstView.GetOutline)
+            sheet_w, sheet_h = sheet_box[2] - sheet_box[0], sheet_box[3] - sheet_box[1]
+            place_x = min(sheet_w - 0.09, outline[2] + 0.08)
+            place_y = max(0.09, sheet_h * 0.30)
+
+        detail = doc.CreateDetailViewAt4(
+            place_x, place_y, 0.0, int(style), float(scale), float(scale), str(label),
+            bool(show_label), bool(flip), False, int(shape), int(circle_segments),
+        )
+        if detail is None:
+            return error(
+                "detail_failed",
+                "CreateDetailViewAt4 returned null for %r" % target.Name,
+                "The boundary circle must lie inside the view geometry; reopen the "
+                "drawing if earlier attempts left it in a bad state.",
+            )
+        # A detail view inherits the parent's scale (UseParentScale = True by default) and
+        # silently ignores ScaleDecimal until that flag is cleared. Setting both right
+        # after creation can be swallowed, so retry until the read-back matches.
+        applied = _apply_detail_scale(doc, detail, scale)
+        if applied is None or abs(applied - float(scale)) > 0.01:
+            # A freshly created detail view refuses the scale until it is committed once.
+            try:
+                doc.SaveSilent
+            except Exception:
+                pass
+            applied = _apply_detail_scale(doc, detail, scale)
+            try:
+                doc.SaveSilent
+            except Exception:
+                pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        try:
+            d_o = list(detail.GetOutline)
+            box = {"width_m": round(d_o[2] - d_o[0], 4), "height_m": round(d_o[3] - d_o[1], 4)}
+        except Exception:
+            box = None
+        return drawing_ok(
+            drawing=doc.GetTitle, detail=detail.Name, source_view=target.Name,
+            label=str(label), boundary_center_m=[round(sheet_x, 4), round(sheet_y, 4)],
+            boundary_radius_m=float(radius_m),
+            scale=applied if applied is not None else float(detail.ScaleDecimal), outline=box,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("detail_failed", str(exc))
