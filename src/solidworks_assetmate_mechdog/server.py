@@ -221,8 +221,12 @@ def set_title_block(
     code: str | None = None,
     material: str | None = None,
     apply: bool = False,
+    include_reversed: bool = True,
 ) -> str:
     """Fill title-block placeholders (图样名称 / 图样代号 / 材质) in a drawing.
+
+    `图样代号` also appears rotated 180 deg at the sheet's top-left corner (GB
+    folding convention). include_reversed=False leaves that one untouched.
 
     GB templates store these as literal quoted text, so nothing is linked to the
     model. Dry-run by default; only the fields you pass are changed, and fields
@@ -230,6 +234,7 @@ def set_title_block(
     """
     return _json(drawing.set_title_block(
         drawing_path, name=name, code=code, material=material, apply=apply,
+        include_reversed=include_reversed,
     ))
 
 

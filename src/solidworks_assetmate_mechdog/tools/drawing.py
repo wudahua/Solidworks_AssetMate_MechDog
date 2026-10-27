@@ -717,6 +717,14 @@ def add_hole_callout(drawing_path, x, y, view_name=None):
         return error("hole_callout_failed", str(exc))
 
 
+def ann_position(note):
+    """Position of a note's annotation, best effort (None when unavailable)."""
+    try:
+        return list(note.GetAnnotation.GetPosition)
+    except Exception:
+        return []
+
+
 def _sheet_notes(sheet):
     """All INote objects on the sheet (annotations whose type is 6)."""
     import win32com.client as win
@@ -745,18 +753,24 @@ def _sheet_notes(sheet):
     return notes
 
 
-def set_title_block(drawing_path, name=None, code=None, material=None, apply=False):
+def set_title_block(drawing_path, name=None, code=None, material=None, apply=False,
+                   include_reversed=True):
     """Fill title-block placeholders such as the literal text “图样名称” / “图样代号”.
 
     GB templates ship these as plain note text with quotes, so nothing is linked to
     the model and every drawing shows the placeholder. Dry-run by default; only the
     fields you pass are touched, unknown fields are reported, never invented.
+
+    `图样代号` appears twice: in the title block (0 deg) and at the sheet's top-left
+    corner rotated 180 deg — the GB convention that makes the number readable after
+    folding the sheet. Both are filled so the drawing stays consistent; pass
+    include_reversed=False to leave the rotated marker alone.
     """
     try:
         doc = _open_drawing(drawing_path)
         sheet = doc.GetFirstView
         notes = _sheet_notes(sheet)
-        planned, unmatched = [], []
+        planned, unmatched, skipped_reversed = [], [], []
 
         wants = []
         if name is not None:
@@ -775,6 +789,21 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                     continue
                 if not isinstance(text, str) or marker not in text:
                     continue
+                angle = 0.0
+                position = None
+                try:
+                    position = [round(v, 4) for v in ann_position(note)]
+                except Exception:
+                    position = None
+                try:
+                    angle = float(note.Angle)
+                except Exception:
+                    angle = 0.0
+                if not include_reversed and abs(angle) > 0.01:
+                    skipped_reversed.append({
+                        "field": field, "text": text, "angle_deg": round(angle * 180 / 3.141592653589793, 1),
+                    })
+                    continue
                 if field == "material":
                     before = text
                     after = text.replace("<未指定>", new_value).replace("<未指定 >", new_value)
@@ -786,6 +815,8 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                     after = new_value
                 planned.append({
                     "field": field, "before": before, "after": after, "note": note,
+                    "angle_deg": round(angle * 180 / 3.141592653589793, 1),
+                    "position": position,
                 })
                 hits += 1
             if hits == 0:
@@ -795,6 +826,7 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
             "drawing": doc.GetTitle,
             "planned": [{k: v for k, v in p.items() if k != "note"} for p in planned],
             "unmatched": unmatched,
+            "skipped_reversed": skipped_reversed,
             "applied": False,
         }
         if not apply:
