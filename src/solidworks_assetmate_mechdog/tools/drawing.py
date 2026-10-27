@@ -429,3 +429,158 @@ def drawing_audit(drawing_path):
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("audit_failed", str(exc))
+
+
+def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True):
+    """Insert the model's driving dimensions into the drawing views.
+
+    Equivalent to SolidWorks "Insert Model Items > Dimensions". Marked-for-drawing
+    dimensions only by default; include_unmarked=True brings in every driving dim
+    (more complete, noisier). Returns how many annotations were inserted.
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        # swImportModelItemsSource_e.FromEntireModel = 0
+        # swInsertAnnotation_e: MarkedForDrawing = 32768, NotMarked = 524288
+        types = 32768 | (524288 if include_unmarked else 0)
+        doc.ClearSelection2(True)
+        inserted = doc.InsertModelAnnotations3(
+            0, types, bool(all_views), not bool(eliminate_duplicates), False, True
+        )
+        try:
+            doc.EditRebuild3
+        except Exception:
+            pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        count = len(inserted) if isinstance(inserted, (tuple, list)) else (1 if inserted else 0)
+        audit = drawing_audit(drawing_path)
+        return ok(
+            drawing=doc.GetTitle,
+            inserted=count,
+            include_unmarked=bool(include_unmarked),
+            total_dimensions=audit.get("total_dimensions"),
+            views=audit.get("views"),
+            warnings=audit.get("warnings"),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("auto_dimension_failed", str(exc))
+
+
+def add_center_marks(drawing_path, include_slots=True, extended_lines=True):
+    """Auto-insert center marks and centerlines on every hole/slot in every view.
+
+    Requires activating each view first — drawing annotation ops act on the active
+    view. GetCenterMarkCount under-reports on this binding, so `views_marked` (the
+    API's own success count) is the reliable signal, not the count.
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        insert_type = 1 | (4 if include_slots else 0)  # Hole = 1, Slots = 4
+        insert_option = 2  # swCenterMarkStyle_e.swCenterMark_Single
+        processed = marked = 0
+        results = []
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            processed += 1
+            try:
+                doc.ActivateView(view.Name)
+            except Exception:
+                pass
+            try:
+                ok_view = view.AutoInsertCenterMarks2(
+                    insert_type, insert_option, bool(include_slots), bool(include_slots),
+                    True, 0.0025, 0.0, bool(extended_lines), True, 0.0,
+                )
+            except Exception as exc:
+                results.append({"view": view.Name, "ok": False, "error": str(exc)})
+                continue
+            if ok_view:
+                marked += 1
+            results.append({"view": view.Name, "ok": bool(ok_view)})
+        try:
+            doc.EditRebuild3
+        except Exception:
+            pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        return ok(
+            drawing=doc.GetTitle,
+            views_processed=processed,
+            views_marked=marked,
+            views=results,
+            note="GetCenterMarkCount under-reports on this binding; views_marked is the "
+                 "reliable signal. Verify visually with render_drawing.",
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("center_marks_failed", str(exc))
+
+
+def add_hole_callout(drawing_path, x, y, view_name=None):
+    """Insert a native hole callout at a sheet point (meters) that lies on a hole edge.
+
+    Returns created + the annotation count delta in the target view. If the point is
+    not on a hole's projected circle, SolidWorks returns null — we report that
+    instead of pretending a callout exists.
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        target = None
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name and view.Name != view_name:
+                continue
+            target = view
+            break
+        if target is not None:
+            try:
+                doc.ActivateView(target.Name)
+            except Exception:
+                pass
+        before = 0
+        if target is not None:
+            try:
+                before = int(target.GetAnnotationCount)
+            except Exception:
+                before = 0
+        doc.ClearSelection2(True)
+        callout = doc.AddHoleCallout2(float(x), float(y), 0.0)
+        if callout is None:
+            return error(
+                "callout_failed",
+                "No hole edge found at (%.3f, %.3f) on the sheet" % (x, y),
+                "Point at a hole's projected circle in a model view; use drawing_audit "
+                "view outlines to locate one, or pass view_name.",
+            )
+        after = 0
+        if target is not None:
+            try:
+                after = int(target.GetAnnotationCount)
+            except Exception:
+                after = 0
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        return ok(
+            drawing=doc.GetTitle,
+            created=True,
+            view=target.Name if target is not None else None,
+            annotations_before=before,
+            annotations_after=after,
+            note="Read the resulting text in the view to confirm diameter/depth/quantity.",
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("hole_callout_failed", str(exc))

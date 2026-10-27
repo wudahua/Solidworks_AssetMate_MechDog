@@ -171,6 +171,50 @@ def render_drawing(pdf_path: str, output_dir: str | None = None, scale: float = 
 
 
 @mcp.tool()
+def auto_dimension(
+    drawing_path: str,
+    all_views: bool = True,
+    include_unmarked: bool = False,
+    eliminate_duplicates: bool = True,
+) -> str:
+    """Insert the model's driving dimensions into the drawing (Insert Model Items).
+
+    Marked-for-drawing dimensions only by default; include_unmarked=True brings in
+    every driving dimension. Returns inserted count and the post-insert audit.
+    """
+    return _json(drawing.auto_dimension(
+        drawing_path, all_views=all_views, include_unmarked=include_unmarked,
+        eliminate_duplicates=eliminate_duplicates,
+    ))
+
+
+@mcp.tool()
+def add_center_marks(
+    drawing_path: str,
+    include_slots: bool = True,
+    extended_lines: bool = True,
+) -> str:
+    """Auto-insert center marks and centerlines on every hole/slot in every view.
+
+    Returns views_marked (reliable) rather than a mark count, which under-reports
+    on this binding.
+    """
+    return _json(drawing.add_center_marks(
+        drawing_path, include_slots=include_slots, extended_lines=extended_lines,
+    ))
+
+
+@mcp.tool()
+def add_hole_callout(drawing_path: str, x: float, y: float, view_name: str | None = None) -> str:
+    """Insert a native hole callout at a sheet point (meters) on a hole edge.
+
+    Returns callout_failed when the point is not on a hole's projected circle —
+    a missing callout is reported, never faked.
+    """
+    return _json(drawing.add_hole_callout(drawing_path, x, y, view_name=view_name))
+
+
+@mcp.tool()
 def drawing_audit(drawing_path: str) -> str:
     """Audit a drawing: views, scales, blank views, dimension and annotation counts.
 

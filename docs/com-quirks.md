@@ -297,6 +297,24 @@ names = list(model.GetModelViewNames)   # ('*正视于','*前视',...,'*等轴�
 - 剖视图必须先 `ActivateView` 目标视图，再选/画剖切线；否则 `CreateSectionViewAt5` 返回 null，
   At2 兜底甚至会让 SolidWorks 崩溃（RPC_E_SERVERFAULT）。
 
+### 自动标注的三个 API（2026-10-27 实测）
+
+```python
+doc.InsertModelAnnotations3(0, 32768, True, True, False, True)   # 插入模型尺寸
+view.AutoInsertCenterMarks2(1|4, 2, True, True, True, 0.0025, 0.0, True, True, 0.0)
+doc.AddHoleCallout2(x, y, 0)                                     # 孔标注
+```
+
+- `InsertModelAnnotations3`：Option=0（FromEntireModel），Types 位掩码 32768（标记为工程图的尺寸）
+  | 524288（全部驱动尺寸）；返回数组，长度即插入数量。P01 支架实测插入 6 个。
+- `AutoInsertCenterMarks2` 是 **10 个参数**：InsertType(1=孔|4=槽)、Style(2=Single)、
+  LinearSlotCenter、ArcSlotCenter、UseDocumentDefaults(True)、Size、Gap、ExtendedLines、
+  CenterLineFont、Angle。**必须先 `ActivateView`**，否则不生效。返回 True 的视图数才是可靠信号，
+  `GetCenterMarkCount` 在这个绑定下会低估（常读 0，但图上确实有标记）。
+- `AddHoleCallout2` 必须点在孔的投影圆上，否则返回 None——工具据此返回 `callout_failed`，
+  不伪造标注。
+- `IModelDoc2.EditRebuild3` 是**属性**（bool），写 `EditRebuild3()` 会报 `'bool' object is not callable`。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。

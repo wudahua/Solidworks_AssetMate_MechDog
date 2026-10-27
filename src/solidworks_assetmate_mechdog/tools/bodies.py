@@ -113,7 +113,7 @@ def recolor_bodies(part_path, palette, apply=False, save=True):
         try:
             doc.ForceRebuild3(False)
         except Exception:
-            doc.EditRebuild3()
+            doc.EditRebuild3
         if save:
             doc.SaveSilent  # property access performs the save; see quirks section 7
 

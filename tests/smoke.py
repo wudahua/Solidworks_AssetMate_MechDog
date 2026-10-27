@@ -232,9 +232,13 @@ def main():
             assert exported["bytes"] > 1000, exported
             rendered = require(drawing.render_drawing(pdf, workdir))
             assert rendered["page_count"] >= 1, rendered
+            dimensioned = require(drawing.auto_dimension(drw))
+            marked = require(drawing.add_center_marks(drw))
             audited = require(drawing.drawing_audit(drw))
             assert audited["view_count"] == 3, audited
-            return "3 views, %d KB pdf, scale %s" % (
+            return "3 views, %d dims, %d/%d views marked, %d KB pdf, scale %s" % (
+                dimensioned.get("total_dimensions") or 0,
+                marked.get("views_marked") or 0, marked.get("views_processed") or 0,
                 exported["bytes"] // 1024, created["views"][0]["scale"])
 
         r.check("drawing chain (create/pdf/render/audit)", _drawing)
