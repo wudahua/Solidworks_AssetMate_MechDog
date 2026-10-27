@@ -604,6 +604,16 @@ object callout = drawingDoc.AddHoleCallout2(px, py, 0.0);
 他们自己在注释里也承认这个方法的局限：
 `coordinate selection is fragile for crowded geometry (KNOWN-LIMITATIONS #6)`。
 
+**实测（配电箱结构图）**：按网格点试选 `EDGE`，15 个点里 12 个能选中 —— SelectByID2 本身有效；
+但 `AddHoleCallout2` 在这些点上仍返回 null，因为网格落点命中的是**直线边**，不是孔的投影圆。
+结论：方法正确，但必须先拿到**圆边上的精确点位**，而这需要扫边。
+
+**扫边是硬瓶颈**：`GetVisibleEntities2(view, 1)` 取到 260 条边后，即使只用端点算弦长预筛
+（不调 GetCurve），一个视图仍跑不完 400 秒。慢在实体枚举与逐边顶点读取，不在曲线判断。
+要提速得换 API（如按视图分片、或用 `IView.GetPolylines7`），没在本次解决。
+
+**当前结论**：孔标注在纯 Python 下可用性不足，建议界面手工或用 `add_drawing_dimension` 标 Ø 尺寸。
+
 ### 圆边识别：GetCurve 必须 Dispatch
 
 ```python

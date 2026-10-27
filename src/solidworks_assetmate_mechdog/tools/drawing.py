@@ -2317,11 +2317,19 @@ def verify_dimension_attachments(drawing_path, view_name=None):
 def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
     """Circular edges of a view, with sheet position and diameter.
 
+    Performance: reading `edge.GetCurve` on every visible edge is the expensive part
+    (260 edges took over 300 s). The chord length between an edge's two vertices is free
+    to compute and is an upper bound on nothing — but a short chord means a small circle,
+    so edges shorter than `min_diameter_mm * 0.5` are skipped before any curve is read.
+    Pass a min_diameter_mm to get a large speed-up on hole-heavy views.
+
     `edge.GetCurve` returns a dispatch pointer that must be wrapped before reading
     IsCircle — calling it on the raw pointer fails silently and made an earlier version
     report "no circles" on a view holding 82 of them.
     """
     try:
+        import math
+
         import win32com.client as win
 
         doc = _open_drawing(drawing_path)
@@ -2332,31 +2340,33 @@ def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
             if view_name and view.Name != view_name:
                 continue
             edges = [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]
-            # Model-space centre must come from ALL visible edges: using only the circular
-            # ones biases the origin and every computed sheet point lands off the hole.
-            all_pts = []
+
+            # Cheap pass: vertex positions only (no curve, no surface).
+            endpoints = []
             for edge in edges:
                 try:
                     a, b = edge.GetStartVertex, edge.GetEndVertex
-                    if a is not None and b is not None:
-                        all_pts.append(a.GetPoint)
-                        all_pts.append(b.GetPoint)
+                    if a is None or b is None:
+                        continue
+                    pa, pb = a.GetPoint, b.GetPoint
+                    chord = math.dist(pa, pb)
+                    endpoints.append((edge, pa, pb, chord))
                 except Exception:
                     continue
+
+            floor = max(float(min_diameter_mm) * 0.5, 1e-4)
             rows = []
-            for edge in edges:
+            for edge, pa, pb, chord in endpoints:
+                if chord < floor:
+                    continue
                 try:
                     curve = win.Dispatch(edge.GetCurve)
                     if curve is None or not curve.IsCircle:
                         continue
-                    params = list(curve.CircleParams)
-                    diameter = round(float(params[6]) * 2000, 2)
+                    diameter = round(float(list(curve.CircleParams)[6]) * 2000, 2)
                     if diameter < float(min_diameter_mm):
                         continue
-                    start = edge.GetStartVertex
-                    if start is None:
-                        continue
-                    rows.append((edge, start.GetPoint, diameter))
+                    rows.append((edge, pa, diameter))
                 except Exception:
                     continue
             if not rows:
@@ -2364,9 +2374,9 @@ def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
             axes = _projection_axes(view, [r[0] for r in rows])
             pos = list(view.Position)
             scale = float(view.ScaleDecimal)
-            pts = all_pts or [r[1] for r in rows]
-            lo = [min(p[i] for p in pts) for i in range(3)]
-            hi = [max(p[i] for p in pts) for i in range(3)]
+            all_pts = [p for _, pa, pb, _ in endpoints for p in (pa, pb)]
+            lo = [min(p[i] for p in all_pts) for i in range(3)]
+            hi = [max(p[i] for p in all_pts) for i in range(3)]
             for edge, point, diameter in rows:
                 out.append({
                     "view": view.Name,
