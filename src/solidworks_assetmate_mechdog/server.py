@@ -125,8 +125,8 @@ def get_assembly_tree(assembly_path: str, max_depth: int = 1, refresh: bool = Fa
 def get_mass_properties(assembly_path: str) -> str:
     """Read whole-assembly mass, volume, surface area and center of mass (SI units).
 
-    Experimental: returns a structured error on pywin32 bindings where
-    CreateMassProperty is unavailable (see docs/com-quirks.md section 5).
+    Returns a structured error when CreateMassProperty is unavailable on the
+    current binding (see docs/com-quirks.md section 5) instead of a guess.
     """
     return _json(assembly.mass_properties(assembly_path))
 
@@ -137,12 +137,16 @@ def export_preview(
     output_path: str,
     size: str = "1600x1200",
     view: str = "*Isometric",
+    keep_bmp: bool = False,
 ) -> str:
     """Export the current view to an image, e.g. 'D:/out/assembly.bmp' or '.png'.
 
-    size is 'WxH'. SolidWorks writes BMP natively; PNG requires Pillow.
+    size is 'WxH'. SolidWorks writes BMP natively; PNG requires Pillow and the
+    intermediate BMP is deleted unless keep_bmp=true.
     """
-    return _json(assembly.export_preview(assembly_path, output_path, size=size, view=view))
+    return _json(assembly.export_preview(
+        assembly_path, output_path, size=size, view=view, keep_bmp=keep_bmp,
+    ))
 
 
 def main():

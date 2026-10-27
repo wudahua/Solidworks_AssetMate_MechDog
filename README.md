@@ -18,7 +18,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `export_bom` | 导出 BOM：零件聚合、数量、材料、单件/总质量，可写 CSV | 仅 CSV |
 | `rename_components` | 重命名零件：`file` 只改磁盘，`auto` 另存新文件并重定向装配引用 | 是 |
 | `get_assembly_tree` | 组件树：零件名、路径、当前颜色、子装配递归 | 否 |
-| `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位；实验性，失败返回结构化错误） | 否 |
+| `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位；失败返回结构化错误） | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
 
 所有工具返回结构化 JSON，出错时附 `hint` 指向对应坑的编号。
@@ -45,6 +45,7 @@ pip install ".[png]"
 | 隔离构建时下载 `setuptools` 失败 | `pip install -e ".[png]" --no-build-isolation`（主环境需已装 setuptools） |
 | 镜像报 `from versions: none`（实际是 HTTP 403） | 换源：`pip install -i https://mirrors.aliyun.com/pypi/simple/ ".[png]"` |
 | 命令行找不到 `solidworks-assetmate-mechdog` | 该入口在 `<python>\Scripts`，通常不在 PATH；改用下方的 `python -m` 方式 |
+| 所有工具报 `int() argument must be ... not 'VARIANT'` | 0.1.5 已修复（强制晚绑定）；升级即可，无需清理 `%TEMP%\gen_py` |
 
 更多 MCP 侧问题（`serverInfo.version`、构建隔离、镜像 403）见 [docs/mcp-server-notes.md](docs/mcp-server-notes.md)。
 

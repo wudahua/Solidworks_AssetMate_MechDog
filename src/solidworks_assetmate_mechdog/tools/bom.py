@@ -131,6 +131,11 @@ def export_bom(
             })
 
         known_mass = [r["mass_total_kg"] for r in rows if r["mass_total_kg"] is not None]
+        # SolidWorks falls back to 1000 kg/m3 when a part has no material; call that
+        # out so the number is not mistaken for a real material density.
+        default_density_parts = [
+            r["part"] for r in rows if r["material"] is None and r["mass_each_kg"] is not None
+        ]
         result = {
             "assembly": doc.GetTitle,
             "path": doc.GetPathName,
@@ -139,6 +144,11 @@ def export_bom(
             "items": rows,
             "total_mass_kg": round(sum(known_mass), 6) if known_mass else None,
             "mass_complete": len(known_mass) == len(rows) if include_mass else False,
+            "mass_basis": (
+                "SolidWorks default density 1000 kg/m3 for %d part(s) without material: %s"
+                % (len(default_density_parts), ", ".join(default_density_parts))
+                if default_density_parts else "material density"
+            ),
             "warnings": missing,
         }
 

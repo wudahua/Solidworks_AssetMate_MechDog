@@ -94,9 +94,11 @@ def mass_properties(assembly_path):
             )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("mass_failed", str(exc))
 
 
-def export_preview(assembly_path, output_path, size="1600x1200", view="*Isometric"):
+def export_preview(assembly_path, output_path, size="1600x1200", view="*Isometric", keep_bmp=False):
     """Save a view image. SolidWorks SaveBMP always writes BMP; PNG needs Pillow."""
     try:
         doc = open_document(assembly_path, SW_DOC_ASSEMBLY)
@@ -121,6 +123,11 @@ def export_preview(assembly_path, output_path, size="1600x1200", view="*Isometri
             try:
                 from PIL import Image
                 Image.open(bmp_path).save(output_path)
+                if not keep_bmp:
+                    try:
+                        os.remove(bmp_path)  # avoid leaving a multi-MB intermediate
+                    except OSError:
+                        pass
                 result.update(image=output_path, format="png")
             except ImportError:
                 result["note"] = "Saved BMP instead. Install Pillow (pip install '.[png]') for PNG output."

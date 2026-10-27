@@ -184,7 +184,32 @@ doc.SaveSilent                          # 保存装配
 - 原文件保留，回退只需把引用改回去并删掉新文件。
 - 关闭被装配引用的零件文档再改名无效（文件锁不释放），不要在这条路上浪费时间。
 
-## 十、一条通用原则
+## 十、早绑定 gen_py 缓存让 byref VARIANT 全面崩溃（2026-10-27 用户实测）
+
+现象：同一份代码，某些机器上 7 个工具全部失败：
+
+```
+TypeError: int() argument must be a string, a bytes-like object or a real number, not 'VARIANT'
+```
+
+根因：`%TEMP%\gen_py` 里存在 SldWorks 类型库的 makepy 缓存时，`GetActiveObject` 返回**早绑定** wrapper。它把 `OpenDoc6` 的 `Errors`/`Warnings` 声明为 byref int，在 `InvokeTypes` 里对传入的 `VARIANT` 调 `int()` → 直接崩。所有工具都要经过 `open_document`，所以全灭；只有纯文件系统的路径（`rename_components` 的 file 模式）幸存。
+
+修复——拿到对象后强制晚绑定：
+
+```python
+import win32com.client.dynamic as dyn
+_SW = dyn.Dispatch(win.GetActiveObject("SldWorks.Application"))
+```
+
+晚绑定路径下 `VARIANT(VT_BYREF | VT_I4)` 正常工作，且不依赖 gen_py 是否被别的程序生成过。
+
+要点：
+
+- **不要靠删 `gen_py` 缓解**——其他程序（含 makepy、其他 CAD 脚本）会再生成，问题必然复发。
+- `EnsureDispatch` 对 SldWorks 会报 "This COM object can not automate the makepy process"，所以也没法用早绑定统一解决。
+- 同类风险适用于所有自定义 `byref VARIANT` 调用（`SelectByID2` 的 Callout、`GetMaterialPropertyName2` 的 BSTR）。统一走晚绑定最省事。
+
+## 十一、一条通用原则
 
 > **先读现值，再改。**
 > 凡是"多层属性"（外观、显示状态、配置、材质），第一步读一次目标对象的现值，它会直接告诉你该改哪一层。跳过这一步，靠猜 API 语义，返工成本是它的 10 倍。

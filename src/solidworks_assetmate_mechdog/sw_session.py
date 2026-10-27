@@ -36,15 +36,29 @@ def _com():
 
 
 def get_sw():
-    """Connect to the running SolidWorks instance, or start one. Cached."""
+    """Connect to the running SolidWorks instance, or start one. Cached.
+
+    Always wrapped in a DYNAMIC (late-bound) dispatcher on purpose. If
+    %TEMP%\\gen_py holds a makepy cache for the SldWorks type library, win32com
+    hands back an early-bound wrapper whose OpenDoc6 declares Errors/Warnings as
+    plain byref ints and calls int() on our byref VARIANT — every tool dies with
+    "int() argument must be ... not 'VARIANT'". Late binding accepts the VARIANT
+    and does not depend on whether some other program generated gen_py.
+    """
     global _SW
     if _SW is not None:
         return _SW
     _, win, _ = _com()
+    from win32com.client import dynamic as dyn
+
     try:
-        _SW = win.GetActiveObject("SldWorks.Application")
+        obj = win.GetActiveObject("SldWorks.Application")
     except Exception:
-        _SW = win.Dispatch("SldWorks.Application")
+        obj = win.Dispatch("SldWorks.Application")
+    try:
+        _SW = dyn.Dispatch(obj)
+    except Exception:
+        _SW = obj  # last resort: keep whatever we got rather than failing to attach
     return _SW
 
 
@@ -73,7 +87,11 @@ def open_document(path, doc_type=SW_DOC_ASSEMBLY):
     """Open path silently, reusing the active document when it is the same file."""
     path = os.path.abspath(path)
     if not os.path.exists(path):
-        raise FileNotFoundError(path)
+        # FileNotFoundError(path) stringifies to a bare path; keep the reason.
+        raise FileNotFoundError(
+            "file not found: %s (check drive, folder and extension "
+            ".SLDASM/.SLDPRT)" % path
+        )
     sw = get_sw()
     doc = sw.ActiveDoc
     if doc is not None and os.path.normcase(doc.GetPathName) == os.path.normcase(path):
