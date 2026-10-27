@@ -517,6 +517,31 @@ view = doc.CreateFlatPatternViewFromModelView3(
 - 试过用「面法向 vs 径向」判孔/凸台：80 个面全部被判成同一类，与已知的 Ø6 安装孔矛盾，
   判据在本环境不可靠，已放弃。台账改为输出**全部圆柱面 + 直径/轴线/中心**，由调用方判断。
 
+### 形位公差 / 粗糙度：能读不能写（2026-10-27 实测）
+
+**能读**：形位公差的注释类型是 **5**（`swAnnotationType_Gtol`），读内容是
+
+```python
+gtol = annotation.GetSpecificAnnotation      # IGtol
+gtol.GetFrameCount                            # 框格数
+gtol.GetFrameValues(1)                        # ('0.01','','','','') 公差值 + 三个基准 + 符号
+```
+
+**不能写**，三条路都堵：
+
+| 尝试 | 结果 |
+|---|---|
+| `doc.InsertGtol(...)` 0–4 个参数 | 全部 `找不到成员`（DISP_E_MEMBERNOTFOUND） |
+| `doc.InsertSurfaceFinishSymbol2(...)` 4–9 个参数 | 全部 `参数数目` 错误 |
+| 宏录制插入动作 | 只录到 `SelectByID2("细节项目275@图纸1", "GTOL", ...)`，插入本身不被捕获 |
+| 复制粘贴：`doc.EditCopy()` 成功，`doc.EditPaste` / `EditPaste2` | **两个方法都不存在** |
+| `gencache.EnsureDispatch` 早绑定 | `This COM object can not automate the makepy process`（SolidWorks 无类型库） |
+
+结论：`InsertGtol` 只存在于早绑定接口（C# interop）。纯 Python 晚绑定下**无法创建**形位公差和
+粗糙度符号，只能读取。要做插入必须写 C# 插件，或人工在 UI 里加。
+
+`list_drawing_annotations` 因此定位为**自检工具**：证明图上有没有形位公差、内容对不对。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。

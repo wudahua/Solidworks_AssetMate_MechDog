@@ -1897,3 +1897,107 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("tolerance_failed", str(exc))
+
+
+ANNOTATION_KINDS = {
+    2: "centerline", 4: "dimension", 5: "geometric_tolerance", 6: "note",
+    7: "surface_finish", 8: "datum_tag", 9: "datum_target", 11: "balloon",
+    12: "weld_symbol", 13: "center_mark", 14: "hole_callout",
+}
+
+
+def list_drawing_annotations(drawing_path, view_name=None):
+    """Inventory every annotation on the sheet, classified by kind.
+
+    Process §6.1 requires checking that datums, geometric tolerances and surface
+    finishes exist and say what they should. SolidWorks can create these only through
+    early binding (a C# add-in), but READING them works here — that is enough for a
+    self-check to state "this drawing has no geometric tolerance at all".
+
+    Geometric tolerance frames are read through IGtol.GetFrameValues.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        rows, counts = [], {}
+        seen = set()
+
+        def scan(view, scope):
+            try:
+                raw = view.GetAnnotations
+            except Exception:
+                return
+            items = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+            for item in items:
+                if item is None:
+                    continue
+                try:
+                    ann = win.Dispatch(item)
+                    kind_code = int(ann.GetType)
+                except Exception:
+                    continue
+                kind = ANNOTATION_KINDS.get(kind_code, "other_%d" % kind_code)
+                counts[kind] = counts.get(kind, 0) + 1
+                key = None
+                try:
+                    key = str(ann.GetName)
+                except Exception:
+                    key = None
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                row = {"kind": kind, "name": key, "scope": scope}
+                try:
+                    row["position_m"] = [round(v, 4) for v in ann.GetPosition]
+                except Exception:
+                    pass
+                if kind == "geometric_tolerance":
+                    try:
+                        gtol = ann.GetSpecificAnnotation
+                        row["frames"] = int(gtol.GetFrameCount)
+                        row["frame1"] = [str(v) for v in gtol.GetFrameValues(1)]
+                        row["text"] = str(gtol.GetText(1))
+                    except Exception:
+                        pass
+                if kind == "dimension":
+                    try:
+                        dim = ann.GetSpecificAnnotation.GetDimension2(0)
+                        if dim is not None:
+                            row["value_mm"] = round(float(dim.SystemValue) * 1000, 3)
+                            try:
+                                row["tolerance_type"] = int(dim.GetToleranceType)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                if kind == "note":
+                    try:
+                        text = ann.GetSpecificAnnotation.GetText
+                        if isinstance(text, str):
+                            row["text"] = text
+                    except Exception:
+                        pass
+                rows.append(row)
+
+        for view in _iter_views(doc):
+            is_sheet = getattr(view, "Type", None) == 1
+            if view_name and not is_sheet and view.Name != view_name:
+                continue
+            scan(view, "sheet" if is_sheet else view.Name)
+
+        return drawing_ok(
+            drawing=doc.GetTitle,
+            totals=counts,
+            annotation_count=len(rows),
+            annotations=rows,
+            notes=[
+                "geometric_tolerance 的 frame1 依次为 公差值/基准1/基准2/基准3/符号位。",
+                "surface_finish 只能报存在，内容读取需早绑定。",
+            ],
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("annotations_failed", str(exc))

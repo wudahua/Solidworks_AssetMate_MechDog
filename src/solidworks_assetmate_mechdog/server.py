@@ -132,6 +132,17 @@ def batch_export(
 
 
 @mcp.tool()
+def list_drawing_annotations(drawing_path: str, view_name: str | None = None) -> str:
+    """Inventory every annotation: dimensions (with value + tolerance), notes,
+    geometric tolerances (frame content), center marks, hole callouts.
+
+    Use it to prove what a drawing does or does not carry — e.g. "no geometric
+    tolerance anywhere" — which the CAD API cannot create but can read.
+    """
+    return _json(drawing.list_drawing_annotations(drawing_path, view_name=view_name))
+
+
+@mcp.tool()
 def add_dimension_tolerance(
     drawing_path: str,
     value_mm: float,
