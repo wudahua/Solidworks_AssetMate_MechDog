@@ -424,6 +424,31 @@ segments = _template_lines(sheet, w, h)   # 必须在加视图前，否则会混
 
 量出的安全区会随结果返回（`safe_area.source` 为 `template` 表示实测，`ratio` 表示回退）。
 
+### 剖视图：剖切线必须画在视图草图里（2026-10-27 实测）
+
+`CreateSectionViewAt5(X, Y, Z, Label, Options, ExcludedComponents, Depth)` —— **7 个参数**，
+但光调用没用，必须先有一条**画在该视图草图里的剖切线**并处于选中状态，否则返回 null。
+
+可行流程（实测通过，得到"剖面视图 A-A"）：
+
+```python
+doc.ActivateView(view.Name)
+sm = doc.SketchManager
+sm.InsertSketch(True)
+# 草图坐标 = (图纸点 - view.Position) / view.ScaleDecimal  ← 用转换实体标定过
+sm.CreateLine(-half, 0, 0, half, 0, 0)      # 水平剖切线
+sm.ActiveSketch.GetSketchSegments → segment.Select2(False, 0)
+sm.InsertSketch(True)                        # 退出，选择会保留
+section = doc.CreateSectionViewAt5(x, y, 0, "A", 4, None, 0)
+```
+
+要点：
+
+- `Options = 4` 是 `swCreateSectionView_ChangeDirection`（翻转观察方向），0 为默认。
+- 剖切线要**穿过几何**；画在视图外或空白处会返回 null（而且失败几次后视图状态会变差，建议重开图）。
+- `Position` 决定局部视图放哪，与剖切线无关。
+- 实测配电箱箱体：3 视图 → 剖视 A-A，尺寸从 50 涨到 68 个。
+
 ### 钣金展开视图（2026-10-27 实测）
 
 ```python

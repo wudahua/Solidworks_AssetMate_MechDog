@@ -174,6 +174,29 @@ def render_drawing(pdf_path: str, output_dir: str | None = None, scale: float = 
 
 
 @mcp.tool()
+def add_section_view(
+    drawing_path: str,
+    view_name: str | None = None,
+    orientation: str = "horizontal",
+    offset_m: float = 0.0,
+    position: list[float] | None = None,
+    label: str = "A",
+    flip: bool = False,
+    depth: float = 0.0,
+) -> str:
+    """Create a SECTION VIEW through a model view (exposes internal features).
+
+    The cut line is drawn in the view's sketch automatically. orientation is
+    "horizontal" or "vertical"; offset_m shifts it off the view centre; flip reverses
+    the viewing direction; depth > 0 gives a partial section.
+    """
+    return _json(drawing.add_section_view(
+        drawing_path, view_name=view_name, orientation=orientation,
+        offset_m=offset_m, position=position, label=label, flip=flip, depth=depth,
+    ))
+
+
+@mcp.tool()
 def add_flat_pattern_view(
     drawing_path: str,
     model_path: str,

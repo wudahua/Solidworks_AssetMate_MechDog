@@ -1423,3 +1423,116 @@ def add_flat_pattern_view(drawing_path, model_path, config_name=None, position=N
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("flat_pattern_failed", str(exc))
+
+
+def add_section_view(drawing_path, view_name=None, orientation="horizontal",
+                     offset_m=0.0, position=None, label="A", flip=False, depth=0.0):
+    """Create a SECTION VIEW through a model view.
+
+    The cut line is drawn in the view's own sketch — the view sketch coordinate system is
+    `sketch = (paper - view.Position) / view.ScaleDecimal` (calibrated with Convert
+    Entities). SolidWorks requires the line to live in that sketch and to be selected
+    before CreateSectionViewAt5, otherwise it returns null.
+
+    orientation: "horizontal" cuts left-right (shows the vertical section), "vertical"
+    cuts top-bottom. offset_m shifts the line off the view centre (sheet metres).
+    flip reverses the viewing direction (Options = 4). depth > 0 gives a partial section.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
+        if not views:
+            return error("no_views", "The drawing has no model view to section")
+        target = None
+        for candidate in views:
+            if view_name is None or candidate.Name == view_name:
+                target = candidate
+                break
+        if target is None:
+            return error("view_not_found", "No view named %r" % view_name,
+                         "Use drawing_audit to list view names.")
+
+        doc.ActivateView(target.Name)
+        pos = list(target.Position)
+        scale = float(target.ScaleDecimal)
+        outline = list(target.GetOutline)
+        width = outline[2] - outline[0]
+        height = outline[3] - outline[1]
+        half = (max(width, height) * 0.62) / scale
+        offset = float(offset_m) / scale
+
+        sm = doc.SketchManager
+        sm.InsertSketch(True)
+        try:
+            if str(orientation).lower() == "vertical":
+                sm.CreateLine(offset, -half, 0.0, offset, half, 0.0)
+            else:
+                sm.CreateLine(-half, offset, 0.0, half, offset, 0.0)
+        except Exception as exc:
+            try:
+                sm.InsertSketch(True)
+            except Exception:
+                pass
+            return error("cut_line_failed", str(exc),
+                         "Could not draw the cut line in the view sketch.")
+
+        raw = sm.ActiveSketch.GetSketchSegments
+        segments = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+        segments = [s for s in segments if s is not None]
+        selected = False
+        for segment in segments:
+            try:
+                seg = win.Dispatch(segment)
+                if seg.Select2(False, 0) and doc.SelectionManager.GetSelectedObjectCount2(-1):
+                    selected = True
+                    break
+            except Exception:
+                continue
+        sm.InsertSketch(True)
+        if not selected:
+            return error("cut_line_not_selected",
+                         "Drew the cut line but could not select it",
+                         "SolidWorks needs the cut line selected before creating the section.")
+
+        if position:
+            place_x, place_y = float(position[0]), float(position[1])
+        else:
+            place_x = outline[0] + width / 2
+            place_y = max(0.075, outline[1] - max(height * 0.55, 0.075))
+
+        options = 4 if flip else 0  # swCreateSectionView_ChangeDirection
+        section = doc.CreateSectionViewAt5(
+            place_x, place_y, 0.0, str(label), options, None, float(depth)
+        )
+        if section is None:
+            return error(
+                "section_failed",
+                "CreateSectionViewAt5 returned null for %r" % target.Name,
+                "The cut line must lie inside the view and cross its geometry; "
+                "or an earlier failed attempt left the view in a bad state — reopen the drawing.",
+            )
+        try:
+            section.ScaleDecimal = scale
+        except Exception:
+            pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        layout = _relayout(doc)
+        try:
+            so = list(section.GetOutline)
+            box = {"width_m": round(so[2] - so[0], 4), "height_m": round(so[3] - so[1], 4)}
+        except Exception:
+            box = None
+        return drawing_ok(
+            drawing=doc.GetTitle, section=section.Name, source_view=target.Name,
+            label=str(label), orientation=str(orientation), flip=bool(flip),
+            outline=box, layout=layout,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("section_failed", str(exc))
