@@ -2064,6 +2064,9 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
 
     ai_supplied: list of field names whose values the caller supplied (materials,
     tolerances, fits) — anything listed here downgrades the verdict and is reported.
+
+    Dimensions with no attached geometry are a blocker: they look like annotations but
+    cannot be traced to the model or updated with it (process §6.1).
     """
     try:
         from . import ledger as _ledger
@@ -2129,6 +2132,20 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                    % (holes_in_drawing, hole_candidates))
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
+
+        # Attachment: a dimension not tied to an edge/face cannot be traced or updated
+        # with the model, so process §6.1 counts it as incomplete.
+        att = verify_dimension_attachments(drawing_path)
+        if att.get("ok"):
+            orphan = int(att.get("orphan_count") or 0)
+            dim_count = int(att.get("dimension_count") or 0)
+            record("dimension_attachments", orphan == 0,
+                   "%d/%d 个尺寸无关联实体" % (orphan, dim_count) if orphan
+                   else "%d 个尺寸均已关联" % dim_count)
+        else:
+            record("dimension_attachments", False,
+                   "关联信息读取失败: %s" % (att.get("message") or "unknown"))
+        unattached = int(att.get("orphan_count") or 0) if att.get("ok") else None
         if require_gdt:
             record("gdt_present", gtols > 0, "%d 处形位公差" % gtols)
         else:
@@ -2165,11 +2182,13 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                 "hole_callouts": holes_in_drawing,
                 "geometric_tolerances": gtols,
                 "cylinder_faces_in_model": hole_candidates,
+                "dimensions_unattached": unattached,
                 "features": model_stats.get("features"),
                 "model_doubts": [d.get("kind") for d in doubts],
             },
             note="verdict 依据流程 §7；blockers 非空即不可宣称可制造，"
-                 "ai_supplied 非空则只能算待设计审核。",
+                 "ai_supplied 非空则只能算待设计审核。无关联实体的尺寸计入 blockers"
+                 "（§6.1：无关联视为未完成）。",
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
