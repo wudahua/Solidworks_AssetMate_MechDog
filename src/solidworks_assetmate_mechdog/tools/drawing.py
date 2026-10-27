@@ -114,7 +114,7 @@ def _iter_views(drawing):
     return flat
 
 
-def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None):
+def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None, pad=0.018):
     """Repack views using their REAL projected outlines so nothing overlaps.
 
     The bounding-box estimate used before creation is only good enough to pick a
@@ -135,11 +135,13 @@ def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None):
         left, right = sheet_w * 0.08, sheet_w * 0.03
         top, bottom = sheet_h * 0.03, sheet_h * 0.20
 
+    # Reserve room for dimension text: IView.GetOutline covers geometry only, so a view
+    # placed flush against the parts list has its dimensions drawn over the border.
     boxes = []
     for view in views:
         try:
             o = list(view.GetOutline or [])
-            boxes.append([view, o[2] - o[0], o[3] - o[1]])
+            boxes.append([view, (o[2] - o[0]) + pad, (o[3] - o[1]) + pad])
         except Exception:
             continue
     if not boxes:
@@ -163,10 +165,10 @@ def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None):
 
     # GB templates keep a parts-list column on the left and a title block bottom-right;
     # staying inside the printable area is not enough — views must avoid those tables.
-    x = left
+    x = left + pad / 2
     for col in columns:
         col_w = max((b[1] for b in col), default=0.0)
-        y = sheet_h - top
+        y = sheet_h - top - pad / 2
         for view, width, height in col:
             center_x = x + width / 2
             center_y = y - height / 2
@@ -603,7 +605,9 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         except Exception:
             pass
         count = len(inserted) if isinstance(inserted, (tuple, list)) else (1 if inserted else 0)
-        layout = _relayout(doc)
+        # No repack: a section view is x-aligned with its parent and cannot be moved
+        # sideways, so repacking would stack it on top of a neighbour.
+        layout = None
         audit = drawing_audit(drawing_path)
         return ok(
             drawing=doc.GetTitle,
@@ -660,7 +664,7 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True):
             doc.GraphicsRedraw2()
         except Exception:
             pass
-        layout = _relayout(doc)
+        layout = None
         return ok(
             drawing=doc.GetTitle,
             layout=layout,
@@ -1499,8 +1503,15 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         if position:
             place_x, place_y = float(position[0]), float(position[1])
         else:
+            # Default to the free area at the sheet's right side. Placing the section
+            # directly under the source view pushes it into the parts list once that
+            # column starts at ~14% of the width.
+            sheet_box = list(doc.GetFirstView.GetOutline)
+            sheet_w = sheet_box[2] - sheet_box[0]
+            sheet_h = sheet_box[3] - sheet_box[1]
+            # A section stays x-aligned with its parent, so it must go above/below it.
             place_x = outline[0] + width / 2
-            place_y = max(0.075, outline[1] - max(height * 0.55, 0.075))
+            place_y = max(sheet_h * 0.14, outline[1] - max(height * 0.55, 0.06))
 
         options = 4 if flip else 0  # swCreateSectionView_ChangeDirection
         section = doc.CreateSectionViewAt5(
@@ -1521,7 +1532,10 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             doc.GraphicsRedraw2()
         except Exception:
             pass
-        layout = _relayout(doc)
+        # Deliberately no repack here: repacking moves the section back into the parts
+        # list whenever the sheet is tight. Call drawing_audit to check the result and
+        # pass `position` to place it precisely.
+        layout = None
         try:
             so = list(section.GetOutline)
             box = {"width_m": round(so[2] - so[0], 4), "height_m": round(so[3] - so[1], 4)}
