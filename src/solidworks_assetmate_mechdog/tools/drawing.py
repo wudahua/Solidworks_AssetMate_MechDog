@@ -110,7 +110,8 @@ def _iter_views(drawing):
     return flat
 
 
-def _place_views(views, sheet_w, sheet_h, margin=0.018, gap=0.012):
+def _place_views(views, sheet_w, sheet_h, gap=0.022,
+                 left=0.034, right=0.020, top=0.020, bottom=0.060):
     """Repack views using their REAL projected outlines so nothing overlaps.
 
     The bounding-box estimate used before creation is only good enough to pick a
@@ -132,6 +133,8 @@ def _place_views(views, sheet_w, sheet_h, margin=0.018, gap=0.012):
     if not boxes:
         return {"fits": False, "columns": 0}
 
+    avail_w = sheet_w - left - right
+    avail_h = sheet_h - top - bottom
     columns = [[]]
     for cols in (2, 1):
         trial = [[] for _ in range(cols)]
@@ -143,13 +146,15 @@ def _place_views(views, sheet_w, sheet_h, margin=0.018, gap=0.012):
         total_w = sum(max((b[1] for b in col), default=0) for col in trial) + gap * (cols - 1)
         total_h = max(heights) if heights else 0.0
         columns = trial
-        if total_w <= sheet_w - 2 * margin and total_h <= sheet_h - 2 * margin:
+        if total_w <= avail_w and total_h <= avail_h:
             break
 
-    x = margin
+    # GB templates keep a parts-list column on the left and a title block bottom-right;
+    # staying inside the printable area is not enough — views must avoid those tables.
+    x = left
     for col in columns:
         col_w = max((b[1] for b in col), default=0.0)
-        y = sheet_h - margin
+        y = sheet_h - top
         for view, width, height in col:
             center_x = x + width / 2
             center_y = y - height / 2
@@ -171,6 +176,32 @@ def _place_views(views, sheet_w, sheet_h, margin=0.018, gap=0.012):
         except Exception:
             fits = False
     return {"fits": fits, "columns": len(columns)}
+
+
+def _relayout(doc):
+    """Repack views after annotation: dimension text extends a view's occupancy.
+
+    A view whose outline fitted before auto_dimension can clip its dimensions
+    against the sheet border afterwards, so annotation steps re-run the packer.
+    """
+    views, sheets = [], []
+    for view in _iter_views(doc):
+        if getattr(view, "Type", None) == 1:
+            sheets.append(view)
+        else:
+            views.append(view)
+    if not sheets or not views:
+        return None
+    try:
+        o = list(sheets[0].GetOutline)
+        result = _place_views(views, o[2] - o[0], o[3] - o[1])
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        return result
+    except Exception:
+        return None
 
 
 def _model_view_name(model, semantic):
@@ -552,10 +583,12 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         except Exception:
             pass
         count = len(inserted) if isinstance(inserted, (tuple, list)) else (1 if inserted else 0)
+        layout = _relayout(doc)
         audit = drawing_audit(drawing_path)
         return ok(
             drawing=doc.GetTitle,
             inserted=count,
+            layout=layout,
             include_unmarked=bool(include_unmarked),
             total_dimensions=audit.get("total_dimensions"),
             views=audit.get("views"),
@@ -607,8 +640,10 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True):
             doc.GraphicsRedraw2()
         except Exception:
             pass
+        layout = _relayout(doc)
         return ok(
             drawing=doc.GetTitle,
+            layout=layout,
             views_processed=processed,
             views_marked=marked,
             views=results,
