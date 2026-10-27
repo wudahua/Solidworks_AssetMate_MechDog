@@ -875,6 +875,78 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         return error("title_block_failed", str(exc))
 
 
+def _nearest_edge_at_sheet_point(view, x, y, tolerance):
+    """Pick the visible edge whose midpoint projects nearest to sheet point (x, y).
+
+    Drawing edges report MODEL coordinates, so a sheet point cannot be used directly.
+    The view's projection plane is inferred from its outline aspect ratio against the
+    model extents (xy = front, xz = top, zy = right), then each edge midpoint is mapped
+    with paper = view.Position + (model - centre) * scale.
+    """
+    import math
+    import win32com.client as win
+
+    try:
+        edges = [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]
+        outline = list(view.GetOutline)
+        scale = float(view.ScaleDecimal)
+        pos = list(view.Position)
+    except Exception:
+        return None
+    if not edges or scale == 0:
+        return None
+
+    pts = []
+    for edge in edges:
+        try:
+            p1 = edge.GetStartVertex.GetPoint
+            p2 = edge.GetEndVertex.GetPoint
+            pts.append((p1, p2))
+        except Exception:
+            continue
+    if not pts:
+        return None
+
+    lo = [min(min(a[i], b[i]) for a, b in pts) for i in range(3)]
+    hi = [max(max(a[i], b[i]) for a, b in pts) for i in range(3)]
+    size = [hi[i] - lo[i] for i in range(3)]
+    centre = [(hi[i] + lo[i]) / 2 for i in range(3)]
+
+    width = outline[2] - outline[0]
+    height = outline[3] - outline[1]
+    if width <= 0 or height <= 0:
+        return None
+    ratio = width / height
+    planes = {
+        "xy": (0, 1),
+        "xz": (0, 2),
+        "zy": (2, 1),
+    }
+    best_plane, best_err = None, None
+    for name, (a, b) in planes.items():
+        if size[a] <= 1e-6 or size[b] <= 1e-6:
+            continue
+        err = abs(size[a] / size[b] - ratio)
+        if best_err is None or err < best_err:
+            best_plane, best_err = (a, b), err
+    if best_plane is None:
+        return None
+    ai, bi = best_plane
+
+    best = None
+    for (p1, p2) in pts:
+        mx = (p1[ai] + p2[ai]) / 2.0
+        my = (p1[bi] + p2[bi]) / 2.0
+        px = pos[0] + (mx - centre[ai]) * scale
+        py = pos[1] + (my - centre[bi]) * scale
+        distance = math.hypot(px - x, py - y)
+        if best is None or distance < best[0]:
+            best = (distance, (p1, p2))
+    if best is None or best[0] > tolerance:
+        return None
+    return best
+
+
 def _view_at_point(doc, x, y):
     for view in _iter_views(doc):
         if getattr(view, "Type", None) == 1:
@@ -988,15 +1060,40 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
                     continue
 
         if selected is None:
-            # Coordinate picking cannot hit drawing edges in this build: SelectByID2 with
-            # an empty name only matches VIEW / REFERENCEPLANE, and edge vertex points are
-            # MODEL coordinates, not sheet coordinates. Point users at edge_index.
-            return error(
-                "segment_not_found",
-                "Coordinate-based edge picking does not work on drawing views here",
-                "Call list_drawing_edges to get edge indices, then "
-                "add_drawing_dimension(edge_index=N). x/y only place the dimension text.",
-            )
+            if view is None or x is None or y is None:
+                return error(
+                    "segment_not_found",
+                    "No edge selected and no sheet point given",
+                    "Pass edge_index (+view_name) or sheet x/y in metres.",
+                )
+            # Fall back to projecting every visible edge's midpoint onto the sheet and
+            # taking the nearest one — SelectByID2 cannot hit drawing edges by coordinates.
+            hit = _nearest_edge_at_sheet_point(view, float(x), float(y), float(tolerance))
+            if hit is None:
+                return error(
+                    "segment_not_found",
+                    "No visible edge within %.1f mm of (%.4f, %.4f)"
+                    % (float(tolerance) * 1000, float(x), float(y)),
+                    "Increase tolerance or pass edge_index from list_drawing_edges.",
+                )
+            import win32com.client as win
+
+            distance, midpoints = hit
+            picked = None
+            for edge in [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]:
+                try:
+                    p1 = edge.GetStartVertex.GetPoint
+                    p2 = edge.GetEndVertex.GetPoint
+                except Exception:
+                    continue
+                if (abs(p1[0] - midpoints[0][0]) < 1e-9 and abs(p1[1] - midpoints[0][1]) < 1e-9
+                        and abs(p2[0] - midpoints[1][0]) < 1e-9 and abs(p2[1] - midpoints[1][1]) < 1e-9):
+                    picked = edge
+                    break
+            if picked is None or not picked.Select2(False, 0):
+                return error("select_failed", "Could not select the nearest edge",
+                             "Retry with edge_index from list_drawing_edges.")
+            selected = "edge_by_point"
 
         if x is None or y is None:
             try:
