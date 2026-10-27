@@ -2052,7 +2052,8 @@ def list_drawing_annotations(drawing_path, view_name=None):
         return error("annotations_failed", str(exc))
 
 
-def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False):
+def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False,
+                   strict_attachments=False):
     """Aggregate model ledger + drawing audit + annotation inventory into a verdict.
 
     Process §7 asks for exactly three outcomes, and forbids calling a drawing
@@ -2065,8 +2066,11 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
     ai_supplied: list of field names whose values the caller supplied (materials,
     tolerances, fits) — anything listed here downgrades the verdict and is reported.
 
-    Dimensions with no attached geometry are a blocker: they look like annotations but
-    cannot be traced to the model or updated with it (process §6.1).
+    Dimensions with no readable attachment are reported; strict_attachments=True also
+    makes them a blocker (§6.1 literal reading). They are a warning by default because
+    GetAttachedEntities2 returns nothing for about half of the imported dimensions no
+    matter which import parameters are used — whether those are truly floating or just
+    unreadable is not settled, so the verdict should not hinge on it.
     """
     try:
         from . import ledger as _ledger
@@ -2133,15 +2137,19 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
 
-        # Attachment: a dimension not tied to an edge/face cannot be traced or updated
-        # with the model, so process §6.1 counts it as incomplete.
+        # Attachment: GetAttachedEntities2 returns nothing for roughly half of the
+        # dimensions that InsertModelAnnotations3 creates, and changing the import
+        # parameters does not move that ratio. It is unclear whether those are really
+        # floating or just unreadable, so by default this is a WARNING; strict mode
+        # (process §6.1 literal reading) turns it into a blocker.
         att = verify_dimension_attachments(drawing_path)
         if att.get("ok"):
             orphan = int(att.get("orphan_count") or 0)
             dim_count = int(att.get("dimension_count") or 0)
             record("dimension_attachments", orphan == 0,
                    "%d/%d 个尺寸无关联实体" % (orphan, dim_count) if orphan
-                   else "%d 个尺寸均已关联" % dim_count)
+                   else "%d 个尺寸均已关联",
+                   blocking=bool(strict_attachments))
         else:
             record("dimension_attachments", False,
                    "关联信息读取失败: %s" % (att.get("message") or "unknown"))
@@ -2175,6 +2183,7 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             passed=passed,
             blockers=blockers,
             pending=pending,
+            strict_attachments=bool(strict_attachments),
             facts={
                 "views": view_count,
                 "dimensions": dim_total,

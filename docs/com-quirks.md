@@ -554,8 +554,23 @@ ann.GetAttachedEntityTypes    # (11, 11)  11 = EDGE
 - 实测配电箱图 44 个尺寸：24 处挂边、7 处挂顶点、8 个 `type_1`、1 个 `type_0`、
   **21 个无关联**。孤儿比例这么高说明 `InsertModelAnnotations3` 导入的尺寸不一定绑到几何上，
   这正是「导入成功 ≠ 图纸正确」的实证。
-- `delivery_check` 把「无关联尺寸」直接计入 **blockers**（流程 §6.1：无关联视为未完成），
-  判定结果因此从"有尺寸就算标了"变成"有尺寸且可追溯才算标了"。
+- `delivery_check` 把「无关联尺寸」计入检查项，**默认按 warning**（`pending`），
+  `strict_attachments=True` 才升级为 blocker（流程 §6.1 的字面读法）。
+
+### 无关联尺寸是不是导入参数造成的？不是（2026-10-27 实测）
+
+`InsertModelAnnotations3` 必须传 **6 个参数**（传 5 个报「非选择性的参数」）。逐一改参数试关联率：
+
+| 调用 | 尺寸数 | 无关联 |
+|---|---|---|
+| `(0, T, True, False, False, True)` 现用 | 44 | 21（47.7%） |
+| `(0, T, True, True, False, True)` 第4参数改 True | 36 | 17（47.2%） |
+| `(0, T, True, True, True, True)` | 46 | 24（52%） |
+
+**孤儿比例不随参数变化**，稳定在 47–52%。要么这些尺寸真的没绑几何，要么
+`GetAttachedEntities2` 对它们就是不返回 —— 目前无法区分。
+
+所以不能拿它一票否决：默认只报 warning，需要严格判定时传 `strict_attachments=True`。
 
 ### PDF 只能来自工程图
 

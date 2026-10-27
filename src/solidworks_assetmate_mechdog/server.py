@@ -146,6 +146,7 @@ def delivery_check(
     drawing_path: str,
     ai_supplied: list[str] | None = None,
     require_gdt: bool = False,
+    strict_attachments: bool = False,
 ) -> str:
     """Aggregate ledger + audit + annotations into a delivery verdict (process §7).
 
@@ -155,6 +156,7 @@ def delivery_check(
     """
     return _json(drawing.delivery_check(
         model_path, drawing_path, ai_supplied=ai_supplied, require_gdt=require_gdt,
+        strict_attachments=strict_attachments,
     ))
 
 
