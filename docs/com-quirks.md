@@ -390,6 +390,19 @@ paper = view.Position + (model - model_centre) * view.ScaleDecimal
 局限：投影面靠长宽比推断，**长宽比接近的视图可能判错**。优先用 `edge_index`
 （`list_drawing_edges` 给出索引，稳定可靠），坐标路径作为便利入口。
 
+### 尺寸去重为什么做不可靠
+
+想要"同一尺寸只标一次"，需要知道图纸上已有哪些尺寸值，这里连续撞了三堵墙：
+
+| 尝试 | 结果 |
+|---|---|
+| `IView.GetDisplayDimensions` | 只返回 13 个值（图纸 56 个尺寸） |
+| `IView.GetAnnotations` + `GetType()==4` | 只返回 15 个值 |
+| 用边长度预判 | 尺寸值是**投影长度**：一条 1253 mm 的三维边在该视图里标注出来是 37.6 mm |
+
+前两条是读不全，第三条是量纲不对。当前实现只接受调用方传 `known_values`，
+默认关闭（`skip_duplicates=False`），并在返回里给出真实 `value_m` 供调用方自行记账。
+
 ### 模板安全区要从模板自己量
 
 把边距写死成 A3 数值（左 34mm / 下 60mm）在 A2 上会直接失败，不同模板的标题栏、

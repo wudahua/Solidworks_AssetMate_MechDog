@@ -875,6 +875,87 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         return error("title_block_failed", str(exc))
 
 
+def _projection_axes(view, edges):
+    """Which two model axes the view projects (xy=front, xz=top, zy=right).
+
+    Chosen by matching the view's outline aspect ratio against the model extents.
+    Dimension values are PROJECTED lengths, so this must be known before comparing
+    a new dimension against existing ones (a 1253 mm edge can dimension as 37.6 mm).
+    """
+    try:
+        outline = list(view.GetOutline)
+        width, height = outline[2] - outline[0], outline[3] - outline[1]
+        if width <= 0 or height <= 0:
+            return None
+        ratio = width / height
+    except Exception:
+        return None
+
+    pts = []
+    for edge in edges:
+        try:
+            pts.append((edge.GetStartVertex.GetPoint, edge.GetEndVertex.GetPoint))
+        except Exception:
+            continue
+    if not pts:
+        return None
+    lo = [min(min(a[i], b[i]) for a, b in pts) for i in range(3)]
+    hi = [max(max(a[i], b[i]) for a, b in pts) for i in range(3)]
+    size = [hi[i] - lo[i] for i in range(3)]
+
+    best, best_err = None, None
+    for axes in ((0, 1), (0, 2), (2, 1)):
+        a, b = axes
+        if size[a] <= 1e-6 or size[b] <= 1e-6:
+            continue
+        err = abs(size[a] / size[b] - ratio)
+        if best_err is None or err < best_err:
+            best, best_err = axes, err
+    return best
+
+
+def _edge_model_length(edge, axes):
+    """Projected length along the two axes the view shows (this equals the dimension value)."""
+    try:
+        p1 = edge.GetStartVertex.GetPoint
+        p2 = edge.GetEndVertex.GetPoint
+    except Exception:
+        return None
+    if axes is None:
+        return None
+    a, b = axes
+    return ((p1[a] - p2[a]) ** 2 + (p1[b] - p2[b]) ** 2) ** 0.5
+
+
+def drawing_dimension_values(doc):
+    """All dimension values already on the sheet, rounded to 0.1 mm.
+
+    IView.GetDisplayDimensions only returns a subset (13 of 56 measured), so read the
+    view's annotation list instead: dimension annotations have GetType() == 4, and the
+    value comes from GetSpecificAnnotation().GetDimension2(0).SystemValue.
+    """
+    import win32com.client as win
+
+    values = set()
+    for view in _iter_views(doc):
+        try:
+            raw = view.GetAnnotations
+        except Exception:
+            continue
+        items = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+        for item in items:
+            try:
+                ann = win.Dispatch(item)
+                if ann.GetType != 4:  # 4 = dimension annotation
+                    continue
+                dim = ann.GetSpecificAnnotation.GetDimension2(0)
+                if dim is not None:
+                    values.add(round(float(dim.SystemValue), 4))
+            except Exception:
+                continue
+    return values
+
+
 def _nearest_edge_at_sheet_point(view, x, y, tolerance):
     """Pick the visible edge whose midpoint projects nearest to sheet point (x, y).
 
@@ -999,7 +1080,7 @@ def list_drawing_edges(drawing_path, view_name=None):
 
 def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0,
                           offset_y=-0.015, view_name=None, tolerance=0.01,
-                          edge_index=None):
+                          edge_index=None, skip_duplicates=False, known_values=None):
     """Add ONE dimension on the visible edge nearest sheet point (x, y), meters.
 
     This is the manual dimensioning path (process §4.4): InsertModelItems only carries
@@ -1008,11 +1089,21 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
     The point does not have to be exactly on the line: the nearest visible edge within
     `tolerance` meters is selected, and the dimension is placed at (x+offset_x,
     y+offset_y). value is meters; omit it to keep the computed value.
+
+    skip_duplicates (EXPERIMENTAL, off by default) rejects values listed in
+    `known_values`. It cannot see the sheet's existing dimensions: read-back recovers only
+    ~15 of 56 values on this binding, and a dimension's value is the PROJECTED length, so
+    the edge length is not a reliable proxy. Track values yourself via the returned
+    `value_m` if you need to avoid repeats.
     """
     try:
         from ..sw_session import byref_dispatch_null
 
         doc = _open_drawing(drawing_path)
+        # Reading dimension values back off the sheet proved unreliable (15 of 56
+        # recovered across GetDisplayDimensions / GetAnnotations), so dedupe trusts only
+        # what the caller says already exists. Callers doing bulk top-up must track it.
+        existing = {round(float(v), 4) for v in (known_values or [])} if skip_duplicates else set()
         view = None
         if view_name:
             for candidate in _iter_views(doc):
@@ -1030,6 +1121,7 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
         doc.ClearSelection2(True)
         selected = None
         distance = None
+        picked_length = None
 
         if edge_index is not None:
             if view is None:
@@ -1041,7 +1133,9 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
                 return error("bad_index", "edge_index %d out of range (0..%d)"
                              % (edge_index, len(edges) - 1))
             try:
-                picked = edges[edge_index].Select2(False, 0)
+                target_edge = edges[edge_index]
+                picked_length = _edge_model_length(target_edge, _projection_axes(view, edges))
+                picked = target_edge.Select2(False, 0)
             except Exception:
                 picked = False
             if not picked or doc.SelectionManager.GetSelectedObjectCount2(-1) < 1:
@@ -1093,6 +1187,11 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
             if picked is None or not picked.Select2(False, 0):
                 return error("select_failed", "Could not select the nearest edge",
                              "Retry with edge_index from list_drawing_edges.")
+            try:
+                picked_length = _edge_model_length(
+                    picked, _projection_axes(view, [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]))
+            except Exception:
+                picked_length = None
             selected = "edge_by_point"
 
         if x is None or y is None:
@@ -1123,6 +1222,17 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
                 applied = float(dim.SystemValue)
             except Exception:
                 pass
+        # Dimensions are per-value: the same length annotated twice on two views is a
+        # drafting error, so skip values that already exist anywhere on the sheet.
+        if skip_duplicates and picked_length is not None and round(picked_length, 4) in existing:
+            doc.ClearSelection2(True)
+            return drawing_ok(
+                drawing=doc.GetTitle, created=False, selected=selected,
+                view=view.Name if view is not None else None,
+                value_m=float(picked_length), skipped="duplicate_value",
+                note="The same dimension already exists on this sheet.",
+            )
+
         doc.ClearSelection2(True)
         try:
             doc.GraphicsRedraw2()
