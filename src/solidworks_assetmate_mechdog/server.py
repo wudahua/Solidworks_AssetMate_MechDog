@@ -216,6 +216,27 @@ def reconcile_ledger(
 
 
 @mcp.tool()
+def survey_drawings(
+    folder: str,
+    sample_size: int = 100,
+    seed: int = 28,
+    html_path: str | None = None,
+) -> str:
+    """Audit a random sample of real drawings and report the statistical baseline.
+
+    Returns distributions (views / dimensions / notes / center marks) and the share of
+    drawings carrying surface finish, geometric tolerance and balloons — the numbers every
+    verdict threshold should be based on. Pass html_path to also write a standalone page.
+
+    Each drawing is closed right after it is read: SolidWorks refuses to open anything once
+    ~40 documents are loaded, and one drawing takes 4-11 s, so sampling beats full scans.
+    """
+    return _json(survey.survey_drawings(
+        folder, sample_size=sample_size, seed=seed, html_path=html_path,
+    ))
+
+
+@mcp.tool()
 def delivery_check(
     model_path: str,
     drawing_path: str,

@@ -27,6 +27,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径） | 工程图 |
 | `add_hole_callouts` | 批量孔标注（同直径标一次 + 回读） | 工程图 |
 | `add_surface_finish` | 插入原生表面粗糙度符号（Ra 值，14 参数） | 工程图 |
+| `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 | 否 |
 | `reconcile_ledger` | 台账 vs 图纸逐条对账：覆盖率 + 缺失清单（按特征分组） | 否 |
 | `delivery_check` | 交付判定：可制造/待设计审核/仅供参考 + 缺项清单 | 否 |
 | `verify_dimension_attachments` | 校验每个尺寸挂在边/面/草图段还是没挂 | 否 |
