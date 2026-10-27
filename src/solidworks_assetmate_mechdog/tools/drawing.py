@@ -1084,7 +1084,7 @@ def list_drawing_edges(drawing_path, view_name=None):
 
 def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0,
                           offset_y=-0.015, view_name=None, tolerance=0.01,
-                          edge_index=None, skip_duplicates=False, known_values=None):
+                          edge_index=None, skip_duplicates=True, known_values=None, save=True):
     """Add ONE dimension on the visible edge nearest sheet point (x, y), meters.
 
     This is the manual dimensioning path (process §4.4): InsertModelItems only carries
@@ -1094,20 +1094,27 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
     `tolerance` meters is selected, and the dimension is placed at (x+offset_x,
     y+offset_y). value is meters; omit it to keep the computed value.
 
-    skip_duplicates (EXPERIMENTAL, off by default) rejects values listed in
-    `known_values`. It cannot see the sheet's existing dimensions: read-back recovers only
-    ~15 of 56 values on this binding, and a dimension's value is the PROJECTED length, so
-    the edge length is not a reliable proxy. Track values yourself via the returned
-    `value_m` if you need to avoid repeats.
+    skip_duplicates rejects a value already on the sheet. Comparison is in whole
+    millimetres against the drawing's own dimensions plus any `known_values`; the value
+    compared is the PROJECTED length (a 1253 mm edge can dimension as 37.6 mm).
+    save=True writes the drawing — a new dimension exists only in memory otherwise.
     """
     try:
         from ..sw_session import byref_dispatch_null
 
         doc = _open_drawing(drawing_path)
-        # Reading dimension values back off the sheet proved unreliable (15 of 56
-        # recovered across GetDisplayDimensions / GetAnnotations), so dedupe trusts only
-        # what the caller says already exists. Callers doing bulk top-up must track it.
-        existing = {round(float(v), 4) for v in (known_values or [])} if skip_duplicates else set()
+        # Compare in whole millimetres: the same dimension rounded to 0.1 mm still differs
+        # in the last float digit between views, and drafting only cares about the number.
+        existing = set()
+        if skip_duplicates:
+            # The annotation list is cached until the drawing rebuilds, so a dimension
+            # added moments ago is invisible without this.
+            try:
+                doc.EditRebuild3
+            except Exception:
+                pass
+            existing |= {round(v * 1000) for v in drawing_dimension_values(doc)}
+            existing |= {round(float(v) * 1000) for v in (known_values or [])}
         view = None
         if view_name:
             for candidate in _iter_views(doc):
@@ -1228,7 +1235,7 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
                 pass
         # Dimensions are per-value: the same length annotated twice on two views is a
         # drafting error, so skip values that already exist anywhere on the sheet.
-        if skip_duplicates and picked_length is not None and round(picked_length, 4) in existing:
+        if skip_duplicates and picked_length is not None and round(picked_length * 1000) in existing:
             doc.ClearSelection2(True)
             return drawing_ok(
                 drawing=doc.GetTitle, created=False, selected=selected,
@@ -1242,10 +1249,17 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
             doc.GraphicsRedraw2()
         except Exception:
             pass
+        if save:
+            # Without this the dimension exists only in memory and disappears on reopen.
+            try:
+                doc.SaveSilent
+            except Exception:
+                pass
         return drawing_ok(
             drawing=doc.GetTitle,
             created=True,
             selected=selected,
+            saved=bool(save),
             view=view.Name if view is not None else None,
             distance_m=round(distance, 6) if distance is not None else None,
             value_m=applied,

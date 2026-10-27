@@ -390,18 +390,21 @@ paper = view.Position + (model - model_centre) * view.ScaleDecimal
 局限：投影面靠长宽比推断，**长宽比接近的视图可能判错**。优先用 `edge_index`
 （`list_drawing_edges` 给出索引，稳定可靠），坐标路径作为便利入口。
 
-### 尺寸去重为什么做不可靠
+### 尺寸去重怎么读、怎么比（2026-10-27 修正）
 
-想要"同一尺寸只标一次"，需要知道图纸上已有哪些尺寸值，这里连续撞了三堵墙：
+早前结论"读不回图纸尺寸"是错的，错在调用方式：
 
-| 尝试 | 结果 |
-|---|---|
-| `IView.GetDisplayDimensions` | 只返回 13 个值（图纸 56 个尺寸） |
-| `IView.GetAnnotations` + `GetType()==4` | 只返回 15 个值 |
-| 用边长度预判 | 尺寸值是**投影长度**：一条 1253 mm 的三维边在该视图里标注出来是 37.6 mm |
+- `IView.GetDisplayDimensions` 确实只给 13 个 —— **不要用它**。
+- 正确路径是 `IView.GetAnnotations` → `GetType() == 4` → `GetSpecificAnnotation.GetDimension2(0).SystemValue`，
+  实测一张 50 尺寸的图能读到 **50 个**值。之前只看到 15 个，是因为值大量重复（5 mm 出现 5 次），
+  不同值只有 11 种。
+- 尺寸值是**投影长度**，不是三维边长：1253 mm 的边在侧视图里标注出来是 37.6 mm。
+- 比较要用**整毫米**（`round(v*1000)`）：同一个尺寸在两个视图里最后几位浮点不同。
+- 新增尺寸后 `doc.EditRebuild3` 才刷新注释列表，否则刚加的尺寸读不到。
+- **`add_drawing_dimension` 必须保存**：只加尺寸不 `SaveSilent`，重开图纸就没了（这解释了
+  为什么之前"补了尺寸却读不回来"）。
 
-前两条是读不全，第三条是量纲不对。当前实现只接受调用方传 `known_values`，
-默认关闭（`skip_duplicates=False`），并在返回里给出真实 `value_m` 供调用方自行记账。
+批量补标时仍建议同时传 `known_values`（由调用方记账），读值作为兜底。
 
 ### 模板安全区要从模板自己量
 
