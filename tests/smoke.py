@@ -236,6 +236,9 @@ def main():
             marked = require(drawing.add_center_marks(drw))
             audited = require(drawing.drawing_audit(drw))
             assert audited["view_count"] == 3, audited
+            bad = [w for w in (audited.get("warnings") or [])
+                   if w.get("issue") in ("view_outside_sheet", "views_overlap")]
+            assert not bad, "layout problems: %s" % bad
             return "3 views, %d dims, %d/%d views marked, %d KB pdf, scale %s" % (
                 dimensioned.get("total_dimensions") or 0,
                 marked.get("views_marked") or 0, marked.get("views_processed") or 0,

@@ -110,6 +110,69 @@ def _iter_views(drawing):
     return flat
 
 
+def _place_views(views, sheet_w, sheet_h, margin=0.018, gap=0.012):
+    """Repack views using their REAL projected outlines so nothing overlaps.
+
+    The bounding-box estimate used before creation is only good enough to pick a
+    scale; an isometric view projects wider than the box, which is how views ended
+    up overlapping. Here we read each view's actual outline and pack them into one
+    or two columns, then move them with IView.Position (needs a VT_ARRAY|VT_R8
+    VARIANT — a plain tuple is silently misread as (0, y)).
+    """
+    import pythoncom
+    from win32com.client import VARIANT
+
+    boxes = []
+    for view in views:
+        try:
+            o = list(view.GetOutline or [])
+            boxes.append([view, o[2] - o[0], o[3] - o[1]])
+        except Exception:
+            continue
+    if not boxes:
+        return {"fits": False, "columns": 0}
+
+    columns = [[]]
+    for cols in (2, 1):
+        trial = [[] for _ in range(cols)]
+        heights = [0.0] * cols
+        for box in sorted(boxes, key=lambda b: -b[2]):
+            index = heights.index(min(heights))
+            trial[index].append(box)
+            heights[index] += box[2] + gap
+        total_w = sum(max((b[1] for b in col), default=0) for col in trial) + gap * (cols - 1)
+        total_h = max(heights) if heights else 0.0
+        columns = trial
+        if total_w <= sheet_w - 2 * margin and total_h <= sheet_h - 2 * margin:
+            break
+
+    x = margin
+    for col in columns:
+        col_w = max((b[1] for b in col), default=0.0)
+        y = sheet_h - margin
+        for view, width, height in col:
+            center_x = x + width / 2
+            center_y = y - height / 2
+            try:
+                view.Position = VARIANT(
+                    pythoncom.VT_ARRAY | pythoncom.VT_R8, [center_x, center_y]
+                )
+            except Exception:
+                pass
+            y -= height + gap
+        x += col_w + gap
+
+    fits = True
+    for view, _, _ in boxes:
+        try:
+            o = list(view.GetOutline or [])
+            if o[0] < 0 or o[1] < 0 or o[2] > sheet_w or o[3] > sheet_h:
+                fits = False
+        except Exception:
+            fits = False
+    return {"fits": fits, "columns": len(columns)}
+
+
 def _model_view_name(model, semantic):
     try:
         names = list(model.GetModelViewNames or ())
@@ -212,7 +275,7 @@ def create_drawing(
             "isometric": (col2, top_y),
         }
 
-        created, skipped = [], []
+        created, skipped, view_objects = [], [], []
         for key in [str(v).strip().lower() for v in views]:
             if key not in VIEW_ALIASES:
                 skipped.append({"view": key, "reason": "unsupported_view"})
@@ -237,6 +300,20 @@ def create_drawing(
                 box_m = None
             created.append({"view": key, "name": view.Name,
                             "scale": float(chosen_scale), "outline": box_m})
+            view_objects.append(view)
+
+        layout = _place_views(view_objects, sheet_w, sheet_h)
+        try:
+            drw.GraphicsRedraw2()
+        except Exception:
+            pass
+        for item, view in zip(created, view_objects):
+            try:
+                o = list(view.GetOutline or [])
+                item["outline"] = {"width_m": round(o[2] - o[0], 4),
+                                   "height_m": round(o[3] - o[1], 4)}
+            except Exception:
+                pass
 
         try:
             drw.GraphicsRedraw2()
@@ -254,6 +331,7 @@ def create_drawing(
             },
             "views": created,
             "skipped_views": skipped,
+            "layout": layout,
             "saved": False,
         }
         if not created:
@@ -359,6 +437,7 @@ def drawing_audit(drawing_path):
 
         rows, warnings = [], []
         total_dims = 0
+        boxes = []
         sheet_box = list(sheets[0].GetOutline) if sheets else None
         for view in model_views:
             try:
@@ -397,6 +476,11 @@ def drawing_audit(drawing_path):
                 warnings.append({"view": name, "issue": "blank_view"})
             if dims == 0:
                 warnings.append({"view": name, "issue": "no_dimensions"})
+            if width is not None and height is not None:
+                try:
+                    boxes.append((name, list(view.GetOutline)))
+                except Exception:
+                    pass
             if sheet_box and width is not None:
                 try:
                     o = list(view.GetOutline)
@@ -410,6 +494,18 @@ def drawing_audit(drawing_path):
 
         if not model_views:
             warnings.append({"view": None, "issue": "no_model_views"})
+
+        # Overlapping views are the failure mode a human notices first but code often
+        # misses: two outlines intersect and neither is blank nor out of bounds.
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i][1], boxes[j][1]
+                if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
+                    warnings.append({
+                        "view": "%s <-> %s" % (boxes[i][0], boxes[j][0]),
+                        "issue": "views_overlap",
+                        "hint": "reduce scale or use fewer views per sheet",
+                    })
 
         return ok(
             drawing=doc.GetTitle,
