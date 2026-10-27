@@ -585,6 +585,25 @@ part.MaterialIdName     # -> 'solidworks materials|普通碳钢|9'
 - 材质库 XML 在 `C:/ProgramData/SOLIDWORKS/SOLIDWORKS 2024\` 下能找到 `*.sldmat`，但
   `<material name="...">` 正则解析不出条目（格式/编码不符），自动列名称暂不可用。
 
+### AddHoleCallout2 必须先 SelectByID2 选边（2026-10-27 对照 SolidPilot 源码）
+
+SolidPilot 的实现（`SolidWorksService.Drawing.cs`，AddHoleCallout）比我多做一步：
+
+```csharp
+modelDoc.ClearSelection2(true);
+bool selected = modelDoc.Extension.SelectByID2("", "EDGE", px, py, 0, false, 0, null, 0);
+if (!selected)
+    selected = modelDoc.Extension.SelectByID2("", "SILHOUETTE", px, py, 0, false, 0, null, 0);
+if (!selected) return "EDGE_NOT_FOUND";
+object callout = drawingDoc.AddHoleCallout2(px, py, 0.0);
+```
+
+**选择集本身就是上下文**：先选中投影边，AddHoleCallout2 才知道标哪个孔、属于哪个视图。
+只给坐标不选边，即使点位正确也返回 null —— 这就是我们之前全部失败的原因。
+
+他们自己在注释里也承认这个方法的局限：
+`coordinate selection is fragile for crowded geometry (KNOWN-LIMITATIONS #6)`。
+
 ### 圆边识别：GetCurve 必须 Dispatch
 
 ```python

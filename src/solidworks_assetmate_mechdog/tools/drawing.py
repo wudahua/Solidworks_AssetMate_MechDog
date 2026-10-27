@@ -723,6 +723,25 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
             except Exception:
                 before = 0
         doc.ClearSelection2(True)
+        # AddHoleCallout2 needs the hole's projected EDGE selected first: the selection is
+        # what carries the owning view and the circular edge into the callout. Without it
+        # SolidWorks returns null even at a correct point.
+        from ..sw_session import byref_dispatch_null
+
+        selected = False
+        for sel_type in ("EDGE", "SILHOUETTE"):
+            try:
+                if doc.Extension.SelectByID2("", sel_type, float(x), float(y), 0,
+                                             False, 0, byref_dispatch_null(), 0):
+                    selected = True
+                    break
+            except Exception:
+                continue
+        if not selected:
+            return error("edge_not_found",
+                         "No hole edge at or near (%.3f, %.3f)" % (x, y),
+                         "Point at a projected circular edge; use list_circular_edges "
+                         "to get exact positions.")
         callout = doc.AddHoleCallout2(float(x), float(y), 0.0)
         if callout is None:
             return error(
