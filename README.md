@@ -61,6 +61,29 @@ pip install ".[png]"
 
 更多 MCP 侧问题（`serverInfo.version`、构建隔离、镜像 403）见 [docs/mcp-server-notes.md](docs/mcp-server-notes.md)。
 
+## 工程图用法
+
+```json
+{ "model_path": "D:/parts/P05.SLDPRT",
+  "output_path": "D:/out/P05.SLDDRW",
+  "views": ["front", "top", "right", "isometric"],
+  "paper": "A3",
+  "view_scales": { "right": 0.2 } }
+```
+
+- `view_scales` 逐视图指定比例：薄壁方向（侧视）在 1:10 下尺寸会挤，单独放大到 1:5 更清楚
+- `paper` 支持 A0–A4；安全区从模板实测，换图幅不用改参数
+- 视图名自动适配中英文（`*前视` / `*Front`）
+- 返回里 `safe_area.source` 为 `template` 表示边距是量出来的，`ratio` 表示回退
+
+补标与标题栏：
+
+```json
+{ "drawing_path": "D:/out/P05.SLDDRW", "view_name": "工程图视图3" }   // list_drawing_edges
+{ "drawing_path": "D:/out/P05.SLDDRW", "view_name": "工程图视图3", "edge_index": 5 }
+{ "drawing_path": "D:/out/P05.SLDDRW", "name": "履带轮", "code": "P05", "material": "45钢", "apply": true }
+```
+
 ## 真机回归
 
 改完代码先跑一遍完整链路（SolidWorks 需运行）：
