@@ -1084,7 +1084,7 @@ def list_drawing_edges(drawing_path, view_name=None):
 
 def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0,
                           offset_y=-0.015, view_name=None, tolerance=0.01,
-                          edge_index=None, skip_duplicates=True, known_values=None, save=True):
+                          edge_index=None, skip_duplicates=False, known_values=None, save=True):
     """Add ONE dimension on the visible edge nearest sheet point (x, y), meters.
 
     This is the manual dimensioning path (process §4.4): InsertModelItems only carries
@@ -1094,10 +1094,12 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
     `tolerance` meters is selected, and the dimension is placed at (x+offset_x,
     y+offset_y). value is meters; omit it to keep the computed value.
 
-    skip_duplicates rejects a value already on the sheet. Comparison is in whole
-    millimetres against the drawing's own dimensions plus any `known_values`; the value
-    compared is the PROJECTED length (a 1253 mm edge can dimension as 37.6 mm).
-    save=True writes the drawing — a new dimension exists only in memory otherwise.
+    skip_duplicates (off by default) rejects values listed in `known_values`. It cannot
+    infer them: a dimension's value is the PROJECTED length, and the same edge projects
+    differently per view (1253 mm measured in 3D becomes 37.6 mm in the side view), so
+    the check can only trust numbers the caller passes — in metres, as projected in the
+    TARGET view. New dimensions are saved (save=True); without that they exist only in
+    memory and vanish on reopen.
     """
     try:
         from ..sw_session import byref_dispatch_null
