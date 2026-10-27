@@ -342,6 +342,33 @@ for ann in sheet.GetAnnotations:   # 属性，嵌套 tuple，需 Dispatch 包装
 替换文字不会改变角度，因此它显示为倒着的编号——**这是标准，不是写错**。
 `set_title_block(include_reversed=False)` 可以只改标题栏、保留倒置标记原样。
 
+### 补标：按边索引选，不要指望坐标
+
+`InsertModelAnnotations3` 只能搬模型已有的驱动尺寸。IR 重建的零件往往尺寸不全
+（实测 P05：模型 38 个驱动尺寸，工程图只能拿到 27 个，缺的 7 个是基准面偏移、
+7 个是草图内部尺寸，这两类不随模型项目导入），必须补标。
+
+在工程图里补一个尺寸的可行顺序：
+
+```python
+# 1) 列边，拿索引
+edges = view.GetVisibleEntities2(view, 1)        # 147 条边
+edge  = win32com.client.Dispatch(edges[n])
+# 2) 选边（Select2 可用，Select4 的 callout 参数会被拒）
+edge.Select2(False, 0)
+# 3) 加尺寸，坐标是图纸米
+doc.AddDimension2(x, y - 0.015, 0).GetDimension2(0).SystemValue = 0.11
+```
+
+要点：
+
+- **`edge.GetStartVertex.GetPoint` 返回的是模型坐标**，不是图纸坐标（P05 实测 x 为 -0.86），
+  所以「按图纸坐标就近选边」是行不通的；要么按索引，要么让用户点在真实线上。
+- `SelectByID2("", "EDGE", x, y, ...)` 在图纸中心这类空白处一定失败；点在真实投影线上才有机会命中。
+  实测 `(0.1, 0.1)` 能命中，视图中心不能。所以工具先试坐标、失败再用 `edge_index`。
+- `IEdge.Select4` 传 callout 会报"无效的参数数目"，用 `Select2(False, 0)`。
+- `AddDimension2` 的 x/y 只是**尺寸文字位置**，与选中哪条边无关。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。

@@ -189,6 +189,40 @@ def auto_dimension(
 
 
 @mcp.tool()
+def list_drawing_edges(drawing_path: str, view_name: str | None = None) -> str:
+    """List a view's visible edges with stable indices and model coordinates.
+
+    Use the index with add_drawing_dimension(edge_index=...) when sheet coordinates
+    are inconvenient (drawing edges report MODEL coordinates under this binding).
+    """
+    return _json(drawing.list_drawing_edges(drawing_path, view_name=view_name))
+
+
+@mcp.tool()
+def add_drawing_dimension(
+    drawing_path: str,
+    x: float,
+    y: float,
+    value: float | None = None,
+    offset_x: float = 0.0,
+    offset_y: float = -0.015,
+    view_name: str | None = None,
+    tolerance: float = 0.01,
+    edge_index: int | None = None,
+) -> str:
+    """Add ONE dimension on a projected edge at sheet point (x, y) in meters.
+
+    Manual dimensioning path: InsertModelItems can only carry dimensions the model
+    already has, so IR-rebuilt parts need this. value is meters; omit to keep the
+    computed value. Selection falls back EDGE -> SILHOUETTE -> SKETCHSEGMENT.
+    """
+    return _json(drawing.add_drawing_dimension(
+        drawing_path, x, y, value=value, offset_x=offset_x, offset_y=offset_y,
+        view_name=view_name, tolerance=tolerance, edge_index=edge_index,
+    ))
+
+
+@mcp.tool()
 def add_center_marks(
     drawing_path: str,
     include_slots: bool = True,

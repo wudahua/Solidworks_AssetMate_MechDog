@@ -28,6 +28,10 @@ from ..sw_session import (
     variant,
 )
 
+# `ok` is also used as a local variable name in some functions; keep the helper
+# reachable under an unambiguous alias.
+drawing_ok = ok
+
 # UI-language aliases, checked in order against the model's own view names.
 VIEW_ALIASES = {
     "front": ("*前视", "*Front"),
@@ -853,3 +857,174 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("title_block_failed", str(exc))
+
+
+def _view_at_point(doc, x, y):
+    for view in _iter_views(doc):
+        if getattr(view, "Type", None) == 1:
+            continue
+        try:
+            o = list(view.GetOutline)
+        except Exception:
+            continue
+        if o[0] <= x <= o[2] and o[1] <= y <= o[3]:
+            return view
+    return None
+
+
+def list_drawing_edges(drawing_path, view_name=None):
+    """List a view's visible edges with stable indices, so dimensions can be added
+    without guessing sheet coordinates (which need a model->sheet transform this
+    binding exposes unreliably).
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        target = None
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name is None or view.Name == view_name:
+                target = view
+                break
+        if target is None:
+            return error("view_not_found", "No model view found (view_name=%r)" % view_name)
+        import win32com.client as win
+
+        rows = []
+        for index, raw in enumerate(target.GetVisibleEntities2(target, 1) or ()):
+            edge = win.Dispatch(raw)
+            item = {"index": index}
+            try:
+                p1 = edge.GetStartVertex.GetPoint
+                p2 = edge.GetEndVertex.GetPoint
+                item["model_start"] = [round(v, 4) for v in p1]
+                item["model_end"] = [round(v, 4) for v in p2]
+            except Exception:
+                pass
+            rows.append(item)
+        return ok(drawing=doc.GetTitle, view=target.Name, edge_count=len(rows), edges=rows)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("list_edges_failed", str(exc))
+
+
+def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0,
+                          offset_y=-0.015, view_name=None, tolerance=0.01,
+                          edge_index=None):
+    """Add ONE dimension on the visible edge nearest sheet point (x, y), meters.
+
+    This is the manual dimensioning path (process §4.4): InsertModelItems only carries
+    dimensions the model already has, so IR-rebuilt parts need this to fill the gaps.
+
+    The point does not have to be exactly on the line: the nearest visible edge within
+    `tolerance` meters is selected, and the dimension is placed at (x+offset_x,
+    y+offset_y). value is meters; omit it to keep the computed value.
+    """
+    try:
+        from ..sw_session import byref_dispatch_null
+
+        doc = _open_drawing(drawing_path)
+        view = None
+        if view_name:
+            for candidate in _iter_views(doc):
+                if getattr(candidate, "Name", None) == view_name:
+                    view = candidate
+                    break
+        if view is None and x is not None and y is not None:
+            view = _view_at_point(doc, float(x), float(y))
+        if view is not None:
+            try:
+                doc.ActivateView(view.Name)
+            except Exception:
+                pass
+
+        doc.ClearSelection2(True)
+        selected = None
+        distance = None
+
+        if edge_index is not None:
+            if view is None:
+                return error("view_not_found", "edge_index requires view_name")
+            import win32com.client as win
+
+            edges = [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]
+            if edge_index < 0 or edge_index >= len(edges):
+                return error("bad_index", "edge_index %d out of range (0..%d)"
+                             % (edge_index, len(edges) - 1))
+            try:
+                picked = edges[edge_index].Select2(False, 0)
+            except Exception:
+                picked = False
+            if not picked or doc.SelectionManager.GetSelectedObjectCount2(-1) < 1:
+                return error("select_failed", "Could not select edge %d" % edge_index)
+            selected = "edge_index"
+
+        # Fast path: coordinate pick (works for some entity kinds on some builds).
+        if selected is None and x is not None and y is not None:
+            for candidate in ("EDGE", "SILHOUETTE", "SKETCHSEGMENT"):
+                try:
+                    if doc.Extension.SelectByID2("", candidate, float(x), float(y), 0,
+                                                 False, 0, byref_dispatch_null(), 0):
+                        selected = candidate
+                        break
+                except Exception:
+                    continue
+
+        if selected is None:
+            # Coordinate picking cannot hit drawing edges in this build: SelectByID2 with
+            # an empty name only matches VIEW / REFERENCEPLANE, and edge vertex points are
+            # MODEL coordinates, not sheet coordinates. Point users at edge_index.
+            return error(
+                "segment_not_found",
+                "Coordinate-based edge picking does not work on drawing views here",
+                "Call list_drawing_edges to get edge indices, then "
+                "add_drawing_dimension(edge_index=N). x/y only place the dimension text.",
+            )
+
+        if x is None or y is None:
+            try:
+                base_x, base_y = list(view.Position)[:2]
+            except Exception:
+                base_x, base_y = 0.2, 0.2
+        else:
+            base_x, base_y = float(x), float(y)
+        display_dim = doc.AddDimension2(base_x + float(offset_x), base_y + float(offset_y), 0)
+        if display_dim is None:
+            doc.ClearSelection2(True)
+            return error(
+                "dimension_failed",
+                "SolidWorks rejected the dimension at (%.4f, %.4f)" % (base_x, base_y),
+                "The entity may not be dimensionable (e.g. a construction line or a "
+                "silhouette that already has a driver).",
+            )
+        dim = display_dim.GetDimension2(0)
+        applied = None
+        try:
+            applied = float(dim.SystemValue) if dim is not None else None
+        except Exception:
+            applied = None
+        if value is not None and dim is not None:
+            try:
+                dim.SystemValue = float(value)
+                applied = float(dim.SystemValue)
+            except Exception:
+                pass
+        doc.ClearSelection2(True)
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        return drawing_ok(
+            drawing=doc.GetTitle,
+            created=True,
+            selected=selected,
+            view=view.Name if view is not None else None,
+            distance_m=round(distance, 6) if distance is not None else None,
+            value_m=applied,
+            note="Verify the dimension text and its attachment, then export a PDF.",
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("add_dimension_failed", str(exc))

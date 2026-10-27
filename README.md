@@ -28,6 +28,8 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `add_center_marks` | 所有视图自动加孔/槽中心标记与中心线 | 工程图 |
 | `add_hole_callout` | 在孔的投影边上加原生孔标注；点不中孔就报失败 | 工程图 |
 | `set_title_block` | 填标题栏：图样名称/图样代号/材料（dry-run） | 工程图 |
+| `list_drawing_edges` | 列视图内可见边（索引 + 模型坐标），供补标选边 | 否 |
+| `add_drawing_dimension` | 按边索引/坐标补标单个尺寸 | 工程图 |
 | `drawing_audit` | 审计：视图/比例/空白视图/越界/尺寸数量 | 否 |
 
 所有工具返回结构化 JSON，出错时附 `hint` 指向对应坑的编号。
