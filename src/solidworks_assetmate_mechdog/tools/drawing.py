@@ -114,7 +114,7 @@ def _iter_views(drawing):
     return flat
 
 
-def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None, pad=0.018):
+def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None, pad=0.0):
     """Repack views using their REAL projected outlines so nothing overlaps.
 
     The bounding-box estimate used before creation is only good enough to pick a
