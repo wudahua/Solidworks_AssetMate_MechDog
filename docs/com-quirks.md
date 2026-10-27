@@ -494,6 +494,29 @@ view = doc.CreateFlatPatternViewFromModelView3(
 
 钣金件要标在**展开图**上（下料尺寸、孔位、折弯方向），不是折弯后的形状视图。
 
+### 注释类操作必须自己保存
+
+`InsertModelAnnotations3`、`AddDimension2`、`InsertCenterMark`、剖视/局部/展开视图创建之后，
+文档是 dirty 的但**没有落盘**。之前只有 `add_drawing_dimension` 做了保存，结果是：
+
+- 内存里 44 个尺寸，导出的 PDF 正常
+- 磁盘上的 .SLDDRW 打开后**一个尺寸都没有**
+
+给调用方的文件是空的。现在 `auto_dimension` / `add_center_marks` / `add_section_view` /
+`add_detail_view` / `add_flat_pattern_view` / `add_dimension_tolerance` 全部 `SaveSilent`。
+
+判断方法：任何"创建了对象"的操作，之后用 `drawing_dimension_values` 读一遍；读不到就是没保存。
+
+### 圆柱面 ≠ 孔：IBody2.GetFaces 是方法
+
+钣金件上每个 R2.54 折弯都贡献一个 Ø5.1 的圆柱面，所以"圆柱面清单"远多于"孔清单"。
+
+- `IBody2.GetFaces` 是**方法**（必须 `GetFaces()`）；`IFeature.GetFaces` / `IComponent2.GetFaces`
+  是属性。按属性调 body 的会静默拿到 bound method，扫描结果为空——这个坑让配电箱的 80 个圆柱面
+  一开始一个都没扫到。
+- 试过用「面法向 vs 径向」判孔/凸台：80 个面全部被判成同一类，与已知的 Ø6 安装孔矛盾，
+  判据在本环境不可靠，已放弃。台账改为输出**全部圆柱面 + 直径/轴线/中心**，由调用方判断。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。

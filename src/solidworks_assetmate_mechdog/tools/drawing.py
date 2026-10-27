@@ -407,6 +407,16 @@ def create_drawing(
         return error("create_drawing_failed", str(exc))
 
 
+def _save_drawing(doc):
+    """Persist the drawing. Annotation steps otherwise live only in memory and the
+    .SLDDRW handed to the user has views but none of the dimensions."""
+    try:
+        doc.SaveSilent
+        return True
+    except Exception:
+        return False
+
+
 def _open_drawing(path):
     from ..sw_session import get_sw
 
@@ -608,6 +618,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         # No repack: a section view is x-aligned with its parent and cannot be moved
         # sideways, so repacking would stack it on top of a neighbour.
         layout = None
+        _save_drawing(doc)
         audit = drawing_audit(drawing_path)
         return ok(
             drawing=doc.GetTitle,
@@ -665,6 +676,7 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True):
         except Exception:
             pass
         layout = None
+        _save_drawing(doc)
         return ok(
             drawing=doc.GetTitle,
             layout=layout,
@@ -1480,6 +1492,7 @@ def add_flat_pattern_view(drawing_path, model_path, config_name=None, position=N
         except Exception:
             pass
         layout = _relayout(doc)
+        _save_drawing(doc)
         try:
             o = list(view.GetOutline or [])
             box = {"width_m": round(o[2] - o[0], 4), "height_m": round(o[3] - o[1], 4)}
@@ -1603,6 +1616,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         # list whenever the sheet is tight. Call drawing_audit to check the result and
         # pass `position` to place it precisely.
         layout = None
+        _save_drawing(doc)
         try:
             so = list(section.GetOutline)
             box = {"width_m": round(so[2] - so[0], 4), "height_m": round(so[3] - so[1], 4)}
@@ -1760,6 +1774,7 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             doc.GraphicsRedraw2()
         except Exception:
             pass
+        _save_drawing(doc)
         try:
             d_o = list(detail.GetOutline)
             box = {"width_m": round(d_o[2] - d_o[0], 4), "height_m": round(d_o[3] - d_o[1], 4)}
@@ -1775,3 +1790,110 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("detail_failed", str(exc))
+
+
+TOLERANCE_TYPES = {
+    "none": 0, "basic": 1, "bilateral": 2, "limit": 3, "symmetric": 4,
+    "min": 5, "max": 6, "fit": 7, "fit_with_tolerance": 8,
+}
+
+
+def _find_dimension(doc, value_mm, view_name=None):
+    """Dimension on the sheet whose value matches `value_mm` (whole millimetres)."""
+    import win32com.client as win
+
+    target = round(float(value_mm))
+    for view in _iter_views(doc):
+        if getattr(view, "Type", None) == 1:
+            continue
+        if view_name and view.Name != view_name:
+            continue
+        try:
+            raw = view.GetAnnotations
+        except Exception:
+            continue
+        items = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+        for item in items:
+            if item is None:
+                continue
+            try:
+                ann = win.Dispatch(item)
+                if ann.GetType != 4:
+                    continue
+                dim = ann.GetSpecificAnnotation.GetDimension2(0)
+                if dim is None:
+                    continue
+                if round(float(dim.SystemValue) * 1000) == target:
+                    return view, dim
+            except Exception:
+                continue
+    return None, None
+
+
+def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
+                           upper=0.1, lower=0.1, view_name=None, apply=True):
+    """Apply a native tolerance to an existing drawing dimension.
+
+    The dimension is located by its VALUE in millimetres (drafting tolerances are
+    specified per nominal size), so no fragile coordinate picking is involved.
+
+    tolerance_type: bilateral (default, ±upper/lower) | symmetric | limit | basic |
+    min | max | fit | fit_with_tolerance | none. upper/lower are in millimetres.
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        code = TOLERANCE_TYPES.get(str(tolerance_type).lower())
+        if code is None:
+            return error("bad_tolerance_type",
+                         "Unknown tolerance_type %r" % tolerance_type,
+                         "Use one of: %s" % ", ".join(sorted(TOLERANCE_TYPES)))
+        view, dim = _find_dimension(doc, value_mm, view_name)
+        if dim is None:
+            return error("dimension_not_found",
+                         "No dimension equal to %s mm%s"
+                         % (value_mm, " in view %r" % view_name if view_name else ""),
+                         "Use drawing_audit to see the dimensions present on the sheet.")
+        planned = {
+            "value_mm": round(float(dim.SystemValue) * 1000, 3),
+            "tolerance_type": str(tolerance_type).lower(),
+            "upper_mm": float(upper), "lower_mm": float(lower),
+            "view": view.Name if view is not None else None,
+        }
+        if not apply:
+            return drawing_ok(dry_run=True, planned=planned,
+                              message="Nothing changed. apply=true writes the tolerance.")
+
+        try:
+            dim.SetToleranceType(code)
+        except Exception as exc:
+            return error("tolerance_unsupported", str(exc),
+                         "This dimension may not accept a tolerance (reference dimensions "
+                         "and driven dimensions reject them).")
+        if code != 0:
+            try:
+                dim.SetToleranceValues(float(upper), float(lower))
+            except Exception:
+                # Symmetric takes a single value on some builds.
+                try:
+                    dim.SetToleranceValues(float(upper), float(upper))
+                except Exception:
+                    pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        try:
+            doc.SaveSilent
+        except Exception:
+            pass
+        applied = None
+        try:
+            applied = int(dim.GetToleranceType)
+        except Exception:
+            pass
+        return drawing_ok(applied=True, saved=True, planned=planned,
+                          tolerance_type_readback=applied)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("tolerance_failed", str(exc))

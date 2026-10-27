@@ -132,6 +132,27 @@ def batch_export(
 
 
 @mcp.tool()
+def add_dimension_tolerance(
+    drawing_path: str,
+    value_mm: float,
+    tolerance_type: str = "bilateral",
+    upper: float = 0.1,
+    lower: float = 0.1,
+    view_name: str | None = None,
+    apply: bool = False,
+) -> str:
+    """Apply a NATIVE tolerance to an existing drawing dimension, located by its value in mm.
+
+    tolerance_type: bilateral | symmetric | limit | basic | min | max | fit |
+    fit_with_tolerance | none. upper/lower in millimetres. Dry-run by default.
+    """
+    return _json(drawing.add_dimension_tolerance(
+        drawing_path, value_mm, tolerance_type=tolerance_type, upper=upper,
+        lower=lower, view_name=view_name, apply=apply,
+    ))
+
+
+@mcp.tool()
 def build_feature_ledger(
     model_path: str,
     include_faces: bool = True,
