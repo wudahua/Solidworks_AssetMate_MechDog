@@ -58,7 +58,15 @@ def get_sw():
     try:
         _SW = dyn.Dispatch(obj)
     except Exception:
-        _SW = obj  # last resort: keep whatever we got rather than failing to attach
+        # Last resort: an early-bound wrapper here would reintroduce the byref
+        # VARIANT crash, so make the fallback visible in logs.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "win32com.client.dynamic.Dispatch failed; using the raw COM object. "
+            "If every tool fails with 'int() argument ... not VARIANT', this is why."
+        )
+        _SW = obj
     return _SW
 
 

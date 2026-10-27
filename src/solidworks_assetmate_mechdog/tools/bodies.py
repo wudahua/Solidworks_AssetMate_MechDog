@@ -124,7 +124,10 @@ def recolor_bodies(part_path, palette, apply=False, save=True):
             faces_painted=total_faces,
             faces_with_previous_color=overwritten,
             saved=bool(save),
-            note="Per-body readback is unavailable; verify visually or by exporting a preview.",
+            note="Per-body readback is unavailable; verify visually or by exporting a preview. "
+                 "If this part is used in an assembly that carries a component-level appearance, "
+                 "the assembly keeps showing the component color — component level overrides "
+                 "face level in the viewport.",
         )
         return ok(**result)
     except (FileNotFoundError, ValueError) as exc:

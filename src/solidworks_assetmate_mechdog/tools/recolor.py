@@ -94,6 +94,26 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
             # save and returns 0/1. Calling it raises "'int' object is not callable".
             doc.SaveSilent
 
+        # Read-back check on a small sample. On some bindings (SolidWorks 2026 with a
+        # gen_py cache present) MaterialPropertyValues reads back as white even though
+        # the render and the saved file are correct — do not let callers trust
+        # previous_colors blindly in that case.
+        readback = []
+        for comp in matched[:3]:
+            name = part_name(comp.Name2)
+            expected = palette[name]
+            actual = rgb_of(comp.MaterialPropertyValues)
+            matched_ok = bool(actual) and all(
+                abs(a - b) <= 0.02 for a, b in zip(actual[:3], expected[:3])
+            )
+            readback.append({
+                "component": comp.Name2,
+                "requested": expected,
+                "readback": actual,
+                "matches": matched_ok,
+            })
+        readback_ok = all(item["matches"] for item in readback)
+
         base.update({
             "applied": True,
             "painted_components": painted,
@@ -101,7 +121,16 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
             "previous_colors": {
                 name: rgb_of(values) for name, values in previous.items()
             },
+            "readback_sample": readback,
+            "readback_verified": readback_ok,
         })
+        if not readback_ok:
+            base["warning"] = (
+                "MaterialPropertyValues does not read back the color just written, although "
+                "the model renders and saves correctly (known on some bindings). Treat "
+                "get_assembly_tree rgb and previous_colors as unreliable here; verify visually "
+                "with export_preview instead of restoring colors from previous_colors."
+            )
         return ok(**base)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

@@ -209,7 +209,25 @@ _SW = dyn.Dispatch(win.GetActiveObject("SldWorks.Application"))
 - `EnsureDispatch` 对 SldWorks 会报 "This COM object can not automate the makepy process"，所以也没法用早绑定统一解决。
 - 同类风险适用于所有自定义 `byref VARIANT` 调用（`SelectByID2` 的 Callout、`GetMaterialPropertyName2` 的 BSTR）。统一走晚绑定最省事。
 
-## 十一、一条通用原则
+## 十一、组件颜色读回失真（2026-10-27 用户实测）
+
+在某些机器上，`recolor_assembly` 写入蓝/黄后：
+
+- 渲染正确（预览图取色 `(24,64,195)` / `(251,181,5)`）
+- 保存正确（关闭重开、`ResolveAllLightweightComponents` 后渲染依旧）
+- 但 `comp.MaterialPropertyValues` 读回 `[1.0, 1.0, 1.0]`
+
+同一台机器上面级 `IFace2.MaterialPropertyValues` 读回正常。出现条件与存在 gen_py 缓存、晚绑定包装早绑定对象一致，判断为**读路径的 VARIANT 解组问题，不是写入问题**。
+
+对策：
+
+- `recolor_assembly` 会抽样 3 个组件做读回校验，返回 `readback_sample` 与 `readback_verified`；为 `false` 时附 warning。
+- 此时**不要用 `previous_colors` 回退**——拿到的可能是白色。验收请用 `export_preview` 看图。
+- `get_assembly_tree` 的 `rgb` 在这种环境下不可信，只看结构、路径、实例数。
+
+另：`recolor_bodies` 的面级颜色在装配中会被**组件级颜色覆盖**（视口优先级：组件级 > 面级）。零件文件内颜色正确，但装配里看到的是组件色；工具已在 `note` 中提示。
+
+## 十二、一条通用原则
 
 > **先读现值，再改。**
 > 凡是"多层属性"（外观、显示状态、配置、材质），第一步读一次目标对象的现值，它会直接告诉你该改哪一层。跳过这一步，靠猜 API 语义，返工成本是它的 10 倍。

@@ -69,22 +69,37 @@ def _children(comp, depth):
 def mass_properties(assembly_path):
     """Whole-assembly mass/volume/area in SI units (kg, m^3, m^2).
 
-    Experimental: CreateMassProperty is unavailable under some pywin32
-    bindings (docs/com-quirks.md section 5); a structured error is returned
-    instead of a fabricated result.
+    Includes `mass_basis`: average density derived from mass/volume. SolidWorks
+    falls back to 1000 kg/m3 for parts without material, so a value of exactly
+    1000 is reported as a suspected placeholder rather than real engineering data.
     """
     try:
         doc = open_document(assembly_path, SW_DOC_ASSEMBLY)
         try:
             mass = doc.Extension.CreateMassProperty
             center = mass.CenterOfMass
+            mass_kg = float(mass.Mass)
+            volume_m3 = float(mass.Volume)
+            density = mass_kg / volume_m3 if volume_m3 else None
+            if density is not None and abs(density - 1000.0) < 1.0:
+                basis = (
+                    "suspected default density: mass/volume = %.1f kg/m3, which matches "
+                    "SolidWorks' fallback for parts without material — verify material "
+                    "assignments before using this mass" % density
+                )
+            elif density is not None:
+                basis = "average density %.1f kg/m3 from mass/volume" % density
+            else:
+                basis = "unknown (volume is zero)"
             return ok(
                 assembly=doc.GetTitle,
                 units={"mass": "kg", "volume": "m^3", "surface_area": "m^2", "center_of_mass": "m"},
-                mass=float(mass.Mass),
-                volume=float(mass.Volume),
+                mass=mass_kg,
+                volume=volume_m3,
                 surface_area=float(mass.SurfaceArea),
                 center_of_mass=[float(v) for v in center] if center else None,
+                mass_basis=basis,
+                average_density_kg_m3=round(density, 3) if density is not None else None,
             )
         except Exception as exc:
             return error(

@@ -18,7 +18,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `export_bom` | 导出 BOM：零件聚合、数量、材料、单件/总质量，可写 CSV | 仅 CSV |
 | `rename_components` | 重命名零件：`file` 只改磁盘，`auto` 另存新文件并重定向装配引用 | 是 |
 | `get_assembly_tree` | 组件树：零件名、路径、当前颜色、子装配递归 | 否 |
-| `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位；失败返回结构化错误） | 否 |
+| `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位），含 `mass_basis` 密度披露 | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
 
 所有工具返回结构化 JSON，出错时附 `hint` 指向对应坑的编号。
@@ -160,6 +160,7 @@ pip install ".[png]"
 - 只改组件外观，不改材质/密度；不含面级、特征级外观。
 - 实体分色为整块上色，不提供单个面单独配色的工具；面级外观会覆盖原贴图。
 - 组件**实例名**无法通过 API 修改（`IComponent2.Name` 只读、`Name2` 赋值静默无效），`rename_components` 只做文件重命名；实例名请在 FeatureManager 树中手动改。
+- 某些环境（存在 `gen_py` 缓存）下组件颜色**读回**可能失真为白色，而渲染与保存正常；`recolor_assembly` 用 `readback_verified` 标记，验收请以 `export_preview` 为准，不要依赖 `previous_colors` 回退。
 - 不做配置/显示状态切换；子装配递归仅 `get_assembly_tree` 支持。
 - 读到的外观可能来自内存文档而非磁盘；核对文件真实状态需先 `CloseAllDocuments`（见坑清单第三节）。
 
