@@ -2181,6 +2181,20 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                 "required": False,
             }
 
+        # ---- ledger reconciliation (§6.1: 逐条比对, not just count) ----------
+        rec = reconcile_ledger(model_path, drawing_path)
+        if rec.get("ok"):
+            coverage = rec.get("coverage")
+            unmatched = rec.get("unmatched_count") or 0
+            record("ledger_reconciled",
+                   coverage is not None and coverage >= 0.9,
+                   "台账覆盖率 %s（%s/%s 个尺寸在图纸上找到，缺 %s）"
+                   % (coverage, rec.get("matched"), rec.get("ledger_dimensions"), unmatched),
+                   blocking=False)
+        else:
+            record("ledger_reconciled", False,
+                   "对账失败: %s" % (rec.get("message") or "unknown"), blocking=False)
+
         # ---- caller-declared assumptions -------------------------------------
         if ai_supplied:
             for field in ai_supplied:
@@ -2472,3 +2486,106 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("hole_callouts_failed", str(exc))
+
+
+def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
+    """Match the model's driving dimensions against the drawing's dimensions.
+
+    This is the §6.1 check that only counting couldn't do: the ledger holds every driving
+    dimension, the drawing holds what was actually annotated, and the gap between them is
+    the concrete list of what is missing.
+
+    Matching is by VALUE (whole millimetres, ±tolerance), which is deliberately loose:
+    a drawing dimension is the PROJECTED length, so a 1253 mm edge can appear as 37.6 mm
+    in a side view. Values that do not match are reported as `unmatched_ledger` —
+    candidates for "not dimensioned", not proof of it.
+    """
+    try:
+        from . import ledger as _ledger
+
+        led = _ledger.build_feature_ledger(model_path, include_faces=False)
+        if not led.get("ok"):
+            return error("model_unreadable", led.get("message") or "ledger failed")
+        doc = _open_drawing(drawing_path)
+        sheet_values = sorted({round(v * 1000, 2) for v in drawing_dimension_values(doc)})
+
+        tol = float(tolerance_mm)
+        # Array spacing and sketch parameters are driving dimensions too, but values far
+        # beyond the part's own bounding box cannot be a manufacturable length.
+        bbox = led.get("bbox_mm") or []
+        try:
+            diagonal = float(sum(v * v for v in bbox) ** 0.5) if bbox else 0.0
+        except Exception:
+            diagonal = 0.0
+        ceiling = diagonal * 2.0 if diagonal else None
+
+        ledger_rows, skipped_non_length, skipped_oversize = [], [], []
+        for feature in led.get("features") or []:
+            for dim in feature.get("dimensions") or []:
+                kind = dim.get("dimension_type")
+                if kind is not None and kind not in (0, 2, 3):
+                    # angular / ordinate dimensions never appear as a linear value
+                    skipped_non_length.append({
+                        "feature": feature.get("name"),
+                        "value": dim.get("value_mm"), "type": kind,
+                    })
+                    continue
+                value = dim.get("value_mm")
+                if ceiling and value is not None and value > ceiling:
+                    skipped_oversize.append({
+                        "feature": feature.get("name"), "value": value,
+                    })
+                    continue
+                ledger_rows.append({
+                    "feature": feature.get("name"),
+                    "feature_type": feature.get("type"),
+                    "dimension": dim.get("name"),
+                    "value_mm": value,
+                    "dimension_type": kind,
+                })
+
+        matched, unmatched = [], []
+        for row in ledger_rows:
+            value = row.get("value_mm")
+            if value is None:
+                continue
+            hit = next((v for v in sheet_values if abs(v - value) <= tol), None)
+            if hit is None:
+                unmatched.append(row)
+            else:
+                matched.append(dict(row, drawing_value_mm=hit))
+
+        ledger_values = {round(r["value_mm"], 2) for r in ledger_rows if r.get("value_mm") is not None}
+        sheet_only = [v for v in sheet_values
+                      if not any(abs(v - lv) <= tol for lv in ledger_values)]
+
+        by_feature = {}
+        for row in unmatched:
+            by_feature.setdefault(row.get("feature") or "?", []).append(row.get("value_mm"))
+
+        return drawing_ok(
+            drawing=doc.GetTitle,
+            model=led.get("part"),
+            ledger_dimensions=len(ledger_rows),
+            drawing_dimensions=len(sheet_values),
+            matched=len(matched),
+            unmatched_count=len(unmatched),
+            coverage=round(len(matched) / len(ledger_rows), 3) if ledger_rows else None,
+            unmatched_by_feature={
+                k: sorted({round(v, 2) for v in vals if v is not None})
+                for k, vals in sorted(by_feature.items())
+            },
+            skipped_non_length=len(skipped_non_length),
+            skipped_oversize=len(skipped_oversize),
+            oversize_examples=skipped_oversize[:6],
+            skipped_examples=skipped_non_length[:8],
+            unmatched_ledger=unmatched[:60],
+            drawing_only_values=sheet_only[:40],
+            note="unmatched_ledger 是「台账有、图纸没有对应值」的候选缺项；"
+                 "drawing_only_values 是图上有但台账没有的（多为投影尺寸或参考尺寸）。"
+                 "投影关系会让同一尺寸在不同视图取值不同，因此按值匹配只能作为待确认清单。",
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("reconcile_failed", str(exc))

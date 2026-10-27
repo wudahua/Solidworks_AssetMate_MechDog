@@ -585,6 +585,20 @@ part.MaterialIdName     # -> 'solidworks materials|普通碳钢|9'
 - 材质库 XML 在 `C:/ProgramData/SOLIDWORKS/SOLIDWORKS 2024\` 下能找到 `*.sldmat`，但
   `<material name="...">` 正则解析不出条目（格式/编码不符），自动列名称暂不可用。
 
+### 台账对账：按值匹配要先过滤两类尺寸（2026-10-27 实测）
+
+`reconcile_ledger` 把台账的驱动尺寸逐个到图纸上找对应值。直接比会有大量假缺失，两类要先剔掉：
+
+| 类型 | 判断 | 例（配电箱） |
+|---|---|---|
+| 非长度尺寸 | `dim.GetType` 不是 0/2/3（线性/直径/半径） | 角度、坐标尺寸 8 个 |
+| 超出包围盒 | 值 > 包围盒对角线 × 2 | 阵列间距 6000/8000，草图 2000/4000，共 4 个 |
+
+过滤后：台账 58 个有效长度尺寸，图纸 22 个值，匹配 51，**覆盖率 87.9%，缺 7 个**。
+缺的具体是 Ø30、Ø1、Ø4（沉孔）—— 这才是可执行的「补这些就齐了」清单。
+
+注意匹配是按值且容差 0.5 mm，而图纸尺寸是投影长度，所以结果只能当待确认清单，不能当判决。
+
 ### AddHoleCallout2 必须先 SelectByID2 选边（2026-10-27 对照 SolidPilot 源码）
 
 SolidPilot 的实现（`SolidWorksService.Drawing.cs`，AddHoleCallout）比我多做一步：

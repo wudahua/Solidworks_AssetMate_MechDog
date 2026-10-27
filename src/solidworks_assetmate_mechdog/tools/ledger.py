@@ -60,9 +60,18 @@ def _feature_dimensions(feature):
                         name = str(dim.Name)
                     except Exception:
                         name = ""
+                kind = None
+                try:
+                    # swDimensionType_e: 0 linear, 1 angular, 2 diameter, 3 radial,
+                    # 4 ordinate. Angles and ordinates are not lengths, so reconciliation
+                    # must not compare them against drawing dimension values.
+                    kind = int(dim.GetType)
+                except Exception:
+                    kind = None
                 rows.append({
                     "name": name,
                     "value_mm": round(float(dim.SystemValue) * 1000, 3),
+                    "dimension_type": kind,
                 })
         except Exception:
             pass

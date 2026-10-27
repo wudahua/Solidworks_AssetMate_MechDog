@@ -26,6 +26,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `material_library` | 列出本地材质库可用名称 | 否 |
 | `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径） | 工程图 |
 | `add_hole_callouts` | 批量孔标注（同直径标一次 + 回读） | 工程图 |
+| `reconcile_ledger` | 台账 vs 图纸逐条对账：覆盖率 + 缺失清单（按特征分组） | 否 |
 | `delivery_check` | 交付判定：可制造/待设计审核/仅供参考 + 缺项清单 | 否 |
 | `verify_dimension_attachments` | 校验每个尺寸挂在边/面/草图段还是没挂 | 否 |
 | `list_drawing_annotations` | 读出全部注释：尺寸(含公差)/注释/形位公差框格/中心标记 | 否 |

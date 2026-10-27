@@ -171,6 +171,22 @@ def add_hole_callouts(
 
 
 @mcp.tool()
+def reconcile_ledger(
+    model_path: str,
+    drawing_path: str,
+    tolerance_mm: float = 0.5,
+) -> str:
+    """Match the model's driving dimensions against the drawing's, and list what is missing.
+
+    The §6.1 check that counting cannot do: returns coverage, unmatched ledger dimensions
+    grouped by feature, and drawing-only values. Projection means the same edge dimensions
+    differently per view, so treat the unmatched list as candidates to confirm.
+    """
+    return _json(drawing.reconcile_ledger(
+        model_path, drawing_path, tolerance_mm=tolerance_mm))
+
+
+@mcp.tool()
 def delivery_check(
     model_path: str,
     drawing_path: str,
