@@ -331,6 +331,10 @@ for ann in sheet.GetAnnotations:   # 属性，嵌套 tuple，需 Dispatch 包装
         note.SetText("履带轮")      # 方法，返回 True
 ```
 
+有的模板连占位词都没有——`gb_a3.drwdot` 的图样名称/代号格是**空文本**，文字匹配必然落空。
+`set_title_block` 因此带位置兜底：文字匹配失败时按 GB A3 的格子坐标（`TITLE_SLOTS`）找最近的
+注释再写入，返回里用 `via: "position"` 标出来。实测配电箱箱体：`name`/`code` 两格均按位置写入成功。
+
 实测：一张 A3 图里 `图样代号` 出现 **2 次**：
 
 | 位置 (m) | 角度 | 含义 |

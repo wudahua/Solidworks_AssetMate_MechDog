@@ -777,6 +777,43 @@ def _sheet_notes(sheet):
     return notes
 
 
+# GB A3 title-block slot centres, measured on gb_a3.drwdot. Some templates leave these
+# cells BLANK (no placeholder text at all), so text matching alone cannot fill them.
+TITLE_SLOTS = {
+    "name": (0.391, 0.036),
+    "code": (0.391, 0.022),
+    "material": (0.344, 0.021),
+}
+
+
+def _note_at(sheet, target, tolerance=0.006):
+    """Sheet note whose anchor is nearest `target` (metres), within tolerance."""
+    import math
+    import win32com.client as win
+
+    try:
+        raw = sheet.GetAnnotations
+    except Exception:
+        return None
+    items = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+    best = None
+    for item in items:
+        if item is None:
+            continue
+        try:
+            ann = win.Dispatch(item)
+            if ann.GetType != 6:  # notes only
+                continue
+            pos = list(ann.GetPosition)
+            note = ann.GetSpecificAnnotation
+        except Exception:
+            continue
+        distance = math.hypot(pos[0] - target[0], pos[1] - target[1])
+        if distance <= tolerance and (best is None or distance < best[0]):
+            best = (distance, note)
+    return best[1] if best else None
+
+
 def set_title_block(drawing_path, name=None, code=None, material=None, apply=False,
                    include_reversed=True):
     """Fill title-block placeholders such as the literal text “图样名称” / “图样代号”.
@@ -844,7 +881,21 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                 })
                 hits += 1
             if hits == 0:
-                unmatched.append({"field": field, "marker": marker})
+                # Fall back to the slot position: many GB templates leave these cells
+                # with empty text, so there is nothing to match on.
+                slot = TITLE_SLOTS.get(field)
+                note = _note_at(sheet, slot) if slot else None
+                if note is not None:
+                    try:
+                        before = note.GetText
+                    except Exception:
+                        before = ""
+                    planned.append({
+                        "field": field, "before": before if isinstance(before, str) else "",
+                        "after": new_value, "note": note, "via": "position",
+                    })
+                else:
+                    unmatched.append({"field": field, "marker": marker})
 
         result = {
             "drawing": doc.GetTitle,
