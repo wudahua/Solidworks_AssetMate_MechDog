@@ -8,7 +8,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 
 **这个项目的差异化不是"会调 API"，而是把 SolidWorks COM 的坑全部固化进代码和文档。** 踩坑清单见 [docs/com-quirks.md](docs/com-quirks.md)。
 
-## 工具（v0.1）
+## 工具（v0.2）
 
 | 工具 | 作用 | 写入？ |
 |---|---|---|
@@ -20,6 +20,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `get_assembly_tree` | 组件树：零件名、路径、当前颜色、子装配递归 | 否 |
 | `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位），含 `mass_basis` 密度披露 | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
+| `batch_export` | 批量导出 STEP（零件/装配）；默认 dry-run，不覆盖已有文件 | 仅新文件 |
 
 所有工具返回结构化 JSON，出错时附 `hint` 指向对应坑的编号。
 
@@ -36,7 +37,7 @@ pip install .
 pip install ".[png]"
 ```
 
-可选：运行标识见握手返回的 `serverInfo.version`（当前 0.1.4），可与 `pyproject.toml` 对照确认装的是哪一版。
+可选：运行标识见握手返回的 `serverInfo.version`（应与 `pyproject.toml` 一致），可在多机部署时确认装的是哪一版。
 
 常见安装问题：
 
@@ -48,6 +49,18 @@ pip install ".[png]"
 | 所有工具报 `int() argument must be ... not 'VARIANT'` | 0.1.5 已修复（强制晚绑定）；升级即可，无需清理 `%TEMP%\gen_py` |
 
 更多 MCP 侧问题（`serverInfo.version`、构建隔离、镜像 403）见 [docs/mcp-server-notes.md](docs/mcp-server-notes.md)。
+
+## 真机回归
+
+改完代码先跑一遍完整链路（SolidWorks 需运行）：
+
+```bash
+python tests/smoke.py
+```
+
+覆盖 12 项：连接/版本、组件树、BOM、质量属性、上色 dry-run、零匹配守卫、上色（内存不保存）、实体列表、实体分色 dry-run、预览 PNG、STEP 导出、错误信息。全部只读或写临时目录，不动仓库里的测试模型，跑完会关闭自己打开的文档。
+
+首次运行约 5–8 分钟（解析轻化组件占大头），之后快很多。`--keep` 保留临时产物，`--skip-export` 跳过 STEP，`--assembly` / `--part` 换测试模型。
 
 ## 在 AI 智能体中注册
 

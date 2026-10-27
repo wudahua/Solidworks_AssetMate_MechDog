@@ -9,7 +9,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME, __version__
-from .tools import assembly, bodies, bom, recolor, rename
+from .tools import assembly, bodies, bom, export as export_tools, recolor, rename
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -112,6 +112,23 @@ def rename_components(
         part_paths=part_paths, mapping=mapping, prefix=prefix, suffix=suffix,
         apply=apply, assembly_path=assembly_path, mode=mode, save=save,
     ))
+
+
+@mcp.tool()
+def batch_export(
+    targets: list[str],
+    output_dir: str,
+    fmt: str = "step",
+    apply: bool = False,
+) -> str:
+    """Export parts/assemblies to STEP in one pass (dry-run by default).
+
+    Read-only on the model: SaveAsSilent() behaves as an export and leaves the
+    document path unchanged. Existing targets are reported as conflicts, never
+    overwritten. PDF needs a .SLDDRW and DXF a flat pattern — those are rejected
+    with a hint rather than guessed at.
+    """
+    return _json(export_tools.batch_export(targets, output_dir, fmt=fmt, apply=apply))
 
 
 @mcp.tool()

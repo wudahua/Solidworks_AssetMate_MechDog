@@ -1,0 +1,246 @@
+"""Live smoke test against a running SolidWorks instance.
+
+Runs the whole chain once and prints a PASS/FAIL table, so a change to one tool
+cannot silently break another. Read-only except for files written to a temp dir:
+nothing is saved back into the test models.
+
+Usage (SolidWorks must be running):
+
+    python tests/smoke.py
+    python tests/smoke.py --assembly "D:/.../asm.SLDASM" --part "D:/.../p.SLDPRT"
+    python tests/smoke.py --keep          # keep the temp output directory
+
+Exit codes: 0 all pass, 1 some check failed, 2 environment problem.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import sys
+import tempfile
+import time
+import traceback
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
+
+DEFAULT_ASSEMBLY = os.path.join(
+    ROOT, "测试用例", "监视器显示器固定支架-rebuild", "装配体_显示器固定支架.SLDASM"
+)
+DEFAULT_PART = os.path.join(ROOT, "测试用例", "履带-rebuild", "P05_karetku.SLDPRT")
+
+
+class Runner:
+    def __init__(self):
+        self.results = []
+
+    def check(self, name, fn):
+        start = time.time()
+        try:
+            detail = fn() or ""
+            ok = True
+        except AssertionError as exc:
+            ok, detail = False, str(exc)
+        except Exception as exc:
+            ok, detail = False, "%s: %s" % (type(exc).__name__, exc)
+            if os.environ.get("SMOKE_TRACE"):
+                traceback.print_exc()
+        elapsed = time.time() - start
+        self.results.append((name, ok, elapsed, detail))
+        print("%-42s %s  %6.1fs  %s" % (name, "PASS" if ok else "FAIL", elapsed, detail), flush=True)
+        return ok
+
+    def summary(self):
+        failed = [r for r in self.results if not r[1]]
+        print("-" * 78)
+        print("%d/%d passed" % (len(self.results) - len(failed), len(self.results)))
+        for name, _, _, detail in failed:
+            print("  FAIL %s -> %s" % (name, detail))
+        return 0 if not failed else 1
+
+
+def require(payload, key=None, value=None):
+    assert isinstance(payload, dict), "expected dict, got %r" % type(payload)
+    assert payload.get("ok") is True, "call failed: %s %s" % (payload.get("error"), payload.get("message"))
+    if key is not None:
+        assert payload.get(key) == value, "%s = %r, expected %r" % (key, payload.get(key), value)
+    return payload
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--assembly", default=DEFAULT_ASSEMBLY)
+    parser.add_argument("--part", default=DEFAULT_PART)
+    parser.add_argument("--keep", action="store_true")
+    parser.add_argument("--skip-export", action="store_true", help="skip STEP export (slow)")
+    args = parser.parse_args()
+
+    for path in (args.assembly, args.part):
+        if not os.path.exists(path):
+            print("missing test model: %s" % path)
+            return 2
+
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    import pythoncom
+
+    pythoncom.CoInitialize()
+
+    from solidworks_assetmate_mechdog import __version__
+    from solidworks_assetmate_mechdog.sw_session import get_sw
+    from solidworks_assetmate_mechdog.tools import assembly, bodies, bom, export, recolor
+
+    try:
+        get_sw()
+    except Exception as exc:
+        print("cannot attach to SolidWorks: %s" % exc)
+        return 2
+
+    workdir = tempfile.mkdtemp(prefix="assetmate_smoke_")
+    # Copy under new names: SolidWorks refuses to open a second file with the same
+    # name as an already-open document (quirks section 2). Copies also guarantee the
+    # repo's test models are never written to.
+    asm_copy = os.path.join(workdir, "smoke_asm.SLDASM")
+    part_copy = os.path.join(workdir, "smoke_part.SLDPRT")
+    shutil.copy2(args.assembly, asm_copy)
+    shutil.copy2(args.part, part_copy)
+
+    print("AssetMate smoke test  v%s" % __version__)
+    print("assembly: %s" % args.assembly)
+    print("part    : %s" % args.part)
+    print("output  : %s" % workdir)
+    print("-" * 78)
+
+    r = Runner()
+
+    r.check("attach + version", lambda: "v" + __version__)
+
+    tree = {}
+
+    def _tree():
+        tree.update(require(assembly.assembly_tree(asm_copy)))
+        assert tree["components"] > 0, "no components"
+        tree["parts"] = sorted({node["part"] for node in tree.get("tree") or [] if node.get("part")})
+        assert tree["parts"], "no part names in tree"
+        return "%d components / %d part types" % (tree["components"], len(tree["parts"]))
+
+    r.check("get_assembly_tree", _tree)
+
+    def _bad_input():
+        payload = assembly.assembly_tree(os.path.join(workdir, "does_not_exist.SLDASM"))
+        assert payload.get("ok") is False and payload.get("error") == "bad_input", payload
+        assert "file not found" in payload.get("message", ""), payload.get("message")
+        return "structured error with reason"
+
+    r.check("bad_input has a reason", _bad_input)
+
+    bom_data = {}
+
+    def _bom():
+        bom_data.update(require(bom.export_bom(asm_copy, csv_path=os.path.join(workdir, "bom.csv"))))
+        assert bom_data["part_types"] > 0
+        assert os.path.exists(os.path.join(workdir, "bom.csv")), "csv not written"
+        basis = "default-density" if "default density" in (bom_data.get("mass_basis") or "") else "material"
+        return "%d rows, mass=%s (%s), warnings=%d" % (
+            bom_data["part_types"], bom_data.get("total_mass_kg"), basis, len(bom_data.get("warnings") or []))
+
+    r.check("export_bom + csv", _bom)
+
+    def _mass():
+        payload = require(assembly.mass_properties(asm_copy))
+        assert payload["mass"] > 0 and payload["volume"] > 0
+        assert "mass_basis" in payload, "mass_basis missing"
+        return "mass=%s kg, density=%s" % (round(payload["mass"], 6), payload.get("average_density_kg_m3"))
+
+    r.check("get_mass_properties", _mass)
+
+    def _recolor_dry():
+        parts = tree["parts"][:2]
+        palette = {parts[0]: [0.15, 0.35, 0.8]}
+        payload = require(recolor.recolor_assembly(asm_copy, palette, apply=False))
+        assert payload.get("dry_run") is True
+        assert payload["matched_components"] >= 1
+        return "%d matched, dry-run only" % payload["matched_components"]
+
+    r.check("recolor_assembly dry-run", _recolor_dry)
+
+    def _recolor_no_match():
+        payload = recolor.recolor_assembly(asm_copy, {"__NO_SUCH_PART__": [1, 0, 0]}, apply=False)
+        assert payload.get("ok") is True and payload.get("matched_components") == 0, payload
+        assert payload.get("available_parts"), "available_parts missing"
+        applied = recolor.recolor_assembly(asm_copy, {"__NO_SUCH_PART__": [1, 0, 0]}, apply=True)
+        assert applied.get("ok") is False and applied.get("error") == "no_match", applied
+        return "dry-run exploratory, apply refused"
+
+    r.check("zero-match guard", _recolor_no_match)
+
+    def _apply_no_save():
+        parts = tree["parts"][:2]
+        palette = {parts[0]: [0.2, 0.4, 0.9], parts[1]: [0.9, 0.6, 0.1]}
+        payload = require(recolor.recolor_assembly(asm_copy, palette, apply=True, save=False))
+        assert payload["painted_components"] >= 1
+        assert payload.get("readback_verified") is True, "readback mismatch: %s" % payload.get("readback_sample")
+        return "%d painted (not saved), readback verified" % payload["painted_components"]
+
+    r.check("recolor_assembly apply (in memory)", _apply_no_save)
+
+    def _bodies():
+        payload = require(bodies.list_bodies(part_copy))
+        assert payload["body_count"] >= 1
+        return "%d bodies" % payload["body_count"]
+
+    r.check("list_bodies", _bodies)
+
+    def _bodies_dry():
+        payload = require(bodies.recolor_bodies(part_copy, {"__NO_SUCH_BODY__": [1, 0, 0]}))
+        return "dry-run, %d bodies listed" % payload["body_count"]
+
+    r.check("recolor_bodies dry-run", _bodies_dry)
+
+    def _preview():
+        target = os.path.join(workdir, "preview.png")
+        payload = require(assembly.export_preview(asm_copy, target, "1280x960"))
+        assert payload.get("format") == "png" and os.path.exists(target), payload
+        assert not os.path.exists(target[:-4] + ".bmp"), "intermediate BMP left behind"
+        return "%d KB png, no bmp residue" % (os.path.getsize(target) // 1024)
+
+    r.check("export_preview png", _preview)
+
+    if not args.skip_export:
+        def _step():
+            dry = require(export.batch_export([asm_copy], workdir, fmt="step", apply=False))
+            assert dry.get("planned"), dry
+            applied = require(export.batch_export([asm_copy], workdir, fmt="step", apply=True))
+            exported = applied.get("exported") or []
+            assert exported, applied
+            assert exported[0]["bytes"] > 1024, "step file too small"
+            return "%.1f MB step" % (exported[0]["bytes"] / 1024 / 1024)
+
+        r.check("batch_export step", _step)
+
+    code = r.summary()
+
+    # Close the documents this run opened. Otherwise the next run hits the same-name
+    # lock ("another file with the same name is already open") and everything fails.
+    try:
+        sw = get_sw()
+        for doc in (sw.GetDocuments or ()):
+            try:
+                if os.path.normcase(os.path.dirname(doc.GetPathName)) == os.path.normcase(workdir):
+                    if doc.GetSaveFlag:
+                        doc.SaveSilent
+                    sw.CloseDoc(doc.GetTitle)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    if args.keep:
+        print("kept: %s" % workdir)
+    else:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
