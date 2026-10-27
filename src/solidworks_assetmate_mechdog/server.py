@@ -174,6 +174,27 @@ def render_drawing(pdf_path: str, output_dir: str | None = None, scale: float = 
 
 
 @mcp.tool()
+def add_flat_pattern_view(
+    drawing_path: str,
+    model_path: str,
+    config_name: str | None = None,
+    position: list[float] | None = None,
+    scale: float | None = None,
+    hide_bend_lines: bool = False,
+    flip: bool = False,
+) -> str:
+    """Add a sheet-metal FLAT PATTERN view (unfolded blank with bend lines).
+
+    The part must have a Flat-Pattern feature. Dimension sheet metal on the flat
+    pattern, not the folded view.
+    """
+    return _json(drawing.add_flat_pattern_view(
+        drawing_path, model_path, config_name=config_name, position=position,
+        scale=scale, hide_bend_lines=hide_bend_lines, flip=flip,
+    ))
+
+
+@mcp.tool()
 def auto_dimension(
     drawing_path: str,
     all_views: bool = True,

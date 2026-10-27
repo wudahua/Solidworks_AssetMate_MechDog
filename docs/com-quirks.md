@@ -424,6 +424,20 @@ segments = _template_lines(sheet, w, h)   # 必须在加视图前，否则会混
 
 量出的安全区会随结果返回（`safe_area.source` 为 `template` 表示实测，`ratio` 表示回退）。
 
+### 钣金展开视图（2026-10-27 实测）
+
+```python
+view = doc.CreateFlatPatternViewFromModelView3(
+    model_path, config_name, x, y, 0, hide_bend_lines, flip)
+```
+
+- **7 个参数**，没有"自动配置"：不传 config 就读模型的 `ConfigurationManager.ActiveConfiguration.Name`。
+- 零件必须有 `FlatPattern` 特征（钣金件）；装配体不能展开，传装配会返回 null。
+- 返回的 IView 与普通视图一样可以 `ScaleDecimal`、可以重排。
+- 实测：配电箱门板（163×215×10 mm）展开后 97×127 mm @1:2，折弯线标注"上 90° R2.54"正确显示。
+
+钣金件要标在**展开图**上（下料尺寸、孔位、折弯方向），不是折弯后的形状视图。
+
 ### PDF 只能来自工程图
 
 `export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。

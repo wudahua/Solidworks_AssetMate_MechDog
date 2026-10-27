@@ -1345,3 +1345,81 @@ def template_safe_area(sheet, sheet_w, sheet_h):
         "title_block_top": round(title_top, 4),
         "parts_list_right": round(list_right, 4),
     }
+
+
+def add_flat_pattern_view(drawing_path, model_path, config_name=None, position=None,
+                         scale=None, hide_bend_lines=False, flip=False):
+    """Add a sheet-metal FLAT PATTERN view (the unfolded blank with bend lines).
+
+    Sheet metal is dimensioned on its flat pattern — blank size, hole positions, bend
+    directions — not on the folded view. The part must have a Flat-Pattern feature and
+    be saved to disk.
+
+    CreateFlatPatternViewFromModelView3(ModelName, ConfigName, LocX, LocY, LocZ,
+    HideBendLines, FlipView) — 7 arguments, no config guessing: pass config_name or the
+    part's active configuration is used.
+    """
+    try:
+        from ..sw_session import get_sw, open_document, SW_DOC_PART
+
+        model_path = os.path.abspath(model_path)
+        if not os.path.exists(model_path):
+            raise FileNotFoundError("file not found: %s" % model_path)
+        if not model_path.lower().endswith(".sldprt"):
+            return error("bad_input", "Flat pattern needs a sheet-metal .SLDPRT",
+                         "Assemblies cannot be unfolded; pass the sheet-metal part.")
+        doc = _open_drawing(drawing_path)
+        sheet = doc.GetFirstView
+        outline = list(sheet.GetOutline or [])
+        sheet_w = (outline[2] - outline[0]) if outline else 0.42
+        sheet_h = (outline[3] - outline[1]) if outline else 0.297
+
+        if not config_name:
+            try:
+                model = open_document(model_path, SW_DOC_PART)
+                config_name = model.ConfigurationManager.ActiveConfiguration.Name
+            except Exception:
+                config_name = "Default"
+        config_name = config_name or "Default"
+
+        if position:
+            px, py = float(position[0]), float(position[1])
+        else:
+            safety = template_safe_area(sheet, sheet_w, sheet_h)
+            px = safety["left"] + (sheet_w - safety["left"] - safety["right"]) / 2
+            py = safety["bottom"] + (sheet_h - safety["bottom"] - safety["top"]) / 2
+
+        view = doc.CreateFlatPatternViewFromModelView3(
+            model_path, config_name, px, py, 0.0, bool(hide_bend_lines), bool(flip)
+        )
+        if view is None:
+            return error(
+                "flat_pattern_failed",
+                "SolidWorks returned null for '%s' (config '%s')" % (
+                    os.path.basename(model_path), config_name),
+                "The part must be SHEET METAL (have a Flat-Pattern feature) and saved to disk.",
+            )
+        if scale:
+            try:
+                view.ScaleDecimal = float(scale)
+            except Exception:
+                pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        layout = _relayout(doc)
+        try:
+            o = list(view.GetOutline or [])
+            box = {"width_m": round(o[2] - o[0], 4), "height_m": round(o[3] - o[1], 4)}
+        except Exception:
+            box = None
+        return drawing_ok(
+            drawing=doc.GetTitle, view=view.Name, config=config_name,
+            scale=float(view.ScaleDecimal), outline=box, layout=layout,
+            hide_bend_lines=bool(hide_bend_lines), flip=bool(flip),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("flat_pattern_failed", str(exc))

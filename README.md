@@ -24,6 +24,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `create_drawing` | 从模型创建 A3 工程图 + 三视图，自动选标准比例；视图名兼容中英文 | 新文件 |
 | `export_drawing` | 工程图导出 PDF / DWG / DXF | 新文件 |
 | `render_drawing` | PDF 逐页渲染 PNG，供目视检查 | 新文件 |
+| `add_flat_pattern_view` | 钣金展开视图（下料尺寸/折弯线） | 工程图 |
 | `auto_dimension` | 导入模型驱动尺寸（Insert Model Items） | 工程图 |
 | `add_center_marks` | 所有视图自动加孔/槽中心标记与中心线 | 工程图 |
 | `add_hole_callout` | 在孔的投影边上加原生孔标注；点不中孔就报失败 | 工程图 |
