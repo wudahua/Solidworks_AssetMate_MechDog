@@ -25,7 +25,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 
 ## 环境
 
-- Windows + SolidWorks 2020+（已在 2024 验证）
+- Windows + SolidWorks 2020+（2024 SP4 为开发验证环境；2026 SP0 已由用户实测可用）
 - 64 位 Python 3.10+，与 SolidWorks 位数一致
 
 ## 安装
@@ -36,9 +36,36 @@ pip install .
 pip install ".[png]"
 ```
 
+可选：运行标识见握手返回的 `serverInfo.version`（当前 0.1.4），可与 `pyproject.toml` 对照确认装的是哪一版。
+
+常见安装问题：
+
+| 现象 | 处理 |
+|---|---|
+| 隔离构建时下载 `setuptools` 失败 | `pip install -e ".[png]" --no-build-isolation`（主环境需已装 setuptools） |
+| 镜像报 `from versions: none`（实际是 HTTP 403） | 换源：`pip install -i https://mirrors.aliyun.com/pypi/simple/ ".[png]"` |
+| 命令行找不到 `solidworks-assetmate-mechdog` | 该入口在 `<python>\Scripts`，通常不在 PATH；改用下方的 `python -m` 方式 |
+
+更多 MCP 侧问题（`serverInfo.version`、构建隔离、镜像 403）见 [docs/mcp-server-notes.md](docs/mcp-server-notes.md)。
+
 ## 在 AI 智能体中注册
 
-MCP 配置（以 Claude Desktop / 兼容客户端为例）：
+**推荐写法**（不依赖 PATH，最稳）：
+
+```json
+{
+  "mcpServers": {
+    "Solidworks_AssetMate_MechDog": {
+      "command": "python",
+      "args": ["-m", "solidworks_assetmate_mechdog.server"]
+    }
+  }
+}
+```
+
+多 Python 环境时把 `command` 换成绝对路径，例如 `C:\\Python313\\python.exe`。
+
+若 `<python>\Scripts` 已加入 PATH，也可用裸命令：
 
 ```json
 {
@@ -49,8 +76,6 @@ MCP 配置（以 Claude Desktop / 兼容客户端为例）：
   }
 }
 ```
-
-开发模式可用 `"command": "python", "args": ["-m", "solidworks_assetmate_mechdog.server"]`。
 
 ## 用法示例
 

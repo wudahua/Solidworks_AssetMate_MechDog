@@ -8,10 +8,15 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from . import SERVER_NAME
+from . import SERVER_NAME, __version__
 from .tools import assembly, bodies, bom, recolor, rename
 
 mcp = FastMCP(SERVER_NAME)
+# FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
+# the mcp package version, so serverInfo.version reported 1.30.0 instead of this
+# toolkit's version. Set it explicitly when the attribute exists.
+if getattr(mcp, "_mcp_server", None) is not None:
+    mcp._mcp_server.version = __version__
 
 
 def _json(payload):
