@@ -537,8 +537,23 @@ gtol.GetFrameValues(1)                        # ('0.01','','','','') 公差值 +
 | 复制粘贴：`doc.EditCopy()` 成功，`doc.EditPaste` / `EditPaste2` | **两个方法都不存在** |
 | `gencache.EnsureDispatch` 早绑定 | `This COM object can not automate the makepy process`（SolidWorks 无类型库） |
 
-结论：`InsertGtol` 只存在于早绑定接口（C# interop）。纯 Python 晚绑定下**无法创建**形位公差和
-粗糙度符号，只能读取。要做插入必须写 C# 插件，或人工在 UI 里加。
+**QueryInterface 试探（2026-10-27，最终结论）**
+
+已知 `IDrawingDoc = {83A33D33-27C5-11CE-BFD4-00400513BB57}`、
+`ISwDrawingDoc = {67930141-0BAC-4518-A40E-30AB15D6E9B8}`（注册表 HKCR\Interface 可查）。
+用 `doc._oleobj_.QueryInterface(pythoncom.IID_IDispatch, IID)` 能成功拿到接口，绕开默认接口限制：
+
+| 接口 | InsertGtol | InsertSurfaceFinishSymbol2 | InsertDatumTag |
+|---|---|---|---|
+| IDrawingDoc | 名字存在，**Invoke 报「找不到成员」** | 名字存在，报「非选择性的参数」 | 调用返回 None |
+| ISwDrawingDoc | 同上 | 同上 | 同上 |
+
+关键点：`GetIDsOfNames` 能找到方法名（类型库里有），但 `Invoke` 报 `DISP_E_MEMBERNOTFOUND`
+—— 说明该版本（SolidWorks 2024）**运行时没有实现这个方法**，不是绑定方式的问题。
+写 C# 插件也绕不过去。
+
+**结论**：形位公差、表面粗糙度在 SolidWorks 2024 + 纯 API 环境下无法创建，只能读或在 UI 手工加。
+`InsertDatumTag` 能调用但返回 None，同样不可用。
 
 `list_drawing_annotations` 因此定位为**自检工具**：证明图上有没有形位公差、内容对不对。
 
