@@ -21,6 +21,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位），含 `mass_basis` 密度披露 | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
 | `batch_export` | 批量导出 STEP（零件/装配）；默认 dry-run，不覆盖已有文件 | 仅新文件 |
+| `build_feature_ledger` | 特征台账：特征/驱动尺寸/孔候选/模型疑点，出图与自检的依据（只读） | 否 |
 | `create_drawing` | 从模型创建 A3 工程图 + 三视图，自动选标准比例；视图名兼容中英文 | 新文件 |
 | `export_drawing` | 工程图导出 PDF / DWG / DXF | 新文件 |
 | `render_drawing` | PDF 逐页渲染 PNG，供目视检查 | 新文件 |

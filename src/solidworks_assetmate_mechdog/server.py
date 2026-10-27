@@ -132,6 +132,23 @@ def batch_export(
 
 
 @mcp.tool()
+def build_feature_ledger(
+    model_path: str,
+    include_faces: bool = True,
+    config: str | None = None,
+) -> str:
+    """Build a feature ledger: every feature, its driving dimensions, hole candidates
+    and model doubts (process §2). This is the basis for annotation planning and
+    self-check — read-only, the model is never modified.
+
+    include_faces=False skips cylindrical-face scanning (faster on large models).
+    """
+    return _json(ledger.build_feature_ledger(
+        model_path, include_faces=include_faces, config=config,
+    ))
+
+
+@mcp.tool()
 def create_drawing(
     model_path: str,
     output_path: str | None = None,
