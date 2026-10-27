@@ -8,7 +8,7 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 
 **这个项目的差异化不是"会调 API"，而是把 SolidWorks COM 的坑全部固化进代码和文档。** 踩坑清单见 [docs/com-quirks.md](docs/com-quirks.md)。
 
-## 工具（v0.2）
+## 工具（v0.3）
 
 | 工具 | 作用 | 写入？ |
 |---|---|---|
@@ -21,6 +21,10 @@ SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub
 | `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位），含 `mass_basis` 密度披露 | 否 |
 | `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
 | `batch_export` | 批量导出 STEP（零件/装配）；默认 dry-run，不覆盖已有文件 | 仅新文件 |
+| `create_drawing` | 从模型创建 A3 工程图 + 三视图，自动选标准比例；视图名兼容中英文 | 新文件 |
+| `export_drawing` | 工程图导出 PDF / DWG / DXF | 新文件 |
+| `render_drawing` | PDF 逐页渲染 PNG，供目视检查 | 新文件 |
+| `drawing_audit` | 审计：视图/比例/空白视图/越界/尺寸数量 | 否 |
 
 所有工具返回结构化 JSON，出错时附 `hint` 指向对应坑的编号。
 
@@ -46,6 +50,7 @@ pip install ".[png]"
 | 隔离构建时下载 `setuptools` 失败 | `pip install -e ".[png]" --no-build-isolation`（主环境需已装 setuptools） |
 | 镜像报 `from versions: none`（实际是 HTTP 403） | 换源：`pip install -i https://mirrors.aliyun.com/pypi/simple/ ".[png]"` |
 | 命令行找不到 `solidworks-assetmate-mechdog` | 该入口在 `<python>\Scripts`，通常不在 PATH；改用下方的 `python -m` 方式 |
+| 工程图视图创建返回空 | 0.3.0 已处理：中文版命名视图是 `*前视`，工具会从模型自动解析；模板路径必须是反斜杠 |
 | 所有工具报 `int() argument must be ... not 'VARIANT'` | 0.1.5 已修复（强制晚绑定）；升级即可，无需清理 `%TEMP%\gen_py` |
 
 更多 MCP 侧问题（`serverInfo.version`、构建隔离、镜像 403）见 [docs/mcp-server-notes.md](docs/mcp-server-notes.md)。

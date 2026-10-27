@@ -74,6 +74,7 @@ def main():
     parser.add_argument("--part", default=DEFAULT_PART)
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--skip-export", action="store_true", help="skip STEP export (slow)")
+    parser.add_argument("--skip-drawing", action="store_true", help="skip drawing chain (slow)")
     args = parser.parse_args()
 
     for path in (args.assembly, args.part):
@@ -88,7 +89,7 @@ def main():
 
     from solidworks_assetmate_mechdog import __version__
     from solidworks_assetmate_mechdog.sw_session import get_sw
-    from solidworks_assetmate_mechdog.tools import assembly, bodies, bom, export, recolor
+    from solidworks_assetmate_mechdog.tools import assembly, bodies, bom, drawing, export, recolor
 
     try:
         get_sw()
@@ -217,6 +218,24 @@ def main():
             return "%.1f MB step" % (exported[0]["bytes"] / 1024 / 1024)
 
         r.check("batch_export step", _step)
+
+    if not args.skip_drawing:
+        def _drawing():
+            drw = os.path.join(workdir, "smoke.SLDDRW")
+            pdf = os.path.join(workdir, "smoke.pdf")
+            created = require(drawing.create_drawing(
+                part_copy, drw, views=["front", "top", "isometric"]))
+            assert created.get("saved") and len(created.get("views") or []) == 3, created
+            exported = require(drawing.export_drawing(drw, pdf))
+            assert exported["bytes"] > 1000, exported
+            rendered = require(drawing.render_drawing(pdf, workdir))
+            assert rendered["page_count"] >= 1, rendered
+            audited = require(drawing.drawing_audit(drw))
+            assert audited["view_count"] == 3, audited
+            return "3 views, %d KB pdf, scale %s" % (
+                exported["bytes"] // 1024, created["views"][0]["scale"])
+
+        r.check("drawing chain (create/pdf/render/audit)", _drawing)
 
     code = r.summary()
 

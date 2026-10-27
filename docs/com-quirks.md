@@ -243,7 +243,66 @@ _SW = dyn.Dispatch(win.GetActiveObject("SldWorks.Application"))
 
 PDF 必须来自 `.SLDDRW` 工程图，DXF 一般来自钣金平板型式或工程图视图；都不能从任意零件导出。`batch_export` 只接受 `step`，其余格式明确拒绝并给提示，不猜。
 
-## 十三、一条通用原则
+## 十三、工程图（2026-10-27 实测）
+
+这一节是 4 个工程图工具的来源，每条都实机踩过。
+
+### 模板路径必须是反斜杠
+
+```python
+sw.NewDocument(r"C:/.../gb_a3.drwdot", 0, 0, 0)   # ❌ 静默返回 None
+sw.NewDocument(r"C://...//gb_a3.drwdot", 0, 0, 0)  # ✅
+```
+
+正斜杠不报错、不抛异常，只返回 None——是最容易误判成"模板坏了"的坑。模板本身可从
+`C://ProgramData//SOLIDWORKS//<版本>//templates//*.drwdot` 找（GB 模板通常叫 `gb_a3.drwdot`）。
+
+### 命名视图是本地化的
+
+中文版 SolidWorks 的命名视图是 `*前视`、`*上视`、`*等轴测`，传 `*Front` 同样静默失败：
+
+```python
+names = list(model.GetModelViewNames)   # ('*正视于','*前视',...,'*等轴测',...)
+```
+
+正确做法是从模型读出真实名称再匹配，不要硬编码英文常量。
+
+### 一批方法在晚绑定下是属性
+
+| 写成方法 | 实际 |
+|---|---|
+| `doc.GetFirstView()` | `doc.GetFirstView`（属性，返回 sheet 的 IView） |
+| `doc.GetViews()` | `doc.GetViews`（属性，返回**嵌套 tuple**） |
+| `view.GetOutline()` | `view.GetOutline`（属性，返回 4 元素数组） |
+| `view.GetDimensionCount()` | `view.GetDimensionCount`（属性） |
+
+`GetViews` 的结构是 `((PyIDispatch, PyIDispatch, ...),)`，元素是裸指针，必须
+`win32com.client.Dispatch(v)` 包装后才能读 `Name` / `Type` / `ScaleDecimal`。
+
+### 视图插入前必须先开模型
+
+`CreateDrawViewFromModelView3` 需要模型已加载；并且模型**必须先存盘**。工程图文档本身
+可以在未保存状态下加视图，但模型不行。
+
+### 新建视图读不到 outline
+
+刚建好的视图 `GetOutline` 可能为空，设置 `ScaleDecimal` 之后才有值。因此比例不能靠"先建后量"，
+要用 `model.GetPartBox(True)` 先估包围盒、选标准比例（1:1、1:2、1:5…），再一次性建视图并排版。
+
+### 尺寸标注的注意事项
+
+- 图纸坐标单位是米，A3 = 0.420 × 0.297。
+- 标注必须点在投影边（`EDGE`）上，选不中时依次退化到 `SILHOUETTE`、`SKETCHSEGMENT`。
+- 调用 `AddDimension2` 前要临时关闭 `swInputDimValOnCreate`，否则弹出数值输入框会卡死自动化。
+- 剖视图必须先 `ActivateView` 目标视图，再选/画剖切线；否则 `CreateSectionViewAt5` 返回 null，
+  At2 兜底甚至会让 SolidWorks 崩溃（RPC_E_SERVERFAULT）。
+
+### PDF 只能来自工程图
+
+`export_drawing` 的 PDF/DWG/DXF 都以 `.SLDDRW` 为输入；`batch_export` 的 STEP 以模型为输入。
+两者不要混用——PDF 从零件导出会得到空壳或直接失败。
+
+## 十四、一条通用原则
 
 > **先读现值，再改。**
 > 凡是"多层属性"（外观、显示状态、配置、材质），第一步读一次目标对象的现值，它会直接告诉你该改哪一层。跳过这一步，靠猜 API 语义，返工成本是它的 10 倍。

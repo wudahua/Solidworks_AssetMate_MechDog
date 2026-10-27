@@ -13,6 +13,7 @@ import os
 
 SW_DOC_PART = 1
 SW_DOC_ASSEMBLY = 2
+SW_DOC_DRAWING = 3
 SW_OPEN_SILENT = 1
 
 _SW = None

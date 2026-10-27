@@ -9,7 +9,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME, __version__
-from .tools import assembly, bodies, bom, export as export_tools, recolor, rename
+from .tools import assembly, bodies, bom, drawing, export as export_tools, recolor, rename
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -129,6 +129,55 @@ def batch_export(
     with a hint rather than guessed at.
     """
     return _json(export_tools.batch_export(targets, output_dir, fmt=fmt, apply=apply))
+
+
+@mcp.tool()
+def create_drawing(
+    model_path: str,
+    output_path: str | None = None,
+    template: str | None = None,
+    views: list[str] | None = None,
+    scale: float | None = None,
+    auto_fit: bool = True,
+) -> str:
+    """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
+
+    views: front/back/left/right/top/bottom/isometric (default front+top+isometric).
+    View names are resolved against the model, so Chinese (`*前视`) and English
+    (`*Front`) SolidWorks both work. Units are meters; an A3 sheet is 0.42 x 0.297.
+    """
+    return _json(drawing.create_drawing(
+        model_path, output_path=output_path, template=template,
+        views=views or ["front", "top", "isometric"], scale=scale, auto_fit=auto_fit,
+    ))
+
+
+@mcp.tool()
+def export_drawing(drawing_path: str, output_path: str, fmt: str | None = None) -> str:
+    """Export a .SLDDRW to PDF / DWG / DXF.
+
+    PDF can only come from a drawing — for STEP/STL of models use batch_export.
+    """
+    return _json(drawing.export_drawing(drawing_path, output_path, fmt=fmt))
+
+
+@mcp.tool()
+def render_drawing(pdf_path: str, output_dir: str | None = None, scale: float = 2.0) -> str:
+    """Render each PDF page to PNG so the drawing can be visually checked.
+
+    Requires pypdfium2 (pip install pypdfium2). Returns one PNG per page.
+    """
+    return _json(drawing.render_drawing(pdf_path, output_dir=output_dir, scale=scale))
+
+
+@mcp.tool()
+def drawing_audit(drawing_path: str) -> str:
+    """Audit a drawing: views, scales, blank views, dimension and annotation counts.
+
+    Evidence only — it never judges view choice, tolerances or manufacturability.
+    Blank views and zero dimensions are reported as warnings, not silently passed.
+    """
+    return _json(drawing.drawing_audit(drawing_path))
 
 
 @mcp.tool()
