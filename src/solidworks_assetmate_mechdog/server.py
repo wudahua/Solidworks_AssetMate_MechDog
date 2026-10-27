@@ -139,6 +139,8 @@ def create_drawing(
     views: list[str] | None = None,
     scale: float | None = None,
     auto_fit: bool = True,
+    view_scales: dict | None = None,
+    paper: str = "A3",
 ) -> str:
     """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
 
@@ -149,6 +151,7 @@ def create_drawing(
     return _json(drawing.create_drawing(
         model_path, output_path=output_path, template=template,
         views=views or ["front", "top", "isometric"], scale=scale, auto_fit=auto_fit,
+        view_scales=view_scales, paper=paper,
     ))
 
 

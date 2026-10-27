@@ -235,6 +235,8 @@ def create_drawing(
     scale=None,
     auto_fit=True,
     save=True,
+    view_scales=None,
+    paper="A3",
 ):
     """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
 
@@ -253,7 +255,7 @@ def create_drawing(
             return error("bad_input", "model_path must be .SLDPRT or .SLDASM",
                          "Drawings are created FROM a model; pass the model, not a drawing.")
 
-        template = os.path.abspath(template) if template else _find_template("A3")
+        template = os.path.abspath(template) if template else _find_template(str(paper).upper())
         if not template or not os.path.exists(template):
             return error("template_not_found",
                          "No drawing template found. Pass template=<path to .drwdot>.",
@@ -324,17 +326,18 @@ def create_drawing(
             if view is None:
                 skipped.append({"view": key, "reason": "create_returned_null"})
                 continue
+            per_view_scale = float((view_scales or {}).get(key, chosen_scale))
             try:
-                view.ScaleDecimal = float(chosen_scale)
+                view.ScaleDecimal = per_view_scale
             except Exception:
-                pass
+                per_view_scale = float(chosen_scale)
             try:
                 o = list(view.GetOutline or [])
                 box_m = {"width_m": round(o[2] - o[0], 4), "height_m": round(o[3] - o[1], 4)}
             except Exception:
                 box_m = None
             created.append({"view": key, "name": view.Name,
-                            "scale": float(chosen_scale), "outline": box_m})
+                            "scale": per_view_scale, "outline": box_m})
             view_objects.append(view)
 
         layout = _place_views(view_objects, sheet_w, sheet_h)
