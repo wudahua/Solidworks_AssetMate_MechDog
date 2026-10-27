@@ -552,8 +552,33 @@ gtol.GetFrameValues(1)                        # ('0.01','','','','') 公差值 +
 —— 说明该版本（SolidWorks 2024）**运行时没有实现这个方法**，不是绑定方式的问题。
 写 C# 插件也绕不过去。
 
-**结论**：形位公差、表面粗糙度在 SolidWorks 2024 + 纯 API 环境下无法创建，只能读或在 UI 手工加。
-`InsertDatumTag` 能调用但返回 None，同样不可用。
+**表面粗糙度有解（2026-10-27 查官方文档后实测通过）**
+
+正确入口是 `IModelDocExtension.InsertSurfaceFinishSymbol3`，而且**必须给满 14 个参数**
+（之前试 4–9 个，所以一直报「非选择性的参数」）：
+
+```python
+doc.Extension.InsertSurfaceFinishSymbol3(
+    SymType, LeaderType, X, Y, Z, LaySymbol, ArrowType,
+    MachAllowance, OtherVals, ProdMethod, SampleLen,
+    MaxRoughness, MinRoughness, RoughnessSpacing)
+```
+
+实测 `(1, 1, 0.30, 0.10, 0.0, 0, 0, "", "", "", "", "3.2", "", "")` 成功返回 SFSymbol，
+落盘后能在 `list_drawing_annotations` 里读回（`surface_finish` 类型）。
+坐标是**图纸坐标**，给错位置会插在空白处，所以要么手动指定，要么先算好表面位置。
+
+**形位公差确认无解（两条官方路径都不可用）**
+
+官方文档给了两条路：
+
+1. 旧：`ModelDoc2.InsertGtol()`（2016/2017 示例）→ 本机报 `DISP_E_MEMBERNOTFOUND`
+2. 新：`IModelDocExtension.CreateGtolData()` + `ext.InsertGtol(data, x, y, z, ...)`（2015+ 推荐）
+   → **本机 `CreateGtolData` / `InsertGtol` 两个成员都不存在**
+
+所以不是参数问题、不是绑定问题，是该版本没有实现。C# 插件也绕不过去。
+
+**结论**：表面粗糙度**可写**（`add_surface_finish`）；形位公差**不可写**，只能读或 UI 手工。
 
 `list_drawing_annotations` 因此定位为**自检工具**：证明图上有没有形位公差、内容对不对。
 

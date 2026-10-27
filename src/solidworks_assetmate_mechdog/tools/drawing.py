@@ -2589,3 +2589,63 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("reconcile_failed", str(exc))
+
+
+# swSFSymType_e: 0 none, 1 machining required, 2 machining prohibited
+SURFACE_FINISH_TYPES = {"machining": 1, "prohibited": 2, "none": 0}
+# swLeaderStyle_e: 0 no leader, 1 straight, 2 bent
+LEADER_STYLES = {"none": 0, "straight": 1, "bent": 2}
+
+
+def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining",
+                       leader_type="none", lay_symbol=0, arrow_type=0,
+                       prod_method="", sample_len="", min_roughness="",
+                       roughness_spacing="", save=True):
+    """Insert a NATIVE surface finish symbol (Ra value) at a sheet point.
+
+    `IModelDocExtension.InsertSurfaceFinishSymbol3` takes FOURTEEN arguments — that count
+    is why every earlier attempt failed with "non-optional parameter". Order:
+      (SymType, LeaderType, X, Y, Z, LaySymbol, ArrowType, MachAllowance, OtherVals,
+       ProdMethod, SampleLen, MaxRoughness, MinRoughness, RoughnessSpacing)
+
+    x/y are sheet metres. roughness is the Ra value as text (e.g. "3.2").
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        sym = SURFACE_FINISH_TYPES.get(str(sym_type).lower(), sym_type)
+        leader = LEADER_STYLES.get(str(leader_type).lower(), leader_type)
+        try:
+            symbol = doc.Extension.InsertSurfaceFinishSymbol3(
+                int(sym), int(leader), float(x), float(y), 0.0,
+                int(lay_symbol), int(arrow_type),
+                "", "", str(prod_method), str(sample_len),
+                str(roughness), str(min_roughness), str(roughness_spacing),
+            )
+        except Exception as exc:
+            return error("surface_finish_failed", str(exc),
+                         "Check the 14-argument order; this signature is easy to mismatch.")
+        if symbol is None:
+            return error("surface_finish_failed",
+                         "SolidWorks returned null for the surface finish symbol",
+                         "Verify the point is on the sheet and the symbol type is valid.")
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        readback = {}
+        try:
+            readback["annotation_name"] = str(symbol.GetAnnotation.GetName)
+        except Exception:
+            pass
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(
+            created=True, saved=bool(save), roughness=str(roughness),
+            sym_type=str(sym_type), leader_type=str(leader_type),
+            position_m=[round(float(x), 4), round(float(y), 4)],
+            readback=readback,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("surface_finish_failed", str(exc))

@@ -132,6 +132,35 @@ def batch_export(
 
 
 @mcp.tool()
+def add_surface_finish(
+    drawing_path: str,
+    x: float,
+    y: float,
+    roughness: str = "3.2",
+    sym_type: str = "machining",
+    leader_type: str = "none",
+    lay_symbol: int = 0,
+    arrow_type: int = 0,
+    prod_method: str = "",
+    sample_len: str = "",
+    min_roughness: str = "",
+    roughness_spacing: str = "",
+    save: bool = True,
+) -> str:
+    """Insert a NATIVE surface finish symbol (Ra value) at a sheet point.
+
+    x/y are sheet metres; roughness is text like "3.2". Needs InsertSurfaceFinishSymbol3's
+    full 14 arguments — a shorter call fails with "non-optional parameter".
+    """
+    return _json(drawing.add_surface_finish(
+        drawing_path, x, y, roughness=roughness, sym_type=sym_type,
+        leader_type=leader_type, lay_symbol=lay_symbol, arrow_type=arrow_type,
+        prod_method=prod_method, sample_len=sample_len,
+        min_roughness=min_roughness, roughness_spacing=roughness_spacing, save=save,
+    ))
+
+
+@mcp.tool()
 def verify_dimension_attachments(drawing_path: str, view_name: str | None = None) -> str:
     """Report what each dimension is attached to (edge / face / sketch segment / nothing).
 
