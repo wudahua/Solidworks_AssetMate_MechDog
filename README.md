@@ -260,6 +260,19 @@ python tests/smoke.py --assembly D:/models/your.SLDASM --part D:/parts/your.SLDP
 python tests/smoke.py --skip-export --skip-drawing    # 只跑快项
 ```
 
+**第二个入口：真实零件链路**
+
+```bash
+# 默认用 测试用例/工程图测试用例（4 个行业分类，1460 个零件）
+python tests/smoke.py --skip-export --skip-drawing --eng-cases --eng-sample 1
+```
+
+`--eng-cases [folder]` 依次跑「台账 → 建图 → 标注 → 审计 → 对账 → 交付判定」，
+按行业目录各取一个零件（确定性挑选，跨次可比）。断言项：台账有包围盒、建图有视图、
+审计无越界/重叠、对账有覆盖率、判定有结论。
+
+实测（KSHE-016.001）：23/63 个尺寸、覆盖率 0.769、判定「仅供参考/未完成」，85 秒。
+
 首次约 5–8 分钟（解析轻化组件），之后 1–2 分钟。**跑前建议清理 SolidWorks 中堆积的文档**，否则会因同名文件打不开而全线失败。
 
 ---

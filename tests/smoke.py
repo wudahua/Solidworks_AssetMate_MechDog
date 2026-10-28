@@ -15,6 +15,7 @@ Exit codes: 0 all pass, 1 some check failed, 2 environment problem.
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import shutil
 import sys
@@ -29,6 +30,9 @@ DEFAULT_ASSEMBLY = os.path.join(
     ROOT, "测试用例", "监视器显示器固定支架-rebuild", "装配体_显示器固定支架.SLDASM"
 )
 DEFAULT_PART = os.path.join(ROOT, "测试用例", "履带-rebuild", "P05_karetku.SLDPRT")
+# Real parts from four industries; the drawing chain is exercised against these because a
+# single hard-coded part cannot represent sheet metal, turned parts and fixtures at once.
+DEFAULT_ENG_CASES = os.path.join(ROOT, "测试用例", "工程图测试用例")
 
 
 class Runner:
@@ -75,6 +79,13 @@ def main():
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--skip-export", action="store_true", help="skip STEP export (slow)")
     parser.add_argument("--skip-drawing", action="store_true", help="skip drawing chain (slow)")
+    parser.add_argument(
+        "--eng-cases", nargs="?", const=DEFAULT_ENG_CASES, default=None,
+        help="also run the real-part chain (ledger -> drawing -> annotations -> verdict) "
+             "on this folder; omit the value to use the bundled 工程图测试用例 sample",
+    )
+    parser.add_argument("--eng-sample", type=int, default=2,
+                        help="how many real parts to test with --eng-cases (default 2)")
     args = parser.parse_args()
 
     for path in (args.assembly, args.part):
@@ -89,7 +100,7 @@ def main():
 
     from solidworks_assetmate_mechdog import __version__
     from solidworks_assetmate_mechdog.sw_session import get_sw
-    from solidworks_assetmate_mechdog.tools import assembly, bodies, bom, drawing, export, recolor
+    from solidworks_assetmate_mechdog.tools import assembly, bodies, bom, drawing, export, ledger, recolor
 
     try:
         get_sw()
@@ -245,6 +256,60 @@ def main():
                 exported["bytes"] // 1024, created["views"][0]["scale"])
 
         r.check("drawing chain (create/pdf/render/audit)", _drawing)
+
+    if args.eng_cases:
+        def _eng_cases():
+            folder = args.eng_cases
+            assert os.path.isdir(folder), "eng-cases folder not found: %s" % folder
+            pool = glob.glob(os.path.join(folder, "**", "*.SLDPRT"), recursive=True)
+            pool += glob.glob(os.path.join(folder, "**", "*.sldprt"), recursive=True)
+            assert pool, "no .SLDPRT under %s" % folder
+            # one part per industry folder, deterministic pick so runs are comparable
+            by_folder = {}
+            for item in sorted(pool):
+                by_folder.setdefault(os.path.basename(os.path.dirname(item)), []).append(item)
+            picks = []
+            for name in sorted(by_folder):
+                if len(picks) >= args.eng_sample:
+                    break
+                picks.append(by_folder[name][0])
+            assert picks, "no parts selected"
+
+            lines = []
+            for src in picks:
+                part = os.path.join(workdir, "eng.SLDPRT")
+                drw = os.path.join(workdir, "eng.SLDDRW")
+                shutil.copy2(src, part)
+                led = require(ledger.build_feature_ledger(part, include_faces=False))
+                assert led.get("bbox_mm"), "ledger missing bbox"
+                created = require(drawing.create_drawing(part, drw, views=["front", "right"]))
+                assert created["views"], "no views created"
+                dimensioned = require(drawing.auto_dimension(drw, all_views=True))
+                marked = require(drawing.add_center_marks(drw))
+                audited = require(drawing.drawing_audit(drw))
+                bad = [w for w in (audited.get("warnings") or [])
+                       if w.get("issue") in ("views_overlap", "view_outside_sheet")]
+                assert not bad, "layout problems on %s: %s" % (os.path.basename(src), bad)
+                rec = require(drawing.reconcile_ledger(part, drw))
+                verdict = require(drawing.delivery_check(part, drw))
+                assert verdict.get("verdict"), "delivery_check returned no verdict"
+                lines.append("%s: %s/%sf dims, cov %s, %s" % (
+                    os.path.basename(src)[:18], dimensioned.get("total_dimensions"),
+                    (led.get("stats") or {}).get("driving_dimensions"),
+                    rec.get("coverage"), verdict.get("verdict")))
+                for name in ("eng.SLDDRW", "eng.SLDPRT"):
+                    try:
+                        get_sw().CloseDoc(name)
+                    except Exception:
+                        pass
+                for stale in (part, drw):
+                    try:
+                        os.remove(stale)
+                    except Exception:
+                        pass
+            return " | ".join(lines)
+
+        r.check("eng cases (ledger/draw/annotate/verdict)", _eng_cases)
 
     code = r.summary()
 
