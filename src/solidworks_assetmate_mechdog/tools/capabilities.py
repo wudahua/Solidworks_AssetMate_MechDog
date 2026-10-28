@@ -35,8 +35,12 @@ CAPABILITIES = [
         "id": "geometric_tolerance",
         "status": "unsupported",
         "summary": "形位公差框格",
-        "why": ("ModelDoc2.InsertGtol 报 DISP_E_MEMBERNOTFOUND；"
-                "IModelDocExtension.CreateGtolData / InsertGtol 成员不存在（SW2024）"),
+        "why": ("四条路径全部失败（2026-10-28 在 SW2026 上逐一实测）："
+                "① 图纸 doc.InsertGtol → DISP_E_MEMBERNOTFOUND；"
+                "② 零件 part.InsertGtol → 同样 MEMBERNOTFOUND；"
+                "③ IModelDocExtension 的 CreateGtolData / InsertGtol → 成员不存在；"
+                "④ InsertModelAnnotations3 带 swInsertGTols(0x20) 只能搬运模型已有 Gtol，"
+                "而模型侧根本创建不出来，无源可搬"),
         "workaround": "界面手工添加；读取不受影响（list_drawing_annotations 可读）",
         "evidence": "2026-10-28 实测，IDrawingDoc/ISwDrawingDoc QueryInterface 两条路径均失败",
         "note": "DISP_E_MEMBERNOTFOUND 只说明分派层找不到成员，不等于 API 必然不存在——"

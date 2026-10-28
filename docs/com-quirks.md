@@ -578,7 +578,24 @@ doc.Extension.InsertSurfaceFinishSymbol3(
 
 所以不是参数问题、不是绑定问题，是该版本没有实现。C# 插件也绕不过去。
 
-**结论**：表面粗糙度**可写**（`add_surface_finish`）；形位公差**不可写**，只能读或 UI 手工。
+**形位公差四条路全堵（2026-10-28 在 SW2026 上逐一实测）**
+
+| # | 路径 | 结果 |
+|---|---|---|
+| 1 | 图纸 `doc.InsertGtol()` | `DISP_E_MEMBERNOTFOUND` |
+| 2 | 零件 `part.InsertGtol()` | 同样 `MEMBERNOTFOUND` |
+| 3 | `IModelDocExtension.CreateGtolData` / `InsertGtol` | 成员不存在 |
+| 4 | `InsertModelAnnotations3(0, swInsertGTols=0x20)` | 只能**搬运**模型已有 Gtol；模型侧创建不出来 → 无源可搬 |
+
+补充排除的假设：不是"要先选中面"（选中状态对 MEMBERNOTFOUND 无影响）、
+不是大小写（`InsertGTol` 同样失败）、不是对象类型（零件和图纸都试过）。
+
+**注意 `MEMBERNOTFOUND` 的含义**：`GetIDsOfNames` 能找到方法名（类型库里有），
+`Invoke` 却失败——说明该版本运行时**没有实现**，不是参数或调用顺序问题。
+早绑定（C#）在同样运行时也会失败，除非 SolidWorks 提供别的入口。
+
+**结论**：表面粗糙度**可写**（`add_surface_finish`）；形位公差**不可创建**，只能读（
+`list_drawing_annotations` 可读出已有 Gtol）或 UI 手工添加。
 
 `list_drawing_annotations` 因此定位为**自检工具**：证明图上有没有形位公差、内容对不对。
 
