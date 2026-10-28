@@ -13,13 +13,23 @@ it silently ignores is exactly how the 400-second wait happened.
 CAPABILITIES = [
     {
         "id": "hole_callout",
-        "status": "unsupported",
+        "status": "pilot",
         "summary": "原生孔标注",
-        "why": ("InsertModelAnnotations3 的孔标注位掩码无效：在含 M6 螺纹孔(Hole Wizard)的零件上，"
-                "传 32768|0x100000 与只传 32768 得到的标注类型完全相同（{4:12, 6:82}）；"
-                "按圆边定位的路线在 260 条边的视图上超过 400 秒"),
-        "workaround": "用 add_drawing_dimension 在圆边上标 Ø 尺寸，或界面手工标注",
-        "evidence": "2026-10-28 实测，配电箱 + SAB1_0101_002(M6 螺纹孔)",
+        "why": ("走「视图可见边 + Select2 + AddHoleCallout2」。SW2026 上**不弹模态对话框**"
+                "（官方 Remarks 过时），单视图 13 条圆边 12 秒完成；"
+                "但只有朝向观察者的孔边可标——同一孔的背面边返回 null"),
+        "workaround": ("背面/被遮挡的孔如实记 failed 并由 Ø 尺寸补；"
+                       "通风百叶等非孔圆不产生标注"),
+        "evidence": ("2026-10-28 实测 door.SLDPRT：5/13 成功（8 X 18 ×2、Ø15 贯穿 ×3，文字完整、"
+                     "引线自动引出），失败 8 个全为 Ø6 背面边（z=6.0）"),
+    },
+    {
+        "id": "hole_callout_batch",
+        "status": "pilot",
+        "summary": "批量孔标注",
+        "why": "按孔去重（同圆心同径只标一次），单视图 25 秒预算，超时返回 budget_exceeded",
+        "workaround": "多孔零件按 plan_drawing 的配额标注，同规格孔只标一处写 n×",
+        "evidence": "2026-10-28 实测",
     },
     {
         "id": "geometric_tolerance",

@@ -2213,6 +2213,15 @@ def list_drawing_annotations(drawing_path, view_name=None):
                 except Exception:
                     continue
                 kind = ANNOTATION_KINDS.get(kind_code, "other_%d" % kind_code)
+                # A hole callout is a DisplayDimension, not its own annotation type — the
+                # only way to tell it apart from an ordinary dimension is IsHoleCallout.
+                if kind == "dimension":
+                    try:
+                        specific = ann.GetSpecificAnnotation
+                        if specific is not None and bool(specific.IsHoleCallout):
+                            kind = "hole_callout"
+                    except Exception:
+                        pass
                 counts[kind] = counts.get(kind, 0) + 1
                 key = None
                 try:
@@ -2236,7 +2245,7 @@ def list_drawing_annotations(drawing_path, view_name=None):
                         row["text"] = str(gtol.GetText(1))
                     except Exception:
                         pass
-                if kind == "dimension":
+                if kind in ("dimension", "hole_callout"):
                     try:
                         dim = ann.GetSpecificAnnotation.GetDimension2(0)
                         if dim is not None:
@@ -2357,9 +2366,21 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
 
         hole_candidates = len(led.get("holes") or [])
         if hole_candidates:
-            record("hole_callouts", holes_in_drawing > 0,
-                   "图纸 %d 处孔标注 / 模型 %d 个圆柱面候选"
-                   % (holes_in_drawing, hole_candidates))
+            # Hole information can legitimately land three ways: a native hole callout, a
+            # thread callout, or a plain Ø dimension on the circular edge. Any of them
+            # carries the manufacturing information, so requiring the callout object
+            # specifically would reject valid drawings.
+            holes_in_drawing = int(totals.get("hole_callout", holes_in_drawing) or 0)
+            diameter_dims = 0
+            for row in anns.get("annotations") or []:
+                text = str(row.get("text") or "")
+                if row.get("kind") == "dimension" and ("Ø" in text or "MOD-DIAM" in text.upper()):
+                    diameter_dims += 1
+            covered = holes_in_drawing + diameter_dims
+            record("hole_callouts", covered > 0,
+                   "图纸 %d 处孔标注 + %d 处 Ø 尺寸 / 模型 %d 个圆柱面候选"
+                   % (holes_in_drawing, diameter_dims, hole_candidates),
+                   "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图")
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
 
