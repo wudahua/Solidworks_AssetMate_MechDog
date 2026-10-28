@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from . import SERVER_NAME, __version__
 from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
                     layout, ledger, material as material_tools, pipeline, planner, recolor,
-                    rename, survey)
+                    rename, sheet_metal, survey)
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -261,6 +261,28 @@ def add_sheet_line(
     fan of diagonals instead of a horizontal line.
     """
     return _json(layout.add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=save))
+
+
+@mcp.tool()
+def sheet_metal_qc(model_path: str) -> str:
+    """Sheet-metal manufacturability checks: thickness, bend count, bend relief.
+
+    Each check returns pass / fail / warn / not_checked. `not_checked` means it was NOT
+    evaluated — geometry-distance checks (min flange, hole-to-bend) are not implemented yet
+    and say so instead of returning a green tick.
+    """
+    return _json(sheet_metal.sheet_metal_qc(model_path))
+
+
+@mcp.tool()
+def flat_pattern_report(model_path: str) -> str:
+    """Where the flat-pattern size comes from — and what this toolkit did not do.
+
+    The blank is computed by SolidWorks' SheetMetal engine. AssetMate only projects the
+    flattened state into a view; it does not read the K-factor or bend table, does not
+    verify the blank, and must not have process parameters invented on the drawing.
+    """
+    return _json(sheet_metal.flat_pattern_report(model_path))
 
 
 @mcp.tool()

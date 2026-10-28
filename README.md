@@ -61,15 +61,17 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `export_drawing` | PDF / DWG / DXF |
 | `render_drawing` | PDF → PNG，供目视检查 |
 
-### 三、规划与自检（8）
+### 三、规划与自检（10）
 
 | 工具 | 回答什么问题 |
 |---|---|
 | `drawing_audit` | 有没有空视图、越界、互相重叠 |
-| `list_drawing_annotations` | 图上到底有多少尺寸/公差/形位公差/粗糙度 |
+| `list_drawing_annotations` | 图上到底有多少尺寸/公差/形位公差/粗糙度（模板文字单列） |
 | `verify_dimension_attachments` | 每个尺寸挂在边/面/草图段，还是根本没挂 |
 | `reconcile_ledger` | **台账对账**：模型的 58 个尺寸，图纸上缺哪 7 个 |
 | `delivery_check` | **这张图能不能交** |
+| `sheet_metal_qc` | 板厚/弯折数/止裂槽；做不到的检查标 `not_checked`，不给假通过 |
+| `flat_pattern_report` | 展开尺寸**谁算的**、工具没做什么、图上该写什么措辞 |
 | `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 |
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
 | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案 |
