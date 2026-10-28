@@ -2389,7 +2389,9 @@ def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
                 except Exception:
                     continue
 
-            floor = max(float(min_diameter_mm) * 0.5, 1e-4)
+            # min_diameter_mm is in MILLIMETRES but chord length is in METRES: convert,
+            # otherwise min_diameter_mm=40 becomes a 20 m threshold and kills every circle.
+            floor = max(float(min_diameter_mm) * 0.0005, 1e-4)
             rows = []
             for edge, pa, pb, chord in endpoints:
                 if chord < floor:

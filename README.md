@@ -32,7 +32,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（15）
+### 二、工程图（16）
 
 | 工具 | 作用 |
 |---|---|
@@ -42,7 +42,9 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_flat_pattern_view` | 钣金展开（下料尺寸 + 折弯线） |
 | `auto_dimension` | 导入模型驱动尺寸，超 30 个会提示冗余 |
 | `add_center_marks` | 孔/槽中心标记与中心线 |
+| `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径），孔标注的前置工具 |
 | `add_hole_callout` | 原生孔标注（带回读 + 模型孔径比对） |
+| `add_hole_callouts` | 批量孔标注（同直径标一次，**受扫描性能限制，见边界**） |
 | `add_drawing_dimension` | 按边索引/坐标补标单个尺寸 |
 | `add_dimension_tolerance` | 原生尺寸公差（双边/对称/极限/配合） |
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
@@ -250,6 +252,13 @@ python tests/smoke.py
 ```
 
 13 项：连接/版本、组件树、BOM、质量属性、上色 dry-run、零匹配守卫、上色 apply、实体列表、实体分色、预览 PNG、STEP 导出、工程图链路（建图→PDF→渲染→审计）、错误信息。全部只读或写临时目录。
+
+**仓库不含测试模型**（`测试用例/` 因体积与版权未入库），裸跑会因文件不存在直接退出。用 `--assembly` / `--part` 指定自己的模型：
+
+```bash
+python tests/smoke.py --assembly D:/models/your.SLDASM --part D:/parts/your.SLDPRT
+python tests/smoke.py --skip-export --skip-drawing    # 只跑快项
+```
 
 首次约 5–8 分钟（解析轻化组件），之后 1–2 分钟。**跑前建议清理 SolidWorks 中堆积的文档**，否则会因同名文件打不开而全线失败。
 

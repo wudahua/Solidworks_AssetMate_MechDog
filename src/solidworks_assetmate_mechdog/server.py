@@ -9,7 +9,8 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME, __version__
-from .tools import assembly, bodies, bom, drawing, export as export_tools, recolor, rename
+from .tools import (assembly, bodies, bom, drawing, export as export_tools, ledger,
+                    material as material_tools, recolor, rename, survey)
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -291,13 +292,13 @@ def add_dimension_tolerance(
 @mcp.tool()
 def material_library(database: str = "SolidWorks Materials.sldmat") -> str:
     """List material names available in the installed SolidWorks material library."""
-    return _json(material.material_library(database=database))
+    return _json(material_tools.material_library(database=database))
 
 
 @mcp.tool()
 def set_part_material(
     paths: list[str],
-    material: str,
+    material_name: str,
     database: str = "SolidWorks Materials.sldmat",
     config: str = "",
     save: bool = True,
@@ -308,8 +309,8 @@ def set_part_material(
     Dry-run by default. Without a material SolidWorks uses 1000 kg/m³, so BOM masses are
     wrong until this is set.
     """
-    return _json(material.set_part_material(
-        paths, material, database=database, config=config, save=save, apply=apply,
+    return _json(material_tools.set_part_material(
+        paths, material_name, database=database, config=config, save=save, apply=apply,
     ))
 
 
@@ -327,7 +328,7 @@ def assign_materials(
     The chosen material is an AI-supplied value: it is reported per part with its reason
     and should be listed as pending confirmation in the delivery record.
     """
-    return _json(material.assign_materials(
+    return _json(material_tools.assign_materials(
         paths, rules=rules, database=database, config=config, save=save, apply=apply,
     ))
 
@@ -532,7 +533,10 @@ def add_center_marks(
 
 
 @mcp.tool()
-def add_hole_callout(drawing_path: str, x: float, y: float, view_name: str | None = None) -> str:
+def add_hole_callout(drawing_path: str, x: float, y: float,
+                    view_name: str | None = None,
+                    model_path: str | None = None,
+                    save: bool = True) -> str:
     """Insert a native hole callout at a sheet point (meters) on a hole edge.
 
     Returns callout_failed when the point is not on a hole's projected circle —
