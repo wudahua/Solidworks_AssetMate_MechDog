@@ -125,6 +125,16 @@ def main():
 
     r = Runner()
 
+    def _static():
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import static_check
+
+        tools, problems = static_check.check()
+        assert not problems, "; ".join(problems[:3])
+        return "%d tools, every module reference resolves" % len(tools)
+
+    r.check("static check (undefined names)", _static)
+
     r.check("attach + version", lambda: "v" + __version__)
 
     tree = {}
