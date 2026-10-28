@@ -45,8 +45,11 @@ CAPABILITIES = [
                 "DISP_E_TYPEMISMATCH。改用正确签名后不再报错，但**返回 None**："
                 "BomType=0/1/2、模板路径已确认存在（安装目录 lang\\chinese-simplified\\"
                 "bom-standard.sldbomtbt）、保存图纸后重试，结果一致。"
-                "`IModelDocExtension.InsertBomTable2/3` 成员存在但参数表不同（10 参数在第 2 位"
-                "报类型不匹配，3 参数报「非选择性的参数」）。"),
+                "`InsertBomTable5`（11 参数，2024 FCS）与 `InsertTableAnnotation2`（7 参数）"
+                "同样全部返回 None；已试 BomType 0-4、空/真实模板、视图激活/EditSheet/"
+                "ActivateSheet/存盘后插、UseAnchorPoint 两种取值，共 7 条 API × 20+ 组合，"
+                "无一成功。返回 None 而非报错 = 调用被接受、创建被静默拒绝，"
+                "最可能是文档属性禁用或模板格式不兼容。"),
         "workaround": "用 add_sheet_line 画表格网格 + add_note 逐格写文字；或界面插入",
         "evidence": "2026-10-28 实测 10 种参数组合全部类型不匹配",
     },
