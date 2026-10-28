@@ -594,8 +594,39 @@ doc.Extension.InsertSurfaceFinishSymbol3(
 `Invoke` 却失败——说明该版本运行时**没有实现**，不是参数或调用顺序问题。
 早绑定（C#）在同样运行时也会失败，除非 SolidWorks 提供别的入口。
 
-**结论**：表面粗糙度**可写**（`add_surface_finish`）；形位公差**不可创建**，只能读（
-`list_drawing_annotations` 可读出已有 Gtol）或 UI 手工添加。
+**形位公差是能创建的——卡在 pywin32 的调用方式上（2026-10-28 突破）**
+
+前面四条路都失败，原因不是 API 缺失，而是 **`doc.InsertGtol()` 被 win32com 当成属性读取
+（DISPATCH_PROPERTYGET）**，于是必然返回 `DISP_E_MEMBERNOTFOUND`。
+
+正确写法——用同一个 DISPID，但显式声明是方法：
+
+```python
+import pythoncom, win32com.client as win
+ole = doc._oleobj_
+dispid = ole.GetIDsOfNames("InsertGtol")
+raw = ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True)   # ← 关键
+gtol = win.Dispatch(raw)
+gtol.SetFrameValues2(1, "0.05", "", "A", "", "")
+anno = gtol.GetAnnotation
+anno.SetPosition(0.30, 0.15, 0.0)
+```
+
+实测：插入 2 个框格，回读 `frame1=['0.05','','A','','']`、`['0.1','','B','C','']`，
+`list_drawing_annotations` 计到 `geometric_tolerance: 2`，图上框格位置正确。
+
+**留下的问题**：框格内的公差**符号**（平面度 ∇、位置度 ⌖）没写进去。
+`SetFrameSymbols2` 的第一个字符串参数传 `<MOD-FLAT-PAR>` 这类格式码无效，传空得到空符号格。
+需要找正确的符号写入方式（可能是 `swGdtSym_e` 枚举值，或特定的格式码语法）。
+
+**方法论教训**：`DISP_E_MEMBERNOTFOUND` 有三种完全不同的来源——属性/方法派发方式错、
+接口指针不对、真的没实现。只测一种调用方式就断言"API 不存在"，会把自己堵死两天。
+
+**`IInsertGtol` / `INewGtol` 报的是另外的错误**（61836/61837 "无法读/写只读属性"），
+说明这两个带 `I` 前缀的 dispatch 变体参数封送规则不同，暂未使用。
+
+**结论**：表面粗糙度**可写**（`add_surface_finish`）；形位公差**可创建**（
+`add_geometric_tolerance`），符号待补。
 
 `list_drawing_annotations` 因此定位为**自检工具**：证明图上有没有形位公差、内容对不对。
 

@@ -2986,3 +2986,156 @@ def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining"
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("surface_finish_failed", str(exc))
+
+
+# swGdtSym_e is not reachable through late binding on this build either; the symbol inside
+# the frame is written with SolidWorks format codes instead (same mechanism as <MOD-DIAM>).
+GTOL_SYMBOLS = {
+    "position": "<MOD-POS-PAR>",
+    "concentricity": "<MOD-CONC-PAR>",
+    "perpendicularity": "<MOD-PERP-PAR>",
+    "parallelism": "<MOD-PAR-PAR>",
+    "flatness": "<MOD-FLAT-PAR>",
+    "straightness": "<MOD-STR-PAR>",
+    "circularity": "<MOD-CIRC-PAR>",
+    "cylindricity": "<MOD-CYL-PAR>",
+    "profile_line": "<MOD-PROF-LINE-PAR>",
+    "profile_surface": "<MOD-PROF-SURF-PAR>",
+    "angularity": "<MOD-ANG-PAR>",
+    "symmetry": "<MOD-SYM-PAR>",
+    "runout": "<MOD-RUN-PAR>",
+    "total_runout": "<MOD-TRUN-PAR>",
+    "none": "",
+}
+
+
+def _invoke_as_method(obj, name, *args):
+    """Call a SolidWorks method that pywin32 insists on treating as a property.
+
+    `doc.InsertGtol()` raises DISP_E_MEMBERNOTFOUND because win32com dispatches it as
+    PROPERTYGET. Invoking the same DISPID with DISPATCH_METHOD works and returns the
+    object. This is the whole reason geometric tolerances looked impossible for so long.
+    """
+    import pythoncom
+
+    ole = obj._oleobj_
+    dispid = ole.GetIDsOfNames(name)
+    if args:
+        return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True, *args)
+    return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True)
+
+
+def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
+                            symbol="none", view_name=None, edge_index=None,
+                            second_datum="", third_datum="", save=True):
+    """Insert a NATIVE geometric tolerance frame (形位公差) into a drawing.
+
+    Verified 2026-10-28 on SW2026: the API exists and works, but only when the call is
+    dispatched as a METHOD. `doc.InsertGtol()` goes through PROPERTYGET and raises
+    DISP_E_MEMBERNOTFOUND — which is why four earlier attempts concluded "impossible".
+
+    x/y are sheet metres. Attach to geometry by passing view_name + edge_index (the same
+    index `list_drawing_edges` returns); without it the frame is free-standing.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+
+        attached = None
+        if view_name and edge_index is not None:
+            for view in _iter_views(doc):
+                if getattr(view, "Type", None) == 1 or view.Name != view_name:
+                    continue
+                try:
+                    doc.ActivateView(view.Name)
+                    doc.ClearSelection2(True)
+                    edges = []
+                    try:
+                        for component in (list(view.GetVisibleComponents or ())):
+                            try:
+                                edges.extend(list(view.GetVisibleEntities2(component, 1) or ()))
+                            except Exception:
+                                continue
+                    except Exception:
+                        edges = []
+                    if edge_index < 0 or edge_index >= len(edges):
+                        return error("bad_edge_index", "edge_index %s out of range (%d edges)"
+                                     % (edge_index, len(edges)))
+                    entity = win.Dispatch(edges[edge_index])
+                    if entity.Select2(False, 0):
+                        attached = "%s[%d]" % (view.Name, edge_index)
+                except Exception:
+                    attached = None
+                break
+
+        raw = _invoke_as_method(doc, "InsertGtol")
+        if raw is None:
+            return error("gtol_failed", "InsertGtol returned null",
+                         "Select an edge/face first; without a selection the frame is free-standing.")
+        gtol = win.Dispatch(raw)
+
+        code = GTOL_SYMBOLS.get(str(symbol).lower(), "")
+        try:
+            gtol.SetFrameSymbols2(1, code, False, "", False, "", "", "", "")
+        except Exception as exc:
+            return error("gtol_symbol_failed", str(exc)[:120])
+        try:
+            wrote = bool(gtol.SetFrameValues2(1, str(tolerance), "", str(datum),
+                                              str(second_datum), str(third_datum)))
+        except Exception as exc:
+            return error("gtol_value_failed", str(exc)[:120])
+
+        position_ok = None
+        try:
+            annotation = gtol.GetAnnotation
+            position_ok = bool(annotation.SetPosition(float(x), float(y), 0.0))
+        except Exception:
+            annotation = None
+
+        try:
+            doc.EditRebuild3()
+        except Exception:
+            pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+
+        # Read back field by field: one unsupported accessor must not blank the whole block.
+        readback = {}
+        if annotation is not None:
+            try:
+                readback["name"] = str(annotation.GetName)
+            except Exception:
+                pass
+            try:
+                readback["position_m"] = [round(v, 4) for v in annotation.GetPosition]
+            except Exception:
+                pass
+        for getter, key in (("GetFrameCount", "frame_count"),):
+            try:
+                readback[key] = int(getattr(gtol, getter))
+            except Exception:
+                pass
+        for getter in ("GetFrameValues2", "GetFrameValues"):
+            try:
+                values = getattr(gtol, getter)(1)
+                readback["frame1"] = [str(v) for v in values]
+                break
+            except Exception:
+                continue
+
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(
+            created=True, saved=bool(save), attached_to=attached,
+            tolerance=str(tolerance), datum=str(datum), symbol=str(symbol),
+            values_written=wrote, position_set=position_ok, readback=readback,
+            note=("形位公差是原生对象，可用 list_drawing_annotations 读出（kind="
+                  "geometric_tolerance）。符号用格式码写入，symbol 传 none 时只有公差值与基准。"),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("gtol_failed", str(exc))

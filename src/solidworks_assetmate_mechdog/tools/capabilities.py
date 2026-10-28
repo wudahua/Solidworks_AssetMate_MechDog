@@ -33,18 +33,18 @@ CAPABILITIES = [
     },
     {
         "id": "geometric_tolerance",
-        "status": "unsupported",
+        "status": "pilot",
         "summary": "形位公差框格",
-        "why": ("四条路径全部失败（2026-10-28 在 SW2026 上逐一实测）："
-                "① 图纸 doc.InsertGtol → DISP_E_MEMBERNOTFOUND；"
-                "② 零件 part.InsertGtol → 同样 MEMBERNOTFOUND；"
-                "③ IModelDocExtension 的 CreateGtolData / InsertGtol → 成员不存在；"
-                "④ InsertModelAnnotations3 带 swInsertGTols(0x20) 只能搬运模型已有 Gtol，"
-                "而模型侧根本创建不出来，无源可搬"),
-        "workaround": "界面手工添加；读取不受影响（list_drawing_annotations 可读）",
-        "evidence": "2026-10-28 实测，IDrawingDoc/ISwDrawingDoc QueryInterface 两条路径均失败",
-        "note": "DISP_E_MEMBERNOTFOUND 只说明分派层找不到成员，不等于 API 必然不存在——"
-                "早绑定诊断仍未做，结论保留",
+        "why": ("**可以做**（2026-10-28 突破）。此前判定「不可创建」是调用方式错误："
+                "pywin32 把 InsertGtol 当作属性派发（PROPERTYGET），必然报 "
+                "DISP_E_MEMBERNOTFOUND。改用 ole.Invoke(dispid, 0, DISPATCH_METHOD, True) "
+                "即可拿到 Gtol 对象，SetFrameValues2 写入公差与基准，回读确认。"
+                "局限：框架内的公差**符号**（平面度/位置度等）用格式码 <MOD-*-PAR> 未生效"),
+        "workaround": ("用 add_geometric_tolerance 创建框格（公差值/基准可靠）；"
+                       "符号需界面补，或后续找到正确的符号写入方式"),
+        "evidence": ("2026-10-28 实测 door.SLDPRT：插入 2 个框格，回读 "
+                     "frame1=['0.05','','A','',''] 与 ['0.1','','B','C','']，位置正确，"
+                     "list_drawing_annotations 计到 geometric_tolerance: 2"),
     },
     {
         "id": "detail_view_scale",

@@ -162,6 +162,35 @@ def batch_export(
 
 
 @mcp.tool()
+def add_geometric_tolerance(
+    drawing_path: str,
+    x: float,
+    y: float,
+    tolerance: str = "0.05",
+    datum: str = "A",
+    symbol: str = "none",
+    view_name: str | None = None,
+    edge_index: int | None = None,
+    second_datum: str = "",
+    third_datum: str = "",
+    save: bool = True,
+) -> str:
+    """Insert a NATIVE geometric tolerance frame (形位公差).
+
+    The API works on SW2026 — it only fails when pywin32 dispatches it as a property. This
+    calls the same DISPID as DISPATCH_METHOD, which returns the Gtol object.
+
+    symbol: none / position / flatness / perpendicularity / parallelism / concentricity /
+    circularity / cylindricity / profile_line / profile_surface / angularity / symmetry /
+    runout / total_runout. Pass view_name + edge_index to attach the leader to geometry.
+    """
+    return _json(drawing.add_geometric_tolerance(
+        drawing_path, x, y, tolerance=tolerance, datum=datum, symbol=symbol,
+        view_name=view_name, edge_index=edge_index, second_datum=second_datum,
+        third_datum=third_datum, save=save))
+
+
+@mcp.tool()
 def add_surface_finish(
     drawing_path: str,
     x: float,
