@@ -9,8 +9,8 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME, __version__
-from .tools import (assembly, bodies, bom, drawing, export as export_tools, ledger,
-                    material as material_tools, recolor, rename, survey)
+from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
+                    ledger, material as material_tools, planner, recolor, rename, survey)
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -22,6 +22,35 @@ if getattr(mcp, "_mcp_server", None) is not None:
 
 def _json(payload):
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def plan_drawing(
+    model_path: str,
+    paper: str = "A3",
+    views: list | None = None,
+    include_unmarked: bool = False,
+) -> str:
+    """Decide before drawing: which dimensions to keep, how many sheets, what views.
+
+    Read-only plan (nothing is created). Real drawings average 14 dimensions; importing
+    every driving dimension puts ~44 on the sheet, which is transcription, not drafting.
+    `keep_dimensions` is the shortlist to feed auto_dimension.
+    """
+    return _json(planner.plan_drawing(
+        model_path, paper=paper,
+        views=tuple(views) if views else ("front", "right"),
+        include_unmarked=include_unmarked))
+
+
+@mcp.tool()
+def check_capabilities(operation: str | None = None) -> str:
+    """What this toolkit can and cannot do — answer before a long pipeline, not after.
+
+    Each entry states the limit, the evidence behind it, and the workaround. Use it to
+    avoid a 400-second run that ends in "0 hole callouts".
+    """
+    return _json(capabilities.check_capabilities(operation=operation))
 
 
 @mcp.tool()
