@@ -2,99 +2,196 @@
 
 ![Before: all parts white / After: 19 part types in distinct colors](docs/images/recolor-before-after.png)
 
-SolidWorks 小工具集，以 MCP 服务器形式提供给 AI 智能体。GitHub 仓库名与 MCP 注册名统一为 **`Solidworks_AssetMate_MechDog`**。
+**一个会出图、也能证明这张图不能交的 SolidWorks MCP 服务。**
 
-第一个能力来自真实项目：给装配体按零件类型批量上色，让整个装配体五颜六色、一眼可分。核心 COM 逻辑已在 SolidWorks 2024 实测验证。
+别的工具告诉你「生成了几张图」，它告诉你「53 个尺寸里有 7 个补不上、0 处孔标注、21 个尺寸挂不到几何上，所以这张图仅供参考」。
 
-**这个项目的差异化不是"会调 API"，而是把 SolidWorks COM 的坑全部固化进代码和文档。** 踩坑清单见 [docs/com-quirks.md](docs/com-quirks.md)。
+Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 注册名：`Solidworks_AssetMate_MechDog`。
 
-## 工具（v0.3）
+差异化不在"会调 API"，而在把 SolidWorks COM 的坑固化进代码与文档 → [docs/com-quirks.md](docs/com-quirks.md)。
 
-| 工具 | 作用 | 写入？ |
-|---|---|---|
-| `recolor_assembly` | 按零件类型批量上色；默认 dry-run，`apply=true` 才修改；返回原色值可回退 | 可选 |
-| `list_bodies` | 列出零件的实体（名称、面/边/顶点数） | 否 |
-| `recolor_bodies` | 多实体零件按实体分色；逐面上色保证生效；默认 dry-run | 可选 |
-| `export_bom` | 导出 BOM：零件聚合、数量、材料、单件/总质量，可写 CSV | 仅 CSV |
-| `rename_components` | 重命名零件：`file` 只改磁盘，`auto` 另存新文件并重定向装配引用 | 是 |
-| `get_assembly_tree` | 组件树：零件名、路径、当前颜色、子装配递归 | 否 |
-| `get_mass_properties` | 整机质量/体积/表面积/质心（SI 单位），含 `mass_basis` 密度披露 | 否 |
-| `export_preview` | 导出等轴测等视图图片（BMP 原生，PNG 需 Pillow） | 仅图片 |
-| `batch_export` | 批量导出 STEP（零件/装配）；默认 dry-run，不覆盖已有文件 | 仅新文件 |
-| `set_part_material` | 给零件指定材质（dry-run，回读材质与质量变化） | 零件 |
-| `assign_materials` | 按名称关键词智能分配材质（标准件→碳钢，结构件→铝） | 零件 |
-| `material_library` | 列出本地材质库可用名称 | 否 |
-| `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径） | 工程图 |
-| `add_hole_callouts` | 批量孔标注（同直径标一次 + 回读） | 工程图 |
-| `add_surface_finish` | 插入原生表面粗糙度符号（Ra 值，14 参数） | 工程图 |
-| `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 | 否 |
-| `reconcile_ledger` | 台账 vs 图纸逐条对账：覆盖率 + 缺失清单（按特征分组） | 否 |
-| `delivery_check` | 交付判定：可制造/待设计审核/仅供参考 + 缺项清单 | 否 |
-| `verify_dimension_attachments` | 校验每个尺寸挂在边/面/草图段还是没挂 | 否 |
-| `list_drawing_annotations` | 读出全部注释：尺寸(含公差)/注释/形位公差框格/中心标记 | 否 |
-| `add_dimension_tolerance` | 按值给已有尺寸加原生公差（双边/对称/极限…），dry-run | 工程图 |
-| `build_feature_ledger` | 特征台账：特征/驱动尺寸/孔候选/模型疑点，出图与自检的依据（只读） | 否 |
-| `create_drawing` | 从模型创建 A3 工程图 + 三视图，自动选标准比例；视图名兼容中英文 | 新文件 |
-| `export_drawing` | 工程图导出 PDF / DWG / DXF | 新文件 |
-| `render_drawing` | PDF 逐页渲染 PNG，供目视检查 | 新文件 |
-| `add_flat_pattern_view` | 钣金展开视图（下料尺寸/折弯线） | 工程图 |
-| `add_section_view` | 剖视图（自动画剖切线，暴露内部特征） | 工程图 |
-| `add_detail_view` | 局部放大视图（圆圈边界 + 独立比例） | 工程图 |
-| `auto_dimension` | 导入模型驱动尺寸（Insert Model Items） | 工程图 |
-| `add_center_marks` | 所有视图自动加孔/槽中心标记与中心线 | 工程图 |
-| `add_hole_callout` | 在孔的投影边上加原生孔标注；点不中孔就报失败 | 工程图 |
-| `set_title_block` | 填标题栏：图样名称/图样代号/材料（dry-run） | 工程图 |
-| `list_drawing_edges` | 列视图内可见边（索引 + 模型坐标），供补标选边 | 否 |
-| `add_drawing_dimension` | 按边索引/坐标补标单个尺寸 | 工程图 |
-| `drawing_audit` | 审计：视图/比例/空白视图/越界/尺寸数量 | 否 |
+---
 
-所有工具返回结构化 JSON，出错时附 `hint` 指向对应坑的编号。
+## 三个能力域
 
-## 环境
+### 一、装配与零件（13）
 
-- Windows + SolidWorks 2020+（2024 SP4 为开发验证环境；2026 SP0 已由用户实测可用）
-- 64 位 Python 3.10+，与 SolidWorks 位数一致
+| 工具 | 作用 |
+|---|---|
+| `get_assembly_tree` | 组件树：零件名、路径、颜色、子装配递归 |
+| `export_bom` | BOM：按零件聚合，数量/材料/单重/总重，可写 CSV |
+| `get_mass_properties` | 整机质量/体积/表面积/质心 |
+| `recolor_assembly` | 按零件类型批量上色（黄金比例配色，同零件同色） |
+| `recolor_bodies` | 多实体零件逐实体分色 |
+| `list_bodies` | 零件实体清单（面/边/顶点数） |
+| `rename_components` | 重命名零件文件，可选重定向装配引用 |
+| `export_preview` | 视图导出 BMP/PNG |
+| `batch_export` | 批量 STEP（默认 dry-run，不覆盖） |
+| `set_part_material` | 指定材质，回读材质与质量变化 |
+| `assign_materials` | 按名称关键词智能分配（标准件→碳钢，结构件→铝） |
+| `material_library` | 列本地材质库名称（解析受限，见边界） |
+| `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-## 安装
+### 二、工程图（15）
 
-```bash
-pip install .
-# 需要 PNG 输出时：
-pip install ".[png]"
+| 工具 | 作用 |
+|---|---|
+| `create_drawing` | 建图：A0–A4、多视图、逐视图比例、模板安全区实测 |
+| `add_section_view` | 剖视图（自动画剖切线） |
+| `add_detail_view` | 局部放大（圆圈边界 + 独立比例） |
+| `add_flat_pattern_view` | 钣金展开（下料尺寸 + 折弯线） |
+| `auto_dimension` | 导入模型驱动尺寸，超 30 个会提示冗余 |
+| `add_center_marks` | 孔/槽中心标记与中心线 |
+| `add_hole_callout` | 原生孔标注（带回读 + 模型孔径比对） |
+| `add_drawing_dimension` | 按边索引/坐标补标单个尺寸 |
+| `add_dimension_tolerance` | 原生尺寸公差（双边/对称/极限/配合） |
+| `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
+| `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
+| `list_drawing_edges` | 视图可见边（索引 + 模型坐标） |
+| `export_drawing` | PDF / DWG / DXF |
+| `render_drawing` | PDF → PNG，供目视检查 |
+
+### 三、自检与判定（6）
+
+| 工具 | 回答什么问题 |
+|---|---|
+| `drawing_audit` | 有没有空视图、越界、互相重叠 |
+| `list_drawing_annotations` | 图上到底有多少尺寸/公差/形位公差/粗糙度 |
+| `verify_dimension_attachments` | 每个尺寸挂在边/面/草图段，还是根本没挂 |
+| `reconcile_ledger` | **台账对账**：模型的 58 个尺寸，图纸上缺哪 7 个 |
+| `delivery_check` | **这张图能不能交** |
+| `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 |
+
+---
+
+## 工程图闭环
+
+```
+特征台账 ──→ 出图 ──→ 标注 ──→ 自检 ──→ 交付判定
+   │                             │           │
+   │  有哪些特征/尺寸/孔          │  有没有  │  可制造
+   └─────────────────────────────┴──────────→ 待设计审核
+                                              仅供参考/未完成
 ```
 
-可选：运行标识见握手返回的 `serverInfo.version`（应与 `pyproject.toml` 一致），可在多机部署时确认装的是哪一版。
+`delivery_check` 的三种结论：
 
-常见安装问题：
-
-| 现象 | 处理 |
+| 结论 | 触发条件 |
 |---|---|
-| 隔离构建时下载 `setuptools` 失败 | `pip install -e ".[png]" --no-build-isolation`（主环境需已装 setuptools） |
-| 镜像报 `from versions: none`（实际是 HTTP 403） | 换源：`pip install -i https://mirrors.aliyun.com/pypi/simple/ ".[png]"` |
-| 命令行找不到 `solidworks-assetmate-mechdog` | 该入口在 `<python>\Scripts`，通常不在 PATH；改用下方的 `python -m` 方式 |
-| 工程图视图创建返回空 | 0.3.0 已处理：中文版命名视图是 `*前视`，工具会从模型自动解析；模板路径必须是反斜杠 |
-| 所有工具报 `int() argument must be ... not 'VARIANT'` | 0.1.5 已修复（强制晚绑定）；升级即可，无需清理 `%TEMP%\gen_py` |
+| **可制造** | 关键尺寸/孔/公差齐全，双重自检通过 |
+| **待设计审核** | 图纸对象正确，但含调用方声明为「AI 拟定」的关键值 |
+| **仅供参考/未完成** | 有越界/重叠/空视图、无尺寸、模型疑点、缺孔标注、尺寸无关联 |
 
-更多 MCP 侧问题（`serverInfo.version`、构建隔离、镜像 403）见 [docs/mcp-server-notes.md](docs/mcp-server-notes.md)。
+实测配电箱箱体：
 
-## 工程图用法
+```
+verdict: 仅供参考/未完成
+blockers:  模型 Flat-Pattern1 被抑制
+           图纸 0 处孔标注 / 模型 80 个圆柱面
+pending:   27/53 尺寸读不到关联
+           台账覆盖率 0.879（51/58，缺 7 个）
+```
+
+**这就是核心价值**：不是"生成成功"，而是"缺什么、能不能交"。
+
+---
+
+## 真实图纸基线
+
+判定标准不是凭感觉定的。用 142 套 SolidWorks 工程图模板里 **6346 张真实 SLDDRW** 抽样 100 张实测：
+
+| 指标 | 平均 | 中位 | 范围 |
+|---|---|---|---|
+| 视图 | 3.1 | 3 | 1–9 |
+| **尺寸** | **14.2** | **11** | 0–58 |
+| 注释 | 46.5 | 36 | 0–160 |
+| 中心标记 | 4.9 | 3 | 0–59 |
+
+**制造类标注的出现率**
+
+| 标注 | 占比 |
+|---|---|
+| 表面粗糙度 | **60%** |
+| 形位公差 | **7%** |
+| 零件序号 | 3% |
+
+据此改掉三条拍脑袋的标准：
+
+| 原来 | 改后 | 依据 |
+|---|---|---|
+| 全量导入 44 个尺寸 | 提示冗余 | 真实 14 个，制图是筛选不是搬运 |
+| 要求形位公差 | 降为可选、粗糙度升为常规 | 7% vs 60% |
+| 视图无尺寸即报警 | 只在整张图无尺寸时报警 | 原判定 79/100 误报，改后 6 |
+
+复跑基线（换新图纸后应重做）：
 
 ```json
-{ "model_path": "D:/parts/P05.SLDPRT",
-  "output_path": "D:/out/P05.SLDDRW",
-  "views": ["front", "top", "right", "isometric"],
-  "paper": "A3",
-  "view_scales": { "right": 0.2 } }
+{ "folder": "D:/142套solidworks工程图图纸模板",
+  "sample_size": 100, "seed": 28,
+  "html_path": "D:/out/survey_report.html" }
 ```
 
-- `view_scales` 逐视图指定比例：薄壁方向（侧视）在 1:10 下尺寸会挤，单独放大到 1:5 更清楚
-- `paper` 支持 A0–A4；安全区从模板实测，换图幅不用改参数
-- 视图名自动适配中英文（`*前视` / `*Front`）
-- 返回里 `safe_area.source` 为 `template` 表示边距是量出来的，`ratio` 表示回退
+固定 `seed` 保证样本可复现，改阈值前后能直接对比。
 
-## 工程图：视图数量与拆图策略
+---
 
-A3 / 1:2、带标注的情况下，实测能稳放的视图数：
+## 能力边界（诚实披露）
+
+| 限制 | 原因 | 影响 |
+|---|---|---|
+| **形位公差写不进去** | `InsertGtol` 报 `DISP_E_MEMBERNOTFOUND`；`IModelDocExtension.CreateGtolData` 成员不存在（SW2024）。两条官方路径都不可用，C# 插件也绕不过 | 只能读不能写；真实图纸仅 7% 需要 |
+| **孔标注不可用** | 方法已查清（`SelectByID2` 选边 → `AddHoleCallout2`），但需要圆边精确点位，扫边 260 条超 400 秒 | 建议界面手工，或用 `add_drawing_dimension` 标 Ø |
+| **`material_library` 失效** | `*.sldmat` 能定位但条目解析不出（格式/编码） | 材质名需自行确认后传入 |
+| **A3 最多 3 个视图** | 剖视图 x 与父视图锁定，无法横向移开 | 钣金件拆两张图（结构 + 展开） |
+| **尺寸跨视图去重需外部传值** | 图纸尺寸是投影长度，同一条边不同视图值不同 | 去重只能靠调用方给 `known_values` |
+| **批量读图需逐张关闭** | SolidWorks 开 40+ 文档后任何新文件都打不开 | 批量脚本必须 `CloseDoc` |
+| **DXF/DWG 逆向建模** | 未实现 | 只有 SolidWorks 原生图纸能读 |
+
+设计原则第一条就是：**工具返回成功 ≠ 图纸正确**。所以每步都回读。
+
+---
+
+## 快速上手
+
+**出一张图并自检**
+
+```json
+// 1. 建图
+{ "model_path": "D:/parts/P05.SLDPRT", "output_path": "D:/out/P05.SLDDRW",
+  "views": ["front", "right"], "paper": "A3", "view_scales": { "right": 0.2 } }
+
+// 2. 标注（导入 + 中心标记 + 标题栏）
+{ "drawing_path": "D:/out/P05.SLDDRW", "all_views": true, "include_unmarked": false }
+{ "drawing_path": "D:/out/P05.SLDDRW", "name": "履带轮", "code": "P05", "apply": true }
+
+// 3. 判定能不能交
+{ "model_path": "D:/parts/P05.SLDPRT", "drawing_path": "D:/out/P05.SLDDRW" }
+```
+
+**查缺哪些尺寸**
+
+```json
+{ "model_path": "D:/parts/P05.SLDPRT", "drawing_path": "D:/out/P05.SLDDRW" }
+→ coverage 0.879, unmatched_by_feature: { "Cut-Extrude1": [1.0, 30.0], "Vent1": [1.0] }
+```
+
+**装配上色**
+
+```json
+{ "assembly_path": "D:/models/beast.SLDASM",
+  "palette": { "Crank": [0.88, 0.20, 0.18], "Frame": [0.36, 0.40, 0.45] },
+  "apply": false }
+```
+
+dry-run 确认零件与匹配数无误后，再 `apply=true`。
+
+![Body-level recolor: 8 solid bodies, 8 colors](docs/images/recolor-bodies.png)
+
+---
+
+## 视图数量与拆图策略
+
+A3 / 1:2、带标注的情况下实测：
 
 | 图幅 | 视图数 | 结果 |
 |---|---|---|
@@ -102,40 +199,36 @@ A3 / 1:2、带标注的情况下，实测能稳放的视图数：
 | A3 | 4 | 互挤，常压到左侧明细栏 |
 | A3 | 5 | 越界 + 重叠，不可用 |
 
-**剖视图的位置是半锁的**：它与父视图 x 对齐（写 `Position` 只有 y 生效），只能放在源视图
-正上/正下方，等于"借"父视图那一列的空间。局部放大视图虽然可以自由移动，但占的是整块面积。
+**剖视图位置半锁**：与父视图 x 对齐（`Position` 只有 y 生效），只能放在源视图正上/正下方。
 
 **拆图建议**（钣金件必用）：
 
-1. **结构图**：主视 + 侧视 + 剖视（≤3 个视图）——表达内外形状
-2. **展开图**：钣金展开 + 一个小的成型对照视图——表达下料尺寸与折弯方向
+1. **结构图**：主视 + 侧视 + 剖视（≤3 视图）
+2. **展开图**：钣金展开 + 成型对照视图
 
-两张图各自零警告，比硬塞进一张干净得多。实测配电箱箱体：5 视图一张图 = 4 处越界 + 1 处重叠；
-拆成上述两张 = 两张都零警告。
+实测配电箱：5 视图一张 = 4 处越界 + 1 重叠；拆成两张 = 两张都零警告。
 
-补标与标题栏：
+---
 
-```json
-{ "drawing_path": "D:/out/P05.SLDDRW", "view_name": "工程图视图3" }   // list_drawing_edges
-{ "drawing_path": "D:/out/P05.SLDDRW", "view_name": "工程图视图3", "edge_index": 5 }
-{ "drawing_path": "D:/out/P05.SLDDRW", "name": "履带轮", "code": "P05", "material": "45钢", "apply": true }
-```
+## 环境与安装
 
-## 真机回归
-
-改完代码先跑一遍完整链路（SolidWorks 需运行）：
+- Windows + SolidWorks 2020+（开发验证 2024 SP4；用户实测 2026 SP0 可用）
+- 64 位 Python 3.10+，与 SolidWorks 位数一致
 
 ```bash
-python tests/smoke.py
+pip install .
+pip install ".[png]"        # 需要 PNG 输出时
 ```
 
-覆盖 12 项：连接/版本、组件树、BOM、质量属性、上色 dry-run、零匹配守卫、上色（内存不保存）、实体列表、实体分色 dry-run、预览 PNG、STEP 导出、错误信息。全部只读或写临时目录，不动仓库里的测试模型，跑完会关闭自己打开的文档。
+| 现象 | 处理 |
+|---|---|
+| 隔离构建下载 `setuptools` 失败 | `pip install -e ".[png]" --no-build-isolation` |
+| 镜像报 `from versions: none`（实为 403） | 换源 `-i https://mirrors.aliyun.com/pypi/simple/` |
+| 找不到 `solidworks-assetmate-mechdog` 命令 | 入口在 `<python>\Scripts`，改用 `python -m` |
+| 工程图视图创建返回空 | 0.3.0 已处理（中文版视图名 `*前视`） |
+| 所有工具报 `int() argument must be ... VARIANT` | 0.1.5 已修复（强制晚绑定） |
 
-首次运行约 5–8 分钟（解析轻化组件占大头），之后快很多。`--keep` 保留临时产物，`--skip-export` 跳过 STEP，`--assembly` / `--part` 换测试模型。
-
-## 在 AI 智能体中注册
-
-**推荐写法**（不依赖 PATH，最稳）：
+MCP 注册（不依赖 PATH）：
 
 ```json
 {
@@ -148,114 +241,56 @@ python tests/smoke.py
 }
 ```
 
-多 Python 环境时把 `command` 换成绝对路径，例如 `C:\\Python313\\python.exe`。
+---
 
-若 `<python>\Scripts` 已加入 PATH，也可用裸命令：
+## 真机回归
 
-```json
-{
-  "mcpServers": {
-    "Solidworks_AssetMate_MechDog": {
-      "command": "solidworks-assetmate-mechdog"
-    }
-  }
-}
+```bash
+python tests/smoke.py
 ```
 
-## 用法示例
+13 项：连接/版本、组件树、BOM、质量属性、上色 dry-run、零匹配守卫、上色 apply、实体列表、实体分色、预览 PNG、STEP 导出、工程图链路（建图→PDF→渲染→审计）、错误信息。全部只读或写临时目录。
 
-对智能体说："把 `D:\models\beast.SLDASM` 按零件类型上色，配色参考 examples/palette.example.json。"
+首次约 5–8 分钟（解析轻化组件），之后 1–2 分钟。**跑前建议清理 SolidWorks 中堆积的文档**，否则会因同名文件打不开而全线失败。
 
-等价工具调用：
-
-```json
-{
-  "assembly_path": "D:/models/beast.SLDASM",
-  "palette": { "Crank": [0.88, 0.20, 0.18], "Frame": [0.36, 0.40, 0.45] },
-  "apply": false
-}
-```
-
-确认 dry-run 返回的零件与匹配数无误后，再以 `apply=true` 执行。
-
-多实体零件按实体分色（先查实体名，再用实体名作 palette 键）：
-
-```json
-{ "part_path": "D:/models/hull.SLDPRT",
-  "palette": { "Hull": [0.33, 0.49, 0.95], "Deck": [0.95, 0.8, 0.33] },
-  "apply": false }
-```
-
-实体分色走面级外观（SolidWorks 的实体级 API 实测不可靠），会覆盖原有面外观，请在副本上操作。
-
-![Body-level recolor: 8 solid bodies, 8 colors](docs/images/recolor-bodies.png)
-
-导出 BOM（只读，可同时写 CSV）：
-
-```json
-{ "assembly_path": "D:/models/beam.SLDASM", "csv_path": "D:/out/bom.csv" }
-```
-
-返回按零件聚合的行：`part`、`qty`、`material`、`mass_each_kg`、`mass_total_kg`、`path`，以及 `total_mass_kg` 和 `warnings`（缺失值逐条列出，不猜）。
-
-重命名零件文件（默认 dry-run）：
-
-```json
-{ "part_paths": ["D:/parts/P01.SLDPRT", "D:/parts/P02.SLDPRT"], "prefix": "RN_" }
-```
-
-支持 `mapping` / `prefix` / `suffix`；目标已存在、非法字符、未变化都会进 `conflicts` 而不执行。`apply=true` 后失败会自动回滚。若传 `assembly_path`，会额外报告哪些组件仍引用旧文件名。
-
-自动模式（改名 + 更新装配引用 + 保存，一次完成）：
-
-```json
-{ "part_paths": ["D:/parts/P01.SLDPRT"], "prefix": "RN_",
-  "assembly_path": "D:/parts/beam.SLDASM", "mode": "auto" }
-```
-
-装配打开时会锁住组件文件，无法直接改名，因此 `auto` 采用「静默另存新文件 → 重定向引用 → 保存装配」：原文件保留、可回退；实例名会跟随新文件名（`P01-1` → `RN_P01-1`）。
-
-## 设计原则
-
-1. **统一会话层**：所有工具共用 `sw_session`，慢调用（如 `GetComponents`）只取一次、内存分组。
-2. **写操作先快照**：默认 dry-run；执行时返回修改前的颜色，支持回退。
-3. **不编造结果**：COM 不可用时返回结构化错误和坑文档指引，绝不假装成功。
-4. **每个工具配一篇坑笔记**：新增工具必须同步更新 [docs/com-quirks.md](docs/com-quirks.md)。
+---
 
 ## 性能
 
-首次读取装配要付 SolidWorks 加载成本：46 组件实测 `GetComponents` 单次约 130 秒。组件列表按文档缓存，`get_assembly_tree → recolor_assembly → get_assembly_tree` 只在第一次付这个成本；外部增删组件后给 `get_assembly_tree` 传 `refresh=true`。
-
-实测数据（2026-10-26，监视器固定支架，46 组件 / 19 种零件，SolidWorks 2024 SP4 / Py3.13）：
+慢在 SolidWorks COM 往返和文件加载，不在 Python 侧。
 
 | 操作 | 耗时 |
 |---|---|
-| `get_assembly_tree` 首次（含零件加载） | 163 s |
-| `recolor_assembly` dry-run（缓存命中） | 64 s |
-| `recolor_assembly` apply（46 件上色 + 保存） | 121 s |
-| `recolor_bodies` apply（899 面 / 8 实体，含保存） | 76 s |
-| `export_preview` 1600×1200 | 4 s |
-| 全流程 tree → dry-run → apply → 复核 → 预览 | 7 m 35 s（未加缓存时 10 m 33 s） |
+| `get_assembly_tree` 首次（46 组件） | 163 s |
+| `recolor_assembly` apply（46 件） | 121 s |
+| 工程图建图 + 3 视图 + 导出 | 12 s |
+| `drawing_audit`（真实图纸） | 2–4 s |
+| `survey_drawings`（100 张真实图） | 1916 s（19 s/张） |
 
-结论：慢在 SolidWorks 的 COM 往返和文件加载，不在 Python 侧。单个装配首次操作请预留 2–3 分钟，不要用默认 30–60 秒的工具超时。
+首次操作单个装配请预留 2–3 分钟，不要用默认 30–60 秒超时。
 
-## 当前局限
+---
 
-- 只改组件外观，不改材质/密度；不含面级、特征级外观。
-- 实体分色为整块上色，不提供单个面单独配色的工具；面级外观会覆盖原贴图。
-- 组件**实例名**无法通过 API 修改（`IComponent2.Name` 只读、`Name2` 赋值静默无效），`rename_components` 只做文件重命名；实例名请在 FeatureManager 树中手动改。
-- 某些环境（存在 `gen_py` 缓存）下组件颜色**读回**可能失真为白色，而渲染与保存正常；`recolor_assembly` 用 `readback_verified` 标记，验收请以 `export_preview` 为准，不要依赖 `previous_colors` 回退。读回抽样为每个 palette 键 1 个实例、最多 8 种零件，超出部分不做读回校验。
-- 不做配置/显示状态切换；子装配递归仅 `get_assembly_tree` 支持。
-- 读到的外观可能来自内存文档而非磁盘；核对文件真实状态需先 `CloseAllDocuments`（见坑清单第三节）。
+## 设计原则
+
+1. **工具返回成功 ≠ 图纸正确** — 每步回读（孔标注读孔径、尺寸读公差类型、剖视读实际切到的位置）
+2. **统一会话层** — 所有工具共用 `sw_session`，慢调用只取一次
+3. **写操作先快照** — 默认 dry-run，返回修改前的值
+4. **不编造结果** — COM 不可用时返回结构化错误 + 坑文档编号，绝不假装成功
+5. **判定要有依据** — 阈值由 100 张真实图纸实测，不是凭感觉
+6. **每个工具配坑笔记** — 新增工具必须同步 `docs/com-quirks.md`
+
+---
 
 ## 路线图
 
-完整规划见 [docs/ROADMAP.md](docs/ROADMAP.md)（目标、版本节奏、质量门、风险）。摘要：
+完整规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
-- v0.2：BOM 导出、批量 STEP/PDF/DXF、组件重命名、干涉检查
-- v0.3：特征树与配合导出，对接 IR 逆向工程流水线
-- v0.4：操作快照与回退、日志、批量任务队列
-- v1.0：接口冻结、多配置与显示状态
+- ~~v0.3 出图链路~~ ✅
+- ~~v0.4 台账 / 公差 / 自检 / 交付判定~~ ✅
+- **v0.5 待做**：孔标注定位（性能）、形位公差（受 API 限制）、出图前规划工作流
+
+---
 
 ## License
 
