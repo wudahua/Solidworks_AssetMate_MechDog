@@ -40,9 +40,13 @@ CAPABILITIES = [
         "id": "bom_table",
         "status": "unsupported",
         "summary": "装配明细栏（BOM 表）",
-        "why": ("`IView.InsertBomTable2/3/4` 成员存在，但 4/5/6/7 参数与两种 AnchorType "
-                "全部返回 DISP_E_TYPEMISMATCH；`InsertTableAnnotation2` 的 X/Y 是相对锚点、"
-                "`UseAnchorPoint=False` 返回 None"),
+        "why": ("`IView.InsertBomTable4` 真实签名有 **10 个参数**（官方 2024 文档），"
+                "第一个是 `UseAnchorPoint`(bool) 不是模板路径——按 6 参数调用必然 "
+                "DISP_E_TYPEMISMATCH。改用正确签名后不再报错，但**返回 None**："
+                "BomType=0/1/2、模板路径已确认存在（安装目录 lang\\chinese-simplified\\"
+                "bom-standard.sldbomtbt）、保存图纸后重试，结果一致。"
+                "`IModelDocExtension.InsertBomTable2/3` 成员存在但参数表不同（10 参数在第 2 位"
+                "报类型不匹配，3 参数报「非选择性的参数」）。"),
         "workaround": "用 add_sheet_line 画表格网格 + add_note 逐格写文字；或界面插入",
         "evidence": "2026-10-28 实测 10 种参数组合全部类型不匹配",
     },
