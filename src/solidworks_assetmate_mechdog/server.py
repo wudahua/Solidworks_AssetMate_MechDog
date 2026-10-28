@@ -215,18 +215,18 @@ def add_hole_callouts(
     drawing_path: str,
     view_name: str | None = None,
     min_diameter_mm: float = 0.0,
-    one_per_diameter: bool = True,
-    model_path: str | None = None,
+    max_callouts: int = 40,
+    budget_s: float = 25.0,
     save: bool = True,
 ) -> str:
-    """Batch native hole callouts on circular edges, reading each one back.
+    """Native hole callouts on a view's visible circular edges, verified by IsHoleCallout.
 
-    one_per_diameter=True follows the drafting convention for repeated holes.
-    model_path cross-checks the read-back diameter against the model.
+    Only this view's visible edges are enumerated (a whole-model scan took >400 s; one view
+    has ~9 circular edges). Callouts are placed stacked to the right of the view.
     """
     return _json(drawing.add_hole_callouts(
         drawing_path, view_name=view_name, min_diameter_mm=min_diameter_mm,
-        one_per_diameter=one_per_diameter, model_path=model_path, save=save))
+        max_callouts=max_callouts, budget_s=budget_s, save=save))
 
 
 @mcp.tool()

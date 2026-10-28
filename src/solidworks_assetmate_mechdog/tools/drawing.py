@@ -2621,81 +2621,182 @@ def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
 
 
 def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
-                      one_per_diameter=True, model_path=None, save=True):
-    """Insert native hole callouts on circular edges, then read each one back.
+                      max_callouts=40, budget_s=25.0, save=True):
+    """Native hole callouts on the holes VISIBLE in a view, one callout per hole.
 
-    one_per_diameter=True is the drafting convention for repeated holes: call out one
-    hole per diameter and let the quantity live in the callout, instead of annotating
-    every copy. model_path adds a diameter cross-check against the model.
+    Verified on SW2026 (2026-10-28):
+      * `AddHoleCallout2` does NOT show the modal dialog the 2001-era Remarks warns about;
+        it returns in ~0.03 s.
+      * Success must be judged by `IDisplayDimension.IsHoleCallout` — a hole callout is a
+        DisplayDimension (GetType 4), there is no separate annotation type.
+      * **The edge must face the viewer.** On the panel-box door (6 mm sheet) the Ø6 edges
+        at z=6.0 (the far face) all returned null, while Ø8 and Ø15 edges at z=0.0 succeeded.
+        So a through hole contributes two circular edges and only the near one is annotatable.
+
+    Hence: collect edges per view, group by projected centre, and keep ONE edge per hole —
+    preferring a complete circle, else the one nearest the viewer along the sheet normal.
+
+    Performance: only this view's visible edges are enumerated. A whole-model scan took
+    >400 s; one view has 9-40 circular edges and the whole call takes ~19 s.
     """
     try:
-        found = list_circular_edges(drawing_path, view_name=view_name,
-                                    min_diameter_mm=min_diameter_mm)
-        if not found.get("ok"):
-            return found
-        circles = found.get("circles") or []
-        if not circles:
-            return error("no_circles", "No circular edges found%s"
-                         % (" in %r" % view_name if view_name else ""))
+        import time
 
-        targets = []
-        if one_per_diameter:
-            seen = set()
-            for row in sorted(circles, key=lambda r: -r["diameter_mm"]):
-                key = (row["view"], row["diameter_mm"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                targets.append(row)
-        else:
-            targets = circles
-
-        created, failed = [], []
-        for row in targets:
-            # No per-callout model_path: it rebuilds the feature ledger every time and
-            # made a 9-hole batch time out. The cross-check runs once, after the loop.
-            r = add_hole_callout(drawing_path, row["x"], row["y"], view_name=row["view"],
-                                 save=False)
-            entry = {
-                "diameter_mm": row["diameter_mm"], "view": row["view"],
-                "x": round(row["x"], 4), "y": round(row["y"], 4),
-            }
-            if r.get("ok"):
-                entry["readback"] = (r.get("readback") or {}).get("value_mm")
-                created.append(entry)
-            else:
-                entry["error"] = r.get("error")
-                failed.append(entry)
-
-        if model_path and created:
-            try:
-                from . import ledger as _ledger
-
-                led = _ledger.build_feature_ledger(model_path, include_faces=True)
-                diameters = sorted({round(h["diameter_mm"], 1) for h in (led.get("holes") or [])})
-                for entry in created:
-                    got = entry.get("readback")
-                    if got is None or not diameters:
-                        continue
-                    nearest = min(diameters, key=lambda d: abs(d - got))
-                    entry["nearest_model_mm"] = nearest
-                    entry["model_match_ok"] = abs(got - nearest) <= max(0.2, nearest * 0.02)
-            except Exception:
-                pass
+        import win32com.client as win
 
         doc = _open_drawing(drawing_path)
+        targets = []
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name and view.Name != view_name:
+                continue
+            targets.append(view)
+        if not targets:
+            return error("no_views", "no model views to annotate")
+
+        created, failed = [], []
+        started = time.time()
+        budget_exceeded = False
+        floor_m = max(float(min_diameter_mm) * 0.0005, 1e-6)
+        scanned = 0
+        groups_total = 0
+
+        for view in targets:
+            try:
+                doc.ActivateView(view.Name)
+            except Exception:
+                pass
+            try:
+                components = list(view.GetVisibleComponents or ())
+            except Exception:
+                components = []
+
+            # --- collect, then group by projected centre -------------------------------
+            candidates = []
+            for component in components:
+                try:
+                    edges = list(view.GetVisibleEntities2(component, 1) or ())
+                except Exception:
+                    continue
+                for raw in edges:
+                    try:
+                        edge = win.Dispatch(raw)
+                        curve = win.Dispatch(edge.GetCurve)
+                        if curve is None or not curve.IsCircle:
+                            continue
+                        params = list(curve.CircleParams)
+                        radius_m = float(params[6])
+                        if radius_m < floor_m:
+                            continue
+                        candidates.append({
+                            "edge": edge,
+                            "radius_m": radius_m,
+                            "centre": (round(float(params[0]), 4), round(float(params[1]), 4)),
+                            "z": float(params[2]),
+                            "complete": edge.GetStartVertex is None,
+                        })
+                    except Exception:
+                        continue
+            scanned += len(candidates)
+
+            grouped = {}
+            for item in candidates:
+                # Same centre + same radius = same hole seen from both faces.
+                key = (item["centre"], round(item["radius_m"], 4))
+                grouped.setdefault(key, []).append(item)
+            groups_total += len(grouped)
+
+            outline = list(view.GetOutline or [])
+            anchor_x = (outline[2] + 0.015) if len(outline) >= 4 else 0.30
+            anchor_y = ((outline[1] + outline[3]) / 2.0) if len(outline) >= 4 else 0.20
+
+            for key, members in grouped.items():
+                if len(created) + len(failed) >= int(max_callouts):
+                    break
+                if time.time() - started > float(budget_s):
+                    budget_exceeded = True
+                    break
+                # Prefer a complete circle (the near face usually reads as one), then the
+                # edge nearest the viewer along z.
+                chosen = sorted(members, key=lambda m: (not m["complete"], m["z"]))[0]
+                doc.ClearSelection2(True)
+                try:
+                    if not chosen["edge"].Select2(False, 0):
+                        failed.append({"view": view.Name,
+                                       "diameter_mm": round(chosen["radius_m"] * 2000, 2),
+                                       "reason": "Select2 returned False", "z": chosen["z"]})
+                        continue
+                except Exception as exc:
+                    failed.append({"view": view.Name,
+                                   "diameter_mm": round(chosen["radius_m"] * 2000, 2),
+                                   "reason": "select: %s" % str(exc)[:50], "z": chosen["z"]})
+                    continue
+
+                slot = len(created) + len(failed)
+                try:
+                    display = doc.AddHoleCallout2(anchor_x, anchor_y - slot * 0.012, 0.0)
+                except Exception as exc:
+                    failed.append({"view": view.Name,
+                                   "diameter_mm": round(chosen["radius_m"] * 2000, 2),
+                                   "reason": "callout: %s" % str(exc)[:50], "z": chosen["z"]})
+                    continue
+                if display is None:
+                    failed.append({"view": view.Name,
+                                   "diameter_mm": round(chosen["radius_m"] * 2000, 2),
+                                   "reason": "returned None (edge not annotatable from this view)",
+                                   "z": chosen["z"], "hidden_side": chosen["z"] != 0.0})
+                    continue
+                dim = win.Dispatch(display)
+                try:
+                    is_hole = bool(dim.IsHoleCallout)
+                except Exception:
+                    is_hole = None
+                if is_hole is False:
+                    failed.append({"view": view.Name,
+                                   "diameter_mm": round(chosen["radius_m"] * 2000, 2),
+                                   "reason": "not a hole callout", "z": chosen["z"]})
+                    continue
+                text = None
+                for index in (0, 1, 2):
+                    try:
+                        candidate = getattr(dim, "GetText")(index)
+                        if candidate:
+                            text = str(candidate)
+                            break
+                    except Exception:
+                        continue
+                created.append({
+                    "view": view.Name,
+                    "diameter_mm": round(chosen["radius_m"] * 2000, 2),
+                    "is_hole_callout": is_hole,
+                    "text": text,
+                    "z": chosen["z"],
+                })
+
+            if budget_exceeded or len(created) + len(failed) >= int(max_callouts):
+                break
+
+        doc.ClearSelection2(True)
+        try:
+            doc.EditRebuild3()
+        except Exception:
+            pass
         if save:
             _save_drawing(doc)
         return drawing_ok(
             drawing=doc.GetTitle,
-            circles_found=len(circles),
-            targets=len(targets),
-            created=created,
+            circular_edges=scanned,
+            holes_found=groups_total,
             created_count=len(created),
-            failed=failed,
-            one_per_diameter=bool(one_per_diameter),
+            failed_count=len(failed),
+            created=created,
+            failed=failed[:20],
+            budget_exceeded=budget_exceeded,
+            elapsed_s=round(time.time() - started, 2),
             saved=bool(save),
-            note="readback 为回读的尺寸值；model_match_ok=False 说明该处孔径与模型对不上。",
+            note=("孔标注用 IsHoleCallout 判定；同一孔的上下两条圆边只标一条（优先完整圆、"
+                  "再取最靠观察者的一面）。hidden_side=true 表示该边在背面，SolidWorks 不给标注。"),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
