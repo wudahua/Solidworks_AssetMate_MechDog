@@ -55,15 +55,44 @@ def _defaults_for(category):
     return CATEGORY_DEFAULTS.get(str(category or ""), FALLBACK_DEFAULTS)
 
 
+def _callout_warning(callouts):
+    """Explain a hole-callout run that did not finish, instead of letting it look empty.
+
+    Two very different situations produced identical output before: "no holes in this
+    view" and "budget ran out after 12 of 20 edges". The user's next action differs — one
+    means add Ø dimensions, the other means raise the budget — so the text must differ too.
+    """
+    if not callouts:
+        return None
+    exceeded = callouts.get("budget_exceeded")
+    created = callouts.get("created_count") or 0
+    elapsed = callouts.get("elapsed_s")
+    scanned = callouts.get("circular_edges")
+    if exceeded and created == 0:
+        return ("孔标注因预算超时未完成（%.1f s 内只扫了 %s 条圆边，未生成任何标注）。"
+                "这不是「图纸没有孔」，请提高 hole_budget_s 后重试。"
+                % (float(elapsed or 0), scanned))
+    if exceeded:
+        return ("孔标注预算超时：已生成 %d 个，%s s 后中止（扫到 %s 条圆边）。"
+                "结果不完整，提高 hole_budget_s 可继续。"
+                % (created, elapsed, scanned))
+    return None
+
+
 def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     category=None, do_hole_callouts=None, do_surface_finish=None,
-                    do_derived_check=True, hole_budget_s=20.0):
+                    do_derived_check=True, hole_budget_s=45.0):
     """Run the whole chain and report each step plus the delivery verdict.
 
     Steps (each failure is recorded, not fatal — a partial drawing beats no drawing):
       1 ledger → 2 plan → 3 create views → 4 auto dimension → 5 center marks
       → 6 surface finish (category default) → 7 hole callouts (if holes exist)
       → 8 audit → 9 ledger reconciliation → 10 delivery verdict
+
+    hole_budget_s defaults to 45 s, not 20: measured cost is ~1.7 s per circular edge, and
+    a 20 s budget silently truncated a 35 s job to zero callouts — which then flipped the
+    verdict to "仅供参考". A timed-out callout run must never look like "this part has no
+    holes" (reported 2026-10-28).
     """
     from . import drawing as drawing_tools
     from . import ledger as ledger_tools
@@ -172,7 +201,14 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         plan={"driving_dimensions": driving, "keep_dimensions": keep_dimensions},
         callouts={"created": callouts.get("created_count"),
                   "failed": callouts.get("failed_count"),
-                  "scanned": callouts.get("circular_edges")},
+                  "scanned": callouts.get("circular_edges"),
+                  "holes_found": callouts.get("holes_found"),
+                  # Passing these through matters: a timed-out run used to be
+                  # indistinguishable from a part with no holes, and the verdict flipped
+                  # on that difference alone.
+                  "budget_exceeded": callouts.get("budget_exceeded"),
+                  "elapsed_s": callouts.get("elapsed_s")},
+        callout_warning=_callout_warning(callouts),
         # Plan says "keep N"; auto_dimension inserts every dimension marked for drawing.
         # The gap is real and stated rather than silently reconciled — pruning inserted
         # dimensions would need delete APIs that are riskier than leaving them.

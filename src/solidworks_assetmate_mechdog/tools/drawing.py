@@ -2181,6 +2181,13 @@ ANNOTATION_KINDS = {
 }
 
 
+TEMPLATE_TEXT = {
+    "标记", "处数", "分区", "签名", "日期", "年 月 日", "阶段标记", "阶 段 标 记",
+    "更改文件号", "设计", "审核", "校核", "批准", "工艺", "标准化", "重量", "比例",
+    "共 张", "第 张", "图样名称", "图样代号", "材料", "数量", "更改单号",
+}
+
+
 def list_drawing_annotations(drawing_path, view_name=None):
     """Inventory every annotation on the sheet, classified by kind.
 
@@ -2262,6 +2269,22 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                 pass
                     except Exception:
                         pass
+                    # IsHoleCallout is also true for a radius callout on an outer arc
+                    # (a Ø220 mm wheel outline read back as text "R"). Counting those as
+                    # hole callouts lets "R" satisfy the hole check and hides a real gap,
+                    # so separate them by their text.
+                    if kind == "hole_callout":
+                        try:
+                            callout_text = str(ann.GetSpecificAnnotation.GetText(0) or "")
+                        except Exception:
+                            callout_text = ""
+                        row["text"] = callout_text or None
+                        upper = callout_text.upper()
+                        if upper.startswith("R") and ("Ø" not in callout_text) \
+                                and ("MOD-DIAM" not in upper) and not upper.startswith("M"):
+                            kind = "radius_callout"
+                            counts["hole_callout"] = max(0, counts.get("hole_callout", 0) - 1)
+                            counts["radius_callout"] = counts.get("radius_callout", 0) + 1
                 if kind == "note":
                     try:
                         text = ann.GetSpecificAnnotation.GetText
@@ -2282,6 +2305,21 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                 counts["title_block_text"] = counts.get("title_block_text", 0) + 1
                     except Exception:
                         pass
+                    # Position alone missed the frame zone labels (1 2 3 4 / A B C D /
+                    # 分区 / 更改文件号 / 年 月 日 / 阶 段 标 记): an empty A3 sheet still
+                    # reported 40 "notes", so annotation_count read 91 against 24 real
+                    # annotations. Match on content too — a one- or two-character token, or
+                    # a known template phrase, is never a drafter's note.
+                    template_phrase = str(row.get("text") or "").strip()
+                    is_furniture = template_phrase in TEMPLATE_TEXT or (
+                        0 < len(template_phrase) <= 2
+                        and all(ch.isalnum() for ch in template_phrase)
+                    )
+                    if kind in ("note", "title_block_text") and is_furniture:
+                        previous = kind
+                        kind = "template_text"
+                        counts[previous] = max(0, counts.get(previous, 0) - 1)
+                        counts["template_text"] = counts.get("template_text", 0) + 1
                 row["kind"] = kind
                 rows.append(row)
 
@@ -2294,7 +2332,15 @@ def list_drawing_annotations(drawing_path, view_name=None):
         return drawing_ok(
             drawing=doc.GetTitle,
             totals=counts,
-            annotation_count=len(rows),
+            # Count only annotation the drafter (or this toolkit) put there. Template
+            # furniture inflated this to 91 against 24 real annotations on an empty sheet,
+            # which made the "real drawings average 46.5 notes" baseline incomparable.
+            annotation_count=sum(
+                1 for row in rows
+                if row.get("kind") not in ("title_block_text", "template_text")
+            ),
+            title_block_text_count=counts.get("title_block_text", 0),
+            template_text_count=counts.get("template_text", 0),
             annotations=rows,
             notes=[
                 "geometric_tolerance 的 frame1 依次为 公差值/基准1/基准2/基准3/符号位。",
@@ -2714,6 +2760,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                 components = []
 
             # --- collect, then group by projected centre -------------------------------
+            # A circle wider than 40% of the view is an outer contour, not a hole. The
+            # track-wheel outline (Ø220-290 mm) came back as IsHoleCallout=true with text
+            # "R"; rejecting it after the call still left a radius callout on the sheet and
+            # still incremented annotation.hole_callout. Judge before inserting.
+            view_box = list(view.GetOutline or [])
+            view_width = (view_box[2] - view_box[0]) if len(view_box) >= 4 else None
             candidates = []
             for component in components:
                 try:
@@ -2729,6 +2781,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                         params = list(curve.CircleParams)
                         radius_m = float(params[6])
                         if radius_m < floor_m:
+                            continue
+                        if view_width and radius_m * 2 > view_width * 0.4:
+                            failed.append({"view": view.Name,
+                                           "diameter_mm": round(radius_m * 2000, 2),
+                                           "reason": "skipped: circle is >40% of the view "
+                                                     "width, treated as an outer contour"})
                             continue
                         candidates.append({
                             "edge": edge,
@@ -2807,6 +2865,21 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                             break
                     except Exception:
                         continue
+                # IsHoleCallout is also True for a plain radius callout on an outer arc:
+                # a 220 mm track-wheel outline came back as is_hole_callout=true with
+                # text "R". Accepting that let "R" stand in for hole information and
+                # suppressed the missing-hole blocker — the tool fooling its own check.
+                text_upper = str(text or "").upper()
+                has_diameter = ("Ø" in str(text or "")) or ("MOD-DIAM" in text_upper) \
+                    or text_upper.startswith("M") or " X " in text_upper
+                radius_only = text_upper.startswith("R") and not has_diameter
+                if radius_only or not has_diameter:
+                    failed.append({"view": view.Name,
+                                   "diameter_mm": round(chosen["radius_m"] * 2000, 2),
+                                   "reason": "not a hole callout (text=%r, likely an outer arc)"
+                                             % (text,),
+                                   "z": chosen["z"], "radius_only": True})
+                    continue
                 created.append({
                     "view": view.Name,
                     "diameter_mm": round(chosen["radius_m"] * 2000, 2),
