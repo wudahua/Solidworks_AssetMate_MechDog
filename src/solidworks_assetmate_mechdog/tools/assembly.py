@@ -67,14 +67,16 @@ def _children(comp, depth):
 
 
 def mass_properties(assembly_path):
-    """Whole-assembly mass/volume/area in SI units (kg, m^3, m^2).
+    """Mass/volume/area in SI units (kg, m^3, m^2) — works for parts and assemblies.
 
     Includes `mass_basis`: average density derived from mass/volume. SolidWorks
     falls back to 1000 kg/m3 for parts without material, so a value of exactly
     1000 is reported as a suspected placeholder rather than real engineering data.
     """
     try:
-        doc = open_document(assembly_path, SW_DOC_ASSEMBLY)
+        # Was hard-coded to SW_DOC_ASSEMBLY, which made every part fail with a
+        # misleading "file may be locked" message (reported 2026-10-28).
+        doc = open_document(assembly_path)
         try:
             mass = doc.Extension.CreateMassProperty
             center = mass.CenterOfMass
@@ -116,7 +118,7 @@ def mass_properties(assembly_path):
 def export_preview(assembly_path, output_path, size="1600x1200", view="*Isometric", keep_bmp=False):
     """Save a view image. SolidWorks SaveBMP always writes BMP; PNG needs Pillow."""
     try:
-        doc = open_document(assembly_path, SW_DOC_ASSEMBLY)
+        doc = open_document(assembly_path)  # type inferred from extension
         try:
             width, height = (int(x) for x in size.lower().split("x"))
         except Exception:

@@ -2197,6 +2197,12 @@ def list_drawing_annotations(drawing_path, view_name=None):
         doc = _open_drawing(drawing_path)
         rows, counts = [], {}
         seen = set()
+        try:
+            outline = list(doc.GetFirstView.GetOutline or [])
+            sheet_w = (outline[2] - outline[0]) if len(outline) >= 4 else 0.42
+            sheet_h = (outline[3] - outline[1]) if len(outline) >= 4 else 0.297
+        except Exception:
+            sheet_w, sheet_h = 0.42, 0.297
 
         def scan(view, scope):
             try:
@@ -2263,6 +2269,20 @@ def list_drawing_annotations(drawing_path, view_name=None):
                             row["text"] = text
                     except Exception:
                         pass
+                    # Title-block and frame text is template furniture, not annotation the
+                    # drafter added: a freshly created A3 sheet reports 82 "notes" whose
+                    # content is 审核/校核/设计/标记. Counting them hides real notes and
+                    # inflates the note tally that drawing_audit and delivery_check read.
+                    try:
+                        position = row.get("position_m")
+                        if position and sheet_w and sheet_h:
+                            if position[1] < sheet_h * 0.13 and position[0] > sheet_w * 0.5:
+                                kind = "title_block_text"
+                                counts["note"] = max(0, counts.get("note", 0) - 1)
+                                counts["title_block_text"] = counts.get("title_block_text", 0) + 1
+                    except Exception:
+                        pass
+                row["kind"] = kind
                 rows.append(row)
 
         for view in _iter_views(doc):

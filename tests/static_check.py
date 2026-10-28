@@ -142,6 +142,39 @@ def check_tools_module(path):
     return problems
 
 
+def check_readme(tool_names):
+    """README must agree with the code: tool counts and every tool name present.
+
+    Two consecutive releases shipped without touching README — the headline feature of
+    each release was missing from the docs, and the capability table still told readers a
+    working feature was impossible. A doc that drifts is worse than no doc, so this runs
+    with the same static check that catches broken imports.
+    """
+    readme_path = os.path.join(ROOT, "README.md")
+    if not os.path.exists(readme_path):
+        return ["README.md not found"]
+    text = open(readme_path, encoding="utf-8").read()
+    problems = []
+
+    # Declared totals in the three section headers, e.g. "### 二、工程图（18）"
+    import re
+
+    declared = [int(n) for n in re.findall(r"^###\s*[一二三四五六七八九十]+、[^\n（]*（(\d+)）",
+                                            text, re.MULTILINE)]
+    if declared:
+        total = sum(declared)
+        if total != len(tool_names):
+            problems.append("README section headers sum to %d tools but the code registers %d"
+                            % (total, len(tool_names)))
+    else:
+        problems.append("README has no section headers declaring a tool count")
+
+    missing = [name for name in tool_names if ("`%s`" % name) not in text]
+    if missing:
+        problems.append("README never mentions: %s" % ", ".join(missing))
+    return problems
+
+
 def main():
     if not os.path.exists(SERVER):
         print("server.py not found at %s" % SERVER)
@@ -150,12 +183,14 @@ def main():
     for name in sorted(os.listdir(TOOLS_DIR)) if os.path.isdir(TOOLS_DIR) else []:
         if name.endswith(".py"):
             problems.extend(check_tools_module(os.path.join(TOOLS_DIR, name)))
+    problems.extend(check_readme([t.name for t in tools]))
     if problems:
         print("static check FAILED (%d issue(s), %d tools scanned):" % (len(problems), len(tools)))
         for item in problems:
             print("  " + item)
         return 1
-    print("static check OK (%d tools, every module reference resolves)" % len(tools))
+    print("static check OK (%d tools, every module reference resolves, README in sync)"
+          % len(tools))
     return 0
 
 

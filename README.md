@@ -36,6 +36,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 
 | 工具 | 作用 |
 |---|---|
+| `produce_drawing` | **一条命令出图**：台账→规划→建图→标注→自检→判定，按类别套默认值 |
 | `create_drawing` | 建图：A0–A4、多视图、逐视图比例、模板安全区实测 |
 | `add_section_view` | 剖视图（自动画剖切线） |
 | `add_detail_view` | 局部放大（圆圈边界 + 独立比例） |
@@ -47,6 +48,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_hole_callouts` | **批量孔标注**：单视图可见边 → `AddHoleCallout2`，`IsHoleCallout` 判定（pilot） |
 | `add_drawing_dimension` | 按边索引/坐标补标单个尺寸 |
 | `add_dimension_tolerance` | 原生尺寸公差（双边/对称/极限/配合） |
+| `add_geometric_tolerance` | **原生形位公差**（公差值 + 多基准 + 引线，pilot） |
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
 | `list_drawing_edges` | 视图可见边（索引 + 模型坐标） |
@@ -147,14 +149,18 @@ pending:   27/53 尺寸读不到关联
 
 ## 能力边界（诚实披露）
 
+权威来源是 `check_capabilities` 的输出——下表是它的摘要，若与工具输出冲突，以工具为准。
+
 | 限制 | 原因 | 影响 |
 |---|---|---|
-| **形位公差写不进去** | `InsertGtol` 报 `DISP_E_MEMBERNOTFOUND`；`IModelDocExtension.CreateGtolData` 成员不存在（SW2024）。两条官方路径都不可用，C# 插件也绕不过 | 只能读不能写；真实图纸仅 7% 需要 |
+| **形位公差框格内的符号为空** | `SetFrameSymbols2` 传 `<MOD-FLAT-PAR>` 这类格式码无效；公差值与基准正常写入 | 框格有、数值对，符号格需界面补（v0.6.0 已解决"能不能创建"） |
 | **孔标注只覆盖朝向观察者的孔边** | 同一孔的两个面只有正面能标，背面返回 null（实测 door.SLDPRT：Ø8/Ø15 成功，Ø6 背面 8 条全失败） | 记 `hidden_side`，用 Ø 尺寸补；或换视图 |
-| **`material_library` 失效** | `*.sldmat` 能定位但条目解析不出（格式/编码） | 材质名需自行确认后传入 |
+| **`material_library` 按文件名查找不可靠** | 传绝对路径可用（UTF-16 已修）；按文件名在 PROGRAMDATA/APPDATA 下遍历可能漏 | 建议传完整路径 |
 | **A3 最多 3 个视图** | 剖视图 x 与父视图锁定，无法横向移开 | 钣金件拆两张图（结构 + 展开） |
 | **装配体拿不到包围盒** | `IAssemblyDoc` 没有 `GetPartBox`，组件 `GetBox` 在轻化下返回 None | 比例靠实测安全区推算 + 建完测量降档兜底 |
 | **尺寸跨视图去重需外部传值** | 图纸尺寸是投影长度，同一条边不同视图值不同 | 去重只能靠调用方给 `known_values` |
+| **`produce_drawing` 会多标尺寸** | 规划给"保留 N 个"，实际导入模型全部标记尺寸（无按值筛接口） | 返回 `dimension_gap` 说明差值，需人工删减 |
+| **图面利用率低** | 布局只保证不越界，不保证填满 | 视图偏小、留白多，需人工放大 |
 | **批量读图需逐张关闭** | SolidWorks 开 40+ 文档后任何新文件都打不开 | 批量脚本必须 `CloseDoc` |
 | **DXF/DWG 逆向建模** | 未实现 | 只有 SolidWorks 原生图纸能读 |
 
@@ -291,7 +297,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 35 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 39 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash

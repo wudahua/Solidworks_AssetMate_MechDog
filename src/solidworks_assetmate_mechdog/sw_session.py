@@ -92,8 +92,21 @@ def byref_dispatch_null():
     return variant(None, pythoncom.VT_BYREF | pythoncom.VT_DISPATCH)
 
 
-def open_document(path, doc_type=SW_DOC_ASSEMBLY):
-    """Open path silently, reusing the active document when it is the same file."""
+_DOC_TYPE_BY_EXT = {
+    ".sldprt": SW_DOC_PART,
+    ".sldasm": SW_DOC_ASSEMBLY,
+    ".slddrw": SW_DOC_DRAWING,
+}
+
+
+def open_document(path, doc_type=None):
+    """Open path silently, reusing the active document when it is the same file.
+
+    doc_type defaults to being inferred from the extension. Hard-coding the assembly type
+    made `get_mass_properties` and `export_preview` fail on every part with a misleading
+    "file may be locked" message, when the real cause was `OpenDoc6` returning None for a
+    type mismatch (reported 2026-10-28).
+    """
     path = os.path.abspath(path)
     if not os.path.exists(path):
         # FileNotFoundError(path) stringifies to a bare path; keep the reason.
@@ -101,6 +114,9 @@ def open_document(path, doc_type=SW_DOC_ASSEMBLY):
             "file not found: %s (check drive, folder and extension "
             ".SLDASM/.SLDPRT)" % path
         )
+    extension = os.path.splitext(path)[1].lower()
+    if doc_type is None:
+        doc_type = _DOC_TYPE_BY_EXT.get(extension, SW_DOC_ASSEMBLY)
     sw = get_sw()
     doc = sw.ActiveDoc
     if doc is not None and os.path.normcase(doc.GetPathName) == os.path.normcase(path):
@@ -110,10 +126,21 @@ def open_document(path, doc_type=SW_DOC_ASSEMBLY):
     warnings = variant(0, pythoncom.VT_BYREF | pythoncom.VT_I4)
     doc = sw.OpenDoc6(path, doc_type, SW_OPEN_SILENT, "", errors, warnings)
     if doc is None:
+        # Keep the COM detail: errors=2097152 is the type-mismatch branch, and dropping it
+        # sent one reporter down two wrong paths (read-only, same-name lock).
+        error_code = None
+        try:
+            error_code = int(errors.value)
+        except Exception:
+            pass
+        hint = ("OpenDoc6 returned null with errors=%s for doc_type=%s (%s). "
+                "The most common cause is a document-type mismatch, not a file lock."
+                % (error_code, doc_type, extension or "no extension"))
         raise RuntimeError(
             "SolidWorks could not open the document. It may be open read-only "
-            "elsewhere, or another file with the same name is already open "
-            "(see docs/com-quirks.md, section 2)."
+            "elsewhere, or another file with the same name is already open; "
+            "doc_type/extension mismatch is another common cause. %s "
+            "(see docs/com-quirks.md, section 2)." % hint
         )
     # A reopened document means previously cached component pointers are stale.
     invalidate_components(path)
