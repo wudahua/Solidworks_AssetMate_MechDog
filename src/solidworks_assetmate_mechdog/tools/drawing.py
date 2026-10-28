@@ -329,7 +329,30 @@ def create_drawing(
         template = template.replace("/", "\\")
 
         sw = get_sw()
-        model = open_document(model_path, SW_DOC_PART if model_path.lower().endswith(".sldprt") else 2)
+        is_assembly = not model_path.lower().endswith(".sldprt")
+        model = open_document(model_path, SW_DOC_PART if not is_assembly else 2)
+
+        # A lightweight assembly draws blank views: all three came out 35.7 x 25.2 mm,
+        # identical, with no geometry. Resolving the components before the first view
+        # exists is what makes the drawing contain the machine rather than a placeholder.
+        lightweight_unresolved = None
+        if is_assembly:
+            # ResolveAllLightweightComponents returns 0 when everything loaded, 2 when some
+            # components stayed lightweight. Views drawn from an unresolved assembly come
+            # out blank (all of them identical at 35.7 x 25.2 mm), so record the outcome
+            # instead of assuming the resolve worked.
+            for _attempt in range(2):
+                try:
+                    lightweight_unresolved = model.ResolveAllLightweightComponents(True)
+                except Exception:
+                    lightweight_unresolved = None
+                    break
+                try:
+                    model.ForceRebuild3(False)
+                except Exception:
+                    pass
+                if lightweight_unresolved == 0:
+                    break
 
         drw = _new_document(sw, template)
         if drw is None:
@@ -351,25 +374,43 @@ def create_drawing(
         box = _model_box(model)
 
         chosen_scale = float(scale) if scale else None
+        # Usable region from the template itself (left band, title block, parts list).
+        # Hard-coding 0.12/0.10 here and 0.05/0.03/0.245 below is what made the predicted
+        # layout disagree with where SolidWorks actually placed the views (reported twice:
+        # D-3 then again for assemblies).
+        safe_x0 = float(safety.get("left", sheet_w * 0.14))
+        safe_x1 = sheet_w - float(safety.get("right", sheet_w * 0.01))
+        safe_y0 = float(safety.get("bottom", sheet_h * 0.22))
+        safe_y1 = sheet_h - float(safety.get("top", sheet_h * 0.012))
+        avail_w = max(safe_x1 - safe_x0, 0.05)
+        avail_h = max(safe_y1 - safe_y0, 0.05)
+        gap = 0.022
+
+        def _fit_scale(candidate_box):
+            width_need = candidate_box[0] + gap + candidate_box[2]
+            height_need = candidate_box[1] + gap + candidate_box[2]
+            return min(avail_w / max(width_need, 1e-6),
+                       avail_h / max(height_need, 1e-6), 1.0)
+
         if chosen_scale is None and auto_fit and box and box[0] > 0 and box[1] > 0:
-            # Width must hold BOTH columns (front + side view) or the right column
-            # lands outside the sheet; height must hold front + top views.
-            fit_w = (sheet_w - 0.12) / max(box[0] + box[2] + 0.03, 1e-6)
-            fit_h = (sheet_h - 0.10) / max(box[1] + box[2] + 0.03, 1e-6)
-            fit = min(fit_w, fit_h, 1.0)
-            chosen_scale = _standard_scale(fit)
+            chosen_scale = _standard_scale(_fit_scale(box))
         elif chosen_scale is None:
             chosen_scale = 1.0
 
         def _layout(scale_value):
             ww, hh, dd = (box or (0.15, 0.08, 0.08))
             ww, hh, dd = ww * scale_value, hh * scale_value, dd * scale_value
-            c1 = 0.05 + ww / 2
-            c2 = min(0.05 + ww + 0.04 + dd / 2, sheet_w - 0.03 - dd / 2)
-            fy = 0.245 - hh / 2
-            ty = max(0.055 + dd / 2, fy - hh / 2 - 0.025 - dd / 2)
-            over = (c2 + dd / 2 > sheet_w - 0.005) or (fy + hh / 2 > sheet_h - 0.005) \
-                or (ty - dd / 2 < 0.005)
+            # Two columns (front+top on the left, right+iso on the right), centred inside
+            # the measured safe area — so the prediction matches where views really land.
+            total_w = ww + gap + dd
+            total_h = hh + gap + dd
+            over = (total_w > avail_w + 1e-6) or (total_h > avail_h + 1e-6)
+            x_start = safe_x0 + (avail_w - total_w) / 2
+            y_start = safe_y0 + (avail_h - total_h) / 2
+            c1 = x_start + ww / 2
+            c2 = x_start + ww + gap + dd / 2
+            fy = y_start + total_h - hh / 2
+            ty = y_start + dd / 2
             return (c1, c2, fy, ty, ww, hh, dd, over)
 
         # A 1.69 m assembly at 1.0 simply does not fit A3; step down until the predicted
@@ -421,6 +462,49 @@ def create_drawing(
             view_objects.append(view)
 
         layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
+
+        # Measure-then-correct. An assembly's bounding box is not obtainable (lightweight
+        # components return None from GetBox, GetPartBox does not exist on IAssemblyDoc),
+        # so the predicted layout cannot be trusted for the very models that need auto_fit
+        # most. After the views exist we can measure them for real: if any outline leaves
+        # the sheet, step the scale down and repack, up to three times.
+        auto_scale_adjustments = []
+        if auto_fit and view_objects:
+            sheet_box = list(sheet.GetOutline or [])
+            for _attempt in range(3):
+                try:
+                    doc.GraphicsRedraw2()
+                except Exception:
+                    pass
+                outside = False
+                measured = []
+                for candidate in view_objects:
+                    try:
+                        o = list(candidate.GetOutline or [])
+                    except Exception:
+                        continue
+                    if len(o) < 4:
+                        continue
+                    measured.append(o)
+                    if (o[0] < sheet_box[0] - 1e-6 or o[1] < sheet_box[1] - 1e-6
+                            or o[2] > sheet_box[2] + 1e-6 or o[3] > sheet_box[3] + 1e-6):
+                        outside = True
+                if not outside:
+                    break
+                try:
+                    current = float(view_objects[0].ScaleDecimal)
+                except Exception:
+                    break
+                smaller = _standard_scale(current * 0.5)
+                if smaller >= current:
+                    break
+                for candidate in view_objects:
+                    try:
+                        candidate.ScaleDecimal = smaller
+                    except Exception:
+                        pass
+                auto_scale_adjustments.append({"from": current, "to": smaller})
+                layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
         try:
             drw.GraphicsRedraw2()
         except Exception:
@@ -466,6 +550,19 @@ def create_drawing(
             drw.SaveAsSilent(out, False)
             result.update(saved=os.path.exists(out), drawing_path=out,
                           bytes=os.path.getsize(out) if os.path.exists(out) else 0)
+        result.update(
+            safe_area_used={
+                "x": [round(safe_x0, 4), round(safe_x1, 4)],
+                "y": [round(safe_y0, 4), round(safe_y1, 4)],
+                "source": safety.get("source"),
+            },
+            box_used_m=[round(v, 4) for v in box] if box else None,
+            auto_scale_adjustments=auto_scale_adjustments,
+            box_source=("part" if box else
+                        "unavailable (assembly) — layout verified by measuring views"),
+            lightweight_resolve_attempted=is_assembly,
+            lightweight_unresolved=lightweight_unresolved,
+        )
         return ok(**result)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
