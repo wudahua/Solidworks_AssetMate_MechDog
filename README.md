@@ -343,11 +343,30 @@ python tests/smoke.py --skip-export --skip-drawing --eng-cases --eng-sample 1
 ## 设计原则
 
 1. **工具返回成功 ≠ 图纸正确** — 每步回读（孔标注读孔径、尺寸读公差类型、剖视读实际切到的位置）
-2. **统一会话层** — 所有工具共用 `sw_session`，慢调用只取一次
-3. **写操作先快照** — 默认 dry-run，返回修改前的值
-4. **不编造结果** — COM 不可用时返回结构化错误 + 坑文档编号，绝不假装成功
-5. **判定要有依据** — 阈值由 100 张真实图纸实测，不是凭感觉
-6. **每个工具配坑笔记** — 新增工具必须同步 `docs/com-quirks.md`
+2. **接口报错 ≠ API 不存在** — 见下方专节，这条差点让形位公差被判死刑
+3. **统一会话层** — 所有工具共用 `sw_session`，慢调用只取一次
+4. **写操作先快照** — 默认 dry-run，返回修改前的值
+5. **不编造结果** — COM 不可用时返回结构化错误 + 坑文档编号，绝不假装成功
+6. **判定要有依据** — 阈值由 100 张真实图纸实测，不是凭感觉
+7. **每个工具配坑笔记** — 新增工具必须同步 `docs/com-quirks.md`
+
+## 接口报错 ≠ API 不存在
+
+`DISP_E_MEMBERNOTFOUND` 有三种完全不同的来源，混为一谈会把自己堵死：
+
+| 来源 | 症状 | 怎么排除 |
+|---|---|---|
+| ① **属性/方法派发方式错** | `doc.InsertGtol()` 报 MEMBERNOTFOUND | `_FlagAsMethod(name)` 或 `ole.Invoke(dispid, 0, DISPATCH_METHOD, True)` |
+| ② **接口指针不对** | 方法在另一个接口上 | `QueryInterface` 到目标接口再试 |
+| ③ **运行时真的没实现** | 以上都试过仍失败 | 才能下这个结论 |
+
+**形位公差就是这个坑**：`win32com` 把 `InsertGtol` 当成属性读取（`DISPATCH_PROPERTYGET`），
+必然返回 `MEMBERNOTFOUND`。改成 `DISPATCH_METHOD` 立刻拿到对象——**同一个 DISPID，一个标志位之差**。
+
+我此前只测了 ① 的一种写法，就断言 ③，还在 release notes 里写「C# 插件也绕不过」，绕了两天。
+
+**规则**：写「这个 API 不存在」之前，三种来源必须逐一排除并留下证据。
+诊断脚本见 `tests/` 与 `docs/com-quirks.md`。
 
 ---
 
