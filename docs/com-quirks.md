@@ -612,6 +612,17 @@ ann.GetAttachedEntityTypes    # (11, 11)  11 = EDGE
 
 所以不能拿它一票否决：默认只报 warning，需要严格判定时传 `strict_attachments=True`。
 
+### 装配体不能脱离引用复制（2026-10-28 教训）
+
+把 `.SLDASM` 单独复制到临时目录去建图，组件引用全部断开，`CreateDrawViewFromModelView3`
+会返回**没有几何的视图**：三个视图 outline 全是 0.0357 × 0.0252 m，`GetVisibleEntities2` 返回 0 条边，
+看起来像"装配建图功能坏了"。
+
+实际上原路径建图一切正常：`box = [0.8, 1.098, 0.8852]`、比例 1:20、视图有内容。
+
+**结论**：测试装配必须保持引用完整——要么在原目录建图、要么整目录复制（含所有零件）。
+只复制 `.SLDASM` 得到的"空白视图"不是产品缺陷。
+
 ### 材料：SetMaterialPropertyName2 与本地名称（2026-10-27 实测）
 
 ```python
