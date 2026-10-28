@@ -230,6 +230,60 @@ def _model_view_name(model, semantic):
     return None
 
 
+def _model_box(model):
+    """Model bounding box in metres, or None.
+
+    IPartDoc.GetPartBox works for parts; on an assembly it can raise or return zeros, and
+    the old code then silently used scale 1.0 for a 1.69 m machine (reported as D-3).
+    Falls back to the union of component boxes so auto_fit has something to work with.
+    """
+    def _valid(value):
+        try:
+            values = list(value or ())
+            if len(values) < 6:
+                return None
+            box = (abs(values[3] - values[0]), abs(values[4] - values[1]),
+                   abs(values[5] - values[2]))
+            return box if box[0] > 0.001 and box[1] > 0.001 else None
+        except Exception:
+            return None
+
+    try:
+        found = _valid(model.GetPartBox(True))
+        if found:
+            return found
+    except Exception:
+        pass
+    # Assembly path: union of visible component boxes.
+    try:
+        components = list(model.GetComponents(False) or ())
+    except Exception:
+        components = []
+    low, high = None, None
+    for component in components:
+        try:
+            import win32com.client as win
+
+            comp = win.Dispatch(component)
+            box = _valid(comp.GetBox(False, False))
+            if box is None:
+                continue
+            values = list(comp.GetBox(False, False))
+            if low is None:
+                low = [values[0], values[1], values[2]]
+                high = [values[3], values[4], values[5]]
+            else:
+                low = [min(low[i], values[i]) for i in range(3)]
+                high = [max(high[i], values[i + 3]) for i in range(3)]
+        except Exception:
+            continue
+    if low is not None:
+        box = (abs(high[0] - low[0]), abs(high[1] - low[1]), abs(high[2] - low[2]))
+        if box[0] > 0.001 and box[1] > 0.001:
+            return box
+    return None
+
+
 def _standard_scale(fit):
     """Nearest standard drawing scale not larger than the available fit."""
     for candidate in (1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002):
@@ -294,13 +348,7 @@ def create_drawing(
         # Size the model from its bounding box so the scale is known BEFORE the first
         # view is inserted — a brand-new view reports no outline, so measuring it and
         # moving it afterwards fights the layout.
-        box = None
-        try:
-            b = list(model.GetPartBox(True) or [])
-            if len(b) >= 6:
-                box = (abs(b[3] - b[0]), abs(b[4] - b[1]), abs(b[5] - b[2]))
-        except Exception:
-            box = None
+        box = _model_box(model)
 
         chosen_scale = float(scale) if scale else None
         if chosen_scale is None and auto_fit and box and box[0] > 0 and box[1] > 0:
@@ -313,12 +361,30 @@ def create_drawing(
         elif chosen_scale is None:
             chosen_scale = 1.0
 
-        w, h, d = (box or (0.15, 0.08, 0.08))
-        w, h, d = w * chosen_scale, h * chosen_scale, d * chosen_scale
-        col1 = 0.05 + w / 2
-        col2 = min(0.05 + w + 0.04 + d / 2, sheet_w - 0.03 - d / 2)
-        front_y = 0.245 - h / 2
-        top_y = max(0.055 + d / 2, front_y - h / 2 - 0.025 - d / 2)
+        def _layout(scale_value):
+            ww, hh, dd = (box or (0.15, 0.08, 0.08))
+            ww, hh, dd = ww * scale_value, hh * scale_value, dd * scale_value
+            c1 = 0.05 + ww / 2
+            c2 = min(0.05 + ww + 0.04 + dd / 2, sheet_w - 0.03 - dd / 2)
+            fy = 0.245 - hh / 2
+            ty = max(0.055 + dd / 2, fy - hh / 2 - 0.025 - dd / 2)
+            over = (c2 + dd / 2 > sheet_w - 0.005) or (fy + hh / 2 > sheet_h - 0.005) \
+                or (ty - dd / 2 < 0.005)
+            return (c1, c2, fy, ty, ww, hh, dd, over)
+
+        # A 1.69 m assembly at 1.0 simply does not fit A3; step down until the predicted
+        # layout is inside the sheet instead of emitting an out-of-frame drawing.
+        if auto_fit and box and chosen_scale:
+            for _ in range(4):
+                probe = _layout(chosen_scale)
+                if not probe[7]:
+                    break
+                smaller = _standard_scale(chosen_scale * 0.5)
+                if smaller >= chosen_scale:
+                    break
+                chosen_scale = smaller
+
+        col1, col2, front_y, top_y, w, h, d, _overflow = _layout(chosen_scale)
         positions = {
             "front": (col1, front_y), "back": (col1, front_y),
             "top": (col1, top_y), "bottom": (col1, top_y),
@@ -1863,11 +1929,19 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             box = {"width_m": round(d_o[2] - d_o[0], 4), "height_m": round(d_o[3] - d_o[1], 4)}
         except Exception:
             box = None
+        final_scale = applied if applied is not None else float(detail.ScaleDecimal)
+        locked = abs(float(final_scale) - float(scale)) > 0.01
         return drawing_ok(
             drawing=doc.GetTitle, detail=detail.Name, source_view=target.Name,
             label=str(label), boundary_center_m=[round(sheet_x, 4), round(sheet_y, 4)],
             boundary_radius_m=float(radius_m),
-            scale=applied if applied is not None else float(detail.ScaleDecimal), outline=box,
+            scale=final_scale,
+            requested_scale=float(scale),
+            scale_locked=locked,
+            scale_note=("局部视图默认继承父视图比例（UseParentScale），ScaleDecimal 需在保存后"
+                        "二次设置才生效；scale_locked=true 表示本次仍按父视图比例，"
+                        "需要不同比例时在 UI 中改或先保存重开再调一次。") if locked else None,
+            outline=box,
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
