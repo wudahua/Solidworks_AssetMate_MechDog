@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME, __version__
 from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
-                    ledger, material as material_tools, planner, recolor, rename, survey)
+                    ledger, material as material_tools, pipeline, planner, recolor, rename, survey)
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -22,6 +22,30 @@ if getattr(mcp, "_mcp_server", None) is not None:
 
 def _json(payload):
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def produce_drawing(
+    model_path: str,
+    output_path: str | None = None,
+    paper: str = "A3",
+    views: list | None = None,
+    category: str | None = None,
+    do_hole_callouts: bool | None = None,
+    do_surface_finish: bool | None = None,
+) -> str:
+    """Model in, annotated and judged drawing out — the whole chain in one call.
+
+    ledger → plan → views → dimensions → center marks → surface finish (category default)
+    → hole callouts → audit → reconciliation → delivery verdict.
+
+    Defaults come from the part category (钣金 / 一般零件 / 轴类 / 装配体) and are echoed in
+    `defaults_applied`. A failing step is recorded and the chain continues.
+    """
+    return _json(pipeline.produce_drawing(
+        model_path, output_path=output_path, paper=paper,
+        views=tuple(views) if views else None, category=category,
+        do_hole_callouts=do_hole_callouts, do_surface_finish=do_surface_finish))
 
 
 @mcp.tool()
