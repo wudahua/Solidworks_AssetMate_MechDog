@@ -461,7 +461,24 @@ def create_drawing(
                             "scale": per_view_scale, "outline": box_m})
             view_objects.append(view)
 
+        # Views report a default outline until the drawing is redrawn; repacking before
+        # that packs placeholder sizes, which is how views ended up scattered across the
+        # sheet instead of grouped. Force geometry first, then repack.
+        if view_objects:
+            try:
+                doc.ForceRebuild3(False)
+            except Exception:
+                pass
+            try:
+                doc.GraphicsRedraw2()
+            except Exception:
+                pass
+
         layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
 
         # Measure-then-correct. An assembly's bounding box is not obtainable (lightweight
         # components return None from GetBox, GetPartBox does not exist on IAssemblyDoc),
