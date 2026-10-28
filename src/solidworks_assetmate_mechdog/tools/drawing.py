@@ -833,11 +833,15 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
             )
 
         readback = {}
+        # GetText is a method on some builds and a property on others: call it, and only
+        # fall back to a bare attribute read when calling raises.
         try:
-            readback["text"] = str(callout.GetText)
+            text_value = callout.GetText()
+            readback["text"] = str(text_value) if not callable(text_value) else None
         except Exception:
             try:
-                readback["text"] = str(callout.GetText())
+                text_value = callout.GetText
+                readback["text"] = str(text_value) if not callable(text_value) else None
             except Exception:
                 readback["text"] = None
         try:

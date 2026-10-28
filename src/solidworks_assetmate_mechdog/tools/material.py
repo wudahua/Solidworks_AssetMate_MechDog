@@ -6,7 +6,9 @@ the database name and material name must both exist in the installed material li
 so a failed lookup is reported instead of silently keeping the old material.
 """
 
+import glob
 import os
+import re
 
 from ..sw_session import SW_DOC_PART, error, ok, open_document
 
@@ -124,6 +126,33 @@ def set_part_material(paths, material, database=DEFAULT_DATABASE, config="",
     )
 
 
+def _normalise_rules(rules):
+    """Accept [{"keywords": [...], "material": "..."}] as well as [(keywords, material)].
+
+    The MCP schema advertises `rules` as an array of objects, but the implementation used
+    to unpack each element as a 2-tuple — a dict then yielded its KEYS, so the material
+    became the literal string "material" (reported as 2.2).
+    """
+    if not rules:
+        return None
+    normalised = []
+    for rule in rules:
+        if isinstance(rule, dict):
+            keywords = rule.get("keywords") or rule.get("keyword") or []
+            material = rule.get("material")
+        elif isinstance(rule, (list, tuple)) and len(rule) == 2:
+            keywords, material = rule
+        else:
+            raise ValueError("each rule must be {keywords, material} or a 2-item list, "
+                             "got %r" % (rule,))
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        if not material or not keywords:
+            raise ValueError("rule needs both keywords and material: %r" % (rule,))
+        normalised.append((list(keywords), str(material)))
+    return normalised
+
+
 def assign_materials(paths, rules=None, database=DEFAULT_DATABASE, config="",
                      save=True, apply=False):
     """Pick a material per part from keyword rules, then assign it.
@@ -135,7 +164,11 @@ def assign_materials(paths, rules=None, database=DEFAULT_DATABASE, config="",
     """
     if isinstance(paths, str):
         paths = [paths]
-    rule_set = rules or DEFAULT_RULES
+    try:
+        rule_set = _normalise_rules(rules) or DEFAULT_RULES
+    except ValueError as exc:
+        return error("bad_rules", str(exc),
+                     'Use [{"keywords": ["KSHE"], "material": "自定义塑料"}]')
     plan, unresolved = [], []
     for path in paths:
         path = os.path.abspath(path)
@@ -173,39 +206,67 @@ def assign_materials(paths, rules=None, database=DEFAULT_DATABASE, config="",
 
 
 def material_library(database=DEFAULT_DATABASE):
-    """List material names available in the installed library.
+    """List material names available in a material library.
 
-    Reads the .sldmat XML when it can be found; SolidWorks stores it under
-    ProgramData/SOLIDWORKS. Returns the folder it managed to read so the caller can judge
-    whether the list is complete.
+    `database` may be a bare filename (searched under the usual install roots), a
+    directory, or an absolute path to a .sldmat. Chinese installs store the library as
+    UTF-16, and the old utf-8 reader silently produced zero materials while reporting
+    ok=true — both are handled here.
     """
     candidates = []
-    for root in (
-        os.environ.get("PROGRAMDATA", r"C:\ProgramData"),
-        os.environ.get("APPDATA", ""),
-    ):
-        if not root:
-            continue
-        base = os.path.join(root, "SOLIDWORKS")
-        if not os.path.isdir(base):
-            continue
-        for dirpath, _dirnames, filenames in os.walk(base):
-            for filename in filenames:
-                if filename.lower() == database.lower():
-                    candidates.append(os.path.join(dirpath, filename))
+    if os.path.isfile(database):
+        candidates = [database]
+    elif os.path.isdir(database):
+        candidates = sorted(glob.glob(os.path.join(database, "**", "*.sldmat"), recursive=True))
+    else:
+        roots = [
+            os.environ.get("PROGRAMDATA", ""),
+            os.environ.get("APPDATA", ""),
+            os.path.join(os.environ.get("PROGRAMFILES", ""), "SOLIDWORKS Corp",
+                         "SOLIDWORKS", "lang"),
+        ]
+        for root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for dirpath, _dirnames, filenames in os.walk(root):
+                for filename in filenames:
+                    if filename.lower() == database.lower():
+                        candidates.append(os.path.join(dirpath, filename))
+
     if not candidates:
+        available = []
+        for root in (os.environ.get("PROGRAMDATA", ""), os.environ.get("APPDATA", ""),
+                     os.path.join(os.environ.get("PROGRAMFILES", ""), "SOLIDWORKS Corp")):
+            if root and os.path.isdir(root):
+                available += glob.glob(os.path.join(root, "**", "*.sldmat"), recursive=True)
         return error("library_not_found",
-                     "No %s found under PROGRAMDATA/APPDATA" % database,
-                     "Pass an explicit database or assign materials by name.")
-    import re
+                     "No material library matching %r" % database,
+                     "Available: %s" % (available[:6] or "none found"))
 
     found = []
     for file_path in candidates[:1]:
-        try:
-            text = open(file_path, "r", encoding="utf-8", errors="ignore").read()
-        except Exception:
-            continue
+        text = None
+        # UTF-16 first: Chinese SolidWorks ships UTF-16 libraries whose every byte is
+        # followed by \x00, so a utf-8 read matches nothing.
+        for encoding in ("utf-16", "utf-8-sig", "utf-8", "gb18030"):
+            try:
+                probe = open(file_path, "r", encoding=encoding, errors="strict").read()
+                if "<material" in probe:
+                    text = probe
+                    break
+            except Exception:
+                continue
+        if text is None:
+            try:
+                text = open(file_path, "r", encoding="utf-8", errors="ignore").read()
+            except Exception:
+                continue
         for match in re.finditer(r'<material name="([^"]+)"', text):
             found.append(match.group(1))
-    return ok(database=database, path=candidates[0], count=len(found),
-              materials=sorted(set(found)))
+
+    found = sorted(set(found))
+    result = ok(database=database, path=candidates[0], count=len(found), materials=found)
+    if not found:
+        result["warning"] = ("parsed 0 materials from %s — file exists but no <material> "
+                             "entries were readable" % candidates[0])
+    return result

@@ -135,6 +135,9 @@ def export_bom(
                 "mass_each_kg": round(mass, 6) if mass is not None else None,
                 "mass_total_kg": round(mass * qty, 6) if mass is not None else None,
                 "path": path,
+                # A sub-assembly row already contains its children, so summing every row
+                # double-counts. Needed by total_mass_leaf_only_kg below.
+                "is_subassembly": str(path or "").lower().endswith((".sldasm", ".asm")),
             })
 
         known_mass = [r["mass_total_kg"] for r in rows if r["mass_total_kg"] is not None]
@@ -149,7 +152,15 @@ def export_bom(
             "components": len(components),
             "part_types": len(rows),
             "items": rows,
+            # Rows flagged as sub-assemblies already contain their children's mass, so
+            # adding both double-counts (measured +11.9% on a 7-component fixture).
             "total_mass_kg": round(sum(known_mass), 6) if known_mass else None,
+            "total_mass_leaf_only_kg": round(sum(
+                row["mass_total_kg"] for row in rows
+                if not row.get("is_subassembly") and isinstance(row.get("mass_total_kg"), (int, float))
+            ), 6) if known_mass else None,
+            "total_mass_note": ("total_mass_kg 含子装配行与其子件行；按零件树去重用 "
+                                "total_mass_leaf_only_kg，它与 get_mass_properties 对得上。"),
             "mass_complete": len(known_mass) == len(rows) if include_mass else False,
             "mass_basis": (
                 "SolidWorks default density 1000 kg/m3 for %d part(s) without material: %s"

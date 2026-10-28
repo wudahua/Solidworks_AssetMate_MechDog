@@ -137,6 +137,12 @@ pending:   27/53 尺寸读不到关联
 
 ---
 
+## 破坏性变更记录
+
+| 版本 | 变更 | 影响 |
+|---|---|---|
+| 0.4.7 | `set_part_material` 的 `material` 参数改名 `material_name` | 旧调用会 schema 校验失败，需同步改参数名（改名是为了修参数遮蔽模块名的 bug） |
+
 ## 能力边界（诚实披露）
 
 | 限制 | 原因 | 影响 |
@@ -224,7 +230,7 @@ pip install ".[png]"        # 需要 PNG 输出时
 
 | 现象 | 处理 |
 |---|---|
-| 隔离构建下载 `setuptools` 失败 | `pip install -e ".[png]" --no-build-isolation` |
+| 隔离构建下载 `setuptools` 失败 | Python ≥3.12 的全新 venv 先 `pip install setuptools wheel`，再 `pip install -e ".[png]" --no-build-isolation` |
 | 镜像报 `from versions: none`（实为 403） | 换源 `-i https://mirrors.aliyun.com/pypi/simple/` |
 | 找不到 `solidworks-assetmate-mechdog` 命令 | 入口在 `<python>\Scripts`，改用 `python -m` |
 | 工程图视图创建返回空 | 0.3.0 已处理（中文版视图名 `*前视`） |
