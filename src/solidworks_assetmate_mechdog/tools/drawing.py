@@ -2235,21 +2235,67 @@ def list_drawing_annotations(drawing_path, view_name=None):
                             kind = "hole_callout"
                     except Exception:
                         pass
-                counts[kind] = counts.get(kind, 0) + 1
-                key = None
+                name = None
                 try:
-                    key = str(ann.GetName)
+                    name = str(ann.GetName)
                 except Exception:
-                    key = None
-                if key and key in seen:
+                    name = None
+                # IsHoleCallout is ALSO true for a radius dimension on an outer arc, and
+                # `GetText` does not exist on those objects — so a text-based test silently
+                # passes on unreadable text and lets "R" stand in for hole information.
+                # The name prefix is reliable and costs nothing: RD* = radius dimension.
+                if kind == "hole_callout" and name:
+                    upper_name = name.upper()
+                    callout_text = ""
+                    # GetText lives on IDisplayDimension, NOT on IAnnotation — calling it on
+                    # the annotation raises and the swallowed exception made every callout
+                    # look like it had no text, so all of them fell through to the RD-prefix
+                    # rule and even real Ø callouts were filed as radius dimensions.
+                    try:
+                        specific = ann.GetSpecificAnnotation
+                    except Exception:
+                        specific = None
+                    for index in (0, 1, 2):
+                        try:
+                            callout_text = str(specific.GetText(index) or "")
+                            if callout_text:
+                                break
+                        except Exception:
+                            continue
+                    upper_text = callout_text.upper()
+                    looks_like_hole = (
+                        "Ø" in callout_text or "MOD-DIAM" in upper_text
+                        or upper_text.startswith("M") or " X " in upper_text
+                    )
+                    # Order matters: readable text that names a diameter wins over the
+                    # name prefix, because a genuine hole callout can also be named RD*.
+                    # Only when the text is unreadable do we fall back to the prefix.
+                    if looks_like_hole:
+                        pass  # keep hole_callout
+                    elif upper_name.startswith("RD"):
+                        kind = "radius_callout"
+                    elif not callout_text:
+                        # No text and no RD prefix: do not claim it is a hole callout.
+                        # "Unreadable" must not read as "verified".
+                        kind = "hole_callout_unverified"
+                    else:
+                        kind = "radius_callout"
+                    row["text"] = callout_text or None
+                position = None
+                try:
+                    position = [round(v, 4) for v in ann.GetPosition]
+                except Exception:
+                    position = None
+                # Dedupe on scope+name+position: the same name (D1) can be hit from several
+                # scans, but a genuine duplicate has the same position too.
+                key = (scope, name, tuple(position) if position else None)
+                if name and key in seen:
                     continue
-                if key:
+                if name:
                     seen.add(key)
-                row = {"kind": kind, "name": key, "scope": scope}
-                try:
-                    row["position_m"] = [round(v, 4) for v in ann.GetPosition]
-                except Exception:
-                    pass
+                row = {"kind": kind, "name": name, "scope": scope}
+                if position:
+                    row["position_m"] = position
                 if kind == "geometric_tolerance":
                     try:
                         gtol = ann.GetSpecificAnnotation
@@ -2269,22 +2315,6 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                 pass
                     except Exception:
                         pass
-                    # IsHoleCallout is also true for a radius callout on an outer arc
-                    # (a Ø220 mm wheel outline read back as text "R"). Counting those as
-                    # hole callouts lets "R" satisfy the hole check and hides a real gap,
-                    # so separate them by their text.
-                    if kind == "hole_callout":
-                        try:
-                            callout_text = str(ann.GetSpecificAnnotation.GetText(0) or "")
-                        except Exception:
-                            callout_text = ""
-                        row["text"] = callout_text or None
-                        upper = callout_text.upper()
-                        if upper.startswith("R") and ("Ø" not in callout_text) \
-                                and ("MOD-DIAM" not in upper) and not upper.startswith("M"):
-                            kind = "radius_callout"
-                            counts["hole_callout"] = max(0, counts.get("hole_callout", 0) - 1)
-                            counts["radius_callout"] = counts.get("radius_callout", 0) + 1
                 if kind == "note":
                     try:
                         text = ann.GetSpecificAnnotation.GetText
@@ -2301,8 +2331,6 @@ def list_drawing_annotations(drawing_path, view_name=None):
                         if position and sheet_w and sheet_h:
                             if position[1] < sheet_h * 0.13 and position[0] > sheet_w * 0.5:
                                 kind = "title_block_text"
-                                counts["note"] = max(0, counts.get("note", 0) - 1)
-                                counts["title_block_text"] = counts.get("title_block_text", 0) + 1
                     except Exception:
                         pass
                     # Position alone missed the frame zone labels (1 2 3 4 / A B C D /
@@ -2316,10 +2344,7 @@ def list_drawing_annotations(drawing_path, view_name=None):
                         and all(ch.isalnum() for ch in template_phrase)
                     )
                     if kind in ("note", "title_block_text") and is_furniture:
-                        previous = kind
                         kind = "template_text"
-                        counts[previous] = max(0, counts.get(previous, 0) - 1)
-                        counts["template_text"] = counts.get("template_text", 0) + 1
                 row["kind"] = kind
                 rows.append(row)
 
@@ -2328,6 +2353,14 @@ def list_drawing_annotations(drawing_path, view_name=None):
             if view_name and not is_sheet and view.Name != view_name:
                 continue
             scan(view, "sheet" if is_sheet else view.Name)
+
+        # Totals are derived FROM the rows. Incrementing a counter during the scan and
+        # appending the row after a dedupe `continue` made them disagree: a repeated name
+        # bumped the count but produced no row, so totals said 15 dimensions while only 1
+        # row existed. One source of truth instead of two.
+        from collections import Counter
+
+        counts = dict(Counter(row.get("kind") for row in rows))
 
         return drawing_ok(
             drawing=doc.GetTitle,
@@ -2747,6 +2780,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         budget_exceeded = False
         floor_m = max(float(min_diameter_mm) * 0.0005, 1e-6)
         scanned = 0
+        edges_scanned = 0
+        rejected = 0
         groups_total = 0
 
         for view in targets:
@@ -2782,7 +2817,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                         radius_m = float(params[6])
                         if radius_m < floor_m:
                             continue
+                        # Count every circular edge the scan met, not just the ones that
+                        # survive the filters: "scanned: 0" next to "failed: 20" reads as
+                        # "this view had nothing", when 20 edges were seen and rejected.
+                        edges_scanned += 1
                         if view_width and radius_m * 2 > view_width * 0.4:
+                            rejected += 1
                             failed.append({"view": view.Name,
                                            "diameter_mm": round(radius_m * 2000, 2),
                                            "reason": "skipped: circle is >40% of the view "
@@ -2901,12 +2941,17 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         return drawing_ok(
             drawing=doc.GetTitle,
             circular_edges=scanned,
+            edges_scanned=edges_scanned,
+            rejected_outer_contour=rejected,
             holes_found=groups_total,
             created_count=len(created),
             failed_count=len(failed),
             created=created,
             failed=failed[:20],
-            budget_exceeded=budget_exceeded,
+            # Judge the budget with the same clock that produced elapsed_s: a run whose
+            # candidates were all rejected never entered the insert loop, so it reported
+            # budget_exceeded=False while taking 55 s of a 45 s budget.
+            budget_exceeded=bool(budget_exceeded or (time.time() - started) > float(budget_s)),
             elapsed_s=round(time.time() - started, 2),
             saved=bool(save),
             note=("孔标注用 IsHoleCallout 判定；同一孔的上下两条圆边只标一条（优先完整圆、"
