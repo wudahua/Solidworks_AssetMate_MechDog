@@ -33,22 +33,10 @@ RELIEF_HINTS = ("Relief", "止裂", "BendRelief", "CornerRelief")
 
 
 def _call(obj, name, *args):
-    """Invoke a method even when pywin32 decides the name is a property.
+    """Thin alias; the single implementation lives in sw_session.call_method."""
+    from ..sw_session import call_method
 
-    FirstFeature / GetNextFeature / GetDefinition are all dispatched as PROPERTYGET by
-    win32com and raise DISP_E_MEMBERNOTFOUND; calling the DISPID as DISPATCH_METHOD works.
-    """
-    import pythoncom
-
-    ole = obj._oleobj_
-    dispid = ole.GetIDsOfNames(name)
-    try:
-        obj._FlagAsMethod(name)
-    except Exception:
-        pass
-    if args:
-        return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True, *args)
-    return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True)
+    return call_method(obj, name, *args)
 
 
 def _walk_features(model, limit=400):

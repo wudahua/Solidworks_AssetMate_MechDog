@@ -3176,19 +3176,10 @@ GTOL_SYMBOLS = {
 
 
 def _invoke_as_method(obj, name, *args):
-    """Call a SolidWorks method that pywin32 insists on treating as a property.
+    """Kept as a thin alias; the single implementation lives in sw_session.call_method."""
+    from ..sw_session import call_method
 
-    `doc.InsertGtol()` raises DISP_E_MEMBERNOTFOUND because win32com dispatches it as
-    PROPERTYGET. Invoking the same DISPID with DISPATCH_METHOD works and returns the
-    object. This is the whole reason geometric tolerances looked impossible for so long.
-    """
-    import pythoncom
-
-    ole = obj._oleobj_
-    dispid = ole.GetIDsOfNames(name)
-    if args:
-        return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True, *args)
-    return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True)
+    return call_method(obj, name, *args)
 
 
 def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",

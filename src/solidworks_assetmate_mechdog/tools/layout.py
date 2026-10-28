@@ -30,18 +30,10 @@ def _prop_put(obj, name, value):
 
 
 def _call_method(obj, name, *args):
-    """Call a method that pywin32 may mistake for a property (GetAnnotation and friends)."""
-    import pythoncom
+    """Thin alias; the single implementation lives in sw_session.call_method."""
+    from ..sw_session import call_method
 
-    ole = obj._oleobj_
-    dispid = ole.GetIDsOfNames(name)
-    method = getattr(obj, "_FlagAsMethod", None)
-    if method:
-        try:
-            method(name)
-        except Exception:
-            pass
-    return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True, *args)
+    return call_method(obj, name, *args)
 
 
 def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True):

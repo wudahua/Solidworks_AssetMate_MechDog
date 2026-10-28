@@ -24,6 +24,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "src", "solidworks_assetmate_mechdog", "server.py")
 TOOLS_DIR = os.path.join(ROOT, "src", "solidworks_assetmate_mechdog", "tools")
 
+# Members win32com dispatches as PROPERTYGET although they are methods. Calling them
+# directly raises DISP_E_MEMBERNOTFOUND, which reads like "the API does not exist" — this
+# cost two days on InsertGtol and hours twice more. They must go through
+# sw_session.call_method(). Duplicated from sw_session so this check needs no pywin32.
+PROPERTY_TRAPS = frozenset({
+    "InsertGtol", "GetAnnotation", "GetAnnotation2", "FirstFeature", "GetNextFeature",
+    "GetDefinition", "SetPosition2", "Select3", "SetScale",
+})
+
 
 def _module_scope(tree):
     imports, defined = set(), set()
@@ -175,6 +184,41 @@ def check_readme(tool_names):
     return problems
 
 
+def check_property_traps(path, traps):
+    """Fail on direct calls to members win32com dispatches as properties.
+
+    `doc.InsertGtol()`, `note.GetAnnotation()`, `feat.FirstFeature()` all raise
+    DISP_E_MEMBERNOTFOUND — which reads like "the API does not exist" and sent this project
+    down a two-day dead end once, and cost hours twice more. They must go through
+    `sw_session.call_method(obj, "Name", ...)`.
+
+    Exempt: sw_session.py itself (where the helper lives) and any call already inside a
+    helper wrapper.
+    """
+    if os.path.basename(path) == "sw_session.py":
+        return []
+    try:
+        tree = ast.parse(open(path, encoding="utf-8").read(), filename=path)
+    except SyntaxError:
+        return []
+    problems = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        if func.attr not in traps:
+            continue
+        # `call_method(obj, "FirstFeature")` passes the name as a string, not an attribute,
+        # so it never reaches here. A bare `obj.FirstFeature()` does.
+        problems.append(
+            "%s:%d: `%s()` must go through sw_session.call_method(obj, \"%s\") — "
+            "win32com dispatches it as a property and it raises MEMBERNOTFOUND"
+            % (os.path.basename(path), getattr(node, "lineno", 0), func.attr, func.attr))
+    return problems
+
+
 def main():
     if not os.path.exists(SERVER):
         print("server.py not found at %s" % SERVER)
@@ -182,7 +226,10 @@ def main():
     tools, problems = check()
     for name in sorted(os.listdir(TOOLS_DIR)) if os.path.isdir(TOOLS_DIR) else []:
         if name.endswith(".py"):
-            problems.extend(check_tools_module(os.path.join(TOOLS_DIR, name)))
+            module_path = os.path.join(TOOLS_DIR, name)
+            problems.extend(check_tools_module(module_path))
+            problems.extend(check_property_traps(module_path, PROPERTY_TRAPS))
+    problems.extend(check_property_traps(SERVER, PROPERTY_TRAPS))
     problems.extend(check_readme([t.name for t in tools]))
     if problems:
         print("static check FAILED (%d issue(s), %d tools scanned):" % (len(problems), len(tools)))

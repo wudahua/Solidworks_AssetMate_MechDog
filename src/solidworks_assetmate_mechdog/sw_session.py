@@ -82,6 +82,53 @@ def double_array(values):
     return variant(list(values), pythoncom.VT_ARRAY | pythoncom.VT_R8)
 
 
+def call_method(obj, name, *args):
+    """Invoke a SolidWorks method through DISPATCH_METHOD, bypassing pywin32's guesswork.
+
+    win32com decides method-vs-property from the type library, and for a number of
+    SolidWorks members it decides WRONG: it dispatches them as PROPERTYGET and the call
+    raises `DISP_E_MEMBERNOTFOUND` (0x80020003), which reads exactly like "this API does
+    not exist". It does exist. Calling the same DISPID with DISPATCH_METHOD works.
+
+    Confirmed cases (each cost hours before being found):
+      * `ModelDoc2.InsertGtol`      — geometric tolerance "impossible" for two days
+      * `INote.GetAnnotation`       — notes could not be positioned
+      * `IFeature.FirstFeature` / `GetNextFeature` / `GetDefinition` — feature walk
+
+    So: for any of those (and anything that reports MEMBERNOTFOUND on a method that the
+    documentation says exists) use this instead of attribute access. `static_check.py`
+    fails the build when a known trap is called directly.
+    """
+    import pythoncom
+
+    ole = obj._oleobj_
+    dispid = ole.GetIDsOfNames(name)
+    flag = getattr(obj, "_FlagAsMethod", None)
+    if flag is not None:
+        try:
+            flag(name)
+        except Exception:
+            pass
+    if args:
+        return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True, *args)
+    return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True)
+
+
+# Members win32com dispatches as properties although they are methods. Kept here so the
+# static check and the helper share one list.
+PROPERTY_TRAP_METHODS = (
+    "InsertGtol",
+    "GetAnnotation",
+    "GetAnnotation2",
+    "FirstFeature",
+    "GetNextFeature",
+    "GetDefinition",
+    "SetPosition2",
+    "Select3",
+    "SetScale",
+)
+
+
 def byref_dispatch_null():
     """Null Callout argument for SelectByID2 (byref IDispatch).
 
