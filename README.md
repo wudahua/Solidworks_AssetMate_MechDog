@@ -32,16 +32,19 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（18）
+### 二、工程图（24）
 
 | 工具 | 作用 |
 |---|---|
 | `produce_drawing` | **一条命令出图**：台账→规划→建图→标注→自检→判定，按类别套默认值 |
-| `create_drawing` | 建图：A0–A4、多视图、逐视图比例、模板安全区实测 |
+| `create_drawing` | 建图：A0–A4、多视图、逐视图比例、`view_positions` 显式摆位、模板安全区实测 |
+| `set_view` | 移动/缩放单个视图（`DISPATCH_PROPERTYPUT` + VARIANT，直接赋值会静默写错） |
+| `place_views` | 批量摆视图：`[{view, x, y, scale}]` |
 | `add_section_view` | 剖视图（自动画剖切线） |
 | `add_detail_view` | 局部放大（圆圈边界 + 独立比例） |
 | `add_flat_pattern_view` | 钣金展开（下料尺寸 + 折弯线） |
 | `auto_dimension` | 导入模型驱动尺寸，超 30 个会提示冗余 |
+| `delete_dimensions` | **按值保留/删除尺寸**，消费 `plan_drawing` 的短名单（逐条约 15 s） |
 | `add_center_marks` | 孔/槽中心标记与中心线 |
 | `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径），孔标注的前置工具 |
 | `add_hole_callout` | 原生孔标注（带回读 + 模型孔径比对） |
@@ -50,6 +53,9 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_dimension_tolerance` | 原生尺寸公差（双边/对称/极限/配合） |
 | `add_geometric_tolerance` | **原生形位公差**（公差值 + 多基准 + 引线，pilot） |
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
+| `add_note` | 技术要求注记（sheet 空间坐标，米） |
+| `add_balloon` | 件号圆圈（可挂 BOM 项号） |
+| `add_sheet_line` | **图纸空间直线**（米）——明细栏网格、图框内表格 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
 | `list_drawing_edges` | 视图可见边（索引 + 模型坐标） |
 | `export_drawing` | PDF / DWG / DXF |

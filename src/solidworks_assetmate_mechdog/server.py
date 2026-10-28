@@ -10,7 +10,8 @@ from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME, __version__
 from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
-                    ledger, material as material_tools, pipeline, planner, recolor, rename, survey)
+                    layout, ledger, material as material_tools, pipeline, planner, recolor,
+                    rename, survey)
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -183,6 +184,83 @@ def batch_export(
     with a hint rather than guessed at.
     """
     return _json(export_tools.batch_export(targets, output_dir, fmt=fmt, apply=apply))
+
+
+@mcp.tool()
+def set_view(
+    drawing_path: str,
+    view_name: str,
+    x_m: float | None = None,
+    y_m: float | None = None,
+    scale: float | None = None,
+    save: bool = True,
+) -> str:
+    """Move and/or rescale one view (sheet metres).
+
+    Writes IView.Position through DISPATCH_PROPERTYPUT with a VARIANT array — a plain
+    assignment silently lands the view elsewhere.
+    """
+    return _json(layout.set_view(drawing_path, view_name, x_m=x_m, y_m=y_m,
+                                 scale=scale, save=save))
+
+
+@mcp.tool()
+def place_views(drawing_path: str, placements: list, save: bool = True) -> str:
+    """Place several views at once: [{view, x, y, scale}] in sheet metres."""
+    return _json(layout.place_views(drawing_path, placements, save=save))
+
+
+@mcp.tool()
+def delete_dimensions(
+    drawing_path: str,
+    keep_values: list | None = None,
+    view_name: str | None = None,
+    keep_tolerance_mm: float = 0.05,
+    save: bool = True,
+) -> str:
+    """Delete dimensions whose value is not in keep_values (the plan_drawing shortlist).
+
+    SolidWorks has no bulk delete; each dimension is selected by position and removed with
+    EditDelete, roughly 15 s apiece.
+    """
+    return _json(layout.delete_dimensions(drawing_path, keep_values=keep_values,
+                                          view_name=view_name,
+                                          keep_tolerance_mm=keep_tolerance_mm, save=save))
+
+
+@mcp.tool()
+def add_note(
+    drawing_path: str, text: str, x_m: float, y_m: float,
+    height_mm: float | None = None, bold: bool = False, save: bool = True,
+) -> str:
+    """Add a drawing note (技术要求). x/y are sheet metres."""
+    return _json(layout.add_note(drawing_path, text, x_m, y_m,
+                                 height_mm=height_mm, bold=bold, save=save))
+
+
+@mcp.tool()
+def add_balloon(
+    drawing_path: str, view_name: str, x_m: float, y_m: float,
+    text: str | None = None, item_number: int | None = None,
+    leader_x_m: float | None = None, leader_y_m: float | None = None,
+    save: bool = True,
+) -> str:
+    """Add a BOM balloon (件号). Pass item_number to attach to the component under the point."""
+    return _json(layout.add_balloon(drawing_path, view_name, x_m, y_m, text=text,
+                                    item_number=item_number, leader_x_m=leader_x_m,
+                                    leader_y_m=leader_y_m, save=save))
+
+
+@mcp.tool()
+def add_sheet_line(
+    drawing_path: str, x1_m: float, y1_m: float, x2_m: float, y2_m: float, save: bool = True,
+) -> str:
+    """Draw a line in true sheet space (metres) — for BOM tables and frames.
+
+    Drawing sketches take sheet metres, not millimetres: passing 236/62 produced a scaled
+    fan of diagonals instead of a horizontal line.
+    """
+    return _json(layout.add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=save))
 
 
 @mcp.tool()

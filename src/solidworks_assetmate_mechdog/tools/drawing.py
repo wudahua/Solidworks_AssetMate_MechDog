@@ -302,6 +302,7 @@ def create_drawing(
     save=True,
     view_scales=None,
     paper="A3",
+    view_positions=None,
 ):
     """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
 
@@ -309,6 +310,11 @@ def create_drawing(
     resolved against the model, so Chinese and English SolidWorks both work.
     scale=None with auto_fit picks a standard scale from the model's projected size
     (1:1, 1:2, 1:5 ...); pass an explicit scale to override.
+
+    view_positions: explicit sheet centres in METRES, one per view, e.g.
+    [[0.12, 0.20], [0.12, 0.08], [0.30, 0.20], [0.30, 0.08]] for a 2x2 layout.
+    When given, the automatic packer is skipped entirely — a 4-view sheet previously
+    fell back to a single vertical column and pushed the last views outside the frame.
     """
     try:
         from ..sw_session import get_sw
@@ -433,6 +439,21 @@ def create_drawing(
             "isometric": (col2, top_y),
         }
 
+        # Explicit sheet centres win over the automatic packer. Callers were forced to
+        # re-place views with raw COM (DISPATCH_PROPERTYPUT + VARIANT array) because a
+        # 4-view sheet collapsed into one column; passing positions avoids that entirely.
+        explicit_positions = False
+        if view_positions:
+            keys = [str(v).strip().lower() for v in views]
+            for index, pos in enumerate(view_positions):
+                if index >= len(keys):
+                    break
+                try:
+                    positions[keys[index]] = (float(pos[0]), float(pos[1]))
+                except Exception:
+                    continue
+            explicit_positions = True
+
         created, skipped, view_objects = [], [], []
         for key in [str(v).strip().lower() for v in views]:
             if key not in VIEW_ALIASES:
@@ -474,7 +495,11 @@ def create_drawing(
             except Exception:
                 pass
 
-        layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
+        if explicit_positions:
+            # Caller placed the views; repacking would throw that away.
+            layout = {"fits": True, "columns": len(views), "explicit": True}
+        else:
+            layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
         try:
             doc.GraphicsRedraw2()
         except Exception:
@@ -486,7 +511,10 @@ def create_drawing(
         # most. After the views exist we can measure them for real: if any outline leaves
         # the sheet, step the scale down and repack, up to three times.
         auto_scale_adjustments = []
-        if auto_fit and view_objects:
+        # auto_fit must not overrule a scale the caller asked for explicitly: a 4-view
+        # layout was silently taken from 1:2.5 to 1:5 (and an A2 to 1:10) while the views
+        # still fitted. Only step down when the caller left scale unset.
+        if auto_fit and not scale and view_objects:
             sheet_box = list(sheet.GetOutline or [])
             for _attempt in range(3):
                 try:

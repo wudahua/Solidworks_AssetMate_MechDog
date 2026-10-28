@@ -216,7 +216,7 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
     if not path.lower().endswith((".sldprt", ".sldasm")):
         return error("bad_input", "Expected a .SLDPRT/.SLDASM, got %s" % os.path.basename(path))
 
-    model = open_document(path, SW_DOC_PART)
+    model = open_document(path)  # type inferred from extension: assemblies failed here
     try:
         config_name = config
         if not config_name:
