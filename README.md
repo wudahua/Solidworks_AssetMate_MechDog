@@ -32,7 +32,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（16）
+### 二、工程图（18）
 
 | 工具 | 作用 |
 |---|---|
@@ -44,7 +44,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_center_marks` | 孔/槽中心标记与中心线 |
 | `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径），孔标注的前置工具 |
 | `add_hole_callout` | 原生孔标注（带回读 + 模型孔径比对） |
-| `add_hole_callouts` | 批量孔标注（同直径标一次，**受扫描性能限制，见边界**） |
+| `add_hole_callouts` | **批量孔标注**：单视图可见边 → `AddHoleCallout2`，`IsHoleCallout` 判定（pilot） |
 | `add_drawing_dimension` | 按边索引/坐标补标单个尺寸 |
 | `add_dimension_tolerance` | 原生尺寸公差（双边/对称/极限/配合） |
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
@@ -53,7 +53,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `export_drawing` | PDF / DWG / DXF |
 | `render_drawing` | PDF → PNG，供目视检查 |
 
-### 三、自检与判定（6）
+### 三、规划与自检（8）
 
 | 工具 | 回答什么问题 |
 |---|---|
@@ -63,6 +63,8 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `reconcile_ledger` | **台账对账**：模型的 58 个尺寸，图纸上缺哪 7 个 |
 | `delivery_check` | **这张图能不能交** |
 | `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 |
+| `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
+| `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案 |
 
 ---
 
@@ -148,7 +150,7 @@ pending:   27/53 尺寸读不到关联
 | 限制 | 原因 | 影响 |
 |---|---|---|
 | **形位公差写不进去** | `InsertGtol` 报 `DISP_E_MEMBERNOTFOUND`；`IModelDocExtension.CreateGtolData` 成员不存在（SW2024）。两条官方路径都不可用，C# 插件也绕不过 | 只能读不能写；真实图纸仅 7% 需要 |
-| **孔标注不可用** | 方法已查清（`SelectByID2` 选边 → `AddHoleCallout2`），但需要圆边精确点位，扫边 260 条超 400 秒 | 建议界面手工，或用 `add_drawing_dimension` 标 Ø |
+| **孔标注只覆盖朝向观察者的孔边** | 同一孔的两个面只有正面能标，背面返回 null（实测 door.SLDPRT：Ø8/Ø15 成功，Ø6 背面 8 条全失败） | 记 `hidden_side`，用 Ø 尺寸补；或换视图 |
 | **`material_library` 失效** | `*.sldmat` 能定位但条目解析不出（格式/编码） | 材质名需自行确认后传入 |
 | **A3 最多 3 个视图** | 剖视图 x 与父视图锁定，无法横向移开 | 钣金件拆两张图（结构 + 展开） |
 | **装配体拿不到包围盒** | `IAssemblyDoc` 没有 `GetPartBox`，组件 `GetBox` 在轻化下返回 None | 比例靠实测安全区推算 + 建完测量降档兜底 |
@@ -234,6 +236,20 @@ A3 / 1:2、带标注的情况下实测：
 **注意**：装配体不能脱离引用复制后再建图。只复制 `.SLDASM` 会让组件引用全断，
 `CreateDrawViewFromModelView3` 返回的视图没有任何几何（三个视图 outline 都是 35.7×25.2 mm），
 看起来像"装配建图坏了"。要么在原目录建图，要么整目录复制。
+
+## 出图前先问两句
+
+```json
+// 1. 什么做不了？
+{ "operation": "hole_callout" }
+→ status: pilot, why: 视图可见边 + AddHoleCallout2，SW2026 无弹窗；背面孔返回 null
+
+// 2. 该标哪些尺寸？
+{ "model_path": "D:/parts/P05.SLDPRT", "paper": "A3" }
+→ driving 70 → keep 11（15.7%），附每条的选取理由与拆图建议
+```
+
+真实图纸尺寸中位 11 个；全量导入会把 70 个驱动尺寸全倒上去——制图是筛选，不是搬运。
 
 ## 环境与安装
 
