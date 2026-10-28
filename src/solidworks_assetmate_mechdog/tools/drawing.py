@@ -710,6 +710,16 @@ def drawing_audit(drawing_path):
         total_dims = 0
         boxes = []
         sheet_box = list(sheets[0].GetOutline) if sheets else None
+        # IView.GetAnnotationCount on a model view also reports sheet-level notes (技术要求),
+        # so "view 3: annotations 11" read as "this view has 11 annotations" when most were
+        # sheet notes. Report the sheet's own count separately and say so, rather than
+        # subtracting — the split between the two is not reliably attributable.
+        sheet_annotations = None
+        if sheets:
+            try:
+                sheet_annotations = int(sheets[0].GetAnnotationCount)
+            except Exception:
+                sheet_annotations = None
         for view in model_views:
             try:
                 name = view.Name
@@ -796,8 +806,11 @@ def drawing_audit(drawing_path):
             view_count=len(model_views),
             total_dimensions=total_dims,
             views=rows,
+            sheet_annotations=sheet_annotations,
             warnings=warnings,
-            note="Evidence only: view choice, tolerances and manufacturability are not judged here.",
+            note=("Evidence only: view choice, tolerances and manufacturability are not judged here. "
+                  "A view's `annotations` count may include sheet-level notes (技术要求) — "
+                  "sheet_annotations reports the sheet's own count separately."),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

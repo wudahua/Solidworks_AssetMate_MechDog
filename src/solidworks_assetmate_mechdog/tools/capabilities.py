@@ -12,6 +12,67 @@ it silently ignores is exactly how the 400-second wait happened.
 # status: "supported" | "partial" | "unsupported"
 CAPABILITIES = [
     {
+        "id": "view_layout",
+        "status": "partial",
+        "summary": "视图摆位与比例",
+        "why": ("`create_drawing(view_positions=...)` 可按图纸米坐标显式摆位，`set_view` / `place_views` "
+                "可事后移动缩放；自动布局在 4 视图以上会退回单列"),
+        "workaround": "多视图请显式给 view_positions；auto_fit 不再覆盖调用方指定的 scale",
+        "evidence": "2026-10-28 实测 4 视图 2x2：layout {fits: True, columns: 4, explicit: True}",
+    },
+    {
+        "id": "dimension_edit",
+        "status": "partial",
+        "summary": "尺寸删除与筛选",
+        "why": "`delete_dimensions` 按值保留/删除；SolidWorks 无批量删除接口，逐条约 15 s",
+        "workaround": "先用 plan_drawing 拿短名单再删；尺寸很多时分批做",
+        "evidence": "2026-10-28 实测 17 条 → 2 条，removed 15 / failed 0",
+    },
+    {
+        "id": "annotation_write",
+        "status": "partial",
+        "summary": "注记 / 件号 / 图纸直线",
+        "why": "`add_note` / `add_balloon` / `add_sheet_line` 可用；图纸草图单位是**米**不是毫米",
+        "workaround": "传毫米会得到满屏放射斜线（坐标被当模型空间并乘视图比例）",
+        "evidence": "2026-10-28 实测三个工具均 ok",
+    },
+    {
+        "id": "bom_table",
+        "status": "unsupported",
+        "summary": "装配明细栏（BOM 表）",
+        "why": ("`IView.InsertBomTable2/3/4` 成员存在，但 4/5/6/7 参数与两种 AnchorType "
+                "全部返回 DISP_E_TYPEMISMATCH；`InsertTableAnnotation2` 的 X/Y 是相对锚点、"
+                "`UseAnchorPoint=False` 返回 None"),
+        "workaround": "用 add_sheet_line 画表格网格 + add_note 逐格写文字；或界面插入",
+        "evidence": "2026-10-28 实测 10 种参数组合全部类型不匹配",
+    },
+    {
+        "id": "sheet_sketch_space",
+        "status": "partial",
+        "summary": "图纸草图坐标系",
+        "why": "`add_sheet_line` 按米定位可用；细表格布线仍需多次调用",
+        "workaround": "先算好每段线的米坐标，批量调用",
+        "evidence": "2026-10-28 实测 ok（未做整表验证）",
+    },
+    {
+        "id": "sheet_metal_qc",
+        "status": "partial",
+        "summary": "钣金工艺检查",
+        "why": ("板厚 / 弯折数 / 止裂槽有无可判；最小折弯边、孔到折弯线、折弯半径需要实体几何"
+                "距离计算，未实现，返回 not_checked"),
+        "workaround": "not_checked 的项按 not_checked 处理，不要当作通过",
+        "evidence": "2026-10-28 实测箱体 3 道弯折无止裂槽 → blocker",
+    },
+    {
+        "id": "flat_pattern_calc",
+        "status": "unsupported",
+        "summary": "展开计算与校验",
+        "why": ("展开由 SolidWorks 钣金引擎计算，工具只投影展平状态；K 因子与折弯表读不到"
+                "（GetCustomBendAllowance 返回空）"),
+        "workaround": "用 flat_pattern_report 拿 expected_note 的措辞，工艺参数由厂内折弯表定",
+        "evidence": "2026-10-28 实测 computed_by_tool=false",
+    },
+    {
         "id": "hole_callout",
         "status": "pilot",
         "summary": "原生孔标注",
