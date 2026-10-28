@@ -1135,7 +1135,7 @@ def _note_at(sheet, target, tolerance=0.006):
 
 
 def set_title_block(drawing_path, name=None, code=None, material=None, apply=False,
-                   include_reversed=True):
+                   include_reversed=True, scale=None):
     """Fill title-block placeholders such as the literal text “图样名称” / “图样代号”.
 
     GB templates ship these as plain note text with quotes, so nothing is linked to
@@ -1160,6 +1160,40 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
             wants.append(("code", "图样代号", str(code)))
         if material is not None:
             wants.append(("material", "材质", str(material)))
+
+        # The scale cell holds a bare value like "1:5", not a labelled field, so the
+        # marker-based loop below never finds it. Match the value pattern instead — and
+        # only inside the title-block band, or a note that happens to read "1:5" elsewhere
+        # would be overwritten.
+        if scale is not None:
+            import re as _re
+
+            scale_pattern = _re.compile(r"^\s*\d+(?:\.\d+)?\s*:\s*\d+(?:\.\d+)?\s*$")
+            try:
+                sheet_box = list(sheet.GetOutline or [])
+                sheet_h = (sheet_box[3] - sheet_box[1]) if len(sheet_box) >= 4 else 0.297
+            except Exception:
+                sheet_h = 0.297
+            for note in notes:
+                try:
+                    text = note.GetText
+                except Exception:
+                    continue
+                if not isinstance(text, str) or not scale_pattern.match(text):
+                    continue
+                try:
+                    position = [round(v, 4) for v in ann_position(note)]
+                except Exception:
+                    position = None
+                if position and position[1] > sheet_h * 0.15:
+                    continue  # outside the title-block band
+                planned.append({
+                    "field": "scale", "before": text, "after": str(scale), "note": note,
+                    "angle_deg": 0.0, "position": position,
+                })
+            if not any(p["field"] == "scale" for p in planned):
+                unmatched.append({"field": "scale", "marker": "n:m",
+                                  "reason": "title block has no scale value in the bottom band"})
 
         for field, marker, new_value in wants:
             hits = 0
@@ -1727,7 +1761,7 @@ def template_safe_area(sheet, sheet_w, sheet_h):
     # Cap the reserved band by ratio so the template still adapts across paper sizes.
     left_band = min(list_right - frame_left + margin, sheet_w * 0.14)
     bottom_band = min(title_top - frame_bottom + margin, sheet_h * 0.24)
-    return {
+    measured = {
         "left": frame_left + left_band,
         "right": sheet_w - frame_right + margin,
         "top": sheet_h - frame_top + margin,
@@ -1736,6 +1770,20 @@ def template_safe_area(sheet, sheet_w, sheet_h):
         "title_block_top": round(title_top, 4),
         "parts_list_right": round(list_right, 4),
     }
+
+    # Sanity check before trusting the measurement. On A2 the frame scan missed the right
+    # border entirely and reported a usable band of 212 mm out of 594 mm, which then drove
+    # the scale down to 1:10 on a part that fits at 1:2. If the reserved margins eat more
+    # than half the sheet, the scan is wrong — fall back to ratios, which are size-relative
+    # and cannot collapse like that.
+    reserved_x = measured["left"] + measured["right"]
+    reserved_y = measured["bottom"] + measured["top"]
+    if reserved_x > sheet_w * 0.5 or reserved_y > sheet_h * 0.5:
+        fallback_used = dict(fallback)
+        fallback_used["source"] = "ratio (template scan rejected: reserved %.0f%% x %.0f%%)" % (
+            reserved_x / sheet_w * 100, reserved_y / sheet_h * 100)
+        return fallback_used
+    return measured
 
 
 def add_flat_pattern_view(drawing_path, model_path, config_name=None, position=None,
@@ -2662,11 +2710,22 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                 try:
                     row["value_mm"] = round(float(dim.SystemValue) * 1000, 3)
                 except Exception:
-                    pass
-                try:
-                    row["is_reference"] = bool(dim.IsReference)
-                except Exception:
-                    pass
+                    row["value_mm"] = None
+                # A driving dimension constrains the model; a reference (从动) one only
+                # reports what the geometry already is. GB practice puts reference
+                # dimensions in parentheses, and a drawing full of unmarked reference
+                # dimensions looks dimensioned while constraining nothing.
+                reference = None
+                for attempt in ("IsReference", "GetReference"):
+                    try:
+                        value = getattr(dim, attempt)
+                        reference = bool(value() if callable(value) else value)
+                        break
+                    except Exception:
+                        continue
+                row["is_reference"] = reference
+                row["role"] = ("reference" if reference
+                               else ("driving" if reference is False else "unknown"))
                 types = []
                 try:
                     raw_types = ann.GetAttachedEntityTypes
@@ -2692,9 +2751,14 @@ def verify_dimension_attachments(drawing_path, view_name=None):
             attachment_summary=counts,
             orphan_count=len(orphans),
             orphans=orphans,
+            reference_count=sum(1 for r in rows if r.get("is_reference") is True),
+            driving_count=sum(1 for r in rows if r.get("is_reference") is False),
+            role_unknown=sum(1 for r in rows if r.get("is_reference") is None),
             dimensions=rows,
             note="orphan_count > 0 表示有尺寸没有关联到任何实体，"
-                 "按流程 §6.1 属于未完成；只挂在 sketch_segment 上的也应复核。",
+                 "按流程 §6.1 属于未完成；只挂在 sketch_segment 上的也应复核。"
+                 " is_reference=true 是从动参考尺寸，不驱动模型——GB 习惯加括号标注，"
+                 "整张图全是参考尺寸时图面看着标注齐全，实际没有约束任何东西。",
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -2891,8 +2955,18 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             anchor_x = (outline[2] + 0.015) if len(outline) >= 4 else 0.30
             anchor_y = ((outline[1] + outline[3]) / 2.0) if len(outline) >= 4 else 0.20
 
+            # Consecutive-failure breaker. On a louvered sheet every one of 90 circular
+            # edges returned null after a full Select2 + AddHoleCallout2 round trip, and
+            # the run burned 82 s to produce nothing. Ten straight nulls means this view's
+            # circles are not holes; stop and say so instead of grinding through the rest.
+            consecutive_nulls = 0
             for key, members in grouped.items():
                 if len(created) + len(failed) >= int(max_callouts):
+                    break
+                if consecutive_nulls >= 10:
+                    failed.append({"view": view.Name, "radius_mm": None,
+                                   "reason": "stopped: 10 consecutive callouts returned null "
+                                             "(this view's circles are not holes)"})
                     break
                 if time.time() - started > float(budget_s):
                     budget_exceeded = True
@@ -2961,6 +3035,7 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                                              % (text,),
                                    "z": chosen["z"], "radius_only": True})
                     continue
+                consecutive_nulls = 0
                 created.append({
                     "view": view.Name,
                     "diameter_mm": round(chosen["radius_m"] * 2000, 2),
