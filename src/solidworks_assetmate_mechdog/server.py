@@ -252,6 +252,17 @@ def add_balloon(
 
 
 @mcp.tool()
+def add_bom_table(drawing_path: str, view_name: str | None = None, save: bool = True) -> str:
+    """Insert a native BOM (materials list) table into an assembly drawing.
+
+    Driven by a recorded macro: the direct API returns None for this installation across
+    20+ argument combinations, while the same operation succeeds from a macro. RunMacro's
+    return value is unreliable, so success is judged by reading the table back.
+    """
+    return _json(layout.add_bom_table(drawing_path, view_name=view_name, save=save))
+
+
+@mcp.tool()
 def add_sheet_line(
     drawing_path: str, x1_m: float, y1_m: float, x2_m: float, y2_m: float, save: bool = True,
 ) -> str:

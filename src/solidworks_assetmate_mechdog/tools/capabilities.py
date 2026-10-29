@@ -38,7 +38,7 @@ CAPABILITIES = [
     },
     {
         "id": "bom_table",
-        "status": "unsupported",
+        "status": "partial",
         "summary": "装配明细栏（BOM 表）",
         "why": ("`IView.InsertBomTable4` 真实签名有 **10 个参数**（官方 2024 文档），"
                 "第一个是 `UseAnchorPoint`(bool) 不是模板路径——按 6 参数调用必然 "
@@ -50,7 +50,8 @@ CAPABILITIES = [
                 "ActivateSheet/存盘后插、UseAnchorPoint 两种取值，共 7 条 API × 20+ 组合，"
                 "无一成功。返回 None 而非报错 = 调用被接受、创建被静默拒绝，"
                 "最可能是文档属性禁用或模板格式不兼容。"),
-        "workaround": "用 add_sheet_line 画表格网格 + add_note 逐格写文字；或界面插入",
+        "workaround": ("用 add_bom_table（宏驱动）可生成原生 BOM；宏按固定视图名与位置录制，"
+                       "视图名不符时可能不出现"),
         "evidence": "2026-10-28 实测 10 种参数组合全部类型不匹配",
     },
     {

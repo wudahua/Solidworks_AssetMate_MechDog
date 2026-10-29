@@ -32,7 +32,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（24）
+### 二、工程图（25）
 
 | 工具 | 作用 |
 |---|---|
@@ -55,6 +55,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
 | `add_note` | 技术要求注记（sheet 空间坐标，米） |
 | `add_balloon` | 件号圆圈（可挂 BOM 项号） |
+| `add_bom_table` | **原生 BOM 明细栏**（宏驱动，回读校验；直接 API 在本机返回 None） |
 | `add_sheet_line` | **图纸空间直线**（米）——明细栏网格、图框内表格 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
 | `list_drawing_edges` | 视图可见边（索引 + 模型坐标） |
