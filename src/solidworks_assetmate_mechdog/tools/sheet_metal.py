@@ -67,13 +67,24 @@ def _thickness_from_ledger(ledger_result):
     Prefer the explicit `Thickness@...` dimension; fall back to any dimension carrying
     'thickness' in its name. Returns (value_mm, source) or (None, reason).
     """
+    # Match the Chinese label too. The ledger reports this dimension as `厚度@钣金1`, and
+    # matching only "板厚" meant sheet_metal_qc answered "no Thickness parameter" for a part
+    # whose thickness build_feature_ledger had just read as 3.0 — same tree, two answers.
+    needles = ("thickness", "板厚", "厚度")
     for feature in ledger_result.get("features") or []:
         for dim in feature.get("dimensions") or []:
             label = str(dim.get("name") or "")
-            if "thickness" in label.lower() or "板厚" in label:
+            low = label.lower()
+            if any(n in low if n.isascii() else n in label for n in needles):
                 value = dim.get("value_mm")
                 if value:
                     return float(value), label
+    # Nothing matched by name: fall back to the sheet-metal feature's own thickness value.
+    for feature in ledger_result.get("features") or []:
+        if "SheetMetal" in str(feature.get("type_name") or ""):
+            value = feature.get("thickness_mm")
+            if value:
+                return float(value), "%s.thickness_mm" % (feature.get("name") or "SheetMetal")
     return None, "no Thickness parameter found in the feature tree"
 
 

@@ -43,13 +43,25 @@ def _material_of(part):
 
 
 def _mass_kg(part):
+    """Mass in kg, or None with a reason. Returning a bare None made `mass_after_kg: null`
+    indistinguishable from "mass was zero" or "tool did not try"."""
     try:
-        mp = part.Extension.CreateMassProperty()
-        if mp is not None:
-            return round(float(mp.Mass), 6)
-    except Exception:
-        pass
-    return None
+        # CreateMassProperty is another member that pywin32 dispatches as a property and
+        # then fails to find; call it through DISPATCH_METHOD like the rest.
+        from ..sw_session import call_method
+        mp = call_method(part.Extension, "CreateMassProperty")
+    except Exception as exc:
+        return None, "CreateMassProperty failed: %s" % str(exc)[:60]
+    if mp is None:
+        return None, "CreateMassProperty returned None (not available in this environment)"
+    try:
+        import win32com.client as _win
+        value = float(_win.Dispatch(mp).Mass)
+    except Exception as exc:
+        return None, "Mass unreadable: %s" % str(exc)[:60]
+    if value <= 0:
+        return None, "Mass reported as %r — density likely missing on the assigned material" % value
+    return round(value, 6), None
 
 
 def set_part_material(paths, material, database=DEFAULT_DATABASE, config="",
@@ -79,11 +91,12 @@ def set_part_material(paths, material, database=DEFAULT_DATABASE, config="",
             missing.append({"path": path, "reason": str(exc)[:80]})
             continue
         before = _material_of(part)
-        mass_before = _mass_kg(part)
+        mass_before, mass_before_note = _mass_kg(part)
         entry = {
             "part": os.path.basename(path),
             "material_before": before,
             "mass_before_kg": mass_before,
+            "mass_before_note": mass_before_note,
             "requested": material,
         }
         if not apply:
@@ -106,24 +119,51 @@ def set_part_material(paths, material, database=DEFAULT_DATABASE, config="",
             continue
         after = _material_of(part)
         entry["material_after"] = after
-        entry["mass_after_kg"] = _mass_kg(part)
+        mass_value, mass_note = _mass_kg(part)
+        entry["mass_after_kg"] = mass_value
+        if mass_note:
+            entry["mass_note"] = mass_note
         entry["ok"] = bool(after) and after == material
         if not entry["ok"]:
-            entry["hint"] = ("名称或数据库在这台机器的材质库里不存在，"
-                             "用 material_library 查看可选名称")
+            # The old hint blamed a missing name, but the name may well exist (it lists
+            # fine in material_library) — the real cause is unknown. Report what actually
+            # happened: what the setter was told, and what the part reads back.
+            entry["hint"] = ("SetMaterialPropertyName2(db=%r, name=%r) 已执行，"
+                             "但回读仍是 %r。名称可能存在于库里（material_library 能列出）"
+                             "而写入未生效——该节点可能带自定义属性导致 marshalling 失败。"
+                             "可用 material_library 换库/换名重试。"
+                             % (database, material, after))
         else:
             changed.append(entry["part"])
         results.append(entry)
 
-    return ok(
+    # Top-level `ok` must not be unconditional. It used to be, so a run where every part
+    # failed still answered ok:true / applied:true — a caller reading only the top level
+    # believed the material was set. Dry-run is the one case where "applied" is honestly
+    # false by design, so it is reported separately instead of faking success.
+    succeeded = [r for r in results if r.get("ok")]
+    failed = len(results) - len(succeeded)
+    payload = dict(
         material=material,
         database=database,
-        applied=bool(apply),
+        applied=(bool(apply) and bool(succeeded)),
+        dry_run=(not apply),
+        succeeded=len(succeeded),
+        failed=failed,
         count=len(results),
         changed=changed,
         results=results,
         missing=missing,
     )
+    # Dry-run never writes, so "failed" is meaningless there — only judge when applying.
+    if apply and failed:
+        return error(
+            "material_partial" if succeeded else "material_not_applied",
+            "%d/%d 零件的材质未写成（成功 %d）" % (failed, len(results), len(succeeded)),
+            "顶层 ok=false 是因为明细里有失败项——旧版本这里恒为 ok=true，"
+            "让调用方误以为全部成功。逐个看 results[].hint 与环境信息。",
+            **payload)
+    return ok(**payload)
 
 
 def _normalise_rules(rules):

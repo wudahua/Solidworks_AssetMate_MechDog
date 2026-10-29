@@ -130,12 +130,15 @@ def populate_top_level_bom(
         False,
     )
     if table is None:
+        from ..sw_session import sw_version as _sw_version
         raise RuntimeError(
-            "InsertBomTable4(Indented) returned None. This step is verified on SW2024 SP4 "
-            "only — a SW2026 report fails right here. Check: (1) the configuration name "
-            "exists in the assembly, (2) the BOM template path is valid for this install, "
-            "(3) the drawing view really references an assembly. "
-            "See check_capabilities -> bom_table for the evidence trail.")
+            "InsertBomTable4(Indented) returned None [sw_version=%s]. This step is verified "
+            "on SW2024 SP4 only — a SW2026 report fails right here, so version is the first "
+            "thing to check. If you are on SW2024: (1) confirm the configuration name exists "
+            "in the assembly, (2) confirm the BOM template path is valid for this install, "
+            "(3) confirm the drawing view really references an assembly. "
+            "See check_capabilities -> bom_table for the evidence trail."
+            % (_sw_version() or "unknown"))
     table = win.Dispatch(table)
     call_method(drawing, "ForceRebuild3", False)
     if int(table.RowCount) <= 1:

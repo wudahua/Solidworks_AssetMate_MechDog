@@ -47,10 +47,11 @@ CAPABILITIES = [
     {
         "id": "annotation_write",
         "status": "partial",
-        "summary": "注记 / 件号 / 图纸直线",
-        "why": "`add_note` / `add_balloon` / `add_sheet_line` 可用；图纸草图单位是**米**不是毫米",
+        "summary": "注记 / 图纸直线（件号见 balloon 条目）",
+        "why": ("`add_note` / `add_sheet_line` 可用；图纸草图单位是**米**不是毫米。"
+                "件号请单独看 `balloon` 条目——它是 unsupported，不要在这里当成可用"),
         "workaround": "传毫米会得到满屏放射斜线（坐标被当模型空间并乘视图比例）",
-        "evidence": "2026-10-28 实测三个工具均 ok",
+        "evidence": "2026-10-28 实测 add_note / add_sheet_line 均 ok；add_balloon 见 balloon 条目",
     },
     {
         "id": "bom_table",

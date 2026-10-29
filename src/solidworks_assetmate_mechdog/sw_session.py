@@ -36,6 +36,21 @@ def _com():
     return pythoncom, win, VARIANT
 
 
+def sw_version(sw=None):
+    """Return the SolidWorks revision string, or None.
+
+    Capability conclusions are version-dependent: `InsertBalloon` is UNKNOWNNAME on SW2026
+    and absent on SW2024; `InsertBomTable4(Indented)` works on SW2024 SP4 and returns None
+    on SW2026. Without the revision in the payload, a failure is indistinguishable from a
+    wrong-configuration failure.
+    """
+    try:
+        app = sw or get_sw()
+        return str(app.RevisionNumber)
+    except Exception:
+        return None
+
+
 def get_sw():
     """Connect to the running SolidWorks instance, or start one. Cached.
 
