@@ -1450,13 +1450,47 @@ def _view_at_point(doc, x, y):
     return None
 
 
-def list_drawing_edges(drawing_path, view_name=None):
+_EDGE_CACHE = {}
+EDGE_CACHE_LIMIT = 32
+
+
+def list_drawing_edges(drawing_path, view_name=None, include_points=True):
     """List a view's visible edges with stable indices, so dimensions can be added
-    without guessing sheet coordinates (which need a model->sheet transform this
-    binding exposes unreliably).
+    without guessing sheet coordinates (which need a model->sheet transform this binding
+    exposes unreliably).
+
+    Performance notes — this used to be the slowest call in the toolkit (measured 335 s on
+    a 1094-edge assembly view), almost all of it in fetching vertex coordinates:
+
+        direct `edge.GetStartVertex`       335 s   (property dispatch, 3 COM calls per edge)
+        sw_session.call_method             179 s   (DISPATCH_METHOD, 2x faster)
+        GetCurveParams2 + evaluate          28 s   (12x faster, but only gives parameters)
+
+    Two mitigations, both measured:
+
+    * `include_points=False` returns indices only. Enumerating edges costs ~66 s on that
+      view; adding coordinates is what pushes it past 300 s. Callers that only need to pick
+      an edge by index should not pay for coordinates.
+    * Results are cached per (drawing, view, include_points). The second call is instant.
+      The cache is dropped when the drawing's mtime changes or after EDGE_CACHE_LIMIT
+      entries, so a re-saved drawing re-reads instead of serving stale geometry.
     """
     try:
-        doc = _open_drawing(drawing_path)
+        import win32com.client as win
+
+        from ..sw_session import call_method
+
+        path = os.path.abspath(drawing_path)
+        try:
+            stamp = (path, os.path.getmtime(path), view_name, bool(include_points))
+        except OSError:
+            stamp = None
+        if stamp is not None and stamp in _EDGE_CACHE:
+            cached = dict(_EDGE_CACHE[stamp])
+            cached["cached"] = True
+            return ok(**cached)
+
+        doc = _open_drawing(path)
         target = None
         for view in _iter_views(doc):
             if getattr(view, "Type", None) == 1:
@@ -1466,21 +1500,45 @@ def list_drawing_edges(drawing_path, view_name=None):
                 break
         if target is None:
             return error("view_not_found", "No model view found (view_name=%r)" % view_name)
-        import win32com.client as win
 
         rows = []
-        for index, raw in enumerate(target.GetVisibleEntities2(target, 1) or ()):
-            edge = win.Dispatch(raw)
-            item = {"index": index}
+        raw_edges = []
+        for component in (target.GetVisibleComponents or ()):
             try:
-                p1 = edge.GetStartVertex.GetPoint
-                p2 = edge.GetEndVertex.GetPoint
-                item["model_start"] = [round(v, 4) for v in p1]
-                item["model_end"] = [round(v, 4) for v in p2]
+                raw_edges.extend(list(target.GetVisibleEntities2(component, 1) or ()))
             except Exception:
-                pass
+                continue
+        if not raw_edges:
+            # Some views return nothing per-component; fall back to the view itself.
+            try:
+                raw_edges = list(target.GetVisibleEntities2(target, 1) or ())
+            except Exception:
+                raw_edges = []
+
+        for index, raw in enumerate(raw_edges):
+            item = {"index": index}
+            if include_points:
+                try:
+                    edge = win.Dispatch(raw)
+                    # call_method: attribute access is dispatched as PROPERTYGET and costs
+                    # roughly twice as much per edge.
+                    p1 = win.Dispatch(call_method(edge, "GetStartVertex")).GetPoint
+                    p2 = win.Dispatch(call_method(edge, "GetEndVertex")).GetPoint
+                    item["model_start"] = [round(v, 4) for v in p1]
+                    item["model_end"] = [round(v, 4) for v in p2]
+                except Exception:
+                    pass
             rows.append(item)
-        return ok(drawing=doc.GetTitle, view=target.Name, edge_count=len(rows), edges=rows)
+
+        payload = {"drawing": doc.GetTitle, "view": target.Name,
+                   "edge_count": len(rows), "edges": rows}
+        if stamp is not None:
+            if len(_EDGE_CACHE) >= EDGE_CACHE_LIMIT:
+                _EDGE_CACHE.clear()
+            _EDGE_CACHE[stamp] = dict(payload)
+        result = ok(**payload)
+        result["cached"] = False
+        return result
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:
