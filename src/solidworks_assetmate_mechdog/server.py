@@ -286,14 +286,17 @@ def add_sheet_line(
 
 
 @mcp.tool()
-def sheet_metal_qc(model_path: str) -> str:
+def sheet_metal_qc(model_path: str, include_cylinders: bool = False) -> str:
     """Sheet-metal manufacturability checks: thickness, bend count, bend relief.
 
     Each check returns pass / fail / warn / not_checked. `not_checked` means it was NOT
     evaluated — geometry-distance checks (min flange, hole-to-bend) are not implemented yet
     and say so instead of returning a green tick.
+
+    include_cylinders=True adds a cylinder radius inventory (every hole and bend fillet,
+    grouped by radius). Costs about 90 extra seconds on a 556-face part, hence opt-in.
     """
-    return _json(sheet_metal.sheet_metal_qc(model_path))
+    return _json(sheet_metal.sheet_metal_qc(model_path, include_cylinders=include_cylinders))
 
 
 @mcp.tool()

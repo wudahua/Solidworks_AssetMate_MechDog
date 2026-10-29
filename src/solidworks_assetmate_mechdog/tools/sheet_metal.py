@@ -77,7 +77,7 @@ def _thickness_from_ledger(ledger_result):
     return None, "no Thickness parameter found in the feature tree"
 
 
-def sheet_metal_qc(model_path):
+def sheet_metal_qc(model_path, include_cylinders=False):
     """Sheet-metal manufacturability checks that the feature tree can actually answer.
 
     Returns per-check status: "pass" | "fail" | "warn" | "not_checked". `not_checked`
@@ -114,6 +114,30 @@ def sheet_metal_qc(model_path):
     if led.get("ok"):
         thickness, thickness_source = _thickness_from_ledger(led)
 
+    # Cylinder inventory: fast (single GetFaces pass) and reliable. Radius groups are what
+    # a fabricator needs to sanity-check the model ("12x Ø7 and 12x Ø12 — is that right?").
+    # Bend/hole separation is NOT attempted here — see the note in not_checked below.
+    cylinders = []
+    cylinder_error = None
+    if include_cylinders:
+      try:
+        import win32com.client as win
+
+        from . import geometry as geo
+
+        # `_call` is this module's local alias for sw_session.call_method; using the wrong
+        # name raised NameError which the broad except then swallowed into "0 cylinders".
+        bodies = list(_call(model, "GetBodies2", 0, True) or ())
+        if bodies:
+            body = win.Dispatch(bodies[0])
+            cylinders = geo.extract_cylinders(body, _call)
+      except Exception as exc:
+        cylinder_error = str(exc)[:120]
+    radius_groups = {}
+    for c in cylinders:
+        key = round(c["radius_mm"], 2)
+        radius_groups[key] = radius_groups.get(key, 0) + 1
+
     checks = []
 
     def add(item, status, detail, blocking=False):
@@ -138,8 +162,12 @@ def sheet_metal_qc(model_path):
     # These need solid geometry distance maths that this build does not do yet. Say so
     # instead of returning a green tick.
     for item, why in (
-        ("min_flange_length", "需测量折弯边实际长度（4t + R），当前未实现几何测量"),
-        ("hole_to_bend_distance", "需计算孔心到折弯线的三维距离（≥2t + R），当前未实现"),
+        ("min_flange_length",
+         "需测量折弯边实际长度（4t + R）。圆柱面几何已能取到，但折弯圆角与孔的分离不可靠"
+         "（半径差=板厚会把 Ø12/Ø14 同心孔误判为折弯），故不做判定"),
+        ("hole_to_bend_distance",
+         "需算孔心到折弯线距离（≥2t + R）。同上：折弯/孔分离不可靠，"
+         "试过面相邻性判据——已知折弯的内外圆角也不共享边，且遍历 80 个圆柱面的边需 200 s"),
         ("bend_radius_vs_thickness", "需读折弯圆角半径并与 0.5t 比对；Feature 定义接口在本版本返回空"),
         ("thickness_consistency", "需逐特征比对板厚，当前只读到全局板厚"),
         ("k_factor_source", "见 flat_pattern_report：K 因子由 SolidWorks 决定，工具不读取也不计算"),
@@ -156,6 +184,12 @@ def sheet_metal_qc(model_path):
         bends=[{"name": b["name"], "type": b["type"]} for b in bends],
         bend_count=len(bends),
         relief_features=reliefs,
+        cylinder_count=len(cylinders) if include_cylinders else None,
+        cylinder_error=cylinder_error,
+        cylinder_radius_groups_mm=sorted(
+            ({"radius_mm": r, "diameter_mm": round(r * 2, 2), "count": n}
+             for r, n in radius_groups.items()),
+            key=lambda x: x["radius_mm"]) if include_cylinders else None,
         checks=checks,
         blockers=failed,
         not_checked=not_checked,
