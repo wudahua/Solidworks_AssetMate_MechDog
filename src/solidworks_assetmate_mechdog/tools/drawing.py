@@ -3740,6 +3740,17 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
                         char_h = float(specific.GetTextFormat.CharHeight) or 0.0035
                     except Exception:
                         pass
+                    # Plain dimensions inserted by auto_dimension return EMPTY from GetText
+                    # (only callouts carry text there). GetDimension2 still answers with the
+                    # value, so build a representative string from it — otherwise the width
+                    # estimate degenerates and the collision test misses real overlaps.
+                    if not text.strip():
+                        try:
+                            dim2 = win.Dispatch(specific.GetDimension2(0))
+                            value_mm = float(dim2.SystemValue) * 1000.0
+                            text = "%g" % round(value_mm, 2)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 # Rough monospace assumption: 0.62 em average advance for digits/Ø/dots.
