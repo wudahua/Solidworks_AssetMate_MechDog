@@ -3672,45 +3672,63 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
                     position = [float(v) for v in annotation.GetPosition]
                 except Exception:
                     continue
+                # Text width is needed to catch horizontal overlap: two dimensions 3 mm
+                # apart in x still collide because "Ø25.3" is ~10 mm wide. IDisplayDimension
+                # gives the character height, so the box can be estimated well enough.
+                text, char_h = "", 0.0035
+                try:
+                    specific = win.Dispatch(annotation.GetSpecificAnnotation)
+                    for index in (0, 1, 2):
+                        try:
+                            candidate = str(specific.GetText(index) or "")
+                            if candidate:
+                                text = candidate
+                                break
+                        except Exception:
+                            continue
+                    try:
+                        char_h = float(specific.GetTextFormat.CharHeight) or 0.0035
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                # Rough monospace assumption: 0.62 em average advance for digits/Ø/dots.
+                width = max(char_h * 0.8, len(text) * char_h * 0.62) if text else char_h * 3
                 items.append({"annotation": annotation, "view": str(view.Name),
-                              "x": position[0], "y": position[1]})
+                              "x": position[0], "y": position[1],
+                              "text": text, "w": width, "h": char_h})
         if not items:
             return error("no_dimensions", "no dimensions found on the selected views")
 
-        # Cluster by x, then within each cluster push apart vertically.
+        def boxes_overlap(a, b, pad=0.0008):
+            """Overlap test using estimated text boxes, not just anchor points."""
+            ax0, ax1 = a["x"] - a["w"] / 2, a["x"] + a["w"] / 2
+            bx0, bx1 = b["x"] - b["w"] / 2, b["x"] + b["w"] / 2
+            ay0, ay1 = a["y"] - a["h"], a["y"] + a["h"]
+            by0, by1 = b["y"] - b["h"], b["y"] + b["h"]
+            return (ax0 < bx1 + pad and bx0 < ax1 + pad
+                    and ay0 < by1 + pad and by0 < ay1 + pad)
+
         items.sort(key=lambda i: (round(i["x"] / cluster_tol_m), i["y"]))
         moves = []
-        for index, item in enumerate(items):
-            if index == 0:
-                continue
-            previous = items[index - 1]
-            same_column = abs(item["x"] - previous["x"]) <= max(cluster_tol_m,
-                                                               min_gap_m * 0.35)
-            if not same_column:
-                continue
-            if item["y"] - previous["y"] >= min_gap_m:
-                continue
-            item["y"] = previous["y"] + min_gap_m
-            moves.append({"view": item["view"], "from_x": round(item["x"], 4),
-                          "to_y": round(item["y"], 4)})
+        # Sweep in reading order; push each item up until it clears every earlier one.
+        placed = []
+        for item in items:
+            for _attempt in range(40):
+                clash = None
+                for other in placed:
+                    if boxes_overlap(item, other):
+                        clash = other
+                        break
+                if clash is None:
+                    break
+                item["y"] = clash["y"] + clash["h"] + item["h"] + min_gap_m * 0.25
+                moves.append({"view": item["view"], "text": item["text"][:10],
+                              "x": round(item["x"], 4), "to_y": round(item["y"], 4)})
+            placed.append(item)
 
         # One pass fixes 64% (14 collisions -> 5): pushing one dimension up can create a new
         # collision with the next one, so the pass has to repeat until it settles.
-        for _round in range(3):
-            items.sort(key=lambda i: (round(i["x"] / cluster_tol_m), i["y"]))
-            changed = False
-            for index in range(1, len(items)):
-                item, previous = items[index], items[index - 1]
-                same_column = abs(item["x"] - previous["x"]) <= max(cluster_tol_m,
-                                                                   min_gap_m * 0.35)
-                if not same_column:
-                    continue
-                if item["y"] - previous["y"] >= min_gap_m:
-                    continue
-                item["y"] = previous["y"] + min_gap_m
-                changed = True
-            if not changed:
-                break
 
         applied = 0
         if moves and not dry_run:
