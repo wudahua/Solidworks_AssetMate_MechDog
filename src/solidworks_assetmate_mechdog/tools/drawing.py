@@ -3314,6 +3314,40 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             pass
         if save:
             _save_drawing(doc)
+        # --- rewrite the raw format codes into readable text -----------------------
+        # AddHoleCallout2 leaves GetText as "<MOD-DIAM>" which renders as those literal
+        # characters. IDisplayDimension.SetText replaces it (value lands in slot 1, not 0).
+        for item in created:
+            dim_obj = item.pop("_annotation", None)
+            if dim_obj is None:
+                continue
+            diameter = item.get("diameter_mm")
+            try:
+                target = chr(216) + "%g" % round(float(diameter), 2)
+            except Exception:
+                continue
+            for slot in (1, 0, 2):
+                try:
+                    dim_obj.SetText(slot, target)
+                except Exception:
+                    continue
+                texts = []
+                for probe in range(3):
+                    try:
+                        texts.append(str(dim_obj.GetText(probe) or ""))
+                    except Exception:
+                        texts.append("")
+                filled = [t for t in texts if t.strip()]
+                if filled:
+                    item["text"] = filled[0]
+                    item["text_source"] = "SetText"
+                    break
+
+        unresolved = [c for c in created
+                      if "<MOD-" in str(c.get("text") or "").upper()]
+        for item in unresolved:
+            item["text_unresolved"] = True
+
         return drawing_ok(
             drawing=doc.GetTitle,
             circular_edges=scanned,
@@ -3324,6 +3358,10 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             failed_count=len(failed),
             created=created,
             failed=failed[:20],
+            unresolved_count=len(unresolved),
+            unresolved_note=(("%d 条标注的文本仍是未解析格式码（<MOD-DIAM> 等），渲染出来是"
+                              "字面量——SetText 改写没成功。建议删掉改用 Ø 尺寸标注。")
+                             % len(unresolved)) if unresolved else None,
             # Judge the budget with the same clock that produced elapsed_s: a run whose
             # candidates were all rejected never entered the insert loop, so it reported
             # budget_exceeded=False while taking 55 s of a 45 s budget.
