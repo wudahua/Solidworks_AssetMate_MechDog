@@ -252,14 +252,25 @@ def add_balloon(
 
 
 @mcp.tool()
-def add_bom_table(drawing_path: str, view_name: str | None = None, save: bool = True) -> str:
+def add_bom_table(
+    drawing_path: str,
+    view_name: str | None = None,
+    bom_type: int = 2,
+    anchor_type: int = 1,
+    configuration: str = "",
+    template: str | None = None,
+    save: bool = True,
+) -> str:
     """Insert a native BOM (materials list) table into an assembly drawing.
 
-    Driven by a recorded macro: the direct API returns None for this installation across
-    20+ argument combinations, while the same operation succeeds from a macro. RunMacro's
-    return value is unreliable, so success is judged by reading the table back.
+    anchor_type must be 1 (TopLeft) and bom_type must be 2 (TopLevelOnly) — 0 and 1 are
+    invalid/PartsOnly and make the call return None. The table is created natively but
+    arrives with its header only: row population is not solved yet.
     """
-    return _json(layout.add_bom_table(drawing_path, view_name=view_name, save=save))
+    return _json(layout.add_bom_table(drawing_path, view_name=view_name,
+                                      bom_type=bom_type, anchor_type=anchor_type,
+                                      configuration=configuration,
+                                      template=template, save=save))
 
 
 @mcp.tool()
