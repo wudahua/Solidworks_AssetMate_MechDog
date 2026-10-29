@@ -55,8 +55,11 @@ CAPABILITIES = [
     {
         "id": "bom_table",
         "status": "verified",
-        "summary": "装配明细栏（原生 BOM）",
-        "why": ("**已解决**（2026-10-29 实测）。直接 InsertBomTable4(BomType=TopLevelOnly=2) 在本环境"
+        "summary": "装配明细栏（原生 BOM）· 仅 SW2024 SP4 验证",
+        "why": ("**仅 SW2024 SP4 验证**（2026-10-29）。SW2026 报告 `InsertBomTable4(Indented)` "
+                "返回 None，两步法第一步就拿不到表——与本项「verified」的口径不符，"
+                "故 status 保持 verified 但限定版本。"
+                "**已解决**（2026-10-29 实测）。直接 InsertBomTable4(BomType=TopLevelOnly=2) 在本环境"
                 "只出表头且无数量列，SetConfigurations 各种形式都不能修复。可行路径是两步："
                 "先用 Indented(3) + 有效配置建表（能出 120 行 4 列，证明装配/模板/引用都正常），"
                 "再把 BomFeature.TableType 切到 2——得到 9 行模块 + 一个重复数量列（5 列），"
@@ -64,8 +67,9 @@ CAPABILITIES = [
         "workaround": ("用 add_bom_table；配置名传真实值（空则取视图的 ReferencedConfiguration）。"
                        "不要在该流程里调 SetConfigurations（会把表清回表头），"
                        "也不要用 SetColumnType 补 Quantity 列（SolidWorks 禁止普通列改数量列，返回 False）。"),
-        "evidence": ("2026-10-29 实测 SAB1_0000_000.SLDASM：rows=10 cols=4 data_rows=9，"
-                     "headers=['项目号','零件号','说明','数量']，保存重开保持。"),
+        "evidence": ("SW2024 SP4 实测 SAB1_0000_000.SLDASM：rows=10 cols=4 data_rows=9，"
+                     "headers=['项目号','零件号','说明','数量']，保存重开保持。"
+                     "SW2026 实测失败：InsertBomTable4(Indented) 返回 None。"),
     },
     {
         "id": "sheet_sketch_space",

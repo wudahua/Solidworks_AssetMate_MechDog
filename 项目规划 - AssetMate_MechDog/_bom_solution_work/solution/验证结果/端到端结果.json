@@ -1,0 +1,76 @@
+{
+  "rows": 10,
+  "columns": 4,
+  "data_rows": 9,
+  "headers": [
+    "项目号",
+    "零件号",
+    "说明",
+    "数量"
+  ],
+  "quantity_column_index": 3,
+  "data": [
+    [
+      "1",
+      "SAB1_0100_000",
+      "框架模块",
+      "1"
+    ],
+    [
+      "2",
+      "SAB1_0200_000",
+      "扫描笔固定模块",
+      "1"
+    ],
+    [
+      "3",
+      "SAB1_0300_000",
+      "运动单元模块",
+      "1"
+    ],
+    [
+      "4",
+      "SAB1_0100_009",
+      "电器安装板固定块2",
+      "1"
+    ],
+    [
+      "5",
+      "SAB1_0500_000",
+      " ",
+      "1"
+    ],
+    [
+      "6",
+      "SAB1_0101_002",
+      "料盘立板 2",
+      "2"
+    ],
+    [
+      "7",
+      "SAB1_0101_004",
+      "安装座",
+      "4"
+    ],
+    [
+      "8",
+      "SAB1_0101_005",
+      "料盘立板",
+      "2"
+    ],
+    [
+      "9",
+      "tray assembly",
+      " ",
+      "2"
+    ]
+  ],
+  "referenced_model": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\测试用例\\工程图测试用例\\条码扫描设备\\SAB1_0000_000.SLDASM",
+  "table_type": 2,
+  "native_bom": true,
+  "ok": true,
+  "assembly": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\测试用例\\工程图测试用例\\条码扫描设备\\SAB1_0000_000.SLDASM",
+  "drawing": "D:\\WorkBuddy_space\\_assetmate_test_run\\bom_fix\\BOM_SOLVED.SLDDRW",
+  "configuration": "Default",
+  "template": "D:\\Program Files\\SOLIDWORKS Corp\\SOLIDWORKS\\lang\\chinese-simplified\\bom-standard.sldbomtbt"
+}

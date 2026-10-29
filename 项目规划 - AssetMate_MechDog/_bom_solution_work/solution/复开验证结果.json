@@ -1,0 +1,20 @@
+{
+  "rows": 10,
+  "columns": 4,
+  "total_columns": 5,
+  "headers": [
+    "<FONT size=3.5>项目号",
+    "<FONT size=3.5>零件号",
+    "<FONT size=3.5>说明",
+    "<FONT size=3.5>数量"
+  ],
+  "first_data_row": [
+    "1",
+    "SAB1_0100_000",
+    "框架模块",
+    "1"
+  ],
+  "table_type": 2,
+  "native_bom": true,
+  "ok": true
+}

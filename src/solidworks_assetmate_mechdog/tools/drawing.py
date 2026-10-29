@@ -2759,6 +2759,8 @@ def verify_dimension_attachments(drawing_path, view_name=None):
         # dedupe on (view, name, position, value) and also report the unique count.
         seen_dims = set()
         duplicates_skipped = 0
+        raw_hits = 0
+        by_primary = {}
 
         for view in _iter_views(doc):
             if getattr(view, "Type", None) == 1:
@@ -2806,6 +2808,13 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                 row["is_reference"] = reference
                 row["role"] = ("reference" if reference
                                else ("driving" if reference is False else "unknown"))
+                # Needed by the dedupe key below. Without it the key collapsed to
+                # (view, name, value) and drawings where every dimension is named "D1"
+                # lost genuinely-distinct dimensions that happened to share a value.
+                try:
+                    row["position_m"] = [round(float(v), 4) for v in ann.GetPosition]
+                except Exception:
+                    row["position_m"] = None
                 types = []
                 try:
                     raw_types = ann.GetAttachedEntityTypes
@@ -2817,11 +2826,12 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                     pass
                 row["attached_count"] = len(types)
                 row["attached_kinds"] = [SELECT_TYPE_NAMES.get(t, "type_%d" % t) for t in types]
-                for kind in row["attached_kinds"]:
-                    counts[kind] = counts.get(kind, 0) + 1
-                if not types:
-                    orphans.append({"view": view.Name, "name": row["name"],
-                                    "value_mm": row.get("value_mm")})
+
+                # Dedupe first, bookkeep after. It used to be the other way round, so
+                # counts/orphans counted RAW HITS (23) while dimension_count counted
+                # unique ones (11) — the three numbers described the same sheet and
+                # disagreed. A report caught this: "8+15=23 != 11".
+                raw_hits += 1
                 dedupe_key = (row.get("view"), row.get("name"),
                               tuple(row.get("position_m") or ()),
                               row.get("value_mm"))
@@ -2829,6 +2839,20 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                     duplicates_skipped += 1
                     continue
                 seen_dims.add(dedupe_key)
+
+                # Two different questions, two different counters. `counts` answers "how
+                # many entity attachments of each kind" (one dimension can attach to many
+                # edges); `by_primary` answers "how many dimensions are primarily of this
+                # kind". Mixing them produced a report where 8+15=23 didn't equal 11 —
+                # neither number was wrong, they were answering different questions.
+                for kind in row["attached_kinds"]:
+                    counts[kind] = counts.get(kind, 0) + 1
+                primary = row["attached_kinds"][0] if row["attached_kinds"] else "none"
+                by_primary[primary] = by_primary.get(primary, 0) + 1
+                if not types:
+                    orphans.append({"view": view.Name, "name": row["name"],
+                                    "value_mm": row.get("value_mm"),
+                                    "position_m": row.get("position_m")})
                 rows.append(row)
 
         total = len(rows)
@@ -2836,9 +2860,11 @@ def verify_dimension_attachments(drawing_path, view_name=None):
             drawing=doc.GetTitle,
             dimension_count=total,
             attachment_summary=counts,
+            dimensions_by_primary_attachment=by_primary,
             orphan_count=len(orphans),
             orphans=orphans,
             unique_dimension_count=len(rows),
+            raw_hits=raw_hits,
             duplicates_skipped=duplicates_skipped,
             reference_count=sum(1 for r in rows if r.get("is_reference") is True),
             driving_count=sum(1 for r in rows if r.get("is_reference") is False),

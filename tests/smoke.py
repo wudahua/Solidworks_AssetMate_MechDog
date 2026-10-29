@@ -42,32 +42,52 @@ def _model_dir():
 DEFAULT_ENG_CASES = os.path.join(ROOT, "测试用例", "工程图测试用例")
 
 
+class FixtureMissing(Exception):
+    """Raised when a test needs a model file that is not in the repository.
+
+    The `测试用例/` tree is local-only (see .gitignore: *.SLDPRT / *.SLDASM), so a fresh
+    clone has none of it. Reporting those cases as FAIL made 12/15 look like a code
+    regression when it was only a missing fixture — SKIP keeps the two distinguishable.
+    """
+
+
 class Runner:
     def __init__(self):
         self.results = []
 
     def check(self, name, fn):
         start = time.time()
+        status = "PASS"
         try:
             detail = fn() or ""
-            ok = True
+        except FixtureMissing as exc:
+            status, detail = "SKIP", "fixture missing: %s" % exc
         except AssertionError as exc:
-            ok, detail = False, str(exc)
+            status, detail = "FAIL", str(exc)
         except Exception as exc:
-            ok, detail = False, "%s: %s" % (type(exc).__name__, exc)
+            status, detail = "FAIL", "%s: %s" % (type(exc).__name__, exc)
             if os.environ.get("SMOKE_TRACE"):
                 traceback.print_exc()
         elapsed = time.time() - start
-        self.results.append((name, ok, elapsed, detail))
-        print("%-42s %s  %6.1fs  %s" % (name, "PASS" if ok else "FAIL", elapsed, detail), flush=True)
-        return ok
+        self.results.append((name, status, elapsed, detail))
+        print("%-42s %s  %6.1fs  %s" % (name, status, elapsed, detail), flush=True)
+        return status == "PASS"
 
     def summary(self):
-        failed = [r for r in self.results if not r[1]]
+        failed = [r for r in self.results if r[1] == "FAIL"]
+        skipped = [r for r in self.results if r[1] == "SKIP"]
+        passed = [r for r in self.results if r[1] == "PASS"]
         print("-" * 78)
-        print("%d/%d passed" % (len(self.results) - len(failed), len(self.results)))
+        line = "%d passed" % len(passed)
+        if skipped:
+            line += ", %d skipped (fixture missing)" % len(skipped)
+        if failed:
+            line += ", %d FAILED" % len(failed)
+        print(line + "  / %d total" % len(self.results))
         for name, _, _, detail in failed:
             print("  FAIL %s -> %s" % (name, detail))
+        for name, _, _, detail in skipped:
+            print("  SKIP %s -> %s" % (name, detail))
         return 0 if not failed else 1
 
 
@@ -333,8 +353,13 @@ def main():
     # list_drawing_annotations wrote row["text"] before creating `row`, so the first
     # callout scanned raised UnboundLocalError. A drawing without callouts never hit it,
     # which is why it shipped — and why this case must create callouts first.
+    def _require_fixture(path, label):
+        if not os.path.exists(path):
+            raise FixtureMissing("%s (expected at %s; 测试用例/ is gitignored)" % (label, path))
+        return path
+
     def _annotations_with_callouts():
-        src = os.path.join(_model_dir(), "door.SLDPRT")
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
         part = os.path.join(workdir, "smoke_anno.SLDPRT")
         drw = os.path.join(workdir, "smoke_anno.SLDDRW")
         shutil.copy2(src, part)
@@ -356,7 +381,7 @@ def main():
         return "{%s}" % ", ".join("%s:%s" % (k, d[k]) for k in sorted(d))
 
     def _dimension_dedupe():
-        src = os.path.join(_model_dir(), "door.SLDPRT")
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
         part = os.path.join(workdir, "smoke_dedupe.SLDPRT")
         drw = os.path.join(workdir, "smoke_dedupe.SLDDRW")
         shutil.copy2(src, part)
@@ -378,7 +403,8 @@ def main():
         bom_assembly = [p for p in glob.glob(
             os.path.join(ROOT, "测试用例", "工程图测试用例", "**", "*.SLDASM"), recursive=True)
             if "SAB1_0000_000" in p]
-        assert bom_assembly, "BOM fixture SAB1_0000_000.SLDASM not found"
+        if not bom_assembly:
+            raise FixtureMissing("SAB1_0000_000.SLDASM (测试用例/ is gitignored)")
         drw = os.path.join(workdir, "smoke_bom.SLDDRW")
         require(drawing.create_drawing(bom_assembly[0], drw, views=["front"], paper="A3"))
         made = layout.add_bom_table(drw)

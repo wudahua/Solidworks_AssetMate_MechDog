@@ -1,0 +1,47 @@
+{
+  "environment": "SOLIDWORKS 2024 SP4 (32.4.0), Python + pywin32 late binding",
+  "experiments": [
+    {
+      "operation": "InsertBomTable4(BomType=TopLevelOnly=2)",
+      "rows": 1,
+      "columns": 3,
+      "result": "only header; no Quantity column"
+    },
+    {
+      "operation": "InsertBomTable2/3/4(BomType=Indented=3, Configuration=Default)",
+      "rows": 120,
+      "columns": 4,
+      "result": "native populated BOM with Quantity column"
+    },
+    {
+      "operation": "InsertBomTable4(BomType=PartsOnly=1, Configuration=Default)",
+      "rows": 101,
+      "columns": 4,
+      "result": "native populated BOM with Quantity column"
+    },
+    {
+      "operation": "Create Indented then set BomFeature.TableType=TopLevelOnly(2)",
+      "rows": 10,
+      "columns": 5,
+      "result": "9 desired top-level data rows plus duplicate Quantity column"
+    },
+    {
+      "operation": "ColumnHidden(last_visible_index, True) via DISPATCH_PROPERTYPUT",
+      "rows": 10,
+      "columns": 4,
+      "result": "target native BOM achieved"
+    },
+    {
+      "operation": "Save, close and reopen BOM_SOLVED.SLDDRW",
+      "rows": 10,
+      "columns": 4,
+      "result": "target state persisted; first data row = 1/SAB1_0100_000/框架模块/1"
+    }
+  ],
+  "negative_results": {
+    "SetConfigurations_variants": "returned True but did not populate TopLevelOnly table",
+    "InsertColumn2_then_SetColumnType2(Quantity=203)": "SetColumnType2 returned False; Quantity cannot be assigned this way",
+    "DeleteColumn(extra_quantity)": "returned True but visible duplicate column remained",
+    "direct_Python_EditRebuild3_parentheses": "on this binding EditRebuild3 is a bool property; use call_method/ForceRebuild3"
+  }
+}

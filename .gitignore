@@ -19,6 +19,10 @@ dist/
 .venv/
 venv/
 
+# vim swap files. NOTE: SolidWorks VBA macros also use .swp — if a real macro ever
+# needs to ship, exclude it explicitly with !path/to/file.swp and add package-data.
+*.swp
+
 # OS / editors
 Thumbs.db
 .DS_Store
