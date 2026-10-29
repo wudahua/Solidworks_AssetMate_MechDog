@@ -184,6 +184,9 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         bends=[{"name": b["name"], "type": b["type"]} for b in bends],
         bend_count=len(bends),
         relief_features=reliefs,
+        # Three states must be distinguishable: not requested / requested but failed /
+        # requested and empty. Returning null for all of them left the reader guessing.
+        cylinders_not_requested=(not include_cylinders),
         cylinder_count=len(cylinders) if include_cylinders else None,
         cylinder_error=cylinder_error,
         cylinder_radius_groups_mm=sorted(

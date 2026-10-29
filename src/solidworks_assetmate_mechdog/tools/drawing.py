@@ -2373,6 +2373,9 @@ def list_drawing_annotations(drawing_path, view_name=None):
                 except Exception:
                     continue
                 kind = ANNOTATION_KINDS.get(kind_code, "other_%d" % kind_code)
+                # Reset per iteration: leaving the previous value in place made a callout
+                # inherit the PREVIOUS annotation's text when its own read failed.
+                callout_text = ""
                 # A hole callout is a DisplayDimension, not its own annotation type — the
                 # only way to tell it apart from an ordinary dimension is IsHoleCallout.
                 if kind == "dimension":
@@ -2427,7 +2430,6 @@ def list_drawing_annotations(drawing_path, view_name=None):
                         kind = "hole_callout_unverified"
                     else:
                         kind = "radius_callout"
-                    row["text"] = callout_text or None
                 position = None
                 try:
                     position = [round(v, 4) for v in ann.GetPosition]
@@ -2441,6 +2443,21 @@ def list_drawing_annotations(drawing_path, view_name=None):
                 if name:
                     seen.add(key)
                 row = {"kind": kind, "name": name, "scope": scope}
+                # `text` must be written AFTER row exists. It used to be written before
+                # this line, which meant: first scanned annotation -> UnboundLocalError
+                # (the tool returned annotations_failed); any later one -> the text was
+                # appended to the PREVIOUS row, silently shifting data between lines.
+                if kind in ("hole_callout", "radius_callout", "hole_callout_unverified"):
+                    # GetText can return raw format codes like "<MOD-DIAM>" instead of "Ø".
+                    # The classification above already treats MOD-DIAM as a diameter, but
+                    # handing the code straight to the caller is unreadable — flag it and
+                    # convert the one code we know for sure.
+                    row["text"] = callout_text or None
+                    if callout_text and "<MOD-" in callout_text.upper():
+                        row["text_is_format_code"] = True
+                        row["text"] = (callout_text.upper()
+                                       .replace("<MOD-DIAM>", "Ø")
+                                       .replace("<MOD-DEG>", "°"))
                 if position:
                     row["position_m"] = position
                 if kind == "geometric_tolerance":
@@ -2737,6 +2754,11 @@ def verify_dimension_attachments(drawing_path, view_name=None):
         doc = _open_drawing(drawing_path)
         rows, counts = [], {}
         orphans = []
+        # Same dimension gets enumerated many times (measured 11x for one D1/275.0), and
+        # name is NOT an identity here — some drawings name every dimension "D1" — so
+        # dedupe on (view, name, position, value) and also report the unique count.
+        seen_dims = set()
+        duplicates_skipped = 0
 
         for view in _iter_views(doc):
             if getattr(view, "Type", None) == 1:
@@ -2800,6 +2822,13 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                 if not types:
                     orphans.append({"view": view.Name, "name": row["name"],
                                     "value_mm": row.get("value_mm")})
+                dedupe_key = (row.get("view"), row.get("name"),
+                              tuple(row.get("position_m") or ()),
+                              row.get("value_mm"))
+                if dedupe_key in seen_dims:
+                    duplicates_skipped += 1
+                    continue
+                seen_dims.add(dedupe_key)
                 rows.append(row)
 
         total = len(rows)
@@ -2809,6 +2838,8 @@ def verify_dimension_attachments(drawing_path, view_name=None):
             attachment_summary=counts,
             orphan_count=len(orphans),
             orphans=orphans,
+            unique_dimension_count=len(rows),
+            duplicates_skipped=duplicates_skipped,
             reference_count=sum(1 for r in rows if r.get("is_reference") is True),
             driving_count=sum(1 for r in rows if r.get("is_reference") is False),
             role_unknown=sum(1 for r in rows if r.get("is_reference") is None),

@@ -18,11 +18,14 @@ Dependency-free: run with the same Python that runs the server, no pyflakes need
 
 import ast
 import os
+import pathlib
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "src", "solidworks_assetmate_mechdog", "server.py")
 TOOLS_DIR = os.path.join(ROOT, "src", "solidworks_assetmate_mechdog", "tools")
+README = os.path.join(ROOT, "README.md")
+PYPROJECT = os.path.join(ROOT, "pyproject.toml")
 
 # Members win32com dispatches as PROPERTYGET although they are methods. Calling them
 # directly raises DISP_E_MEMBERNOTFOUND, which reads like "the API does not exist" — this
@@ -185,6 +188,37 @@ def check_duplicate_defs(path):
     return _duplicate_defs_in_body(tree.body, "", path)
 
 
+def check_stale_roadmap(readme_path, pyproject_path):
+    """Flag a README roadmap entry still marked 待做 for a version <= current.
+
+    The README keeps its own short roadmap next to a link to docs/ROADMAP.md. They drifted:
+    README said "v0.5 待做" while ROADMAP said v0.5-v0.8 were all released, and the version
+    counter had already passed 0.8. Someone reading the README would misjudge progress.
+    """
+    import re
+
+    problems = []
+    try:
+        current = re.search(r'^version\s*=\s*"([0-9.]+)"',
+                            pathlib.Path(pyproject_path).read_text(encoding="utf-8"),
+                            re.MULTILINE)
+        if not current:
+            return problems
+        cur = tuple(int(x) for x in current.group(1).split("."))
+        text = pathlib.Path(readme_path).read_text(encoding="utf-8")
+    except OSError:
+        return problems
+
+    for match in re.finditer(r"v(\d+)\.(\d+)[^\n]{0,40}待做", text):
+        ver = (int(match.group(1)), int(match.group(2)))
+        if ver <= cur:
+            problems.append(
+                "%s: roadmap says v%d.%d 待做 but the package is already %d.%d — "
+                "either mark it done or move it forward"
+                % (os.path.basename(readme_path), ver[0], ver[1], cur[0], cur[1]))
+    return problems
+
+
 def check_readme(tool_names):
     """README must agree with the code: tool counts and every tool name present.
 
@@ -267,6 +301,7 @@ def main():
     problems.extend(check_property_traps(SERVER, PROPERTY_TRAPS))
     problems.extend(check_duplicate_defs(SERVER))
     problems.extend(check_readme([t.name for t in tools]))
+    problems.extend(check_stale_roadmap(README, PYPROJECT))
     if problems:
         print("static check FAILED (%d issue(s), %d tools scanned):" % (len(problems), len(tools)))
         for item in problems:
