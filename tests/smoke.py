@@ -30,6 +30,13 @@ DEFAULT_ASSEMBLY = os.path.join(
     ROOT, "测试用例", "监视器显示器固定支架-rebuild", "装配体_显示器固定支架.SLDASM"
 )
 DEFAULT_PART = os.path.join(ROOT, "测试用例", "履带-rebuild", "P05_karetku.SLDPRT")
+SHEET_METAL_DIR = os.path.join(ROOT, "测试用例",
+                               "electric panel box配电箱3D数模图纸 Solidworks设计")
+
+
+def _model_dir():
+    """Directory holding the sheet-metal fixtures (door.SLDPRT / panel box.SLDPRT)."""
+    return SHEET_METAL_DIR
 # Real parts from four industries; the drawing chain is exercised against these because a
 # single hard-coded part cannot represent sheet metal, turned parts and fixtures at once.
 DEFAULT_ENG_CASES = os.path.join(ROOT, "测试用例", "工程图测试用例")
@@ -100,7 +107,8 @@ def main():
 
     from solidworks_assetmate_mechdog import __version__
     from solidworks_assetmate_mechdog.sw_session import get_sw
-    from solidworks_assetmate_mechdog.tools import assembly, bodies, bom, drawing, export, ledger, recolor
+    from solidworks_assetmate_mechdog.tools import (assembly, bodies, bom, drawing, export,
+                                                    layout, ledger, recolor)
 
     try:
         get_sw()
@@ -320,6 +328,70 @@ def main():
             return " | ".join(lines)
 
         r.check("eng cases (ledger/draw/annotate/verdict)", _eng_cases)
+
+    # --- v0.8.3 P0 regression: annotations on a drawing that HAS hole callouts ---------
+    # list_drawing_annotations wrote row["text"] before creating `row`, so the first
+    # callout scanned raised UnboundLocalError. A drawing without callouts never hit it,
+    # which is why it shipped — and why this case must create callouts first.
+    def _annotations_with_callouts():
+        src = os.path.join(_model_dir(), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_anno.SLDPRT")
+        drw = os.path.join(workdir, "smoke_anno.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front", "right"], paper="A3"))
+        made = drawing.add_hole_callouts(drw, budget_s=40)
+        total = made.get("created_count") or 0
+        listed = require(drawing.list_drawing_annotations(drw))
+        totals = listed.get("totals") or {}
+        callouts = [a for a in (listed.get("annotations") or [])
+                    if "callout" in str(a.get("kind"))]
+        assert callouts, ("callouts created (%d) but none listed — the text/row ordering "
+                          "may have regressed" % total)
+        for row_ in callouts:
+            assert row_.get("kind"), "callout row missing kind: %r" % (row_,)
+        return "created %d, listed %d rows, totals=%s" % (total, len(callouts),
+                                                          server_sorted(totals))
+
+    def server_sorted(d):
+        return "{%s}" % ", ".join("%s:%s" % (k, d[k]) for k in sorted(d))
+
+    def _dimension_dedupe():
+        src = os.path.join(_model_dir(), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_dedupe.SLDPRT")
+        drw = os.path.join(workdir, "smoke_dedupe.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        drawing.auto_dimension(drw, all_views=True)
+        checked = require(drawing.verify_dimension_attachments(drw))
+        unique = checked.get("unique_dimension_count")
+        dupes = checked.get("duplicates_skipped")
+        assert unique is not None, "unique_dimension_count missing"
+        assert unique == len(checked.get("dimensions") or []), (
+            "unique_dimension_count=%r but len(dimensions)=%r"
+            % (unique, len(checked.get("dimensions") or [])))
+        return "unique=%s duplicates_skipped=%s" % (unique, dupes)
+
+    def _bom_table():
+        # Use the sheet-metal assembly, not --assembly: the BOM path goes through
+        # InsertBomTable4(Indented) and not every assembly reports configurations in a way
+        # that populates it. SAB1_0000_000 is the fixture verified for 10x4.
+        bom_assembly = [p for p in glob.glob(
+            os.path.join(ROOT, "测试用例", "工程图测试用例", "**", "*.SLDASM"), recursive=True)
+            if "SAB1_0000_000" in p]
+        assert bom_assembly, "BOM fixture SAB1_0000_000.SLDASM not found"
+        drw = os.path.join(workdir, "smoke_bom.SLDDRW")
+        require(drawing.create_drawing(bom_assembly[0], drw, views=["front"], paper="A3"))
+        made = layout.add_bom_table(drw)
+        require(made)
+        assert made.get("rows", 0) > 1, "BOM has no data rows (rows=%r)" % made.get("rows")
+        assert made.get("columns") == 4, "BOM has %r columns, expected 4" % made.get("columns")
+        assert made.get("native_bom"), "not a native BOM"
+        return "rows=%s columns=%s headers=%s" % (made.get("rows"), made.get("columns"),
+                                                  made.get("headers"))
+
+    r.check("list_drawing_annotations with hole callouts (P0)", _annotations_with_callouts)
+    r.check("verify_dimension_attachments dedupe", _dimension_dedupe)
+    r.check("add_bom_table (native, populated)", _bom_table)
 
     code = r.summary()
 

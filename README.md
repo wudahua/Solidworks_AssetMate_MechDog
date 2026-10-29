@@ -213,6 +213,9 @@ pending:   27/53 尺寸读不到关联
 
 设计原则第一条就是：**工具返回成功 ≠ 图纸正确**。所以每步都回读。
 
+开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**（`python tests/smoke.py`），
+`static_check` 只验结构，验不了行为。
+
 ---
 
 ## 快速上手
