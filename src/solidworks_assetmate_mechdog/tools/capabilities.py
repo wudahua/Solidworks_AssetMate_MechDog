@@ -45,6 +45,21 @@ CAPABILITIES = [
                      "用户反馈 SW2026 同款失败。"),
     },
     {
+        "id": "delete_annotation",
+        "status": "pilot",
+        "summary": "删除/移动标注（按 name）",
+        "why": ("`delete_view` 已验证可用（SelectByID2(name,'DRAWINGVIEW') + EditDelete）。"
+                "但按 name 删除**标注**尚未跑通：`SelectByID2` 不接受通用 'ANNOTATION'，"
+                "而笔记/GT/粗糙度各有自己的类型串；改用「按 position_m 打射线选中」也选不中"
+                "（sheet 的 GetAnnotations 拿到的对象与 list_drawing_annotations 报告的名称"
+                "对不上，可能是模板文字与模型标注混在一起）。"),
+        "workaround": ("删视图用 `delete_view`（可用）。"
+                       "标注只能整张重建，或界面手工删。"),
+        "evidence": ("2026-10-29 实测：delete_view 删掉 工程图视图2 成功；"
+                     "delete_annotation / move_annotation 对 note 报 annotation_not_found，"
+                     "尝试过 5 种 select type 与按坐标射线。"),
+    },
+    {
         "id": "annotation_write",
         "status": "partial",
         "summary": "注记 / 图纸直线（件号见 balloon 条目）",

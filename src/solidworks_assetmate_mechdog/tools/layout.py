@@ -469,3 +469,186 @@ def add_bom_table(drawing_path, view_name=None, configuration="Default",
         return error("bom_table_failed", str(exc))
 
 
+
+
+# --- delete / move: the missing half of the API surface -------------------------------
+#
+# Every create-only design funnels into the same dead end: one wrong parameter means
+# rebuilding the whole sheet, because nothing on it can be removed. A report measured this
+# precisely — four full rebuilds for one drawing, three of them solely because the sheet
+# carried leftovers (`delete_view` / `delete_annotation` absent). `name` was already exposed
+# by list_drawing_annotations, so deletion was the cheapest possible fix.
+
+# SelectByID2 does not accept a generic "ANNOTATION" — notes, GT frames and surface symbols
+# each have their own type string, and the reported `name` ("细节项目256") is not resolvable
+# by ID at all. Selecting by the annotation's own position is what actually works.
+DELETABLE_SELECT_TYPES = ("NOTE", "GTOL", "SFSYMBOL", "DIMENSION", "ANNOTATION")
+
+
+def _find_annotation_by_name(doc, name):
+    """Return (annotation, position_m) for an annotation with this reported name."""
+    import win32com.client
+    try:
+        sheet = doc.GetFirstView
+        for raw in (call_method(sheet, "GetAnnotations") or ()):
+            annotation = win32com.client.Dispatch(raw)
+            try:
+                if str(annotation.GetName) == name:
+                    position = [float(v) for v in annotation.GetPosition]
+                    return annotation, position
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None, None
+
+
+def _select_by_name(doc, name, select_type, byref_dispatch_null):
+    """Select one object by its reported name. Returns True when the selection took."""
+    try:
+        ok_selected = doc.Extension.SelectByID2(name, select_type, 0, 0, 0,
+                                               False, 0, byref_dispatch_null(), 0)
+    except Exception:
+        return False
+    if not ok_selected:
+        return False
+    try:
+        return doc.SelectionManager.GetSelectedObjectCount2(-1) > 0
+    except Exception:
+        return ok_selected
+
+
+def delete_view(drawing_path, view_name, save=True):
+    """Delete a drawing view (wrong section, empty detail, stray projection).
+
+    Without this, a single wrong `add_section_view` forces rebuilding the entire sheet.
+    """
+    try:
+        from ..sw_session import byref_dispatch_null, error, get_sw
+
+        doc = _open_drawing(drawing_path)
+        before = [str(v.Name) for v in _iter_views(doc)
+                  if getattr(v, "Type", None) != 1]
+        if view_name not in before:
+            return error("view_not_found",
+                         "no model view named %r" % view_name,
+                         "available: %s" % ", ".join(before))
+        doc.ClearSelection2(True)
+        if not _select_by_name(doc, view_name, "DRAWINGVIEW", byref_dispatch_null):
+            return error("select_failed",
+                         "SelectByID2 could not select %r as DRAWINGVIEW" % view_name)
+        _call_method(doc, "EditDelete")
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        after = [str(v.Name) for v in _iter_views(doc)
+                 if getattr(v, "Type", None) != 1]
+        if len(after) >= len(before):
+            return error("delete_failed",
+                         "EditDelete did not remove the view",
+                         "before=%s after=%s" % (before, after),
+                         before=before, after=after)
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(deleted=view_name, views_before=before, views_after=after,
+                          saved=bool(save))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("delete_view_failed", str(exc))
+
+
+def delete_annotation(drawing_path, name, save=True):
+    """Delete one annotation by name (broken hole callout, unwanted GT, stray note)."""
+    try:
+        from ..sw_session import byref_dispatch_null, error
+
+        doc = _open_drawing(drawing_path)
+        doc.ClearSelection2(True)
+
+        # Strategy 1: select at the annotation's own position. This is what works —
+        # SelectByID2 with the reported name fails for notes/GT/surface symbols.
+        annotation, position = _find_annotation_by_name(doc, name)
+        selected_type = None
+        if position is not None:
+            try:
+                hit = doc.Extension.SelectByRay(position[0], position[1], position[2],
+                                                0.0, 0.0, -1.0, 0.002, 2,
+                                                False, 0, 0)
+                if hit and doc.SelectionManager.GetSelectedObjectCount2(-1) > 0:
+                    selected_type = "by_position"
+            except Exception:
+                pass
+        if selected_type is None:
+            # Strategy 2: fall back to type-based ID selection for dimensions.
+            for candidate in DELETABLE_SELECT_TYPES:
+                if _select_by_name(doc, name, candidate, byref_dispatch_null):
+                    selected_type = candidate
+                    break
+        if selected_type is None:
+            return error("annotation_not_found",
+                         "no annotation named %r could be selected" % name,
+                         "tried selecting at its reported position and by ID with types: %s. "
+                         "List names first with list_drawing_annotations."
+                         % ", ".join(DELETABLE_SELECT_TYPES))
+        _call_method(doc, "EditDelete")
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        doc.ClearSelection2(True)
+        # EditDelete returns None on success, so there is nothing to trust; the caller can
+        # re-run list_drawing_annotations to confirm the name is gone.
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(deleted=name, selected_as=selected_type, saved=bool(save))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("delete_annotation_failed", str(exc))
+
+
+def move_annotation(drawing_path, name, x_m, y_m, save=True):
+    """Move an annotation or dimension to a sheet position (metres).
+
+    Dimensions pile up on the centre line when auto_dimension runs on a section view; there
+    was no way to pull them apart, which made the output unreadable.
+    """
+    try:
+        from ..sw_session import byref_dispatch_null, error
+
+        doc = _open_drawing(drawing_path)
+        doc.ClearSelection2(True)
+        annotation, before = _find_annotation_by_name(doc, name)
+        if annotation is None:
+            return error("annotation_not_found",
+                         "no annotation named %r on this sheet" % name,
+                         "list names first with list_drawing_annotations")
+        try:
+            before = [round(float(v), 4) for v in annotation.GetPosition]
+        except Exception:
+            before = None
+        try:
+            annotation.SetPosition(float(x_m), float(y_m), 0)
+        except Exception as exc:
+            return error("move_failed", "SetPosition raised: %s" % str(exc)[:80],
+                         "section/detail views keep projection alignment and refuse some moves")
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        after = None
+        try:
+            after = [round(float(v), 4) for v in annotation.GetPosition]
+        except Exception:
+            pass
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(moved=name, position_before_m=before, position_after_m=after,
+                          requested=[round(float(x_m), 4), round(float(y_m), 4)],
+                          applied=after != before, saved=bool(save))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("move_annotation_failed", str(exc))

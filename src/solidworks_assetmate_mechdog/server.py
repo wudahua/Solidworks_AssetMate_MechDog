@@ -252,6 +252,37 @@ def add_balloon(
 
 
 @mcp.tool()
+def delete_view(drawing_path: str, view_name: str, save: bool = True) -> str:
+    """Delete a drawing view by name.
+
+    Create-only APIs meant one wrong `add_section_view` forced rebuilding the whole sheet.
+    `view_name` comes from `drawing_audit` or `view_positions`.
+    """
+    return _json(layout.delete_view(drawing_path, view_name, save=save))
+
+
+@mcp.tool()
+def delete_annotation(drawing_path: str, name: str, save: bool = True) -> str:
+    """Delete one annotation (hole callout / GT / surface finish / note) by name.
+
+    Names come from `list_drawing_annotations` (e.g. "细节项目272"). The tool tries
+    ANNOTATION then DIMENSION selection, so dimensions work too.
+    """
+    return _json(layout.delete_annotation(drawing_path, name, save=save))
+
+
+@mcp.tool()
+def move_annotation(drawing_path: str, name: str, x_m: float, y_m: float,
+                    save: bool = True) -> str:
+    """Move an annotation or dimension to a sheet position in metres.
+
+    Returns `requested` vs `position_after_m` separately — section and detail views keep
+    projection alignment and may refuse the requested spot.
+    """
+    return _json(layout.move_annotation(drawing_path, name, x_m, y_m, save=save))
+
+
+@mcp.tool()
 def add_bom_table(
     drawing_path: str,
     view_name: str | None = None,
