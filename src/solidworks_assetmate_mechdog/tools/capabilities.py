@@ -38,21 +38,18 @@ CAPABILITIES = [
     },
     {
         "id": "bom_table",
-        "status": "partial",
-        "summary": "装配明细栏（BOM 表）",
-        "why": ("`IView.InsertBomTable4` 真实签名有 **10 个参数**（官方 2024 文档），"
-                "第一个是 `UseAnchorPoint`(bool) 不是模板路径——按 6 参数调用必然 "
-                "DISP_E_TYPEMISMATCH。改用正确签名后不再报错，但**返回 None**："
-                "BomType=0/1/2、模板路径已确认存在（安装目录 lang\\chinese-simplified\\"
-                "bom-standard.sldbomtbt）、保存图纸后重试，结果一致。"
-                "`InsertBomTable5`（11 参数，2024 FCS）与 `InsertTableAnnotation2`（7 参数）"
-                "同样全部返回 None；已试 BomType 0-4、空/真实模板、视图激活/EditSheet/"
-                "ActivateSheet/存盘后插、UseAnchorPoint 两种取值，共 7 条 API × 20+ 组合，"
-                "无一成功。返回 None 而非报错 = 调用被接受、创建被静默拒绝，"
-                "最可能是文档属性禁用或模板格式不兼容。"),
-        "workaround": ("用 add_bom_table（宏驱动）可生成原生 BOM；宏按固定视图名与位置录制，"
-                       "视图名不符时可能不出现"),
-        "evidence": "2026-10-28 实测 10 种参数组合全部类型不匹配",
+        "status": "verified",
+        "summary": "装配明细栏（原生 BOM）",
+        "why": ("**已解决**（2026-10-29 实测）。直接 InsertBomTable4(BomType=TopLevelOnly=2) 在本环境"
+                "只出表头且无数量列，SetConfigurations 各种形式都不能修复。可行路径是两步："
+                "先用 Indented(3) + 有效配置建表（能出 120 行 4 列，证明装配/模板/引用都正常），"
+                "再把 BomFeature.TableType 切到 2——得到 9 行模块 + 一个重复数量列（5 列），"
+                "隐藏最后一列即得 10 行 4 列目标形态。"),
+        "workaround": ("用 add_bom_table；配置名传真实值（空则取视图的 ReferencedConfiguration）。"
+                       "不要在该流程里调 SetConfigurations（会把表清回表头），"
+                       "也不要用 SetColumnType 补 Quantity 列（SolidWorks 禁止普通列改数量列，返回 False）。"),
+        "evidence": ("2026-10-29 实测 SAB1_0000_000.SLDASM：rows=10 cols=4 data_rows=9，"
+                     "headers=['项目号','零件号','说明','数量']，保存重开保持。"),
     },
     {
         "id": "sheet_sketch_space",

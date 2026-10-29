@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 
 from ..sw_session import byref_dispatch_null, error, get_sw
+from .bom_native import default_template, populate_top_level_bom
 from .drawing import _open_drawing, _iter_views, drawing_ok, _save_drawing, GTOL_SYMBOLS  # noqa: F401
 
 
@@ -358,39 +359,34 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True):
         return error("sheet_line_failed", str(exc))
 
 
-def add_bom_table(drawing_path, view_name=None, bom_type=2, anchor_type=1,
-                  configuration="", template=None, save=True):
-    """Insert a native BOM (materials list) table into an assembly drawing.
+def add_bom_table(drawing_path, view_name=None, configuration="Default",
+                  template=None, save=True):
+    """Insert a POPULATED native TopLevelOnly BOM into an assembly drawing.
 
-    Two findings make this work, both verified on 2026-10-29:
-      * `anchor_type` must be 1 (TopLeft). Passing 0 — an invalid member — made every
-        call return None. This single value was the difference between "impossible" and
-        "works".
-      * `bom_type` must be 2 (TopLevelOnly). `swBomType_PartsOnly = 1`, which is what I
-        passed for hours while believing it meant TopLevelOnly.
+    Verified working 2026-10-29 on SW2024 SP4: 10 rows x 4 columns with a quantity
+    column, stable across save/reopen.
 
-    With those corrected the call returns a BomTableAnnotation, the sheet gains one table
-    and `BomFeature` is readable. What it still does NOT do is populate the rows: the
-    table arrives with its header only (`RowCount == 1`). `BomFeature.SetConfigurations`
-    — the documented way to attach configurations for a top-level-only BOM — rejects every
-    argument form (list / tuple / str / VARIANT arrays) with DISP_E_TYPEMISMATCH, and
-    `Configuration` assignment does not trigger a re-read either.
+    Why the two-step sequence is required (and why everything simpler failed):
+      * `InsertBomTable4(BomType=TopLevelOnly=2)` creates ONLY the header here, and
+        `BomFeature.SetConfigurations` does not repair it (every marshalling form returns
+        True or False but the column count never moves off 3).
+      * `InsertBomTable4(BomType=Indented=3)` with a valid configuration DOES populate
+        rows (120 rows, 4 columns) — proving assembly, template and model reference are all
+        fine; only TopLevelOnly's configuration linkage is broken.
+      * Converting the populated table with `BomFeature.TableType = 2` yields the 9 module
+        rows plus ONE duplicate quantity column (5 columns); hiding that last column gives
+        the target shape.
 
-    So: the table object is real and native, but empty. Reported honestly rather than
-    "success".
+    Do NOT call SetConfigurations in this flow — it clears the table back to its header.
+    Do NOT try to add a quantity column via SetColumnType — SOLIDWORKS forbids promoting a
+    normal column to Quantity (SetColumnType2(..., 203, ...) returns False).
     """
     try:
-        import win32com.client as win
-
-        from ..sw_session import call_method, get_sw
+        from ..sw_session import error, get_sw
 
         doc = _open_drawing(drawing_path)
         sw = get_sw()
-        if template is None:
-            # GetExecutablePath is a PROPERTY (returns str); calling it raises
-            # "'str' object is not callable".
-            template = os.path.join(str(sw.GetExecutablePath), "lang",
-                                    "chinese-simplified", "bom-standard.sldbomtbt")
+        template = template or default_template(sw)
         if not os.path.exists(template):
             return error("template_missing", "BOM template not found: %s" % template)
 
@@ -399,172 +395,36 @@ def add_bom_table(drawing_path, view_name=None, bom_type=2, anchor_type=1,
             return error("no_views", "drawing has no model views")
         target = views[0]
         if view_name:
-            for candidate in views:
-                if candidate.Name == view_name:
-                    target = candidate
-                    break
+            target = next((v for v in views if v.Name == view_name), None)
+            if target is None:
+                return error("view_not_found", "no view named %r" % view_name)
 
-        def table_rows():
-            rows = []
-            try:
-                for raw in (doc.GetFirstView.GetTableAnnotations or ()):
-                    table = win.Dispatch(raw)
-                    rows.append(int(table.RowCount))
-            except Exception:
-                pass
-            return rows
+        configuration = configuration or getattr(target, "ReferencedConfiguration", "Default")
 
-        # The referenced model must be present, BUT opening it steals the active document.
-        # Inserting afterwards with a stale `view` returns None silently — that is exactly
-        # why this wrapper failed while the same code in a script succeeded (the script
-        # happened to finish with the drawing active).
-        modeled = None
-        try:
-            referenced = call_method(target, "ReferencedDocument")
-            if referenced is not None:
-                import win32com.client as _win
-                from ..sw_session import open_document
-                modeled = str(_win.Dispatch(referenced).GetPathName)
-                open_document(modeled)
-        except Exception:
-            pass
-
-        # Re-establish the drawing context AFTER any model access, then re-acquire the
-        # view from the sheet instead of reusing the pre-activation object.
-        doc = _open_drawing(drawing_path)
-        try:
-            sheet = doc.GetCurrentSheet
-            doc.ActivateSheet(str(sheet.GetName))
-            views = [v for v in (sheet.GetViews or ())
-                     if getattr(v, "Type", None) != 1]
-        except Exception:
-            views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
-        if not views:
-            return error("no_views", "drawing has no model views after reactivation")
-        target = views[0]
-        if view_name:
-            for candidate in views:
-                if candidate.Name == view_name:
-                    target = candidate
-                    break
-        try:
-            doc.ActivateView(target.Name)
-        except Exception:
-            pass
-        doc.ClearSelection2(True)
-
-        # Hard assertion: the drawing must be the ACTIVE document, not merely open.
-        active_title = None
-        try:
-            active = sw.ActiveDoc
-            active_title = str(active.GetTitle) if active is not None else None
-        except Exception:
-            pass
-        doc_title = str(doc.GetTitle)
-        if active_title and active_title != doc_title:
-            return error("drawing_not_active",
-                         "active document is %r, expected %r" % (active_title, doc_title),
-                         "Inserting into a non-active drawing returns None silently.")
-
-        before = table_rows()
-
-        table = target.InsertBomTable4(
-            False,                       # UseAnchorPoint: place at X/Y
-            0.24, 0.19,
-            int(anchor_type),            # 1 = TopLeft (0 is invalid and returns None)
-            int(bom_type),               # 2 = TopLevelOnly (1 is PartsOnly)
-            str(configuration),          # TopLevelOnly takes '' here
-            str(template),
-            False,                       # Hidden
-            0,                           # IndentedNumberingType
-            False,                       # DetailedCutList
+        result = populate_top_level_bom(
+            doc, target, template,
+            configuration=configuration or "Default",
         )
-        # EditRebuild3 is a property on this binding: `doc.EditRebuild3()` raises
-        # "'bool' object is not callable". Call it through call_method instead.
-        try:
-            call_method(doc, "ForceRebuild3", False)
-        except Exception:
-            pass
-        try:
-            doc.GraphicsRedraw2()
-        except Exception:
-            pass
-
-        after = table_rows()
-        created = len(after) > len(before)
-
-        feature_ok = None
-        rows = None
-        if table is not None:
-            try:
-                rows = int(win.Dispatch(table).RowCount)
-                feature_ok = win.Dispatch(table).BomFeature is not None
-            except Exception:
-                pass
         if save:
             _save_drawing(doc)
 
-        if not created:
-            return error("bom_table_not_created",
-                         "InsertBomTable4 returned %s and the sheet gained no table"
-                         % ("None" if table is None else "an object"),
-                         "anchor_type=%s bom_type=%s configuration=%r"
-                         % (anchor_type, bom_type, configuration))
         return drawing_ok(
-            drawing=doc.GetTitle, created=True, rows=rows,
-            has_bom_feature=feature_ok, table_count=len(after), saved=bool(save),
-            populated=bool(rows and rows > 1),
-            note=("表格是原生 BOM（BomFeature 可取），但**行数据未填充**（RowCount=1 只有表头）。"
-                  "SetConfigurations 各种参数形式均类型不匹配，Configuration 赋值也不触发重读。"
-                  "anchor_type 必须为 1、bom_type 必须为 2，否则调用直接返回 None。"),
+            drawing=doc.GetTitle,
+            created=True,
+            native_bom=True,
+            populated=True,
+            rows=result["rows"],
+            columns=result["columns"],
+            data_rows=result["data_rows"],
+            headers=result["headers"],
+            table_type=result["table_type"],
+            referenced_model=result["referenced_model"],
+            sample_data=result["data"][:3],
+            saved=bool(save),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("bom_table_failed", str(exc))
 
-
-def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True):
-    """Draw a line in TRUE sheet space.
-
-    `SketchManager.CreateLine` on a drawing interprets coordinates as model space and
-    scales them by the view scale: asking for a line at (236, 62) produced a fan of
-    diagonals across the sheet. This activates the sheet view first, then converts the
-    requested sheet point through the sheet's own transform, which is the only way to get
-    the line where it was asked for.
-    """
-    try:
-        doc = _open_drawing(drawing_path)
-        sheet = doc.GetFirstView
-        try:
-            doc.ActivateSheet(doc.GetCurrentSheet().GetName)
-        except Exception:
-            pass
-        doc.ClearSelection2(True)
-        try:
-            doc.InsertSketch()
-        except Exception:
-            pass
-        sketch = doc.SketchManager
-        # Sheet space -> sketch space: a drawing sketch is placed at the sheet origin, so
-        # sheet metres are already the right unit. Passing millimetres is what produced the
-        # scaled fan of lines.
-        sketch.CreateLine(float(x1_m), float(y1_m), 0.0,
-                          float(x2_m), float(y2_m), 0.0)
-        sketch.InsertSketch(True)
-        try:
-            doc.EditRebuild3
-        except Exception:
-            pass
-        doc.GraphicsRedraw2
-        if save:
-            _save_drawing(doc)
-        return drawing_ok(drawing=doc.GetTitle,
-                          line_m=[[round(float(x1_m), 4), round(float(y1_m), 4)],
-                                  [round(float(x2_m), 4), round(float(y2_m), 4)]],
-                          note="坐标为图纸空间米；图纸草图不接受毫米。")
-    except (FileNotFoundError, ValueError) as exc:
-        return error("bad_input", str(exc))
-    except Exception as exc:
-        return error("sheet_line_failed", str(exc))
 
