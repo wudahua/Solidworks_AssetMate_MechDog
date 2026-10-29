@@ -151,6 +151,40 @@ def check_tools_module(path):
     return problems
 
 
+def _duplicate_defs_in_body(body, scope, path):
+    """Collect duplicate def names within one scope (module level or one class)."""
+    seen, errors = {}, []
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in seen:
+                errors.append(
+                    "%s: duplicate def %s%s (line %s and line %s) — the later one "
+                    "silently wins, so the earlier code never runs"
+                    % (os.path.basename(path), scope, node.name,
+                       seen[node.name], node.lineno))
+            else:
+                seen[node.name] = node.lineno
+        elif isinstance(node, ast.ClassDef):
+            errors.extend(_duplicate_defs_in_body(node.body, scope + node.name + ".", path))
+    return errors
+
+
+def check_duplicate_defs(path):
+    """Flag a second definition of the same name in the same scope.
+
+    This is not caught by the interpreter, by import, or by most tests — the module simply
+    binds the later object and the earlier one vanishes. It cost 40 minutes here once:
+    `layout.py` ended up with two `add_bom_table` (new one mid-file, old macro-driven one at
+    the end), so the tool kept running the old code while the standalone script — importing
+    the same module — looked fine.
+    """
+    try:
+        tree = ast.parse(open(path, encoding="utf-8").read(), filename=path)
+    except SyntaxError:
+        return []  # the compile check reports syntax errors
+    return _duplicate_defs_in_body(tree.body, "", path)
+
+
 def check_readme(tool_names):
     """README must agree with the code: tool counts and every tool name present.
 
@@ -229,7 +263,9 @@ def main():
             module_path = os.path.join(TOOLS_DIR, name)
             problems.extend(check_tools_module(module_path))
             problems.extend(check_property_traps(module_path, PROPERTY_TRAPS))
+            problems.extend(check_duplicate_defs(module_path))
     problems.extend(check_property_traps(SERVER, PROPERTY_TRAPS))
+    problems.extend(check_duplicate_defs(SERVER))
     problems.extend(check_readme([t.name for t in tools]))
     if problems:
         print("static check FAILED (%d issue(s), %d tools scanned):" % (len(problems), len(tools)))
