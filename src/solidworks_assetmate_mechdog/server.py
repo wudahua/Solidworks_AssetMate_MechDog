@@ -255,20 +255,22 @@ def add_balloon(
 def add_bom_table(
     drawing_path: str,
     view_name: str | None = None,
-    bom_type: int = 2,
-    anchor_type: int = 1,
-    configuration: str = "",
+    configuration: str = "Default",
     template: str | None = None,
     save: bool = True,
 ) -> str:
-    """Insert a native BOM (materials list) table into an assembly drawing.
+    """Insert a POPULATED native BOM (materials list) into an assembly drawing.
 
-    anchor_type must be 1 (TopLeft) and bom_type must be 2 (TopLevelOnly) — 0 and 1 are
-    invalid/PartsOnly and make the call return None. The table is created natively but
-    arrives with its header only: row population is not solved yet.
+    Returns 10 rows x 4 columns with a quantity column on the reference assembly.
+
+    Signature note: this wrapper must match `layout.add_bom_table` exactly. It used to
+    forward `bom_type` / `anchor_type` from the old header-only implementation, and after
+    the two-step (Indented -> TopLevelOnly) rewrite those parameters no longer exist — so
+    EVERY call failed with "unexpected keyword argument 'bom_type'" while
+    `check_capabilities` reported the tool as verified. `static_check` now compares wrapper
+    kwargs against the implementation signature to catch this class of drift.
     """
     return _json(layout.add_bom_table(drawing_path, view_name=view_name,
-                                      bom_type=bom_type, anchor_type=anchor_type,
                                       configuration=configuration,
                                       template=template, save=save))
 

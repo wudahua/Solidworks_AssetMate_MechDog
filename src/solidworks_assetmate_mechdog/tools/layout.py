@@ -30,11 +30,9 @@ def _prop_put(obj, name, value):
     return ole.Invoke(dispid, 0, pythoncom.DISPATCH_PROPERTYPUT, True, value)
 
 
-def _call_method(obj, name, *args):
-    """Thin alias; the single implementation lives in sw_session.call_method."""
-    from ..sw_session import call_method
-
-    return call_method(obj, name, *args)
+# call_method lives in sw_session; this module used to carry its own copy, which risked
+# drifting from the real one. Keep the single import and drop the duplicate.
+from ..sw_session import call_method as _call_method
 
 
 def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True):
@@ -76,10 +74,13 @@ def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True)
             except Exception:
                 pass
         try:
-            doc.EditRebuild3
+            _call_method(doc, "EditRebuild3")
         except Exception:
             pass
-        doc.GraphicsRedraw2
+        try:
+            doc.GraphicsRedraw2
+        except Exception:
+            pass
         if save:
             _save_drawing(doc)
         return drawing_ok(drawing=doc.GetTitle, **applied)
@@ -184,10 +185,13 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
 
         doc.ClearSelection2(True)
         try:
-            doc.EditRebuild3
+            _call_method(doc, "EditRebuild3")
         except Exception:
             pass
-        doc.GraphicsRedraw2
+        try:
+            doc.GraphicsRedraw2
+        except Exception:
+            pass
         if save:
             _save_drawing(doc)
         return drawing_ok(
@@ -239,10 +243,13 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
             except Exception:
                 pass
         try:
-            doc.EditRebuild3
+            _call_method(doc, "EditRebuild3")
         except Exception:
             pass
-        doc.GraphicsRedraw2
+        try:
+            doc.GraphicsRedraw2
+        except Exception:
+            pass
         if save:
             _save_drawing(doc)
         name = None
@@ -276,18 +283,46 @@ def add_balloon(drawing_path, view_name, x_m, y_m, text=None, item_number=None,
             return error("view_not_found", "no view named %r" % view_name)
         doc.ActivateView(target.Name)
         doc.ClearSelection2(True)
+        # Both entry points go through call_method: direct attribute access on this binding
+        # raises for some of them, and one user report on SW2026 shows `InsertBalloon`
+        # resolving to nothing at all (DISP_E_UNKNOWNNAME) — i.e. renamed or removed in
+        # that version. Reported honestly rather than hidden behind a bare except.
+        balloon_error = None
         ballon = None
         if item_number is not None:
-            try:
-                ballon = doc.InsertBOMBalloon2(item_number, 0, 0, 0, 0.0)
-            except Exception:
-                ballon = None
+            for attempt in (5, 4, 3):
+                try:
+                    args = [item_number] + [0] * (attempt - 1)
+                    if attempt == 5:
+                        args[-1] = 0.0
+                    ballon = _call_method(doc, "InsertBOMBalloon2", *args)
+                    if ballon is not None:
+                        break
+                except Exception as exc:
+                    balloon_error = "%s(%d args): %s" % ("InsertBOMBalloon2", attempt,
+                                                         str(exc)[:60])
         if ballon is None:
-            ballon = doc.InsertBalloon(0, 0, 0, float(x_m), float(y_m), float(leader_x_m or x_m),
-                                       float(leader_y_m or y_m))
+            # `InsertBalloon` does not exist on this binding at all (GetIDsOfNames: False on
+            # SW2024 SP4, DISP_E_UNKNOWNNAME on SW2026 per a user report). `InsertBOMBalloon`
+            # and `InsertBOMBalloon2` do. Try the older entry point before giving up.
+            for api in ("InsertBOMBalloon", "InsertBalloon"):
+                try:
+                    ballon = _call_method(doc, api, 0, 0, 0,
+                                          float(x_m), float(y_m),
+                                          float(leader_x_m or x_m),
+                                          float(leader_y_m or y_m))
+                    if ballon is not None:
+                        balloon_error = None
+                        break
+                except Exception as exc:
+                    balloon_error = "%s; %s: %s" % (balloon_error or "no callout",
+                                                    api, str(exc)[:60])
         if ballon is None:
-            return error("balloon_failed", "InsertBalloon returned null",
-                         "Balloons need a view with components; activate the view first.")
+            return error("balloon_failed",
+                         "no balloon could be created",
+                         "%s | Verified on SW2024 SP4 only; a SW2026 report shows "
+                         "InsertBalloon as DISP_E_UNKNOWNNAME (renamed or removed there)."
+                         % (balloon_error or "both entry points returned null"))
         applied_text = None
         if text:
             try:
@@ -300,10 +335,13 @@ def add_balloon(drawing_path, view_name, x_m, y_m, text=None, item_number=None,
                 except Exception:
                     pass
         try:
-            doc.EditRebuild3
+            _call_method(doc, "EditRebuild3")
         except Exception:
             pass
-        doc.GraphicsRedraw2
+        try:
+            doc.GraphicsRedraw2
+        except Exception:
+            pass
         if save:
             _save_drawing(doc)
         return drawing_ok(drawing=doc.GetTitle, view=target.Name, text=applied_text,
@@ -343,10 +381,13 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True):
                           float(x2_m), float(y2_m), 0.0)
         sketch.InsertSketch(True)
         try:
-            doc.EditRebuild3
+            _call_method(doc, "EditRebuild3")
         except Exception:
             pass
-        doc.GraphicsRedraw2
+        try:
+            doc.GraphicsRedraw2
+        except Exception:
+            pass
         if save:
             _save_drawing(doc)
         return drawing_ok(drawing=doc.GetTitle,

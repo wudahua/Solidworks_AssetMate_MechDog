@@ -88,7 +88,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_geometric_tolerance` | **原生形位公差**（公差值 + 多基准 + 引线，pilot） |
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
 | `add_note` | 技术要求注记（sheet 空间坐标，米） |
-| `add_balloon` | 件号圆圈（可挂 BOM 项号） |
+| `add_balloon` | 件号圆圈 —— **本机不可用**，三个入口分别报「参数必需/数目无效/名字不存在」 |
 | `add_bom_table` | **原生 BOM 明细栏**（Indented→TopLevelOnly 两步，10 行 4 列含数量） |
 | `add_sheet_line` | **图纸空间直线**（米）——明细栏网格、图框内表格 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |

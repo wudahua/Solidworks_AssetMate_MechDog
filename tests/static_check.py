@@ -219,6 +219,69 @@ def check_stale_roadmap(readme_path, pyproject_path):
     return problems
 
 
+def check_wrapper_signatures(server_path):
+    """Verify every `_json(module.func(...))` call passes kwargs the implementation accepts.
+
+    `server.py` wrappers are thin forwarders, so their signatures must track the functions
+    they call. When `layout.add_bom_table` was rewritten to the two-step
+    (Indented -> TopLevelOnly) form, `bom_type` / `anchor_type` disappeared from the
+    implementation but the wrapper kept forwarding them — every call failed with
+    "unexpected keyword argument 'bom_type'" while `check_capabilities` still said
+    "verified". Duplicate-def detection cannot see this: the names all resolve, the call is
+    syntactically fine, it just cannot ever work.
+    """
+    import importlib
+    import inspect
+
+    problems = []
+    try:
+        tree = ast.parse(open(server_path, encoding="utf-8").read(), filename=server_path)
+    except SyntaxError:
+        return problems
+
+    src_dir = os.path.dirname(os.path.dirname(os.path.abspath(server_path)))
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+
+    wrappers = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            # looking for module.func(...) with a module attribute on the left
+            if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+                continue
+            module_name, func_name = func.value.id, func.attr
+            passed = [kw.arg for kw in inner.keywords if kw.arg]
+            if passed:
+                wrappers.setdefault((module_name, func_name), set()).update(passed)
+
+    for (module_name, func_name), kwargs in sorted(wrappers.items()):
+        try:
+            module = importlib.import_module(
+                "solidworks_assetmate_mechdog.tools.%s" % module_name)
+            target = getattr(module, func_name)
+            sig = inspect.signature(target)
+        except Exception:
+            continue  # module not importable without SolidWorks; skip rather than guess
+        accepts_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD
+                             for p in sig.parameters.values())
+        if accepts_kwargs:
+            continue
+        allowed = set(sig.parameters)
+        extra = sorted(kwargs - allowed)
+        if extra:
+            problems.append(
+                "%s: wrapper forwards %s to %s.%s(), which accepts only %s "
+                "— every call will fail with 'unexpected keyword argument'"
+                % (os.path.basename(server_path), ", ".join(extra),
+                   module_name, func_name, ", ".join(sorted(allowed))))
+    return problems
+
+
 def check_readme(tool_names):
     """README must agree with the code: tool counts and every tool name present.
 
@@ -302,6 +365,7 @@ def main():
     problems.extend(check_duplicate_defs(SERVER))
     problems.extend(check_readme([t.name for t in tools]))
     problems.extend(check_stale_roadmap(README, PYPROJECT))
+    problems.extend(check_wrapper_signatures(SERVER))
     if problems:
         print("static check FAILED (%d issue(s), %d tools scanned):" % (len(problems), len(tools)))
         for item in problems:

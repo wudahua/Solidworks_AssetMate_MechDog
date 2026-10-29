@@ -29,6 +29,22 @@ CAPABILITIES = [
         "evidence": "2026-10-28 实测 17 条 → 2 条，removed 15 / failed 0",
     },
     {
+        "id": "balloon",
+        "status": "unsupported",
+        "summary": "件号圆圈（BOM balloon）",
+        "why": ("`add_balloon` 的两条路径都不成立。在 SW2024 SP4 实测："
+                "`InsertBOMBalloon2` 全部参数都是必需的（DISP_E_PARAMNOTOPTIONAL，"
+                "传 3/4/5 参都不够，完整签名需要 9 参含 Style/Size/上标/下标/引线样式）；"
+                "`InsertBOMBalloon` 参数数目无效；`InsertBalloon` **名字解析不到**"
+                "（DISP_E_UNKNOWNNAME，GetIDsOfNames 直接 False）。"
+                "用户反馈在 SW2026 上 `InsertBalloon` 同样是 UNKNOWNNAME，与本地一致。"),
+        "workaround": ("件号暂时用 add_note 写文字 + add_sheet_line 画引线；"
+                       "或界面手工插（明细栏行号本身已经正确）"),
+        "evidence": ("2026-10-29 实测 SW2024 SP4：InsertBOMBalloon2 → 非选择性的参数；"
+                     "InsertBOMBalloon → 无效的参数数目；InsertBalloon → 未知名称。"
+                     "用户反馈 SW2026 同款失败。"),
+    },
+    {
         "id": "annotation_write",
         "status": "partial",
         "summary": "注记 / 件号 / 图纸直线",
