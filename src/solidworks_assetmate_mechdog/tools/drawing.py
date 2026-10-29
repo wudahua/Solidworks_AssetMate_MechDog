@@ -295,6 +295,15 @@ def _standard_scale(fit):
 OUTLINE_MARGIN_M = 0.0119  # measured constant: GetOutline is 11.9 mm larger per side
 
 
+def _dispatch_specific(annotation):
+    """Resolve an annotation to its IDisplayDimension (or None)."""
+    import win32com.client as win
+    try:
+        return win.Dispatch(annotation.GetSpecificAnnotation)
+    except Exception:
+        return None
+
+
 def ink_outline(view):
     """Real projected extent of a view, from the visible edges' vertices.
 
@@ -3290,6 +3299,9 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     "is_hole_callout": is_hole,
                     "text": text,
                     "z": chosen["z"],
+                    # Kept so the SetText rewrite below can reach the IDisplayDimension.
+                    # Stripped before returning — COM objects must not leak into JSON.
+                    "_annotation": dim,
                 })
 
             if budget_exceeded or len(created) + len(failed) >= int(max_callouts):
