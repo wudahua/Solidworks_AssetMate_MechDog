@@ -40,6 +40,11 @@ def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True)
 
     Position is written with DISPATCH_PROPERTYPUT + VARIANT(VT_ARRAY|VT_R8); a plain
     assignment silently lands the view somewhere else.
+
+    Section and detail views keep projection alignment with their parent, so the applied
+    position may differ from the requested one. The result reports `requested`,
+    `position_after_m` and `aligned_to_parent` separately — previously it just said ok:true
+    while quietly moving y, and a reporter needed two rounds to notice.
     """
     try:
         import pythoncom

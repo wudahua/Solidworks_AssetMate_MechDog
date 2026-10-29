@@ -297,19 +297,6 @@ def add_note(
 
 
 @mcp.tool()
-def add_balloon(
-    drawing_path: str, view_name: str, x_m: float, y_m: float,
-    text: str | None = None, item_number: int | None = None,
-    leader_x_m: float | None = None, leader_y_m: float | None = None,
-    save: bool = True,
-) -> str:
-    """Add a BOM balloon (件号). Pass item_number to attach to the component under the point."""
-    return _json(layout.add_balloon(drawing_path, view_name, x_m, y_m, text=text,
-                                    item_number=item_number, leader_x_m=leader_x_m,
-                                    leader_y_m=leader_y_m, save=save))
-
-
-@mcp.tool()
 def delete_view(drawing_path: str, view_name: str, save: bool = True) -> str:
     """Delete a drawing view by name.
 

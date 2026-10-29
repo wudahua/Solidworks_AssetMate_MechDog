@@ -66,7 +66,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（28）
+### 二、工程图（27）
 
 | 工具 | 作用 |
 |---|---|
@@ -88,7 +88,6 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_geometric_tolerance` | **原生形位公差**（公差值 + 多基准 + 引线，pilot） |
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
 | `add_note` | 技术要求注记（sheet 空间坐标，米） |
-| `add_balloon` | 件号圆圈 —— **本机不可用**，三个入口分别报「参数必需/数目无效/名字不存在」 |
 | `delete_view` | **删除视图**（错切的剖视 / 空白局部放大） |
 | `delete_annotation` | 删除标注 —— **pilot**，按 name 选不中，暂不可用 |
 | `move_annotation` | 移动标注 —— **pilot**，同上 |

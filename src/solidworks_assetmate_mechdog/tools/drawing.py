@@ -292,6 +292,45 @@ def _standard_scale(fit):
     return 0.002
 
 
+OUTLINE_MARGIN_M = 0.0119  # measured constant: GetOutline is 11.9 mm larger per side
+
+
+def ink_outline(view):
+    """Real projected extent of a view, from the visible edges' vertices.
+
+    `IView.GetOutline` is a PROPERTY that returns the geometry box inflated by a fixed
+    11.9 mm margin on every view and every scale (measured across four views at 1:1 and
+    2:1) — so `fits`/`views_overlap` decisions built on it are systematically pessimistic
+    and can report overlap that is not there. This returns the actual ink box.
+    """
+    import win32com.client as win
+
+    xs, ys, zs = [], [], []
+    try:
+        components = list(view.GetVisibleComponents or ())
+    except Exception:
+        components = []
+    if not components:
+        components = [view]
+    for component in components:
+        try:
+            edges = list(view.GetVisibleEntities2(component, 1) or ())
+        except Exception:
+            continue
+        for raw in edges:
+            try:
+                edge = win.Dispatch(raw)
+                for getter in ("GetStartVertex", "GetEndVertex"):
+                    vertex = win.Dispatch(call_method(edge, getter))
+                    point = [float(v) for v in vertex.GetPoint]
+                    xs.append(point[0]); ys.append(point[1]); zs.append(point[2])
+            except Exception:
+                continue
+    if not xs:
+        return None
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
 def create_drawing(
     model_path,
     output_path=None,
@@ -592,9 +631,49 @@ def create_drawing(
             if os.path.splitext(out)[1].lower() != ".slddrw":
                 out += ".SLDDRW"
             os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-            drw.SaveAsSilent(out, False)
-            result.update(saved=os.path.exists(out), drawing_path=out,
-                          bytes=os.path.getsize(out) if os.path.exists(out) else 0)
+
+            # `saved = os.path.exists(out)` was a lie whenever the path was already held by
+            # an open document: SaveAsSilent fails, but the OLD file is still there, so the
+            # check passed and callers believed they were editing the new drawing. A report
+            # spent three rounds on this. Two guards instead:
+            #   1. refuse up front if an open document already owns the path
+            #   2. after saving, require the file to be newer than before
+            blocker = None
+            try:
+                from ..sw_session import get_sw
+                app = get_sw()
+                open_names = []
+                for doc in (app.GetDocuments or ()):
+                    try:
+                        if os.path.normcase(str(doc.GetPathName)) == os.path.normcase(out):
+                            open_names.append(str(doc.GetTitle))
+                    except Exception:
+                        continue
+                if open_names:
+                    blocker = ("path_locked_by_open_doc",
+                               "target path is already open as %r — saving would fail "
+                               "silently and leave the OLD file in place" % open_names[0])
+            except Exception:
+                pass
+
+            before_mtime = os.path.getmtime(out) if os.path.exists(out) else None
+            if blocker is None:
+                try:
+                    drw.SaveAsSilent(out, False)
+                except Exception as exc:
+                    blocker = ("saveas_failed", str(exc)[:120])
+            after_mtime = os.path.getmtime(out) if os.path.exists(out) else None
+            wrote = after_mtime is not None and after_mtime != before_mtime
+            if blocker is None and not wrote:
+                blocker = ("save_not_written",
+                           "SaveAsSilent returned without raising, but the file on disk did "
+                           "not change (mtime unchanged) — treat as not saved")
+            if blocker:
+                result.update(saved=False, drawing_path=out, save_error=blocker[0],
+                              save_reason=blocker[1])
+            else:
+                result.update(saved=True, drawing_path=out,
+                              bytes=os.path.getsize(out) if os.path.exists(out) else 0)
         result.update(
             safe_area_used={
                 "x": [round(safe_x0, 4), round(safe_x1, 4)],
@@ -603,6 +682,9 @@ def create_drawing(
             },
             box_used_m=[round(v, 4) for v in box] if box else None,
             auto_scale_adjustments=auto_scale_adjustments,
+            outline_note=("`outline` 来自 IView.GetOutline，它比真实投影每边大 %.1f mm；"
+                          "需要精确值时用 ink_outline_m（按可见边顶点重算）"
+                          % (OUTLINE_MARGIN_M * 1000)),
             box_source=("part" if box else
                         "unavailable (assembly) — layout verified by measuring views"),
             lightweight_resolve_attempted=is_assembly,
@@ -849,7 +931,37 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         _save_drawing(doc)
         audit = drawing_audit(drawing_path)
         total = audit.get("total_dimensions") or 0
+
+        # `eliminate_duplicates` is forwarded to SolidWorks' own InsertModelAnnotations3,
+        # which did not prevent the same D1@草图1 from landing once per view (56 dims across
+        # 4 views). Value-based dedupe cannot fix that. Report the duplicates by full model
+        # name so the caller can decide — deleting automatically would be riskier than the
+        # problem it solves.
+        duplicate_report = {}
+        try:
+            import win32com.client as _win_dd
+            seen = {}
+            for view in _iter_views(doc):
+                if getattr(view, "Type", None) == 1:
+                    continue
+                for raw in (view.GetAnnotations or ()):
+                    annotation = _win_dd.Dispatch(raw)
+                    try:
+                        full_name = str(annotation.GetName)
+                    except Exception:
+                        continue
+                    seen.setdefault(full_name, []).append(str(view.Name))
+            duplicate_report = {k: v for k, v in seen.items() if len(v) > 1}
+        except Exception:
+            duplicate_report = {}
+
         notes = []
+        if duplicate_report:
+            worst = max(duplicate_report.items(), key=lambda kv: len(kv[1]))
+            notes.append("%d 个尺寸在多个视图里重复出现（最多 %d 次：%s）——"
+                         "`eliminate_duplicates` 传给了 SolidWorks 原生接口，没有生效。"
+                         "需要按 full name 手工删，或用 delete_dimensions 按视图清。"
+                         % (len(duplicate_report), len(worst[1]), worst[0]))
         if total > 30:
             notes.append(
                 "本图 %d 个尺寸；100 张真实工程图实测平均 14 个（中位 11）。"
@@ -861,6 +973,8 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             layout=layout,
             include_unmarked=bool(include_unmarked),
             total_dimensions=total,
+            duplicate_dimension_names=len(duplicate_report),
+            duplicate_examples=dict(list(duplicate_report.items())[:5]),
             advisory=notes,
             views=audit.get("views"),
             warnings=audit.get("warnings"),
@@ -1925,7 +2039,10 @@ def add_flat_pattern_view(drawing_path, model_path, config_name=None, position=N
 
 def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                      offset_m=0.0, position=None, label="A", flip=False, depth=0.0):
-    """Create a SECTION VIEW through a model view.
+    """(Sign convention, measured on a top view: the cut line runs along the view's
+    vertical axis, so `offset_m` shifts along the *horizontal* axis — negative moves left.
+    A part whose hole axis sits 15.55 mm left of the view centre needs offset_m=-0.01555;
+    a positive value cuts outside the part entirely.)Create a SECTION VIEW through a model view.
 
     The cut line is drawn in the view's own sketch — the view sketch coordinate system is
     `sketch = (paper - view.Position) / view.ScaleDecimal` (calibrated with Convert
