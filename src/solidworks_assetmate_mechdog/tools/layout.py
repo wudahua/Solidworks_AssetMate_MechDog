@@ -412,21 +412,58 @@ def add_bom_table(drawing_path, view_name=None, bom_type=2, anchor_type=1,
                 pass
             return rows
 
-        # Open (and keep open) the referenced model. Inserting without it present in the
-        # session fails silently — the same call succeeds when the assembly is open, which
-        # is how the manual reproduction differed from this wrapper.
+        # The referenced model must be present, BUT opening it steals the active document.
+        # Inserting afterwards with a stale `view` returns None silently — that is exactly
+        # why this wrapper failed while the same code in a script succeeded (the script
+        # happened to finish with the drawing active).
+        modeled = None
         try:
-            call_method(doc, "ActivateView", target.Name)
             referenced = call_method(target, "ReferencedDocument")
             if referenced is not None:
                 from ..sw_session import open_document
-                open_document(str(referenced.GetPathName))
+                modeled = str(referenced.GetPathName)
+                open_document(modeled)
         except Exception:
             pass
 
-        before = table_rows()
-        doc.ActivateView(target.Name)
+        # Re-establish the drawing context AFTER any model access, then re-acquire the
+        # view from the sheet instead of reusing the pre-activation object.
+        doc = _open_drawing(drawing_path)
+        try:
+            sheet = doc.GetCurrentSheet
+            doc.ActivateSheet(str(sheet.GetName))
+            views = [v for v in (sheet.GetViews or ())
+                     if getattr(v, "Type", None) != 1]
+        except Exception:
+            views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
+        if not views:
+            return error("no_views", "drawing has no model views after reactivation")
+        target = views[0]
+        if view_name:
+            for candidate in views:
+                if candidate.Name == view_name:
+                    target = candidate
+                    break
+        try:
+            doc.ActivateView(target.Name)
+        except Exception:
+            pass
         doc.ClearSelection2(True)
+
+        # Hard assertion: the drawing must be the ACTIVE document, not merely open.
+        active_title = None
+        try:
+            active = sw.ActiveDoc
+            active_title = str(active.GetTitle) if active is not None else None
+        except Exception:
+            pass
+        doc_title = str(doc.GetTitle)
+        if active_title and active_title != doc_title:
+            return error("drawing_not_active",
+                         "active document is %r, expected %r" % (active_title, doc_title),
+                         "Inserting into a non-active drawing returns None silently.")
+
+        before = table_rows()
 
         table = target.InsertBomTable4(
             False,                       # UseAnchorPoint: place at X/Y
