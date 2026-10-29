@@ -9,6 +9,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME, __version__
+from . import sw_session
 from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
                     layout, ledger, material as material_tools, pipeline, planner, recolor,
                     rename, sheet_metal, survey)
@@ -22,7 +23,64 @@ if getattr(mcp, "_mcp_server", None) is not None:
 
 
 def _json(payload):
+    """Serialise a tool result, and log it when it reports failure.
+
+    Hooking here instead of in 51 individual wrappers keeps the coverage complete without
+    touching every tool: every result passes through this one function. The tool name is
+    taken from the caller's frame, which is the `@mcp.tool()` function itself.
+    """
+    import sys
+
+    tool = None
+    try:
+        tool = sys._getframe(1).f_code.co_name
+    except Exception:
+        pass
+    try:
+        if isinstance(payload, dict):
+            sw_session.note_last_call(tool=tool, args=None)
+            if payload.get("ok") is False:
+                sw_session.log_failure(tool, payload)
+    except Exception:
+        # Diagnostics must never break a tool.
+        pass
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def health_check(deep: bool = False) -> str:
+    """Report whether the MCP bridge and SolidWorks are both alive.
+
+    Tells apart three states that used to look identical: the bridge is dead (a stale COM
+    pointer — `reconnect()` retries), SolidWorks is not responding, or everything is fine.
+    `deep=True` also reads ActiveDoc, which is where a stale pointer usually surfaces.
+    """
+    return json.dumps(sw_session.health(deep=deep), ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def recent_failures(tail: int = 20) -> str:
+    """Read back the last N failures from logs/mcp-YYYYMMDD.log.
+
+    A mid-run disconnect used to leave no trace at all. Every failing tool call now appends
+    one JSON line (tool, args, payload, SW version, health snapshot, traceback).
+    """
+    import os
+
+    path = os.path.join(sw_session.log_dir(), "mcp-%s.log" % __import__("datetime").datetime.now().strftime("%Y%m%d"))
+    if not os.path.exists(path):
+        return json.dumps({"ok": True, "log": path, "entries": [], "note": "no failures today"},
+                          ensure_ascii=False, indent=2)
+    with open(path, encoding="utf-8") as f:
+        lines = [ln for ln in f.read().splitlines() if ln.strip()]
+    entries = []
+    for line in lines[-max(1, int(tail)):]:
+        try:
+            entries.append(json.loads(line))
+        except Exception:
+            continue
+    return json.dumps({"ok": True, "log": path, "count": len(entries), "entries": entries},
+                      ensure_ascii=False, indent=2)
 
 
 @mcp.tool()

@@ -86,6 +86,120 @@ def get_sw():
     return _SW
 
 
+def reconnect():
+    """Drop the cached dispatcher and connect again.
+
+    The cached `_SW` never noticed when the COM connection died: after a `Not connected`
+    every subsequent call kept failing against a dead pointer for minutes, which is exactly
+    what a report described ("all calls fail, SolidWorks itself is fine"). Clearing the
+    cache lets the next `get_sw()` re-acquire through GetActiveObject.
+    """
+    global _SW
+    _SW = None
+    return get_sw()
+
+
+def health(deep=False):
+    """Report whether the bridge is alive, and whether SolidWorks is alive.
+
+    Distinguishes three states that used to look identical from the outside:
+      * bridge alive + SW responding  -> ok
+      * bridge alive + SW not responding -> the COM call is the problem
+      * bridge dead (cached pointer stale) -> reconnect() may fix it
+
+    `deep=True` also touches ActiveDoc, which is where a stale pointer usually shows up.
+    """
+    state = {"sw_version": None, "active_doc": None, "reconnected": False, "error": None}
+    try:
+        app = get_sw()
+        state["sw_version"] = str(app.RevisionNumber)
+    except Exception as exc:
+        state["error"] = "connect failed: %s" % str(exc)[:100]
+        try:
+            app = reconnect()
+            state["reconnected"] = True
+            state["sw_version"] = str(app.RevisionNumber)
+            state["error"] = None
+        except Exception as exc2:
+            state["error"] = "%s; reconnect failed: %s" % (state["error"], str(exc2)[:80])
+            return state
+    if deep:
+        try:
+            doc = app.ActiveDoc
+            state["active_doc"] = str(doc.GetTitle) if doc is not None else None
+        except Exception as exc:
+            state["error"] = "ActiveDoc unreadable: %s" % str(exc)[:100]
+            try:
+                app = reconnect()
+                state["reconnected"] = True
+                doc = app.ActiveDoc
+                state["active_doc"] = str(doc.GetTitle) if doc is not None else None
+                state["error"] = None
+            except Exception as exc2:
+                state["error"] = "ActiveDoc still unreadable after reconnect: %s" % str(exc2)[:80]
+    return state
+
+
+LOG_DIRNAME = "logs"
+
+
+def log_dir():
+    import os
+    path = os.path.join(os.getcwd(), LOG_DIRNAME)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def note_last_call(tool=None, args=None):
+    """Remember what was running, so a crash report can name it."""
+    global _LAST_CALL
+    _LAST_CALL = {"tool": tool, "args": args}
+
+
+def log_failure(tool, payload, exc=None, extra=None, args=None):
+    """Append one JSON line per failure to logs/mcp-YYYYMMDD.log.
+
+    Without this, a mid-run disconnect left no trace at all — the reporter could not tell
+    whether the MCP process had died or SolidWorks had. The line records the tool, its
+    arguments, the error, the SW version and the last call before the failure.
+    """
+    import json
+    import os
+    import traceback
+    from datetime import datetime
+
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        path = os.path.join(log_dir(), "mcp-%s.log" % today)
+        record = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "pid": os.getpid(),
+            "tool": tool,
+            "args": args if args is not None else _LAST_CALL.get("args"),
+            "payload": payload if isinstance(payload, dict) else str(payload)[:400],
+            "last_call_before": _LAST_CALL,
+            "sw_version": sw_version(),
+            "health": health(),
+        }
+        if exc is not None:
+            record["exception"] = "%s: %s" % (type(exc).__name__, str(exc)[:300])
+            record["traceback"] = traceback.format_exc()[-1200:]
+        if extra:
+            record["extra"] = extra
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + chr(10))
+        return path
+    except Exception as exc2:
+        # Logging must never be the reason a tool fails — but staying silent about the
+        # logger itself is how the first version swallowed a NameError and returned None.
+        try:
+            with open(os.path.join(log_dir(), "_logger_error.log"), "a", encoding="utf-8") as f:
+                f.write("%s: %s" % (type(exc2).__name__, exc2) + chr(10))
+        except Exception:
+            pass
+        return None
+
+
 def variant(value, vartype):
     pythoncom, _, VARIANT = _com()
     return VARIANT(vartype, value)

@@ -99,7 +99,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `export_drawing` | PDF / DWG / DXF |
 | `render_drawing` | PDF → PNG，供目视检查 |
 
-### 三、规划与自检（10）
+### 三、规划与自检（12）
 
 | 工具 | 回答什么问题 |
 |---|---|
@@ -113,6 +113,8 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 |
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
 | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案 |
+| `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
+| `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
 
 ---
 
