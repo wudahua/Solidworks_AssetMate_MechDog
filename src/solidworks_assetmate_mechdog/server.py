@@ -297,6 +297,27 @@ def add_note(
 
 
 @mcp.tool()
+def layout_dimensions(
+    drawing_path: str,
+    view_name: str | None = None,
+    min_gap_m: float = 0.006,
+    cluster_tol_m: float = 0.0015,
+    dry_run: bool = False,
+    save: bool = True,
+) -> str:
+    """Pull apart dimensions that auto_dimension stacked on the same axis.
+
+    Clusters by x (tolerance `cluster_tol_m`), sorts each cluster by y, pushes any closer
+    than `min_gap_m` upward. Already-clear dimensions are not touched.
+    Use dry_run=True first to see how many collisions it would fix.
+    """
+    return _json(drawing.layout_dimensions(drawing_path, view_name=view_name,
+                                           min_gap_m=min_gap_m,
+                                           cluster_tol_m=cluster_tol_m,
+                                           dry_run=dry_run, save=save))
+
+
+@mcp.tool()
 def delete_view(drawing_path: str, view_name: str, save: bool = True) -> str:
     """Delete a drawing view by name.
 

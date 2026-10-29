@@ -2039,10 +2039,20 @@ def add_flat_pattern_view(drawing_path, model_path, config_name=None, position=N
 
 def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                      offset_m=0.0, position=None, label="A", flip=False, depth=0.0):
-    """(Sign convention, measured on a top view: the cut line runs along the view's
-    vertical axis, so `offset_m` shifts along the *horizontal* axis — negative moves left.
-    A part whose hole axis sits 15.55 mm left of the view centre needs offset_m=-0.01555;
-    a positive value cuts outside the part entirely.)Create a SECTION VIEW through a model view.
+    """Create a SECTION VIEW through a model view.
+
+    Sign convention (measured on the 灌装阀阀体 top view, 59x28x80, bypass hole at z=28):
+
+      orientation="vertical"   cut line runs along the view's vertical axis, so offset_m
+                               shifts along the *horizontal* axis. Negative = left.
+                               A hole axis 15.55 mm left of centre needs offset_m=-0.01555.
+      orientation="horizontal" cut line runs along the horizontal axis, so offset_m shifts
+                               along the *vertical* axis — BUT the view sketch's y axis
+                               points at -Z for a top view, so the sign is inverted inside
+                               this function. Callers pass the model-space offset: to cut
+                               at z=28 on a 0..80 part (centre 40) you pass -0.012, and
+                               the tool negates it internally. Measured: -0.012 -> 59x28
+                               (correct), +0.012 -> 20x20 (Ø20 bore, wrong plane).
 
     The cut line is drawn in the view's own sketch — the view sketch coordinate system is
     `sketch = (paper - view.Position) / view.ScaleDecimal` (calibrated with Convert
@@ -2077,6 +2087,12 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         height = outline[3] - outline[1]
         half = (max(width, height) * 0.62) / scale
         offset = float(offset_m) / scale
+        # A top view's sketch y axis runs at -Z, so a model-space offset applied to the
+        # horizontal cut line lands mirrored. Measured on 灌装阀阀体: offset -0.012 produced
+        # a 20x20 (Ø20 bore) section while +0.012 produced the correct 59x28. Negate here so
+        # callers can think in model coordinates for both orientations.
+        if str(orientation).lower() != "vertical":
+            offset = -offset
 
         sm = doc.SketchManager
         sm.InsertSketch(True)
@@ -3616,3 +3632,114 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("gtol_failed", str(exc))
+
+
+def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
+                      cluster_tol_m=0.0015, dry_run=False, save=True):
+    """Spray out dimensions that landed on top of each other.
+
+    `auto_dimension` on a section view stacks every Ø dimension on the axis: measured on the
+    filling-valve body, 34 dimensions shared only a handful of x values (six sat at
+    x=0.0942), so the text overlapped into unreadable strings like "Ø18Ø20".
+
+    SolidWorks has no "distribute" call, so this clusters dimensions by x (tolerance
+    `cluster_tol_m`), sorts each cluster by y, and pushes any that are closer than
+    `min_gap_m` upward until they are not. Dimensions that are already clear are untouched —
+    the tool only pays for the ones that actually collide.
+
+    dry_run=True reports the plan without moving anything.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
+        if view_name:
+            views = [v for v in views if str(v.Name) == view_name]
+            if not views:
+                return error("view_not_found", "no view named %r" % view_name)
+
+        items = []
+        for view in views:
+            for raw in (view.GetAnnotations or ()):
+                annotation = win.Dispatch(raw)
+                try:
+                    if int(annotation.GetType()) not in (0, 1, 2):
+                        continue
+                except Exception:
+                    pass
+                try:
+                    position = [float(v) for v in annotation.GetPosition]
+                except Exception:
+                    continue
+                items.append({"annotation": annotation, "view": str(view.Name),
+                              "x": position[0], "y": position[1]})
+        if not items:
+            return error("no_dimensions", "no dimensions found on the selected views")
+
+        # Cluster by x, then within each cluster push apart vertically.
+        items.sort(key=lambda i: (round(i["x"] / cluster_tol_m), i["y"]))
+        moves = []
+        for index, item in enumerate(items):
+            if index == 0:
+                continue
+            previous = items[index - 1]
+            same_column = abs(item["x"] - previous["x"]) <= max(cluster_tol_m,
+                                                               min_gap_m * 0.35)
+            if not same_column:
+                continue
+            if item["y"] - previous["y"] >= min_gap_m:
+                continue
+            item["y"] = previous["y"] + min_gap_m
+            moves.append({"view": item["view"], "from_x": round(item["x"], 4),
+                          "to_y": round(item["y"], 4)})
+
+        # One pass fixes 64% (14 collisions -> 5): pushing one dimension up can create a new
+        # collision with the next one, so the pass has to repeat until it settles.
+        for _round in range(3):
+            items.sort(key=lambda i: (round(i["x"] / cluster_tol_m), i["y"]))
+            changed = False
+            for index in range(1, len(items)):
+                item, previous = items[index], items[index - 1]
+                same_column = abs(item["x"] - previous["x"]) <= max(cluster_tol_m,
+                                                                   min_gap_m * 0.35)
+                if not same_column:
+                    continue
+                if item["y"] - previous["y"] >= min_gap_m:
+                    continue
+                item["y"] = previous["y"] + min_gap_m
+                changed = True
+            if not changed:
+                break
+
+        applied = 0
+        if moves and not dry_run:
+            for item in items:
+                try:
+                    current = [float(v) for v in item["annotation"].GetPosition]
+                except Exception:
+                    continue
+                if abs(current[1] - item["y"]) < 1e-9:
+                    continue
+                try:
+                    item["annotation"].SetPosition(float(item["x"]), float(item["y"]), 0)
+                    applied += 1
+                except Exception:
+                    continue
+            try:
+                _call_method(doc, "EditRebuild3")
+            except Exception:
+                pass
+            if save:
+                _save_drawing(doc)
+
+        return drawing_ok(dimension_count=len(items), collisions=len(moves),
+                          moved=applied, dry_run=bool(dry_run),
+                          min_gap_mm=min_gap_m * 1000,
+                          sample_moves=moves[:5],
+                          note=("按 x 聚类后沿 y 推开，间距 %.0f mm。只动真正重叠的，"
+                                "已经清楚的尺寸不碰。" % (min_gap_m * 1000)))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("layout_dimensions_failed", str(exc))
