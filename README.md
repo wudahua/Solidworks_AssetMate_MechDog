@@ -66,7 +66,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（28）
+### 二、工程图（29）
 
 | 工具 | 作用 |
 |---|---|
@@ -77,13 +77,13 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_section_view` | 剖视图（自动画剖切线） |
 | `add_detail_view` | 局部放大（圆圈边界 + 独立比例） |
 | `add_flat_pattern_view` | 钣金展开（下料尺寸 + 折弯线） |
-| `auto_dimension` | 导入模型驱动尺寸，超 30 个会提示冗余 |
-| `delete_dimensions` | **按值保留/删除尺寸**，消费 `plan_drawing` 的短名单（逐条约 15 s） |
+| `auto_dimension` | 导入模型驱动尺寸，超 30 个会提示冗余；**按模型 full name 自动删除重复副本** |
+| `delete_dimensions` | **按值保留/删除尺寸**，消费 `plan_drawing` 的短名单（实测 14 条一次调用 < 5 s） |
 | `add_center_marks` | 孔/槽中心标记与中心线 |
 | `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径），孔标注的前置工具 |
 | `add_hole_callout` | 原生孔标注（带回读 + 模型孔径比对） |
-| `add_hole_callouts` | **批量孔标注**：单视图可见边 → `AddHoleCallout2`，`IsHoleCallout` 判定（pilot） |
-| `add_drawing_dimension` | 按边索引/坐标补标单个尺寸 |
+| `add_hole_callouts` | **批量孔标注**：单视图可见边 → `AddHoleCallout2`，`IsHoleCallout` 判定（pilot），可指定引线落点 |
+| `add_drawing_dimension` | 按边索引/坐标补标单个尺寸（失败返回最近边模型/图纸坐标 + 距离） |
 | `add_dimension_tolerance` | 原生尺寸公差（双边/对称/极限/配合） |
 | `add_geometric_tolerance` | **原生形位公差**（公差值 + 多基准 + 引线，pilot） |
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
@@ -92,6 +92,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `delete_view` | **删除视图**（错切的剖视 / 空白局部放大） |
 | `delete_annotation` | **删除标注**（按 name，回读计数确认） |
 | `move_annotation` | **移动标注**到图纸坐标（米） |
+| `set_dimension_position` | **移动单个尺寸**到图纸坐标（米），校验目标是尺寸并回读数值与位置 |
 | `add_bom_table` | **原生 BOM 明细栏**（Indented→TopLevelOnly 两步，10 行 4 列含数量） |
 | `add_sheet_line` | **图纸空间直线**（米）——明细栏网格、图框内表格 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
@@ -356,14 +357,14 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 53 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 54 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash
 python tests/static_check.py     # 单独跑，秒级
 ```
 
-默认 **29 项**（另可用 `--eng-cases` 加跑真实零件链路）：连接/版本、组件树与错误信息、BOM+CSV、质量属性、上色 dry-run/零匹配/apply、实体列表/分色、预览 PNG、STEP 导出、工程图链路（建图→PDF→渲染→审计）、孔标注清单（P0）、尺寸去重、原生 BOM 表、按名编辑（移动/删除标注、删尺寸、移视图、尺寸排版、删视图）、`health`、标注写入（形位公差/粗糙度/尺寸公差）、规划入口、视图/明细/标题栏、零件工具、单孔标注、重命名 dry-run、展开视图、材料写入诚实性、台账对账+交付判定、**server 包装层签名契约**。全部只读或写临时目录。
+默认 **30 项**（另可用 `--eng-cases` 加跑真实零件链路）：连接/版本、组件树与错误信息、BOM+CSV、质量属性、上色 dry-run/零匹配/apply、实体列表/分色、预览 PNG、STEP 导出、工程图链路（建图→PDF→渲染→审计）、孔标注清单（P0）、**孔标注引线落点（P1-7）**、尺寸去重、**auto_dimension 按 full name 自动去重**、原生 BOM 表、按名编辑（移动/删除标注、删尺寸、移视图、尺寸排版、删视图、**单尺寸移动 + 类型守卫**）、`health`、标注写入（形位公差/粗糙度/尺寸公差）、规划入口、视图/明细/标题栏、零件工具、单孔标注、重命名 dry-run、展开视图、材料写入诚实性、台账对账+交付判定、**server 包装层签名契约**。全部只读或写临时目录。
 
 **仓库不含测试模型**（`测试用例/` 因体积与版权未入库），裸跑会因文件不存在直接退出。用 `--assembly` / `--part` 指定自己的模型：
 

@@ -349,6 +349,18 @@ def move_annotation(drawing_path: str, name: str, x_m: float, y_m: float,
 
 
 @mcp.tool()
+def set_dimension_position(drawing_path: str, name: str, x_m: float, y_m: float,
+                           save: bool = True) -> str:
+    """Move ONE dimension to a sheet position in metres, by its reported name.
+
+    P0-2: single-dimension counterpart to layout_dimensions' bulk auto-placement. Verifies
+    the target is a dimension (not a note/GTOL), and reports value plus before/after
+    positions. Use list_drawing_annotations first to get the `name`.
+    """
+    return _json(layout.set_dimension_position(drawing_path, name, x_m, y_m, save=save))
+
+
+@mcp.tool()
 def add_bom_table(
     drawing_path: str,
     view_name: str | None = None,
@@ -493,16 +505,20 @@ def add_hole_callouts(
     min_diameter_mm: float = 0.0,
     max_callouts: int = 40,
     budget_s: float = 25.0,
+    leader_x_m: float | None = None,
+    leader_y_m: float | None = None,
     save: bool = True,
 ) -> str:
     """Native hole callouts on a view's visible circular edges, verified by IsHoleCallout.
 
     Only this view's visible edges are enumerated (a whole-model scan took >400 s; one view
-    has ~9 circular edges). Callouts are placed stacked to the right of the view.
+    has ~9 circular edges). Callouts are stacked to the right of the view by default; pass
+    leader_x_m / leader_y_m (sheet metres) to pin the text inside the frame (P1-7).
     """
     return _json(drawing.add_hole_callouts(
         drawing_path, view_name=view_name, min_diameter_mm=min_diameter_mm,
-        max_callouts=max_callouts, budget_s=budget_s, save=save))
+        max_callouts=max_callouts, budget_s=budget_s,
+        leader_x_m=leader_x_m, leader_y_m=leader_y_m, save=save))
 
 
 @mcp.tool()

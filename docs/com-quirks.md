@@ -801,3 +801,29 @@ if curve.IsCircle: ...
 
 > **先读现值，再改。**
 > 凡是"多层属性"（外观、显示状态、配置、材质），第一步读一次目标对象的现值，它会直接告诉你该改哪一层。跳过这一步，靠猜 API 语义，返工成本是它的 10 倍。
+
+## 十五、标注身份、类型与位置（0.8.19，P1-6 / P0-2 / P1-7）
+
+**尺寸身份是 `IDimension.FullName`，不是 `IAnnotation.GetName`。** `GetName` 只是图纸内
+唯一的 `细节项目N` 标签；同一个驱动尺寸 `D1@草图1@零件.Part` 在 front / top / right
+三个视图各插一次，会得到三个互不相同的 `细节项目N`。`auto_dimension` 靠
+`InsertModelAnnotations3` 自带的 `eliminate_duplicates` 标志去重**没有用**（实测 56 个
+尺寸散在 4 个视图）。可行做法：插入前快照所有 `GetName`，插入后 `EditRebuild3`，
+再按 `IDimension.FullName`（回退 `Name`）分组，保留首次出现，其余用
+`annotation.Select(False)` + `EditDelete` 删除。**只处理本次新增的标注**——
+`before_names` 快照把用户先前放的尺寸全部排除，否则一次自动标注会删掉别人的成果。
+
+**`IDisplayDimension.GetAnnotation` 必须按方法调用。** 晚绑定下写 `dim.GetAnnotation`
+会被当 PROPERTYGET 派发，拿不到 `IAnnotation`；用 `call_method(dim, "GetAnnotation")`
+再 `Dispatch` 才能读 `GetPosition`。这是 `add_hole_callouts` 回读引线真实落点
+（`position_m`）的依据——请求落点 `anchor_m` 与真实落点可能不一致，必须都返回。
+
+**`IAnnotation.GetType == 4` 才是尺寸。** note / GTOL / 粗糙度是别的类型。
+`set_dimension_position` 先查类型，非尺寸直接回 `not_a_dimension`，避免名字打错时
+静默移动错对象；`SetPosition(x, y, 0)` 之后必须 `EditRebuild3` 再回读
+`GetPosition`（section / detail 视图会保持投影对齐而拒绝部分移动，所以要返回
+`requested` 与 `position_after_m` 供调用方判断）。
+
+**`EditRebuild3` 是方法不是属性。** `auto_dimension` 里曾写成裸 `doc.EditRebuild3`
+属性访问，插入后 `view.GetAnnotations` 仍是旧集合，去重遍历扑空；必须
+`call_method(doc, "EditRebuild3")` 真正调用才会刷新。

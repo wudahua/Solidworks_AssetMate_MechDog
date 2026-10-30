@@ -991,12 +991,94 @@ def drawing_audit(drawing_path):
         return error("audit_failed", str(exc))
 
 
+def _annotation_dimension_full_name(annotation, win):
+    """Model-level identity of a dimension annotation (e.g. D1@草图1@灌装阀阀体.Part).
+
+    `IAnnotation.GetName` is only a sheet-unique label (细节项目272), so grouping by it can
+    never detect the same driving dimension inserted into four different views. IDimension
+    .FullName is the identity P1-6 needs; `Name` is the fallback on older builds.
+    """
+    try:
+        specific = win.Dispatch(annotation.GetSpecificAnnotation)
+    except Exception:
+        return None
+    try:
+        dim = win.Dispatch(specific.GetDimension2(0))
+    except Exception:
+        return None
+    for attr in ("FullName", "Name"):
+        try:
+            value = str(getattr(dim, attr))
+        except Exception:
+            continue
+        if value:
+            return value
+    return None
+
+
+def _dedupe_inserted_dimensions(doc, before_names, win):
+    """Delete duplicate driving dimensions among the annotations JUST inserted (P1-6).
+
+    SolidWorks' own `eliminate_duplicates` flag on InsertModelAnnotations3 did not stop the
+    same D1@草图1 from landing once per view (56 dims across 4 views). Keep the FIRST
+    occurrence of each model full name and delete the rest. Only annotations whose sheet
+    name was absent before the insert are eligible, so dimensions the user already placed
+    are never touched. Returns (duplicate_groups, removed_names, failures).
+    """
+    groups = {}
+    for view in _iter_views(doc):
+        if getattr(view, "Type", None) == 1:
+            continue
+        for raw in (view.GetAnnotations or ()):
+            try:
+                annotation = win.Dispatch(raw)
+                if int(annotation.GetType) != 4:  # 4 = dimension annotation
+                    continue
+                sheet_name = str(annotation.GetName)
+            except Exception:
+                continue
+            if sheet_name in before_names:
+                continue
+            full = _annotation_dimension_full_name(annotation, win)
+            if full:
+                groups.setdefault(full, []).append((sheet_name, annotation))
+    duplicates = {k: v for k, v in groups.items() if len(v) > 1}
+    removed, failed = [], []
+    for full, entries in duplicates.items():
+        for sheet_name, annotation in entries[1:]:
+            try:
+                doc.ClearSelection2(True)
+                if not annotation.Select(False):
+                    raise RuntimeError("Select(False) returned False")
+                if doc.SelectionManager.GetSelectedObjectCount2(-1) < 1:
+                    raise RuntimeError("nothing selected")
+                _call_method(doc, "EditDelete")
+                removed.append(sheet_name)
+            except Exception as exc:
+                failed.append({"name": sheet_name, "full_name": full,
+                               "reason": str(exc)[:80]})
+    if removed:
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        try:
+            doc.ClearSelection2(True)
+        except Exception:
+            pass
+    return duplicates, removed, failed
+
+
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True):
     """Insert the model's driving dimensions into the drawing views.
 
     Equivalent to SolidWorks "Insert Model Items > Dimensions". Marked-for-drawing
     dimensions only by default; include_unmarked=True brings in every driving dim
     (more complete, noisier). Returns how many annotations were inserted.
+
+    `eliminate_duplicates=True` (default) now deletes the extra copies by MODEL full name,
+    keeping the first occurrence of each driving dimension. Only dimensions inserted by
+    this call are eligible — existing user-placed dimensions are never touched.
     """
     try:
         doc = _open_drawing(drawing_path)
@@ -1004,11 +1086,29 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         # swInsertAnnotation_e: MarkedForDrawing = 32768, NotMarked = 524288
         types = 32768 | (524288 if include_unmarked else 0)
         doc.ClearSelection2(True)
+        # P1-6: snapshot every annotation name BEFORE inserting. The dedupe pass below
+        # must only consider annotations this call created, never a dimension the user
+        # placed on the sheet earlier.
+        import win32com.client as _win_auto
+
+        before_names = set()
+        for _v in _iter_views(doc):
+            if getattr(_v, "Type", None) == 1:
+                continue
+            for _raw in (_v.GetAnnotations or ()):
+                try:
+                    before_names.add(str(_win_auto.Dispatch(_raw).GetName))
+                except Exception:
+                    continue
         inserted = doc.InsertModelAnnotations3(
             0, types, bool(all_views), not bool(eliminate_duplicates), False, True
         )
         try:
-            doc.EditRebuild3
+            # Must be a real METHOD call: after InsertModelAnnotations3 the new
+            # annotations only show up in view.GetAnnotations once the sheet rebuilds.
+            # A bare `doc.EditRebuild3` attribute access used to be a silent no-op here,
+            # which made the dedupe pass below see an empty set of new dimensions.
+            _call_method(doc, "EditRebuild3")
         except Exception:
             pass
         try:
@@ -1019,40 +1119,37 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         # No repack: a section view is x-aligned with its parent and cannot be moved
         # sideways, so repacking would stack it on top of a neighbour.
         layout = None
+        # P1-6: `eliminate_duplicates` used to mean "tell SolidWorks to try". It did not
+        # work (56 dims / 4 views). Now also delete the extra copies by model full name.
+        duplicates, removed, dedupe_failed = {}, [], []
+        if eliminate_duplicates:
+            try:
+                duplicates, removed, dedupe_failed = _dedupe_inserted_dimensions(
+                    doc, before_names, _win_auto)
+            except Exception as exc:
+                dedupe_failed = [{"reason": "dedupe pass failed: %s" % str(exc)[:80]}]
         _save_drawing(doc)
         audit = drawing_audit(drawing_path)
         total = audit.get("total_dimensions") or 0
 
-        # `eliminate_duplicates` is forwarded to SolidWorks' own InsertModelAnnotations3,
-        # which did not prevent the same D1@草图1 from landing once per view (56 dims across
-        # 4 views). Value-based dedupe cannot fix that. Report the duplicates by full model
-        # name so the caller can decide — deleting automatically would be riskier than the
-        # problem it solves.
-        duplicate_report = {}
-        try:
-            import win32com.client as _win_dd
-            seen = {}
-            for view in _iter_views(doc):
-                if getattr(view, "Type", None) == 1:
-                    continue
-                for raw in (view.GetAnnotations or ()):
-                    annotation = _win_dd.Dispatch(raw)
-                    try:
-                        full_name = str(annotation.GetName)
-                    except Exception:
-                        continue
-                    seen.setdefault(full_name, []).append(str(view.Name))
-            duplicate_report = {k: v for k, v in seen.items() if len(v) > 1}
-        except Exception:
-            duplicate_report = {}
+        # P1-6: report the model full names that HAD duplicates and what the automatic
+        # pass actually removed. The old code only reported and told the caller to delete
+        # by hand — the duplicates stayed on the sheet.
+        duplicate_report = {
+            full: [sheet_name for sheet_name, _ in entries]
+            for full, entries in duplicates.items()
+        }
 
         notes = []
         if duplicate_report:
             worst = max(duplicate_report.items(), key=lambda kv: len(kv[1]))
-            notes.append("%d 个尺寸在多个视图里重复出现（最多 %d 次：%s）——"
-                         "`eliminate_duplicates` 传给了 SolidWorks 原生接口，没有生效。"
-                         "需要按 full name 手工删，或用 delete_dimensions 按视图清。"
-                         % (len(duplicate_report), len(worst[1]), worst[0]))
+            notes.append("%d 个 driving 尺寸在多个视图里重复（最多 %d 次：%s）——"
+                         "已按 full name 自动删除 %d 条多余副本（保留首次出现），失败 %d 条。"
+                         % (len(duplicate_report), len(worst[1]), worst[0],
+                            len(removed), len(dedupe_failed)))
+        if dedupe_failed:
+            notes.append("%d 条重复尺寸删除失败，见 dedupe_failed；可用 "
+                         "delete_dimensions 按视图兜底。" % len(dedupe_failed))
         if total > 30:
             notes.append(
                 "本图 %d 个尺寸；100 张真实工程图实测平均 14 个（中位 11）。"
@@ -1066,6 +1163,10 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             total_dimensions=total,
             duplicate_dimension_names=len(duplicate_report),
             duplicate_examples=dict(list(duplicate_report.items())[:5]),
+            dedupe_applied=bool(eliminate_duplicates),
+            duplicates_removed=len(removed),
+            duplicate_names_removed=removed[:20],
+            dedupe_failed=dedupe_failed[:10],
             advisory=notes,
             views=audit.get("views"),
             warnings=audit.get("warnings"),
@@ -3222,7 +3323,8 @@ def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
 
 
 def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
-                      max_callouts=40, budget_s=25.0, save=True):
+                      max_callouts=40, budget_s=25.0, leader_x_m=None,
+                      leader_y_m=None, save=True):
     """Native hole callouts on the holes VISIBLE in a view, one callout per hole.
 
     Verified on SW2026 (2026-10-28):
@@ -3236,6 +3338,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
 
     Hence: collect edges per view, group by projected centre, and keep ONE edge per hole —
     preferring a complete circle, else the one nearest the viewer along the sheet normal.
+
+    `leader_x_m` / `leader_y_m` (P1-7) pin the callout text to a sheet point in metres.
+    By default the text is stacked just outside the view's outline, which on a compact part
+    threw the leader 100 mm past the frame border. The per-callout 12 mm vertical stack
+    still applies when a custom anchor is given, so callouts do not overlap each other.
+    Each created item reports `anchor_m` (requested) and `position_m` (read back).
 
     Performance: only this view's visible edges are enumerated. A whole-model scan took
     >400 s; one view has 9-40 circular edges and the whole call takes ~19 s.
@@ -3328,8 +3436,14 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             groups_total += len(grouped)
 
             outline = list(view.GetOutline or [])
-            anchor_x = (outline[2] + 0.015) if len(outline) >= 4 else 0.30
-            anchor_y = ((outline[1] + outline[3]) / 2.0) if len(outline) >= 4 else 0.20
+            default_x = (outline[2] + 0.015) if len(outline) >= 4 else 0.30
+            default_y = ((outline[1] + outline[3]) / 2.0) if len(outline) >= 4 else 0.20
+            # P1-7: the old default anchor sat just outside the view outline, which on a
+            # compact part threw the leader well past the sheet border. Callers can now
+            # pin the text to any sheet point; the vertical stack below still separates
+            # consecutive callouts.
+            anchor_x = float(leader_x_m) if leader_x_m is not None else default_x
+            anchor_y = float(leader_y_m) if leader_y_m is not None else default_y
 
             # Consecutive-failure breaker. On a louvered sheet every one of 90 circular
             # edges returned null after a full Select2 + AddHoleCallout2 round trip, and
@@ -3411,6 +3525,16 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                                              % (text,),
                                    "z": chosen["z"], "radius_only": True})
                     continue
+                callout_point = [anchor_x, anchor_y - slot * 0.012]
+                # `GetAnnotation` must be invoked as a METHOD under late binding (see
+                # layout.add_note). Read the real text position back so the caller can
+                # verify SolidWorks honoured the requested leader anchor (P1-7).
+                position_m = None
+                try:
+                    ann = win.Dispatch(_call_method(dim, "GetAnnotation"))
+                    position_m = [round(float(v), 4) for v in ann.GetPosition]
+                except Exception:
+                    pass
                 consecutive_nulls = 0
                 created.append({
                     "view": view.Name,
@@ -3418,6 +3542,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     "is_hole_callout": is_hole,
                     "text": text,
                     "z": chosen["z"],
+                    "anchor_m": [round(callout_point[0], 4), round(callout_point[1], 4)],
+                    "position_m": position_m,
                     # Kept so the SetText rewrite below can reach the IDisplayDimension.
                     # Stripped before returning — COM objects must not leak into JSON.
                     "_annotation": dim,
@@ -3477,6 +3603,9 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             failed_count=len(failed),
             created=created,
             failed=failed[:20],
+            leader_anchor_requested_m=(
+                [round(float(leader_x_m), 4), round(float(leader_y_m), 4)]
+                if leader_x_m is not None and leader_y_m is not None else None),
             unresolved_count=len(unresolved),
             unresolved_note=(("%d 条标注的文本仍是未解析格式码（<MOD-DIAM> 等），渲染出来是"
                               "字面量——SetText 改写没成功。建议删掉改用 Ø 尺寸标注。")

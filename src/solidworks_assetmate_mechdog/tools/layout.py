@@ -713,3 +713,67 @@ def move_annotation(drawing_path, name, x_m, y_m, save=True):
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("move_annotation_failed", str(exc))
+
+
+def set_dimension_position(drawing_path, name, x_m, y_m, save=True):
+    """Move ONE dimension to a sheet position (metres), by its reported name.
+
+    P0-2: `list_drawing_annotations` already gives every dimension a stable `name`; this is
+    the single-dimension counterpart to `layout_dimensions`' bulk auto-placement. Unlike
+    `move_annotation` it verifies the target really is a dimension (GetType 4), reports the
+    dimension value, and refuses notes / GTOL / surface-finish symbols so a typo cannot
+    silently move the wrong kind of annotation.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        doc.ClearSelection2(True)
+        annotation, _ = _find_annotation_by_name(doc, name)
+        if annotation is None:
+            return error("annotation_not_found",
+                         "no annotation named %r on this sheet" % name,
+                         "List names first with list_drawing_annotations.")
+        try:
+            kind = int(annotation.GetType)
+        except Exception:
+            kind = None
+        if kind != 4:
+            return error("not_a_dimension",
+                         "%r is annotation type %r, not a dimension (4)" % (name, kind),
+                         "Use move_annotation for notes / GTOL / surface-finish symbols.")
+        value_mm = None
+        try:
+            specific = win.Dispatch(annotation.GetSpecificAnnotation)
+            dim = win.Dispatch(specific.GetDimension2(0))
+            value_mm = round(float(dim.SystemValue) * 1000.0, 3)
+        except Exception:
+            pass
+        try:
+            before = [round(float(v), 4) for v in annotation.GetPosition]
+        except Exception:
+            before = None
+        try:
+            annotation.SetPosition(float(x_m), float(y_m), 0)
+        except Exception as exc:
+            return error("move_failed", "SetPosition raised: %s" % str(exc)[:80],
+                         "Section/detail views keep projection alignment and refuse some moves.")
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        try:
+            after = [round(float(v), 4) for v in annotation.GetPosition]
+        except Exception:
+            after = None
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(
+            dimension=name, dimension_value_mm=value_mm,
+            position_before_m=before, position_after_m=after,
+            requested=[round(float(x_m), 4), round(float(y_m), 4)],
+            applied=after != before, saved=bool(save))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("set_dimension_position_failed", str(exc))

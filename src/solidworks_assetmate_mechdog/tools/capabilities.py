@@ -23,11 +23,14 @@ CAPABILITIES = [
     {
         "id": "dimension_edit",
         "status": "partial",
-        "summary": "尺寸删除与筛选",
-        "why": ("`delete_dimensions` 按值保留/删除；SolidWorks 无批量删除接口。"
-                "实测 14 条一次调用 < 5 s（早期文档高估约 100 倍）"),
-        "workaround": "先用 plan_drawing 拿短名单再删；单次调用即可批量清理",
-        "evidence": "2026-10-29 实测 14 条一次调用 < 5 s；2026-10-28 实测 17 条 → 2 条，removed 15 / failed 0",
+        "summary": "尺寸删除、去重与单个移动",
+        "why": ("`delete_dimensions` 按值保留/删除；`auto_dimension(eliminate_duplicates=True)` "
+                "（0.8.19）按模型 full name 自动删除多视图重复副本，只动本次插入的尺寸、"
+                "不碰用户已有尺寸；`set_dimension_position` 可把单个尺寸移到图纸坐标并回读数值。"
+                "SolidWorks 无批量删除接口，实测 14 条一次调用 < 5 s（早期文档高估约 100 倍）"),
+        "workaround": "先用 plan_drawing 拿短名单再删；单条微调尺寸位置用 set_dimension_position",
+        "evidence": ("2026-10-29 实测 14 条一次调用 < 5 s；2026-10-28 实测 17 条 → 2 条，"
+                     "removed 15 / failed 0；0.8.19 full-name dedupe + 单尺寸移动 smoke 覆盖"),
     },
     {
         "id": "balloon",
@@ -49,14 +52,17 @@ CAPABILITIES = [
         "id": "delete_annotation",
         "status": "verified",
         "summary": "删除/移动标注（按 name）",
-        "why": ("`delete_view` 与 `delete_annotation` / `move_annotation` 均可用。"
+        "why": ("`delete_view` 与 `delete_annotation` / `move_annotation` 均可用；"
+                "`set_dimension_position`（0.8.19）只对尺寸生效（GetType==4），会拒绝"
+                "note/GTOL/粗糙度，避免名字打错时移动错对象，并回读尺寸值与前后位置。"
                 "关键是用 `IAnnotation.Select(False)` 选中——`Select3` 返回 False、"
                 "`SelectByID2` 对「细节项目34」这类名字根本解析不到。"
                 "删除后回读 annotation 计数确认（82 → 81），不只信 EditDelete 的返回值。"),
         "workaround": ("按 name 操作前先用 `list_drawing_annotations` 取名字——"
                        "名字是 `细节项目N` 形式，每次建图编号不同，不能硬编码。"),
         "evidence": ("2026-10-30 实测：delete 82→81 removed=True；"
-                     "move [0.005,0.057]→[0.16,0.16] applied=True。"),
+                     "move [0.005,0.057]→[0.16,0.16] applied=True；"
+                     "0.8.19 set_dimension_position 单尺寸移动 + 类型守卫 smoke 覆盖。"),
     },
     {
         "id": "annotation_write",
@@ -121,6 +127,8 @@ CAPABILITIES = [
         "summary": "原生孔标注",
         "why": ("走「视图可见边 + Select2 + AddHoleCallout2」。SW2026 上**不弹模态对话框**"
                 "（官方 Remarks 过时），单视图 13 条圆边 12 秒完成；"
+                "可用 leader_x_m/leader_y_m（0.8.19）把引线文字钉在图纸米坐标内，"
+                "返回值 echo 请求落点并逐条回读真实 position_m；"
                 "但只有朝向观察者的孔边可标——同一孔的背面边返回 null"),
         "workaround": ("背面/被遮挡的孔如实记 failed 并由 Ø 尺寸补；"
                        "通风百叶等非孔圆不产生标注"),

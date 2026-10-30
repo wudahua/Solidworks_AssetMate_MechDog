@@ -530,6 +530,85 @@ def assert_no_stale_doc_claims():
     return "15 s claim gone, bom drift story out of the docstring"
 
 
+def assert_full_name_dedupe_deletes_copies():
+    """0.8.19 / P1-6 — eliminate_duplicates only *asked* SolidWorks; 56 dims stayed.
+
+    `InsertModelAnnotations3`'s own flag did nothing across 4 views: the same
+    D1@草图1 landed once per view. Guard that the dedupe pass groups by
+    IDimension.FullName (NOT the sheet-unique 细节项目N name), really deletes the extra
+    copies, and is scoped by a before-insert snapshot so user dimensions survive.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    node = _function_node(tree, "auto_dimension")
+    assert node is not None, "auto_dimension not found"
+    body = ast.get_source_segment(src, node) or ""
+    assert "_dedupe_inserted_dimensions" in body, (
+        "auto_dimension does not call the dedupe pass — eliminate_duplicates is a no-op again")
+    assert "before_names" in body, (
+        "no before-insert snapshot — dedupe could delete dimensions the user already placed")
+    assert "EditRebuild3" in body, (
+        "insert is not rebuilt before the dedupe pass reads view.GetAnnotations")
+    helper = _function_node(tree, "_dedupe_inserted_dimensions")
+    assert helper is not None, "_dedupe_inserted_dimensions not found"
+    hbody = ast.get_source_segment(src, helper) or ""
+    assert "_annotation_dimension_full_name" in hbody, (
+        "dedupe does not group by model full name — sheet names 细节项目N are unique per "
+        "view and can never detect the same driving dimension in four views")
+    assert "before_names" in hbody, "dedupe pass is not restricted to newly inserted annotations"
+    assert "EditDelete" in hbody, "dedupe pass does not actually delete duplicates"
+    return "groups by IDimension.FullName, deletes copies, scoped by before_names"
+
+
+def assert_dimension_position_validates_type():
+    """0.8.19 / P0-2 — a single-dimension move that could silently move the wrong kind.
+
+    `set_dimension_position` must reject non-dimension annotations (GetType != 4) so a
+    typo'd name cannot move a note / GTOL / surface-finish symbol, report the dimension
+    value, and read back before/after positions. It must also be registered as a tool.
+    """
+    src = _read("tools/layout.py")
+    node = _function_node(ast.parse(src), "set_dimension_position")
+    assert node is not None, "layout.set_dimension_position not found"
+    body = ast.get_source_segment(src, node) or ""
+    assert "not_a_dimension" in body, (
+        "set_dimension_position has no type guard — move_annotation's generic setter would "
+        "move a note/GTOL if the caller fat-fingered a name")
+    assert "dimension_value_mm" in body, "does not report the dimension value"
+    assert "position_before_m" in body and "position_after_m" in body, (
+        "no before/after readback — caller cannot tell SolidWorks refused the move")
+    srv = _read("server.py")
+    assert "def set_dimension_position" in srv, "set_dimension_position not registered as a tool"
+    return "GetType guard + value + before/after readback + registered"
+
+
+def assert_hole_callout_leader_is_parameterized():
+    """0.8.19 / P1-7 — callout text was pinned just outside the view outline.
+
+    On a compact part that threw the leader past the sheet border and there was no
+    override. Guard that leader_x_m / leader_y_m are real parameters end-to-end
+    (implementation AND server wrapper), that the requested anchor is echoed back,
+    and that created items read back their real text position.
+    """
+    from solidworks_assetmate_mechdog.tools import drawing
+    sig = set(inspect.signature(drawing.add_hole_callouts).parameters)
+    for param in ("leader_x_m", "leader_y_m"):
+        assert param in sig, "drawing.add_hole_callouts has no %s parameter" % param
+    src = _read("tools/drawing.py")
+    node = _function_node(ast.parse(src), "add_hole_callouts")
+    body = ast.get_source_segment(src, node) or ""
+    assert "leader_anchor_requested_m" in body, (
+        "does not echo the requested anchor — caller cannot tell default vs custom placement")
+    assert "position_m" in body, "no readback of the real text position"
+    srv = _read("server.py")
+    wnode = _function_node(ast.parse(srv), "add_hole_callouts")
+    assert wnode is not None, "server.add_hole_callouts wrapper missing"
+    wparams = {a.arg for a in wnode.args.args} | {a.arg for a in wnode.args.kwonlyargs}
+    for param in ("leader_x_m", "leader_y_m"):
+        assert param in wparams, "server.add_hole_callouts wrapper does not forward %s" % param
+    return "leader anchor parameter end-to-end with position readback"
+
+
 # ---------------------------------------------------------------- registry
 
 STATIC_REGRESSIONS = [
@@ -554,6 +633,9 @@ STATIC_REGRESSIONS = [
     ("0.8.18 nearest-edge diagnostic", assert_dimension_failure_has_nearest_edge_diagnostic),
     ("0.8.18 precise outline in audit", assert_overlap_checks_use_precise_outline),
     ("0.8.18 stale doc claims removed", assert_no_stale_doc_claims),
+    ("0.8.19 full-name dedupe", assert_full_name_dedupe_deletes_copies),
+    ("0.8.19 dimension type guard", assert_dimension_position_validates_type),
+    ("0.8.19 leader anchor parameter", assert_hole_callout_leader_is_parameterized),
 ]
 
 

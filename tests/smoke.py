@@ -414,6 +414,32 @@ def main():
         return "created %d, listed %d rows, totals=%s" % (total, len(callouts),
                                                           server_sorted(totals))
 
+    def _hole_callout_leader_anchor():
+        """P1-7 / 0.8.19: leader_x_m / leader_y_m pin the text to a sheet point."""
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_leader.SLDPRT")
+        drw = os.path.join(workdir, "smoke_leader.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        anchor = [0.25, 0.20]
+        made = drawing.add_hole_callouts(drw, budget_s=25, max_callouts=3,
+                                         leader_x_m=anchor[0], leader_y_m=anchor[1])
+        assert made.get("ok") is not None, "add_hole_callouts returned no verdict"
+        if made.get("ok"):
+            assert made.get("leader_anchor_requested_m") == anchor, (
+                "leader anchor not echoed: %r" % made.get("leader_anchor_requested_m"))
+            for item in (made.get("created") or []):
+                assert "anchor_m" in item and "position_m" in item, (
+                    "created callout missing anchor/position readback: %r" % item)
+                assert abs(item["anchor_m"][0] - anchor[0]) < 1e-3, (
+                    "callout text ignored leader_x_m: %r" % item["anchor_m"])
+        for name in ("smoke_leader.SLDDRW", "smoke_leader.SLDPRT"):
+            try:
+                get_sw().CloseDoc(name)
+            except Exception:
+                pass
+        return "leader anchor echoed, created=%s" % (made.get("created_count"),)
+
     def server_sorted(d):
         return "{%s}" % ", ".join("%s:%s" % (k, d[k]) for k in sorted(d))
 
@@ -423,7 +449,13 @@ def main():
         drw = os.path.join(workdir, "smoke_dedupe.SLDDRW")
         shutil.copy2(src, part)
         require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
-        drawing.auto_dimension(drw, all_views=True)
+        deduped = require(drawing.auto_dimension(drw, all_views=True))
+        # 0.8.19 / P1-6: eliminate_duplicates must really delete the copies and report
+        # what it did — not just pass a flag to SolidWorks and hope for the best.
+        assert deduped.get("dedupe_applied") is True, (
+            "auto_dimension did not apply the dedupe pass: %r" % deduped)
+        assert isinstance(deduped.get("duplicates_removed"), int), (
+            "auto_dimension omitted duplicates_removed count: %r" % deduped)
         checked = require(drawing.verify_dimension_attachments(drw))
         unique = checked.get("unique_dimension_count")
         dupes = checked.get("duplicates_skipped")
@@ -453,6 +485,7 @@ def main():
                                                   made.get("headers"))
 
     r.check("list_drawing_annotations with hole callouts (P0)", _annotations_with_callouts)
+    r.check("hole callout leader anchor (P1-7)", _hole_callout_leader_anchor)
     r.check("verify_dimension_attachments dedupe", _dimension_dedupe)
     r.check("add_bom_table (native, populated)", _bom_table)
 
@@ -482,6 +515,12 @@ def main():
         assert moved.get("position_before_m") != moved.get("position_after_m"), (
             "move applied but the readback position did not change: %r" % moved)
 
+        # 0.8.19 / P0-2: the single-dimension mover must REFUSE a note target. A typo'd
+        # name would otherwise silently relocate the wrong annotation kind.
+        guard = layout.set_dimension_position(drw, target, 0.20, 0.20)
+        assert guard.get("ok") is False and guard.get("error") == "not_a_dimension", (
+            "set_dimension_position accepted a note target: %r" % guard)
+
         deleted = require(layout.delete_annotation(drw, target))
         assert deleted.get("removed") is True, (
             "delete_annotation reported ok but removed is not true: %r" % deleted)
@@ -491,10 +530,19 @@ def main():
         still = [a for a in (after.get("annotations") or []) if a.get("name") == target]
         assert not still, "annotation %s still listed after delete" % target
 
-        # delete_dimensions lives in layout, not drawing. A real prune removes each
-        # dimension at ~15 s, so scan a view name that matches nothing: the tool
-        # still reports removed/kept/failed without a 10-minute teardown.
+        # delete_dimensions lives in layout, not drawing. Measured: 14 dimensions in ONE
+        # call took < 5 s (an early note overestimated ~100x). Scan a view name that
+        # matches nothing so the check stays fast and does not tear down the sheet.
         require(drawing.auto_dimension(drw))
+        # 0.8.19: move ONE dimension to a sheet position and read its value back.
+        listed_dims = require(drawing.list_drawing_annotations(drw))
+        dim_rows = [a for a in (listed_dims.get("annotations") or [])
+                    if a.get("kind") == "dimension"]
+        if dim_rows:
+            dim_name = dim_rows[0]["name"]
+            placed = require(layout.set_dimension_position(drw, dim_name, 0.20, 0.20))
+            for key in ("dimension_value_mm", "position_after_m", "requested", "applied"):
+                assert key in placed, "set_dimension_position missing %r: %r" % (key, placed)
         pruned = require(layout.delete_dimensions(drw, view_name="__SMOKE_NO_VIEW__"))
         for key in ("removed", "kept", "failed"):
             assert key in pruned, "delete_dimensions missing %r bucket" % key
@@ -525,7 +573,7 @@ def main():
                 get_sw().CloseDoc(name)
             except Exception:
                 pass
-        return "note add/move/delete + dims prune + set_view + layout + view delete"
+        return "note add/move/delete + dim type-guard/position + dims prune + set_view + layout + view delete"
 
     def _health():
         payload = sw_session.health(deep=True)
