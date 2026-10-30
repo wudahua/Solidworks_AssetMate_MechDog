@@ -46,18 +46,16 @@ CAPABILITIES = [
     },
     {
         "id": "delete_annotation",
-        "status": "pilot",
+        "status": "verified",
         "summary": "删除/移动标注（按 name）",
-        "why": ("`delete_view` 已验证可用（SelectByID2(name,'DRAWINGVIEW') + EditDelete）。"
-                "但按 name 删除**标注**尚未跑通：`SelectByID2` 不接受通用 'ANNOTATION'，"
-                "而笔记/GT/粗糙度各有自己的类型串；改用「按 position_m 打射线选中」也选不中"
-                "（sheet 的 GetAnnotations 拿到的对象与 list_drawing_annotations 报告的名称"
-                "对不上，可能是模板文字与模型标注混在一起）。"),
-        "workaround": ("删视图用 `delete_view`（可用）。"
-                       "标注只能整张重建，或界面手工删。"),
-        "evidence": ("2026-10-29 实测：delete_view 删掉 工程图视图2 成功；"
-                     "delete_annotation / move_annotation 对 note 报 annotation_not_found，"
-                     "尝试过 5 种 select type 与按坐标射线。"),
+        "why": ("`delete_view` 与 `delete_annotation` / `move_annotation` 均可用。"
+                "关键是用 `IAnnotation.Select(False)` 选中——`Select3` 返回 False、"
+                "`SelectByID2` 对「细节项目34」这类名字根本解析不到。"
+                "删除后回读 annotation 计数确认（82 → 81），不只信 EditDelete 的返回值。"),
+        "workaround": ("按 name 操作前先用 `list_drawing_annotations` 取名字——"
+                       "名字是 `细节项目N` 形式，每次建图编号不同，不能硬编码。"),
+        "evidence": ("2026-10-30 实测：delete 82→81 removed=True；"
+                     "move [0.005,0.057]→[0.16,0.16] applied=True。"),
     },
     {
         "id": "annotation_write",

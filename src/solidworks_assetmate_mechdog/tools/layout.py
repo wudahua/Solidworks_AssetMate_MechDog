@@ -491,11 +491,28 @@ DELETABLE_SELECT_TYPES = ("NOTE", "GTOL", "SFSYMBOL", "DIMENSION", "ANNOTATION")
 
 
 def _find_annotation_by_name(doc, name):
-    """Return (annotation, position_m) for an annotation with this reported name."""
+    """Return (annotation, position_m) for an annotation with this reported name.
+
+    Iterates EVERY view, not just the first one. `doc.GetFirstView` is the sheet, and its
+    GetAnnotations returns sheet furniture only — but in practice every annotation, including
+    model-view ones, hangs off the sheet view too (the name reported by
+    list_drawing_annotations, e.g. "细节项目256", does appear here). Sweeping all views is
+    still the correct approach: it costs one extra loop and covers the case where an
+    annotation belongs to a model view.
+    """
     import win32com.client
     try:
-        sheet = doc.GetFirstView
-        for raw in (call_method(sheet, "GetAnnotations") or ()):
+        candidates = []
+        for view in _iter_views(doc):
+            try:
+                # _call_method is this module's alias for sw_session.call_method. Writing
+                # `call_method` here raised NameError, which the surrounding except turned
+                # into a silent "no candidates" — the finder then reported not_found for
+                # names the listing tool had just printed.
+                candidates.extend(list(_call_method(view, "GetAnnotations") or ()))
+            except Exception:
+                continue
+        for raw in candidates:
             annotation = win32com.client.Dispatch(raw)
             try:
                 if str(annotation.GetName) == name:
@@ -565,49 +582,63 @@ def delete_view(drawing_path, view_name, save=True):
 
 
 def delete_annotation(drawing_path, name, save=True):
-    """Delete one annotation by name (broken hole callout, unwanted GT, stray note)."""
+    """Delete one annotation by name (broken hole callout, unwanted GT, stray note).
+
+    Uses `IAnnotation.Select(False)` then EditDelete. Measured on a real sheet:
+    Select3 returned False and selected nothing; Select(False) selected exactly one object
+    and EditDelete removed it (82 -> 81 annotations). SelectByID2 with the reported name
+    never worked either — `<unknown>`-style names like "细节项目34" are not resolvable ids.
+    """
     try:
-        from ..sw_session import byref_dispatch_null, error
+        from ..sw_session import error
 
         doc = _open_drawing(drawing_path)
         doc.ClearSelection2(True)
-
-        # Strategy 1: select at the annotation's own position. This is what works —
-        # SelectByID2 with the reported name fails for notes/GT/surface symbols.
         annotation, position = _find_annotation_by_name(doc, name)
-        selected_type = None
-        if position is not None:
-            try:
-                hit = doc.Extension.SelectByRay(position[0], position[1], position[2],
-                                                0.0, 0.0, -1.0, 0.002, 2,
-                                                False, 0, 0)
-                if hit and doc.SelectionManager.GetSelectedObjectCount2(-1) > 0:
-                    selected_type = "by_position"
-            except Exception:
-                pass
-        if selected_type is None:
-            # Strategy 2: fall back to type-based ID selection for dimensions.
-            for candidate in DELETABLE_SELECT_TYPES:
-                if _select_by_name(doc, name, candidate, byref_dispatch_null):
-                    selected_type = candidate
-                    break
-        if selected_type is None:
+        if annotation is None:
             return error("annotation_not_found",
-                         "no annotation named %r could be selected" % name,
-                         "tried selecting at its reported position and by ID with types: %s. "
-                         "List names first with list_drawing_annotations."
-                         % ", ".join(DELETABLE_SELECT_TYPES))
+                         "no annotation named %r on this sheet" % name,
+                         "list names first with list_drawing_annotations")
+        try:
+            selected = annotation.Select(False)
+        except Exception as exc:
+            return error("select_failed", "IAnnotation.Select raised: %s" % str(exc)[:80])
+        try:
+            count = doc.SelectionManager.GetSelectedObjectCount2(-1)
+        except Exception:
+            count = None
+        if not selected or count == 0:
+            return error("select_failed",
+                         "Select(False) did not select %r" % name,
+                         "selected count=%r" % count)
+
+        before = None
+        try:
+            before = len(list(doc.GetFirstView.GetAnnotations or ()))
+        except Exception:
+            pass
         _call_method(doc, "EditDelete")
         try:
             _call_method(doc, "EditRebuild3")
         except Exception:
             pass
+        after = None
+        try:
+            after = len(list(doc.GetFirstView.GetAnnotations or ()))
+        except Exception:
+            pass
         doc.ClearSelection2(True)
-        # EditDelete returns None on success, so there is nothing to trust; the caller can
-        # re-run list_drawing_annotations to confirm the name is gone.
+        removed = (before is not None and after is not None and after < before)
+        if before is not None and after is not None and not removed:
+            return error("delete_failed",
+                         "EditDelete did not remove %r" % name,
+                         "annotation count %s -> %s" % (before, after))
         if save:
             _save_drawing(doc)
-        return drawing_ok(deleted=name, selected_as=selected_type, saved=bool(save))
+        return drawing_ok(deleted=name, removed=removed,
+                          annotations_before=before, annotations_after=after,
+                          position_m=[round(v, 4) for v in position] if position else None,
+                          saved=bool(save))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

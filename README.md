@@ -90,8 +90,8 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_note` | 技术要求注记（sheet 空间坐标，米） |
 | `layout_dimensions` | **拆开叠在一起的尺寸**（按 x 聚类后沿 y 推开） |
 | `delete_view` | **删除视图**（错切的剖视 / 空白局部放大） |
-| `delete_annotation` | 删除标注 —— **pilot**，按 name 选不中，暂不可用 |
-| `move_annotation` | 移动标注 —— **pilot**，同上 |
+| `delete_annotation` | **删除标注**（按 name，回读计数确认） |
+| `move_annotation` | **移动标注**到图纸坐标（米） |
 | `add_bom_table` | **原生 BOM 明细栏**（Indented→TopLevelOnly 两步，10 行 4 列含数量） |
 | `add_sheet_line` | **图纸空间直线**（米）——明细栏网格、图框内表格 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
