@@ -192,7 +192,7 @@ def check_capabilities(operation=None):
     Call this before a long pipeline. It answers in milliseconds what would otherwise cost
     a full SolidWorks run to discover.
     """
-    from ..sw_session import error, ok
+    from ..sw_session import error, ok, sw_version
 
     entries = CAPABILITIES
     if operation:
@@ -213,6 +213,12 @@ def check_capabilities(operation=None):
         payload.append(row)
 
     return ok(
+        # Version context belongs in the answer: "verified" means verified on one SolidWorks
+        # build, and bom_table is SW2024 SP4 only.
+        server_name="Solidworks_AssetMate_MechDog",
+        server_version=__import__("solidworks_assetmate_mechdog").__version__,
+        sw_version=sw_version(),
+        platform=__import__("platform").platform(),
         operation=operation,
         checked=len(entries),
         blocked=[c["id"] for c in blocked],

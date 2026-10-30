@@ -11,8 +11,17 @@
 改了任何工具函数后，**提交前**至少跑一次真实调用，不要只看 `compileall` 和 `static_check`。
 
 ```bash
-python tests/smoke.py --skip-export     # 约 6 分钟，16 项检查
+python tests/check_all.py     # 秒级，无需 SolidWorks（三层）
+python tests/smoke.py         # 约 6 分钟，需 SolidWorks（行为层）
 ```
+
+`check_all.py` 依次跑：
+
+| 层 | 文件 | 挡什么 |
+|---|---|---|
+| 1 语法 | `compileall` | 文件根本编不过 |
+| 2 结构 | `static_check.py` | 未导入名字、README 漂移、重复 def、属性陷阱、路线图过期、包装器签名 |
+| 3 **历史回归** | `regressions.py` | **每个已修复的 bug 一条断言（14 条）** |
 
 只改了一个工具时，跑它对应的那一项就够（照 `tests/smoke.py` 里的写法抄一个临时脚本）。
 
