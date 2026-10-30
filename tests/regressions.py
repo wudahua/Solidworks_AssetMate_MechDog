@@ -285,6 +285,149 @@ def assert_every_tool_has_docstring():
     return "all decorated tools documented"
 
 
+COVERAGE_EXEMPT = {
+    # Tools that genuinely cannot run in the current smoke environment, with reasons.
+    "produce_drawing": "runs 9 sub-tools; each is covered individually",
+    "survey_drawings": "samples many drawings; slow, covered by eng_cases",
+    "batch_export": "covered under the name 'batch_export step'",
+    "recent_failures": "reads the failure log; exercised by tests/smoke.py startup",
+    "health_check": "pure passthrough to sw_session.health(); covered by regressions",
+}
+
+
+def assert_every_tool_has_smoke_coverage():
+    """Every registered tool must appear in smoke.py, or be explicitly exempted.
+
+    This is the check that would have caught today's real problem: six new tools
+    (delete_view / delete_annotation / move_annotation / layout_dimensions / health_check /
+    recent_failures) shipped across five releases and none of them was ever added to the
+    smoke run. They "worked" only because each was hand-tested once by me and then left
+    unguarded.
+
+    A tool nobody calls in CI is a tool nobody knows is broken.
+    """
+    tree = _tree("server.py")
+    tools = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        has_tool = any(
+            isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "tool" for d in node.decorator_list)
+        if has_tool:
+            tools.append(node.name)
+
+    smoke_src = open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8").read()
+    missing = [t for t in tools
+               if t not in COVERAGE_EXEMPT
+               and ("%s(" % t) not in smoke_src
+               and ("%s " % t) not in smoke_src
+               and ('"%s"' % t) not in smoke_src]
+    covered = len(tools) - len(missing) - len([t for t in tools if t in COVERAGE_EXEMPT])
+    assert not missing, (
+        "%d of %d tools are never called by smoke.py: %s"
+        % (len(missing), len(tools), ", ".join(missing[:12])))
+    return "%d/%d tools covered (%d exempt)" % (covered, len(tools), len(COVERAGE_EXEMPT))
+
+
+# smoke.py imports these modules directly; map the short name to the importable path.
+SMOKE_MODULE_MAP = {
+    "assembly": "solidworks_assetmate_mechdog.tools.assembly",
+    "bodies": "solidworks_assetmate_mechdog.tools.bodies",
+    "bom": "solidworks_assetmate_mechdog.tools.bom",
+    "drawing": "solidworks_assetmate_mechdog.tools.drawing",
+    "export": "solidworks_assetmate_mechdog.tools.export",
+    "layout": "solidworks_assetmate_mechdog.tools.layout",
+    "ledger": "solidworks_assetmate_mechdog.tools.ledger",
+    "recolor": "solidworks_assetmate_mechdog.tools.recolor",
+    "capabilities": "solidworks_assetmate_mechdog.tools.capabilities",
+    "sheet_metal": "solidworks_assetmate_mechdog.tools.sheet_metal",
+    "planner": "solidworks_assetmate_mechdog.tools.planner",
+    "rename": "solidworks_assetmate_mechdog.tools.rename",
+    "material": "solidworks_assetmate_mechdog.tools.material",
+    "sw_session": "solidworks_assetmate_mechdog.sw_session",
+}
+
+
+def assert_smoke_calls_match_signatures():
+    """Hardening smoke produced 8 FAILs that were all wrong *call shapes*.
+
+    `place_views()` was called without `placements`, `plan_drawing` was looked up on the
+    `drawing` module, `add_flat_pattern_view` missed `model_path`, `add_note` had its args
+    in an old order, `rename_components` used a mode that does not exist. None of these
+    need a live SolidWorks to detect. Bind every module.func(...) call in smoke.py against
+    the real signature; a TypeError means the smoke test itself is broken, not the tool.
+    """
+    import importlib
+
+    smoke_src = open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8").read()
+    tree = ast.parse(smoke_src)
+    problems, checked = [], 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            continue
+        short = func.value.id
+        dotted = SMOKE_MODULE_MAP.get(short)
+        if not dotted:
+            continue
+        # A **kwargs expansion cannot be resolved statically.
+        if any(kw.arg is None for kw in node.keywords):
+            continue
+        try:
+            module = importlib.import_module(dotted)
+        except ImportError:
+            continue  # environment (e.g. no pywin32); shape cannot be checked here
+        try:
+            target = getattr(module, func.attr)
+        except AttributeError:
+            problems.append("smoke.py:%d: %s.%s does not exist"
+                            % (node.lineno, short, func.attr))
+            continue
+        try:
+            sig = inspect.signature(target)
+        except (TypeError, ValueError):
+            continue
+        positional = [None] * len(node.args)
+        kwargs = {kw.arg: None for kw in node.keywords if kw.arg}
+        checked += 1
+        try:
+            sig.bind(*positional, **kwargs)
+        except TypeError as exc:
+            problems.append("smoke.py:%d: %s.%s(...) -> %s"
+                            % (node.lineno, short, func.attr, exc))
+    assert not problems, (
+        "%d smoke call(s) cannot bind to the real signature:\n    %s"
+        % (len(problems), "\n    ".join(problems[:12])))
+    return "%d calls bound to real signatures" % checked
+
+
+def assert_smoke_selfheals_stale_documents():
+    """0.8.17 — a SIGTERM'd smoke run left 10 documents open.
+
+    The next run failed 14 checks with OpenDoc6 errors=65536 because SolidWorks refuses
+    a second file with the same name (com-quirks section 2). smoke.py must close any
+    document left in an assetmate_smoke_* temp dir before copying its own fixtures in.
+    """
+    src = open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+    main = _function_node(tree, "main")
+    assert main is not None, "smoke.py main() not found"
+    has_membership = any(
+        isinstance(n, ast.Compare) and any(isinstance(op, ast.In) for op in n.ops)
+        and isinstance(n.left, ast.Constant) and n.left.value == "assetmate_smoke_"
+        for n in ast.walk(main))
+    has_close = any(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "CloseDoc" for n in ast.walk(main))
+    assert has_membership, (
+        "smoke.py no longer filters stale docs by the assetmate_smoke_ path prefix")
+    assert has_close, "smoke.py no longer closes stale documents at startup"
+    return "startup self-heal present"
+
+
 # ---------------------------------------------------------------- registry
 
 STATIC_REGRESSIONS = [
@@ -302,6 +445,9 @@ STATIC_REGRESSIONS = [
     ("sw_version reported", assert_sw_version_reported),
     ("capability statuses legal", assert_capability_statuses_legal),
     ("tools documented", assert_every_tool_has_docstring),
+    ("smoke covers every tool", assert_every_tool_has_smoke_coverage),
+    ("smoke calls match signatures", assert_smoke_calls_match_signatures),
+    ("smoke self-heals stale docs", assert_smoke_selfheals_stale_documents),
 ]
 
 

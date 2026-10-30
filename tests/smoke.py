@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import traceback
+import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -126,15 +127,38 @@ def main():
     pythoncom.CoInitialize()
 
     from solidworks_assetmate_mechdog import __version__
+    from solidworks_assetmate_mechdog import sw_session
     from solidworks_assetmate_mechdog.sw_session import get_sw
     from solidworks_assetmate_mechdog.tools import (assembly, bodies, bom, drawing, export,
-                                                    layout, ledger, recolor)
+                                                    layout, ledger, recolor, capabilities,
+                                                    sheet_metal, planner, rename, material)
 
     try:
         get_sw()
     except Exception as exc:
         print("cannot attach to SolidWorks: %s" % exc)
         return 2
+
+    # A run killed by a timeout (SIGTERM) never reaches the cleanup at the bottom, so its
+    # documents stay open in SolidWorks. The next run then fails every model check with
+    # OpenDoc6 errors=65536: SolidWorks refuses a second file with the same name
+    # (com-quirks section 2). Self-heal — close any document left in an earlier
+    # assetmate_smoke_* temp dir before we copy our own fixtures in.
+    sw = get_sw()
+    stale = []
+    for doc in (sw.GetDocuments or ()):
+        try:
+            if "assetmate_smoke_" in str(doc.GetPathName or ""):
+                stale.append(str(doc.GetTitle))
+        except Exception:
+            continue
+    for title in stale:
+        try:
+            sw.CloseDoc(title)
+        except Exception:
+            pass
+    if stale:
+        print("closed %d stale smoke document(s) left by a previous run" % len(stale))
 
     workdir = tempfile.mkdtemp(prefix="assetmate_smoke_")
     # Copy under new names: SolidWorks refuses to open a second file with the same
@@ -293,7 +317,15 @@ def main():
                 marked.get("views_marked") or 0, marked.get("views_processed") or 0,
                 exported["bytes"] // 1024, created["views"][0]["scale"])
 
-        r.check("drawing chain (create/pdf/render/audit)", _drawing)
+        def _drawing_chain_guarded():
+            try:
+                return _drawing()
+            except AssertionError as exc:
+                if "pypdfium2" in str(exc):
+                    raise FixtureMissing("pypdfium2 not installed (PDF render needs it)")
+                raise
+
+        r.check("drawing chain (create/pdf/render/audit)", _drawing_chain_guarded)
 
     if args.eng_cases:
         def _eng_cases():
@@ -374,6 +406,11 @@ def main():
                           "may have regressed" % total)
         for row_ in callouts:
             assert row_.get("kind"), "callout row missing kind: %r" % (row_,)
+            # 0.8.13: AddHoleCallout2 leaves '<MOD-DIAM>' in the text. The SetText
+            # rewrite must have turned it into a real diameter before it is listed.
+            text = str(row_.get("text") or "")
+            assert "<MOD-" not in text.upper(), (
+                "callout text is still a raw format code: %r" % text)
         return "created %d, listed %d rows, totals=%s" % (total, len(callouts),
                                                           server_sorted(totals))
 
@@ -418,6 +455,360 @@ def main():
     r.check("list_drawing_annotations with hole callouts (P0)", _annotations_with_callouts)
     r.check("verify_dimension_attachments dedupe", _dimension_dedupe)
     r.check("add_bom_table (native, populated)", _bom_table)
+
+    # --- editing tools: create → move → delete, all by name -----------------------------
+    # None of these were in the smoke run before. delete_view / delete_annotation /
+    # move_annotation / layout_dimensions each shipped in a separate release and were only
+    # ever verified by hand, once, by me. A tool nobody calls is a tool nobody knows is
+    # broken.
+    def _editing_by_name():
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_edit.SLDPRT")
+        drw = os.path.join(workdir, "smoke_edit.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front", "right"], paper="A3"))
+
+        # add_note + add_sheet_line: cheap writes that should show up in the listing
+        require(layout.add_note(drw, "SMOKE_NOTE", 0.10, 0.10))
+        listed = require(drawing.list_drawing_annotations(drw))
+        notes = [a for a in (listed.get("annotations") or []) if a.get("kind") == "note"]
+        assert notes, "add_note succeeded but the sheet lists no note"
+
+        # Names are `细节项目N` and the N changes on every rebuild — never hard-code one.
+        # (Hard-coding "细节项目256" is exactly what made me chase a phantom bug.)
+        target = notes[0]["name"]
+        moved = require(layout.move_annotation(drw, target, 0.14, 0.14))
+        assert moved.get("applied") is True, "move_annotation did not apply: %r" % moved
+        assert moved.get("position_before_m") != moved.get("position_after_m"), (
+            "move applied but the readback position did not change: %r" % moved)
+
+        deleted = require(layout.delete_annotation(drw, target))
+        assert deleted.get("removed") is True, (
+            "delete_annotation reported ok but removed is not true: %r" % deleted)
+        assert deleted.get("annotations_after") is not None, (
+            "delete_annotation omitted the after-count readback")
+        after = require(drawing.list_drawing_annotations(drw))
+        still = [a for a in (after.get("annotations") or []) if a.get("name") == target]
+        assert not still, "annotation %s still listed after delete" % target
+
+        # delete_dimensions lives in layout, not drawing. A real prune removes each
+        # dimension at ~15 s, so scan a view name that matches nothing: the tool
+        # still reports removed/kept/failed without a 10-minute teardown.
+        require(drawing.auto_dimension(drw))
+        pruned = require(layout.delete_dimensions(drw, view_name="__SMOKE_NO_VIEW__"))
+        for key in ("removed", "kept", "failed"):
+            assert key in pruned, "delete_dimensions missing %r bucket" % key
+
+        # set_view: position readback must reflect the request (or say why it did not)
+        views = [v for v in drawing._iter_views(drawing._open_drawing(drw))
+                 if getattr(v, "Type", None) != 1]
+        assert views, "no model views to reposition"
+        res = require(layout.set_view(drw, str(views[0].Name), x_m=0.08, y_m=0.28))
+        assert "position_m" in res or "requested" in res, "set_view returned no position"
+
+        # layout_dimensions: must run and report counts
+        laid = require(drawing.layout_dimensions(drw, dry_run=True))
+        for key in ("dimension_count", "collisions", "dry_run"):
+            assert key in laid, "layout_dimensions missing %r" % key
+
+        # delete_view last: it removes a view the other checks may have touched
+        if len(views) > 1:
+            drop = str(views[1].Name)
+            gone = require(layout.delete_view(drw, drop))
+            assert gone.get("views_after") is not None, "delete_view returned no view list"
+
+        for name in ("smoke_edit.SLDDRW", "smoke_edit.SLDPRT"):
+            try:
+                get_sw().CloseDoc(name)
+            except Exception:
+                pass
+        return "note add/move/delete + dims prune + set_view + layout + view delete"
+
+    def _health():
+        payload = sw_session.health(deep=True)
+        assert payload.get("sw_version"), "health() reports no sw_version"
+        assert payload.get("error") is None, "health() reports %r" % payload.get("error")
+        return "sw %s, active doc %r" % (payload.get("sw_version"), payload.get("active_doc"))
+
+    r.check("edit tools by name (move/delete/layout)", _editing_by_name)
+    r.check("health()", _health)
+
+    # --- annotation and layout writers ----------------------------------------------
+    def _annotation_writers():
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_anno2.SLDPRT")
+        drw = os.path.join(workdir, "smoke_anno2.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+
+        # sheet sketch primitives — unit trap: sheet coordinates are METRES
+        require(layout.add_sheet_line(drw, 0.02, 0.02, 0.06, 0.02))
+
+        # place_views with an explicit order; must return a plan or an error with a reason
+        placed = layout.place_views(drw, placements={})
+        assert placed.get("ok") is not None, "place_views returned no verdict"
+
+        # circular edges feed hole callouts; must list something or say why not
+        edges = drawing.list_circular_edges(drw)
+        assert edges.get("ok") is not None, "list_circular_edges returned no verdict"
+
+        # GT frame: symbol may fail, but the call must be structured, not raise
+        gt = drawing.add_geometric_tolerance(drw, 0.10, 0.10, "0.05", "A", symbol="position")
+        assert gt.get("ok") is not None, "add_geometric_tolerance returned no verdict"
+        if gt.get("ok"):
+            # The tool reports `symbol` and `values_written` (not a guessed
+            # `symbol_written`); a missing readback would hide a failed symbol write.
+            assert "symbol" in gt and "values_written" in gt, (
+                "GT result omits the symbol/values readback")
+
+        # surface finish: created flag must be explicit
+        sf = drawing.add_surface_finish(drw, 0.12, 0.10, "3.2")
+        assert sf.get("ok") is not None, "add_surface_finish returned no verdict"
+
+        # dimension tolerance on an existing dimension
+        require(drawing.auto_dimension(drw))
+        tol = drawing.add_dimension_tolerance(drw, 0.05, upper=0.05, lower=0.05,
+                                             apply=False)
+        assert tol.get("ok") is not None, "add_dimension_tolerance returned no verdict"
+
+        for name in ("smoke_anno2.SLDDRW", "smoke_anno2.SLDPRT"):
+            try:
+                get_sw().CloseDoc(name)
+            except Exception:
+                pass
+        return "sheet_line + place_views + circular_edges + GT + finish + tolerance"
+
+    # --- planning and inspection entry points ----------------------------------------
+    def _planning():
+        caps = require(capabilities.check_capabilities())
+        assert caps.get("server_version"), "check_capabilities has no server_version"
+        assert caps.get("sw_version"), "check_capabilities has no sw_version"
+
+        plan = planner.plan_drawing(args.part)
+        assert plan.get("ok") is not None, "plan_drawing returned no verdict"
+
+        # Do not name this local `ledger`: it shadows the imported module and the
+        # signature-guard assertion in regressions.py would read `ledger.get(...)` as a
+        # module call that does not exist.
+        led = require(ledger.build_feature_ledger(args.part, include_faces=False))
+        assert led.get("features"), "ledger returned no features"
+
+        # sheet_metal_qc must reject a non-sheet-metal part cleanly, not guess.
+        # `"sheet_metal" in dir()` used to make this a silent no-op: dir() sees only
+        # locals, while sheet_metal is a closure variable imported in main().
+        qc = sheet_metal.sheet_metal_qc(args.part)
+        assert qc.get("ok") is not None, "sheet_metal_qc returned no verdict"
+        return "capabilities + plan + ledger + qc(is_sheet_metal=%s)" % qc.get("is_sheet_metal")
+
+    r.check("annotation writers (sheet/GT/finish/tolerance)", _annotation_writers)
+    r.check("planning entry points", _planning)
+
+    # --- views, dimensions and title block ------------------------------------------
+    def _views_and_dims():
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_views.SLDPRT")
+        drw = os.path.join(workdir, "smoke_views.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front", "top"], paper="A3"))
+
+        title = drawing.set_title_block(drw, scale="1:2")
+        assert title.get("ok") is not None, "set_title_block returned no verdict"
+
+        # section through the middle: must either produce a view or explain the miss
+        section = drawing.add_section_view(drw, orientation="vertical", offset_m=0.0,
+                                          label="S")
+        assert section.get("ok") is not None, "add_section_view returned no verdict"
+        # The offset-sign rule is guarded statically by
+        # regressions.assert_section_offset_sign. A successful cut must name the
+        # created view; a structured failure is acceptable on a fixture with no
+        # sectionable view.
+        assert "section" in section or section.get("ok") is False, (
+            "section result neither warns nor fails — the sanity check may be gone")
+
+        # detail view: scale may be rejected by the parent, but must be reported
+        detail = drawing.add_detail_view(drw, center=[0.10, 0.15], radius_m=0.008,
+                                        position=[0.28, 0.10], scale=2, label="D")
+        assert detail.get("ok") is not None, "add_detail_view returned no verdict"
+        if detail.get("ok"):
+            assert "scale" in detail and "scale_locked" in detail, (
+                "detail result omits the scale readback")
+
+        # edges + edge-anchored dimension: the only manual placement path
+        edges = require(drawing.list_drawing_edges(drw, include_points=False))
+        assert edges.get("edge_count") is not None, "list_drawing_edges returned no count"
+        if edges.get("edge_count"):
+            dim = drawing.add_drawing_dimension(drw, edge_index=0, value=None,
+                                               offset_x=0.0, offset_y=-0.012)
+            assert dim.get("ok") is not None, "add_drawing_dimension returned no verdict"
+
+        for name in ("smoke_views.SLDDRW", "smoke_views.SLDPRT"):
+            try:
+                get_sw().CloseDoc(name)
+            except Exception:
+                pass
+        return "title block + section + detail + edges + edge dimension"
+
+    # --- part-level tools ------------------------------------------------------------
+    def _part_tools():
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_part_%s.SLDPRT" % uuid.uuid4().hex[:6])
+        shutil.copy2(src, part)
+
+        lib = material.material_library()
+        assert lib.get("ok") is not None, "material_library returned no verdict"
+
+        # dry-run first: never mutate the fixture without a dry run in between
+        dry = material.set_part_material([part], "Plain Carbon Steel")
+        assert dry.get("dry_run") is True, "set_part_material default is not dry-run"
+
+        smart = material.assign_materials([part], apply=False)
+        assert smart.get("ok") is not None, "assign_materials returned no verdict"
+
+        fp = sheet_metal.flat_pattern_report(part)
+        assert fp.get("ok") is not None, "flat_pattern_report returned no verdict"
+
+        try:
+            get_sw().CloseDoc(os.path.basename(part))
+        except Exception:
+            pass
+        return "material library/set/assign + flat pattern report"
+
+    def _hole_callout_single():
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_hole.SLDPRT")
+        drw = os.path.join(workdir, "smoke_hole.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        result = drawing.add_hole_callout(drw, 0.10, 0.10)
+        # A miss is fine — what matters is a structured verdict, not an exception
+        assert result.get("ok") is not None, "add_hole_callout returned no verdict"
+        for name in ("smoke_hole.SLDDRW", "smoke_hole.SLDPRT"):
+            try:
+                get_sw().CloseDoc(name)
+            except Exception:
+                pass
+        return "structured verdict: ok=%r" % result.get("ok")
+
+    def _rename():
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_rename_src.SLDPRT")
+        shutil.copy2(src, part)
+        result = rename.rename_components(
+            part_paths=[part], prefix="SMOKE_", apply=False,
+            assembly_path=args.assembly, mode="file")
+        assert result.get("ok") is not None, "rename_components returned no verdict"
+        assert result.get("dry_run") is True, "rename_components is not dry-run"
+        return "dry-run ok=%r, planned=%d" % (
+            result.get("ok"), len(result.get("planned") or []))
+
+    # add_flat_pattern_view needs a sheet-metal part with a flat pattern
+    def _flat_pattern_view():
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_fp.SLDPRT")
+        drw = os.path.join(workdir, "smoke_fp.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        result = drawing.add_flat_pattern_view(drw, part, position=[0.28, 0.22])
+        assert result.get("ok") is not None, "add_flat_pattern_view returned no verdict"
+        for name in ("smoke_fp.SLDDRW", "smoke_fp.SLDPRT"):
+            try:
+                get_sw().CloseDoc(name)
+            except Exception:
+                pass
+        return "verdict ok=%r" % result.get("ok")
+
+    # --- 0.8.6 behavioural guard: total material failure must not report ok:true --
+    def _material_write_honesty():
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_mat_write.SLDPRT")
+        shutil.copy2(src, part)
+        # The material name may or may not exist in the library. What matters is the
+        # top-level verdict: 0.8.6 always answered ok:true even when every part failed.
+        result = material.set_part_material([part], "Plain Carbon Steel",
+                                            apply=True, save=False)
+        assert result.get("ok") is not None, "set_part_material returned no verdict"
+        assert "succeeded" in result and "failed" in result, (
+            "set_part_material omits succeeded/failed counts")
+        if result.get("failed") and not result.get("succeeded"):
+            assert result.get("ok") is False, (
+                "every part failed but the top level still says ok:true (0.8.6)")
+        try:
+            get_sw().CloseDoc(os.path.basename(part))
+        except Exception:
+            pass
+        return "ok=%r succeeded=%s failed=%s" % (
+            result.get("ok"), result.get("succeeded"), result.get("failed"))
+
+    # --- reconciliation + delivery verdict, previously only under --eng-cases -----
+    def _reconcile_delivery():
+        part = os.path.join(workdir, "smoke_part.SLDPRT")
+        drw = os.path.join(workdir, "smoke.SLDDRW")
+        if not os.path.exists(drw):
+            raise FixtureMissing("drawing chain output smoke.SLDDRW (needs drawing chain)")
+        rec = drawing.reconcile_ledger(part, drw)
+        assert rec.get("ok") is not None, "reconcile_ledger returned no verdict"
+        verdict = drawing.delivery_check(part, drw)
+        assert verdict.get("ok") is not None, "delivery_check returned no verdict"
+        return "reconcile ok=%r, delivery ok=%r, verdict=%r" % (
+            rec.get("ok"), verdict.get("ok"), verdict.get("verdict"))
+
+    # --- server wrapper layer: smoke calls tools directly, so check forwarders -----
+    def _server_wrapper_contract():
+        # server.py is not importable here (mcp is a server-only dependency) and smoke
+        # deliberately exercises the tools layer. Verify the wrapper layer statically:
+        # every @mcp.tool() forwarder must bind to the real tools-layer signature.
+        # 0.8.4 shipped add_bom_table forwarding a kwarg the implementation had dropped.
+        import ast as _ast
+        import importlib as _importlib
+        import inspect as _inspect
+
+        src = open(os.path.join(ROOT, "src", "solidworks_assetmate_mechdog", "server.py"),
+                   encoding="utf-8").read()
+        tree = _ast.parse(src)
+        wrappers = [n for n in tree.body if isinstance(n, _ast.FunctionDef) and any(
+            isinstance(d, _ast.Call) and isinstance(d.func, _ast.Attribute)
+            and d.func.attr == "tool" for d in n.decorator_list)]
+        names = {n.name for n in wrappers}
+        for required in ("get_assembly_tree", "get_mass_properties", "health_check",
+                         "recent_failures", "produce_drawing", "survey_drawings"):
+            assert required in names, "server wrapper %r is missing" % required
+
+        checked, problems = 0, []
+        for node in wrappers:
+            for call in _ast.walk(node):
+                if not isinstance(call, _ast.Call):
+                    continue
+                f = call.func
+                if not (isinstance(f, _ast.Attribute) and isinstance(f.value, _ast.Name)):
+                    continue
+                if f.value.id in ("sw_session", "json", "sys", "os", "platform"):
+                    continue
+                try:
+                    mod = _importlib.import_module(
+                        "solidworks_assetmate_mechdog.tools.%s" % f.value.id)
+                    sig = _inspect.signature(getattr(mod, f.attr))
+                except (ImportError, AttributeError, TypeError, ValueError):
+                    continue
+                if any(kw.arg is None for kw in call.keywords):
+                    continue
+                checked += 1
+                try:
+                    sig.bind(*([None] * len(call.args)),
+                             **{kw.arg: None for kw in call.keywords if kw.arg})
+                except TypeError as exc:
+                    problems.append("%s -> %s: %s" % (node.name, f.attr, exc))
+        assert checked >= 30, "only %d wrapper calls inspected" % checked
+        assert not problems, "server wrappers with broken call shapes: %s" % problems[:4]
+        return "%d wrappers, %d forwarding calls bind" % (len(wrappers), checked)
+
+    r.check("views, dimensions, title block", _views_and_dims)
+    r.check("part tools (material/flat pattern)", _part_tools)
+    r.check("single hole callout", _hole_callout_single)
+    r.check("rename components (dry-run)", _rename)
+    r.check("flat pattern view", _flat_pattern_view)
+    r.check("material write honesty (0.8.6)", _material_write_honesty)
+    r.check("reconcile ledger + delivery verdict", _reconcile_delivery)
+    r.check("server wrapper contract", _server_wrapper_contract)
 
     code = r.summary()
 

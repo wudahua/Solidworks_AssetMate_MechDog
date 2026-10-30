@@ -356,14 +356,14 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 48 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 53 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash
 python tests/static_check.py     # 单独跑，秒级
 ```
 
-13 项：连接/版本、组件树、BOM、质量属性、上色 dry-run、零匹配守卫、上色 apply、实体列表、实体分色、预览 PNG、STEP 导出、工程图链路（建图→PDF→渲染→审计）、错误信息。全部只读或写临时目录。
+默认 **28 项**（另可用 `--eng-cases` 加跑真实零件链路）：连接/版本、组件树与错误信息、BOM+CSV、质量属性、上色 dry-run/零匹配/apply、实体列表/分色、预览 PNG、STEP 导出、工程图链路（建图→PDF→渲染→审计）、孔标注清单（P0）、尺寸去重、原生 BOM 表、按名编辑（移动/删除标注、删尺寸、移视图、尺寸排版、删视图）、`health`、标注写入（形位公差/粗糙度/尺寸公差）、规划入口、视图/明细/标题栏、零件工具、单孔标注、重命名 dry-run、展开视图、材料写入诚实性、台账对账+交付判定、**server 包装层签名契约**。全部只读或写临时目录。
 
 **仓库不含测试模型**（`测试用例/` 因体积与版权未入库），裸跑会因文件不存在直接退出。用 `--assembly` / `--part` 指定自己的模型：
 
