@@ -279,7 +279,7 @@ def delete_dimensions(
     """Delete dimensions whose value is not in keep_values (the plan_drawing shortlist).
 
     SolidWorks has no bulk delete; each dimension is selected by position and removed with
-    EditDelete, roughly 15 s apiece.
+    EditDelete. Measured 2026-10-29: 14 dimensions in ONE call took < 5 s.
     """
     return _json(layout.delete_dimensions(drawing_path, keep_values=keep_values,
                                           view_name=view_name,
@@ -360,12 +360,11 @@ def add_bom_table(
 
     Returns 10 rows x 4 columns with a quantity column on the reference assembly.
 
-    Signature note: this wrapper must match `layout.add_bom_table` exactly. It used to
-    forward `bom_type` / `anchor_type` from the old header-only implementation, and after
-    the two-step (Indented -> TopLevelOnly) rewrite those parameters no longer exist — so
-    EVERY call failed with "unexpected keyword argument 'bom_type'" while
-    `check_capabilities` reported the tool as verified. `static_check` now compares wrapper
-    kwargs against the implementation signature to catch this class of drift.
+    Verified on SW2024 SP4 only. On other builds `InsertBomTable4` may return None;
+    `check_capabilities` reports the version-qualified status and `bom_native` includes
+    the SW version in the failure message. Wrapper/implementation signature drift is
+    guarded by `static_check.check_wrapper_signatures` (a regression assertion, not a
+    runtime concern — see CONTRIBUTING).
     """
     return _json(layout.add_bom_table(drawing_path, view_name=view_name,
                                       configuration=configuration,

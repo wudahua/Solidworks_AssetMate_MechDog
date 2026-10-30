@@ -289,6 +289,29 @@ names = list(model.GetModelViewNames)   # ('*正视于','*前视',...,'*等轴�
 刚建好的视图 `GetOutline` 可能为空，设置 `ScaleDecimal` 之后才有值。因此比例不能靠"先建后量"，
 要用 `model.GetPartBox(True)` 先估包围盒、选标准比例（1:1、1:2、1:5…），再一次性建视图并排版。
 
+### GetOutline 恒定虚胖 11.9 mm（2026-10-29 实测，P2-13）
+
+`IView.GetOutline` 返回的包围盒**宽和高各比真实投影大 11.9 mm**，与视图、比例无关：
+
+| 视图 | 真实投影 | GetOutline | 差 |
+|---|---|---|---|
+| front (X×Y) | 59 × 28 | 70.9 × 39.9 | +11.9 / +11.9 |
+| top (X×Z) | 59 × 80 | 70.9 × 91.9 | +11.9 / +11.9 |
+| right (Z×Y) | 80 × 28 | 91.9 × 39.9 | +11.9 / +11.9 |
+| A-A 剖视 (Y×Z) | 28 × 80 | 39.9 × 91.9 | +11.9 / +11.9 |
+
+2:1 后仍是同一常数，说明是**固定偏移而非投影误差**。后果：`drawing_audit` 会把只在这层
+虚胖边距里"相交"的两个视图误报 `views_overlap`，`_place_views` 摆位偏保守，auto_fit 会把
+本可放下的视图缩小。
+
+修法（`drawing.precise_outline`）：宽高各减 `OUTLINE_MARGIN_M = 0.0119`、四边各内缩 5.95 mm，
+O(1)、零额外 COM 调用，与真实 ink bbox 吻合。**不要**在 audit 里逐视图遍历可见边顶点重算：
+`ink_outline()` 那样做在 25 特征零件上实测约 200 s（见「四、性能」），只适合一次性交叉校验。
+
+另外 `ink_outline` 早期版本返回的是**模型坐标**的 x/y，对 top/right 视图用错了投影轴；现在
+统一用 `paper = view.Position + (model - centre) * scale` 投影到图纸米，与 `GetOutline`
+同一坐标系后才能直接比较。
+
 ### 尺寸标注的注意事项
 
 - 图纸坐标单位是米，A3 = 0.420 × 0.297。

@@ -63,21 +63,14 @@ def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True)
             return error("view_not_found", "no view named %r" % view_name,
                          "Available: %s" % ", ".join(names))
 
-        applied = {"view": view_name, "position_m": None, "scale": None}
+        requested = None
         if x_m is not None and y_m is not None:
+            requested = [round(float(x_m), 4), round(float(y_m), 4)]
             _prop_put(target, "Position",
                       VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8,
                               [float(x_m), float(y_m)]))
-            try:
-                applied["position_m"] = [round(v, 4) for v in target.Position]
-            except Exception:
-                pass
         if scale is not None:
             _prop_put(target, "ScaleDecimal", float(scale))
-            try:
-                applied["scale"] = float(target.ScaleDecimal)
-            except Exception:
-                pass
         try:
             _call_method(doc, "EditRebuild3")
         except Exception:
@@ -86,9 +79,40 @@ def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True)
             doc.GraphicsRedraw2
         except Exception:
             pass
+
+        # Read back AFTER the rebuild. Section/detail views keep projection alignment
+        # with their parent, so SolidWorks may have moved the view away from the
+        # requested position. P2-12: report requested vs applied separately instead of
+        # only saying ok:true while quietly changing y.
+        applied = {"view": view_name, "position_m": None, "scale": None}
+        position_after = None
+        try:
+            position_after = [round(v, 4) for v in target.Position]
+        except Exception:
+            pass
+        if x_m is not None and y_m is not None:
+            applied["position_m"] = position_after
+        if scale is not None:
+            try:
+                applied["scale"] = float(target.ScaleDecimal)
+            except Exception:
+                pass
+        aligned = bool(
+            requested is not None and position_after is not None
+            and (abs(position_after[0] - requested[0]) > 1e-4
+                 or abs(position_after[1] - requested[1]) > 1e-4)
+        )
         if save:
             _save_drawing(doc)
-        return drawing_ok(drawing=doc.GetTitle, **applied)
+        return drawing_ok(
+            drawing=doc.GetTitle,
+            requested=requested,
+            position_after_m=position_after,
+            aligned_to_parent=aligned,
+            alignment_reason=("section/detail views keep projection alignment with the "
+                              "parent view" if aligned else None),
+            **applied,
+        )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:
@@ -116,9 +140,10 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
     """Delete dimensions whose value is not in keep_values.
 
     SolidWorks has no bulk delete: each dimension is selected by position and removed with
-    EditDelete, which costs roughly 15 s per dimension. This batches the loop and reports
-    what was removed, so a 49-dimension sheet can be reduced to the planned shortlist
-    without hand-written COM.
+    EditDelete. Measured 2026-10-29: 14 dimensions in ONE call took < 5 s. An earlier
+    timing note overestimated this by ~100x and made callers budget ten minutes for a
+    job that takes seconds. This batches the loop and reports what was removed, so a
+    49-dimension sheet can be reduced to the planned shortlist without hand-written COM.
     """
     try:
         import win32com.client as win
@@ -204,7 +229,7 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
             removed=len(removed), kept=len(kept), failed=len(failed),
             removed_items=removed[:40], kept_values=[k["value_mm"] for k in kept][:40],
             failed_items=failed[:10],
-            note="按值保留（默认容差 0.05 mm）。SolidWorks 无批量删除接口，逐条约 15 s。",
+            note="按值保留（默认容差 0.05 mm）。SolidWorks 无批量删除接口；实测 14 条一次调用 < 5 s。",
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

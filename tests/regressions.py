@@ -428,6 +428,108 @@ def assert_smoke_selfheals_stale_documents():
     return "startup self-heal present"
 
 
+def assert_set_view_reports_alignment():
+    """0.8.18 / P2-12 — docstring promised three keys the return never had.
+
+    `set_view` quietly moved y to keep projection alignment with the parent. Its
+    docstring was later updated to claim it reports requested / position_after_m /
+    aligned_to_parent, but the return still only had drawing/view/position_m/scale —
+    worse than the original ok:true because it now lies in writing. Guard the keys in
+    an actual return statement, not just in a comment.
+    """
+    src = _read("tools/layout.py")
+    node = _function_node(ast.parse(src), "set_view")
+    assert node is not None, "layout.set_view not found"
+    keys_in_returns = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Call):
+            keys_in_returns |= {kw.arg for kw in sub.value.keywords if kw.arg}
+    for key in ("requested", "position_after_m", "aligned_to_parent"):
+        assert key in keys_in_returns, (
+            "set_view does not return %s — callers cannot see that SolidWorks aligned "
+            "the view away from the requested position" % key)
+    return "requested / position_after_m / aligned_to_parent returned"
+
+
+def assert_dimension_failure_has_nearest_edge_diagnostic():
+    """0.8.18 / P1-8 — segment_not_found gave no coordinates to calibrate against.
+
+    A sheet point could be in metres or model coordinates; the old error said only
+    "No visible edge within 20.0 mm" and the caller had to guess. Guard that the
+    failure carries model AND sheet coordinates plus the distance, and that the
+    nearest-edge helper returns the projection info even when out of tolerance (so
+    the diagnostic costs no second slow edge enumeration).
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    node = _function_node(tree, "add_drawing_dimension")
+    assert node is not None, "add_drawing_dimension not found"
+    body = ast.get_source_segment(src, node) or ""
+    for key in ("requested_sheet_m", "nearest_edge_sheet_m",
+                "nearest_edge_model_m", "nearest_edge_distance_mm"):
+        assert key in body, (
+            "segment_not_found has no %s — callers cannot self-calibrate x/y in one "
+            "read" % key)
+    helper = _function_node(tree, "_nearest_edge_at_sheet_point")
+    assert helper is not None, "_nearest_edge_at_sheet_point not found"
+    hbody = ast.get_source_segment(src, helper) or ""
+    assert "return (best[0], best[1], projection)" in hbody, (
+        "nearest-edge helper still drops the hit when out of tolerance — the "
+        "diagnostic would need a second slow enumeration")
+    return "failure returns model + sheet coordinates and distance"
+
+
+def assert_overlap_checks_use_precise_outline():
+    """0.8.18 / P2-13 — GetOutline inflates every view by a constant 11.9 mm.
+
+    Audit reported views_overlap that was not there, packing was needlessly
+    conservative, and auto-fit shrank scales for views that actually fitted. Guard
+    that the deflated ink box is used in all three decision points — but NOT that
+    we enumerate vertices there (that measured ~200 s on a real part).
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    po = _function_node(tree, "precise_outline")
+    assert po is not None, (
+        "precise_outline missing — the constant GetOutline inflation is not corrected")
+    pobody = ast.get_source_segment(src, po) or ""
+    assert "OUTLINE_MARGIN_M" in pobody, (
+        "precise_outline does not deflate by the measured constant margin")
+    for fname in ("_place_views", "drawing_audit", "create_drawing"):
+        node = _function_node(tree, fname)
+        assert node is not None, "%s not found" % fname
+        body = ast.get_source_segment(src, node) or ""
+        assert "precise_outline(" in body, (
+            "%s still decides overlap/out-of-sheet from raw GetOutline — the 11.9 mm "
+            "phantom margin will report fake views_overlap" % fname)
+    return "packing / audit / auto-fit use the deflated ink box"
+
+
+def assert_no_stale_doc_claims():
+    """0.8.18 / P3-15 — two stale doc claims misled callers.
+
+    `delete_dimensions` still said "roughly 15 s apiece" (measured 14 in one call
+    < 5 s, ~100x off), and `add_bom_table`'s docstring narrated a historical
+    bom_type/anchor_type drift bug instead of describing the tool.
+    """
+    stale_phrases = ("15 s per", "15 s apiece", "roughly 15 s", "逐条约 15 s", "15 s/")
+    offenders = []
+    for rel in ("tools/layout.py", "server.py", "tools/capabilities.py"):
+        src = _read(rel)
+        for phrase in stale_phrases:
+            if phrase in src:
+                offenders.append("%s: %r" % (rel, phrase))
+    srv = _read("server.py")
+    node = _function_node(ast.parse(srv), "add_bom_table")
+    assert node is not None, "server.add_bom_table not found"
+    doc = ast.get_docstring(node) or ""
+    assert "bom_type" not in doc and "anchor_type" not in doc, (
+        "add_bom_table docstring still narrates the historical bom_type drift — that "
+        "belongs in the regression ledger, not the tool description")
+    assert not offenders, "stale timing claims: %s" % "; ".join(offenders)
+    return "15 s claim gone, bom drift story out of the docstring"
+
+
 # ---------------------------------------------------------------- registry
 
 STATIC_REGRESSIONS = [
@@ -448,6 +550,10 @@ STATIC_REGRESSIONS = [
     ("smoke covers every tool", assert_every_tool_has_smoke_coverage),
     ("smoke calls match signatures", assert_smoke_calls_match_signatures),
     ("smoke self-heals stale docs", assert_smoke_selfheals_stale_documents),
+    ("0.8.18 set_view alignment receipt", assert_set_view_reports_alignment),
+    ("0.8.18 nearest-edge diagnostic", assert_dimension_failure_has_nearest_edge_diagnostic),
+    ("0.8.18 precise outline in audit", assert_overlap_checks_use_precise_outline),
+    ("0.8.18 stale doc claims removed", assert_no_stale_doc_claims),
 ]
 
 

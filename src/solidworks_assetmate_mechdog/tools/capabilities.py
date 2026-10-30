@@ -24,9 +24,10 @@ CAPABILITIES = [
         "id": "dimension_edit",
         "status": "partial",
         "summary": "尺寸删除与筛选",
-        "why": "`delete_dimensions` 按值保留/删除；SolidWorks 无批量删除接口，逐条约 15 s",
-        "workaround": "先用 plan_drawing 拿短名单再删；尺寸很多时分批做",
-        "evidence": "2026-10-28 实测 17 条 → 2 条，removed 15 / failed 0",
+        "why": ("`delete_dimensions` 按值保留/删除；SolidWorks 无批量删除接口。"
+                "实测 14 条一次调用 < 5 s（早期文档高估约 100 倍）"),
+        "workaround": "先用 plan_drawing 拿短名单再删；单次调用即可批量清理",
+        "evidence": "2026-10-29 实测 14 条一次调用 < 5 s；2026-10-28 实测 17 条 → 2 条，removed 15 / failed 0",
     },
     {
         "id": "balloon",

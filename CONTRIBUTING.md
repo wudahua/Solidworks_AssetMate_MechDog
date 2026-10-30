@@ -12,7 +12,7 @@
 
 ```bash
 python tests/check_all.py     # 秒级，无需 SolidWorks（三层）
-python tests/smoke.py         # 约 10 分钟，需 SolidWorks（行为层，28 项）
+python tests/smoke.py         # 约 10 分钟，需 SolidWorks（行为层，29 项）
 ```
 
 `check_all.py` 依次跑：
@@ -21,7 +21,7 @@ python tests/smoke.py         # 约 10 分钟，需 SolidWorks（行为层，28 
 |---|---|---|
 | 1 语法 | `compileall` | 文件根本编不过 |
 | 2 结构 | `static_check.py` | 未导入名字、README 漂移、重复 def、属性陷阱、路线图过期、包装器签名 |
-| 3 **历史回归** | `regressions.py` | **每个已修复的 bug 一条断言（17 条，含 smoke 调用签名契约与残留文档自愈）** |
+| 3 **历史回归** | `regressions.py` | **每个已修复的 bug 一条断言（21 条，含 smoke 调用签名契约、残留文档自愈与 0.8.18 四项收尾）** |
 
 只改了一个工具时，跑它对应的那一项就够（照 `tests/smoke.py` 里的写法抄一个临时脚本）。
 

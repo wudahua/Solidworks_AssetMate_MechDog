@@ -504,7 +504,10 @@ def main():
                  if getattr(v, "Type", None) != 1]
         assert views, "no model views to reposition"
         res = require(layout.set_view(drw, str(views[0].Name), x_m=0.08, y_m=0.28))
-        assert "position_m" in res or "requested" in res, "set_view returned no position"
+        # P2-12: the docstring promises an alignment receipt; guard all three keys so
+        # a future refactor cannot quietly drop them again.
+        for key in ("requested", "position_after_m", "aligned_to_parent"):
+            assert key in res, "set_view missing %r (P2-12 alignment receipt)" % key
 
         # layout_dimensions: must run and report counts
         laid = require(drawing.layout_dimensions(drw, dry_run=True))

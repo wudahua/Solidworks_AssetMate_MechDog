@@ -135,12 +135,14 @@ def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None, pad=0.0):
         left, right = sheet_w * 0.08, sheet_w * 0.03
         top, bottom = sheet_h * 0.03, sheet_h * 0.20
 
-    # Reserve room for dimension text: IView.GetOutline covers geometry only, so a view
-    # placed flush against the parts list has its dimensions drawn over the border.
+    # Reserve room for dimension text: the projected outline covers geometry only, so a
+    # view placed flush against the parts list has its dimensions drawn over the border.
+    # P2-13: deflate GetOutline first — it reports every view 11.9 mm wider and taller
+    # than the ink, which packs views further apart than they need to be.
     boxes = []
     for view in views:
         try:
-            o = list(view.GetOutline or [])
+            o = precise_outline(view) or list(view.GetOutline or [])
             boxes.append([view, (o[2] - o[0]) + pad, (o[3] - o[1]) + pad])
         except Exception:
             continue
@@ -295,6 +297,39 @@ def _standard_scale(fit):
 OUTLINE_MARGIN_M = 0.0119  # measured constant: GetOutline is 11.9 mm larger per side
 
 
+def precise_outline(view):
+    """Projected outline in SHEET metres with the fixed GetOutline inflation removed.
+
+    P2-13: `IView.GetOutline` inflates width AND height by a constant 11.9 mm on every
+    view at every scale (measured on four views at 1:1 and 2:1 — front 59x28 reads
+    70.9x39.9, top 59x80 reads 70.9x91.9, etc.). It is a fixed offset, not a projection
+    error, so deflating by that constant recovers the real ink box at O(1) cost.
+
+    This is the DEFAULT for packing / overlap / out-of-sheet checks. Walking visible-edge
+    vertices (`ink_outline`) is exact but measured ~200 s on a real part — keep it as an
+    optional cross-check, never in a per-view audit loop.
+
+    Returns [x0, y0, x1, y1] in the same sheet frame as GetOutline, or None when it
+    cannot be deflated safely (callers then fall back to the inflated but valid box).
+    """
+    try:
+        o = list(view.GetOutline or [])
+    except Exception:
+        return None
+    if len(o) < 4:
+        return None
+    m = OUTLINE_MARGIN_M / 2.0
+    w = o[2] - o[0] - OUTLINE_MARGIN_M
+    h = o[3] - o[1] - OUTLINE_MARGIN_M
+    if w <= 0 or h <= 0:
+        # The view is smaller than the inflation margin itself (a tiny detail view or
+        # a blank one). Deflating would invert or collapse the box, which would make
+        # _place_views stack views on top of each other — worse than the phantom margin.
+        # Signal "cannot deflate" so every caller keeps the original GetOutline box.
+        return None
+    return [o[0] + m, o[1] + m, o[2] - m, o[3] - m]
+
+
 def _dispatch_specific(annotation):
     """Resolve an annotation to its IDisplayDimension (or None)."""
     import win32com.client as win
@@ -305,36 +340,64 @@ def _dispatch_specific(annotation):
 
 
 def ink_outline(view):
-    """Real projected extent of a view, from the visible edges' vertices.
+    """Precise projected extent in SHEET metres, recomputed from visible-edge vertices.
 
-    `IView.GetOutline` is a PROPERTY that returns the geometry box inflated by a fixed
-    11.9 mm margin on every view and every scale (measured across four views at 1:1 and
-    2:1) — so `fits`/`views_overlap` decisions built on it are systematically pessimistic
-    and can report overlap that is not there. This returns the actual ink box.
+    Cross-check only: this walks every visible edge and reads both vertices, which
+    measured ~200 s on a real 25-feature part. For routine packing / audit use
+    `precise_outline` — deflating GetOutline by the measured constant margin is O(1)
+    and agrees with this ink box (P2-13).
+
+    Returns [x0, y0, x1, y1] in the SAME sheet frame as GetOutline, or None when no
+    visible edges can be enumerated. The earlier version returned raw MODEL x/y (and
+    ignored the projection plane, so it was wrong for top/right views); it now uses the
+    same paper = pos + (model - centre) * scale mapping that picks dimensions.
     """
     import win32com.client as win
 
-    xs, ys, zs = [], [], []
     try:
-        components = list(view.GetVisibleComponents or ())
+        edges = [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]
+        outline = list(view.GetOutline)
+        scale = float(view.ScaleDecimal)
+        pos = list(view.Position)
     except Exception:
-        components = []
-    if not components:
-        components = [view]
-    for component in components:
+        return None
+    if not edges or scale == 0:
+        return None
+
+    pts = []
+    for edge in edges:
         try:
-            edges = list(view.GetVisibleEntities2(component, 1) or ())
+            p1 = edge.GetStartVertex.GetPoint
+            p2 = edge.GetEndVertex.GetPoint
+            pts.append((p1, p2))
         except Exception:
             continue
-        for raw in edges:
-            try:
-                edge = win.Dispatch(raw)
-                for getter in ("GetStartVertex", "GetEndVertex"):
-                    vertex = win.Dispatch(call_method(edge, getter))
-                    point = [float(v) for v in vertex.GetPoint]
-                    xs.append(point[0]); ys.append(point[1]); zs.append(point[2])
-            except Exception:
-                continue
+    if not pts:
+        return None
+
+    lo = [min(min(a[i], b[i]) for a, b in pts) for i in range(3)]
+    hi = [max(max(a[i], b[i]) for a, b in pts) for i in range(3)]
+    size = [hi[i] - lo[i] for i in range(3)]
+    centre = [(hi[i] + lo[i]) / 2 for i in range(3)]
+    width, height = outline[2] - outline[0], outline[3] - outline[1]
+    if width <= 0 or height <= 0:
+        return None
+    ratio = width / height
+    best_plane, best_err = None, None
+    for a, b in ((0, 1), (0, 2), (2, 1)):
+        if size[a] <= 1e-6 or size[b] <= 1e-6:
+            continue
+        err = abs(size[a] / size[b] - ratio)
+        if best_err is None or err < best_err:
+            best_plane, best_err = (a, b), err
+    if best_plane is None:
+        return None
+    ai, bi = best_plane
+    xs, ys = [], []
+    for (p1, p2) in pts:
+        for p in (p1, p2):
+            xs.append(pos[0] + (p[ai] - centre[ai]) * scale)
+            ys.append(pos[1] + (p[bi] - centre[bi]) * scale)
     if not xs:
         return None
     return [min(xs), min(ys), max(xs), max(ys)]
@@ -573,7 +636,9 @@ def create_drawing(
                 measured = []
                 for candidate in view_objects:
                     try:
-                        o = list(candidate.GetOutline or [])
+                        # P2-13: judge out-of-sheet on the deflated ink box, not the
+                        # 11.9 mm-inflated GetOutline (which shrank scales needlessly).
+                        o = precise_outline(candidate) or list(candidate.GetOutline or [])
                     except Exception:
                         continue
                     if len(o) < 4:
@@ -607,6 +672,12 @@ def create_drawing(
                 o = list(view.GetOutline or [])
                 item["outline"] = {"width_m": round(o[2] - o[0], 4),
                                    "height_m": round(o[3] - o[1], 4)}
+                p = precise_outline(view)
+                if p:
+                    item["precise_outline_m"] = {
+                        "width_m": round(p[2] - p[0], 4),
+                        "height_m": round(p[3] - p[1], 4),
+                    }
             except Exception:
                 pass
 
@@ -691,8 +762,9 @@ def create_drawing(
             },
             box_used_m=[round(v, 4) for v in box] if box else None,
             auto_scale_adjustments=auto_scale_adjustments,
-            outline_note=("`outline` 来自 IView.GetOutline，它比真实投影每边大 %.1f mm；"
-                          "需要精确值时用 ink_outline_m（按可见边顶点重算）"
+            outline_note=("`outline` 来自 IView.GetOutline，宽高各虚胖 %.1f mm（恒定常数，"
+                          "非投影误差）；`precise_outline_m` 已内缩该常数，与真实投影吻合。"
+                          "逐顶点校验可用 ink_outline()（遍历可见边，约 200 s）"
                           % (OUTLINE_MARGIN_M * 1000)),
             box_source=("part" if box else
                         "unavailable (assembly) — layout verified by measuring views"),
@@ -835,11 +907,18 @@ def drawing_audit(drawing_path):
                 notes = None
             if dims:
                 total_dims += dims
+            # P2-13: GetOutline is inflated by a constant 11.9 mm on every view. Overlap
+            # and out-of-sheet checks must use the deflated ink box, otherwise two views
+            # whose phantom margins merely touch raise a views_overlap that is not real.
+            # Keep the raw width/height in the row for backwards compatibility.
+            pbox = precise_outline(view)
             row = {
                 "name": name,
                 "scale": scale,
                 "width_m": round(width, 4) if width is not None else None,
                 "height_m": round(height, 4) if height is not None else None,
+                "precise_width_m": round(pbox[2] - pbox[0], 4) if pbox else None,
+                "precise_height_m": round(pbox[3] - pbox[1], 4) if pbox else None,
                 "dimensions": dims,
                 "annotations": notes,
             }
@@ -852,19 +931,22 @@ def drawing_audit(drawing_path):
 
             if width is not None and height is not None:
                 try:
-                    boxes.append((name, list(view.GetOutline)))
+                    boxes.append((name, pbox or list(view.GetOutline)))
                 except Exception:
                     pass
-            if sheet_box and width is not None:
+            check_box = pbox
+            if check_box is None and sheet_box:
                 try:
-                    o = list(view.GetOutline)
-                    if o[0] < sheet_box[0] or o[1] < sheet_box[1] or o[2] > sheet_box[2] or o[3] > sheet_box[3]:
-                        warnings.append({
-                            "view": name, "issue": "view_outside_sheet",
-                            "hint": "reduce scale or move the view",
-                        })
+                    check_box = list(view.GetOutline)
                 except Exception:
-                    pass
+                    check_box = None
+            if sheet_box and check_box:
+                if (check_box[0] < sheet_box[0] or check_box[1] < sheet_box[1]
+                        or check_box[2] > sheet_box[2] or check_box[3] > sheet_box[3]):
+                    warnings.append({
+                        "view": name, "issue": "view_outside_sheet",
+                        "hint": "reduce scale or move the view",
+                    })
 
         if not model_views:
             warnings.append({"view": None, "issue": "no_model_views"})
@@ -1495,6 +1577,12 @@ def _nearest_edge_at_sheet_point(view, x, y, tolerance):
     The view's projection plane is inferred from its outline aspect ratio against the
     model extents (xy = front, xz = top, zy = right), then each edge midpoint is mapped
     with paper = view.Position + (model - centre) * scale.
+
+    Returns (distance_m, (p1, p2), projection) for the NEAREST edge even when that edge
+    is OUTSIDE `tolerance`, so the caller can emit a self-calibration diagnostic instead
+    of a bare "not found" (P1-8). `projection` carries the plane/pos/scale/centre needed
+    to report both model and sheet coordinates. Returning None means only "no visible
+    edges could be enumerated" — the tolerance check belongs to the caller.
     """
     import math
     import win32com.client as win
@@ -1555,9 +1643,12 @@ def _nearest_edge_at_sheet_point(view, x, y, tolerance):
         distance = math.hypot(px - x, py - y)
         if best is None or distance < best[0]:
             best = (distance, (p1, p2))
-    if best is None or best[0] > tolerance:
+    if best is None:
         return None
-    return best
+    plane_name = {(0, 1): "xy", (0, 2): "xz", (2, 1): "zy"}.get((ai, bi), "?")
+    projection = {"plane": plane_name, "ai": ai, "bi": bi,
+                  "pos": pos, "scale": scale, "centre": centre}
+    return (best[0], best[1], projection)
 
 
 def _view_at_point(doc, x, y):
@@ -1765,13 +1856,41 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
             if hit is None:
                 return error(
                     "segment_not_found",
-                    "No visible edge within %.1f mm of (%.4f, %.4f)"
-                    % (float(tolerance) * 1000, float(x), float(y)),
-                    "Increase tolerance or pass edge_index from list_drawing_edges.",
+                    "No visible edges could be enumerated in this view",
+                    "The view may be blank, not activated, or not rebuilt yet. Activate "
+                    "it and retry, or pass edge_index from list_drawing_edges.",
                 )
             import win32com.client as win
 
-            distance, midpoints = hit
+            distance, midpoints, proj = hit
+            if distance > float(tolerance):
+                # P1-8: a bare "not found" left callers unable to tell whether x/y were
+                # in sheet metres or model coordinates. Report BOTH, plus the distance,
+                # so one read is enough to self-calibrate the next call.
+                ai, bi = proj["ai"], proj["bi"]
+                m1, m2 = midpoints
+                mid_model = [(m1[i] + m2[i]) / 2.0 for i in range(3)]
+                nearest_sheet = [
+                    round(proj["pos"][0] + (mid_model[ai] - proj["centre"][ai]) * proj["scale"], 4),
+                    round(proj["pos"][1] + (mid_model[bi] - proj["centre"][bi]) * proj["scale"], 4),
+                ]
+                return error(
+                    "segment_not_found",
+                    "No visible edge within %.1f mm of sheet point (%.4f, %.4f)"
+                    % (float(tolerance) * 1000, float(x), float(y)),
+                    "Nearest edge is %.2f mm away. Re-aim at nearest_edge_sheet_m, raise "
+                    "tolerance, or pass edge_index from list_drawing_edges."
+                    % (distance * 1000),
+                    requested_sheet_m=[round(float(x), 4), round(float(y), 4)],
+                    nearest_edge_sheet_m=nearest_sheet,
+                    nearest_edge_model_m={
+                        "start": [round(float(v), 5) for v in m1],
+                        "end": [round(float(v), 5) for v in m2],
+                    },
+                    nearest_edge_distance_mm=round(distance * 1000, 2),
+                    tolerance_mm=round(float(tolerance) * 1000, 2),
+                    projection_plane=proj["plane"],
+                )
             picked = None
             for edge in [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]:
                 try:
