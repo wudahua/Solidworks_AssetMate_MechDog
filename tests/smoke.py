@@ -584,6 +584,30 @@ def main():
     r.check("edit tools by name (move/delete/layout)", _editing_by_name)
     r.check("health()", _health)
 
+    def _bridge_selfheal():
+        """P0-1: ping() must do a real round trip, and a dead cache must heal itself.
+
+        Registered LAST: it poisons the cached dispatcher on purpose, so if a reconnect
+        ever fails it must not take the rest of the run down with it.
+        """
+        first = sw_session.ping()
+        assert first.get("ok") is True, first.get("message") or first.get("error")
+        assert first.get("sw_version"), "ping returned no sw_version"
+        assert first.get("latency_ms") is not None, "ping returned no latency"
+        assert isinstance(first.get("bridge"), dict), "ping returned no bridge counters"
+
+        before = dict(sw_session._BRIDGE_STATE).get("stale_drops", 0)
+        sw_session._SW = object()      # a pointer that cannot answer RevisionNumber
+        sw_session._LAST_PROBE = 0.0   # allow the liveness probe immediately
+        sw_session.get_sw()
+        after = dict(sw_session._BRIDGE_STATE).get("stale_drops", 0)
+        assert after == before + 1, (
+            "get_sw handed back a dead dispatcher (stale_drops %d -> %d)" % (before, after))
+
+        healed = sw_session.ping()
+        assert healed.get("ok") is True, "ping did not survive a poisoned cache"
+        return "ping + stale-dispatcher self-heal (%d drops)" % after
+
     # --- annotation and layout writers ----------------------------------------------
     def _annotation_writers():
         src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
@@ -765,6 +789,15 @@ def main():
         assert detail.get("ok") is not None, "add_detail_view returned no verdict"
         assert detail.get("edge_count") is not None, (
             "add_detail_view omitted edge_count (P2-9 empty-view guard)")
+        # P2-13: a detail view is small, so the fixed 11.9 mm inflation is a large RELATIVE
+        # error there — the deflated box has to be reported explicitly, not implied.
+        assert "precise_outline_m" in detail, (
+            "add_detail_view omitted precise_outline_m (P2-13)")
+        if detail.get("precise_outline_m") and (detail.get("outline") or {}).get("width_m"):
+            pbox = detail["precise_outline_m"]
+            delta = detail["outline"]["width_m"] - (pbox[2] - pbox[0])
+            assert abs(delta - 0.0119) < 0.001, (
+                "detail precise outline is not deflated by the 11.9 mm constant: %r" % delta)
         if detail.get("ok"):
             assert detail["edge_count"] > 0, "ok:true detail view has 0 edges (P2-9)"
             assert "requested_scale" in detail and "scale_locked" in detail, (
@@ -953,6 +986,8 @@ def main():
     r.check("material write honesty (0.8.6)", _material_write_honesty)
     r.check("reconcile ledger + delivery verdict", _reconcile_delivery)
     r.check("server wrapper contract", _server_wrapper_contract)
+    # Last on purpose — see the docstring: this one deliberately poisons the COM cache.
+    r.check("bridge self-heal (P0-1)", _bridge_selfheal)
 
     code = r.summary()
 

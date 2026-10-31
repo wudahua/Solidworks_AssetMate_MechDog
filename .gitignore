@@ -38,3 +38,7 @@ recolor-GitHub-交接/
 
 # Local review/feedback notes — working material, not part of the published package
 用户反馈问题/
+
+# Runtime failure logs (sw_session.log_dir writes here from the current directory).
+# They are diagnostics for the machine that ran the tool, never part of the package.
+logs/

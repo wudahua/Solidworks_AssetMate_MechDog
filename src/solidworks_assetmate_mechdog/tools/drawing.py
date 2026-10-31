@@ -305,9 +305,16 @@ def precise_outline(view):
     70.9x39.9, top 59x80 reads 70.9x91.9, etc.). It is a fixed offset, not a projection
     error, so deflating by that constant recovers the real ink box at O(1) cost.
 
-    This is the DEFAULT for packing / overlap / out-of-sheet checks. Walking visible-edge
-    vertices (`ink_outline`) is exact but measured ~200 s on a real part — keep it as an
-    optional cross-check, never in a per-view audit loop.
+    This is the single source of truth for packing / overlap / out-of-sheet / hit-testing.
+    A per-vertex "exact" variant is deliberately NOT provided: every route to real
+    geometry points was measured dead on 2026-10-31 (a 31-face valve body):
+      * `IView.GetVisibleEntities2(comp, 1)` returns SILHOUETTE edges — GetStartVertex
+        returns None, only GetCurve has a value;
+      * `IBody2.GetVertices` returns None for a body whose edges are all closed circles;
+      * `IEdge.GetStartVertex` returns None through call_method as well;
+      * `ICurve` on this build has no GetEndPoint / GetStartPoint / GetTessPoints.
+    So deflation is not a shortcut, it is the only workable route. Accuracy measured
+    against the rendered ink box: 58.98 mm vs 59.2 mm true (0.4%).
 
     Returns [x0, y0, x1, y1] in the same sheet frame as GetOutline, or None when it
     cannot be deflated safely (callers then fall back to the inflated but valid box).
@@ -337,70 +344,6 @@ def _dispatch_specific(annotation):
         return win.Dispatch(annotation.GetSpecificAnnotation)
     except Exception:
         return None
-
-
-def ink_outline(view):
-    """Precise projected extent in SHEET metres, recomputed from visible-edge vertices.
-
-    Cross-check only: this walks every visible edge and reads both vertices, which
-    measured ~200 s on a real 25-feature part. For routine packing / audit use
-    `precise_outline` — deflating GetOutline by the measured constant margin is O(1)
-    and agrees with this ink box (P2-13).
-
-    Returns [x0, y0, x1, y1] in the SAME sheet frame as GetOutline, or None when no
-    visible edges can be enumerated. The earlier version returned raw MODEL x/y (and
-    ignored the projection plane, so it was wrong for top/right views); it now uses the
-    same paper = pos + (model - centre) * scale mapping that picks dimensions.
-    """
-    import win32com.client as win
-
-    try:
-        edges = [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]
-        outline = list(view.GetOutline)
-        scale = float(view.ScaleDecimal)
-        pos = list(view.Position)
-    except Exception:
-        return None
-    if not edges or scale == 0:
-        return None
-
-    pts = []
-    for edge in edges:
-        try:
-            p1 = edge.GetStartVertex.GetPoint
-            p2 = edge.GetEndVertex.GetPoint
-            pts.append((p1, p2))
-        except Exception:
-            continue
-    if not pts:
-        return None
-
-    lo = [min(min(a[i], b[i]) for a, b in pts) for i in range(3)]
-    hi = [max(max(a[i], b[i]) for a, b in pts) for i in range(3)]
-    size = [hi[i] - lo[i] for i in range(3)]
-    centre = [(hi[i] + lo[i]) / 2 for i in range(3)]
-    width, height = outline[2] - outline[0], outline[3] - outline[1]
-    if width <= 0 or height <= 0:
-        return None
-    ratio = width / height
-    best_plane, best_err = None, None
-    for a, b in ((0, 1), (0, 2), (2, 1)):
-        if size[a] <= 1e-6 or size[b] <= 1e-6:
-            continue
-        err = abs(size[a] / size[b] - ratio)
-        if best_err is None or err < best_err:
-            best_plane, best_err = (a, b), err
-    if best_plane is None:
-        return None
-    ai, bi = best_plane
-    xs, ys = [], []
-    for (p1, p2) in pts:
-        for p in (p1, p2):
-            xs.append(pos[0] + (p[ai] - centre[ai]) * scale)
-            ys.append(pos[1] + (p[bi] - centre[bi]) * scale)
-    if not xs:
-        return None
-    return [min(xs), min(ys), max(xs), max(ys)]
 
 
 def create_drawing(
@@ -763,8 +706,11 @@ def create_drawing(
             box_used_m=[round(v, 4) for v in box] if box else None,
             auto_scale_adjustments=auto_scale_adjustments,
             outline_note=("`outline` 来自 IView.GetOutline，宽高各虚胖 %.1f mm（恒定常数，"
-                          "非投影误差）；`precise_outline_m` 已内缩该常数，与真实投影吻合。"
-                          "逐顶点校验可用 ink_outline()（遍历可见边，约 200 s）"
+                          "非投影误差）；`precise_outline_m` 已内缩该常数，实测与渲染 ink bbox "
+                          "吻合（58.98 mm vs 59.2 mm，0.4%%）。没有逐顶点版本："
+                          "IView.GetVisibleEntities2 返回轮廓边（GetStartVertex 为 None）、"
+                          "IBody2.GetVertices 对全圆边实体返回 None、ICurve 在该版本没有 "
+                          "GetEndPoint/GetTessPoints，三条取点路都已实测排除。"
                           % (OUTLINE_MARGIN_M * 1000)),
             box_source=("part" if box else
                         "unavailable (assembly) — layout verified by measuring views"),
@@ -1596,10 +1542,14 @@ def _projection_axes(view, edges):
     Chosen by matching the view's outline aspect ratio against the model extents.
     Dimension values are PROJECTED lengths, so this must be known before comparing
     a new dimension against existing ones (a 1253 mm edge can dimension as 37.6 mm).
+
+    P2-13: the aspect ratio uses the DEFLATED outline. GetOutline inflates width and height
+    by the same 11.9 mm, which does not preserve the ratio — on a 70.9x39.9 view the raw
+    ratio is 1.78 while the real 59x28 view is 2.11, enough to pick the wrong axis pair.
     """
     try:
-        outline = list(view.GetOutline)
-        width, height = outline[2] - outline[0], outline[3] - outline[1]
+        box = precise_outline(view) or list(view.GetOutline)
+        width, height = box[2] - box[0], box[3] - box[1]
         if width <= 0 or height <= 0:
             return None
         ratio = width / height
@@ -1757,7 +1707,9 @@ def _view_at_point(doc, x, y):
         if getattr(view, "Type", None) == 1:
             continue
         try:
-            o = list(view.GetOutline)
+            # P2-13: hit-test the deflated box. GetOutline's phantom 11.9 mm margin made
+            # points that sit just outside a view answer as "inside" it.
+            o = precise_outline(view) or list(view.GetOutline)
         except Exception:
             continue
         if o[0] <= x <= o[2] and o[1] <= y <= o[3]:
@@ -2838,6 +2790,10 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             box = {"width_m": round(d_o[2] - d_o[0], 4), "height_m": round(d_o[3] - d_o[1], 4)}
         except Exception:
             box = None
+        # P2-13: report the deflated box too — a detail view is smaller than the source, so
+        # the fixed 11.9 mm inflation is a much larger relative error here (a 30 mm detail
+        # reads 41.9 mm, i.e. 40% too wide).
+        precise = precise_outline(detail)
         final_scale = applied if applied is not None else float(detail.ScaleDecimal)
         locked = abs(float(final_scale) - requested_scale) > 0.01
 
@@ -2856,6 +2812,7 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             "requested_scale": requested_scale,
             "parent_scale": parent_scale,
             "outline": box,
+            "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),
         }
         if edge_count == 0:
             return error(
@@ -2877,18 +2834,11 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
                 scale_note=("局部视图默认继承父视图比例（UseParentScale）；本次请求的 "
                             "%.4g 未生效，实际 %.4g。" % (requested_scale, float(final_scale))),
                 **diag)
-        return drawing_ok(
-            drawing=doc.GetTitle, detail=detail.Name, source_view=target.Name,
-            label=str(label), boundary_center_m=[round(sheet_x, 4), round(sheet_y, 4)],
-            boundary_radius_m=float(radius_m),
-            scale=final_scale,
-            requested_scale=requested_scale,
-            parent_scale=parent_scale,
-            edge_count=edge_count,
-            scale_locked=False,
-            scale_note=None,
-            outline=box,
-        )
+        # diag already carries every measured field (detail, source_view, boundary_*,
+        # edge_count, scale, requested_scale, parent_scale, outline, precise_outline_m),
+        # so success and failure report exactly the same numbers.
+        return drawing_ok(drawing=doc.GetTitle, label=str(label),
+                          scale_locked=False, scale_note=None, **diag)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

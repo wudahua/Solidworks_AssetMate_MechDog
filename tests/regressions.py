@@ -783,6 +783,145 @@ def assert_section_wrapper_forwards_cut_plane():
     return "cut_plane_normal / cut_plane_origin / verify_cut forwarded"
 
 
+def _module_constant(tree, name):
+    """Value of a module-level `NAME = <literal>` assignment, or None."""
+    for item in tree.body:
+        if isinstance(item, ast.Assign) and any(
+                getattr(t, "id", "") == name for t in item.targets):
+            try:
+                return ast.literal_eval(item.value)
+            except Exception:
+                return None
+    return None
+
+
+def assert_bridge_self_heals_stale_dispatcher():
+    """0.8.22 / P0-1 — a dead cached dispatcher kept failing for minutes.
+
+    The report: after ~50 min every call answered "Not connected" for >120 s while
+    SolidWorks itself was fine. `get_sw()` returned the cached pointer forever. It now
+    probes `RevisionNumber` (measured 18 ms) at most once per interval and drops the cache
+    on the first failure, so the next call re-acquires through GetActiveObject.
+    """
+    src = _read("sw_session.py")
+    tree = ast.parse(src)
+    node = _function_node(tree, "get_sw")
+    assert node is not None, "get_sw not found"
+    body = ast.get_source_segment(src, node) or ""
+    assert "probe" in [a.arg for a in node.args.args], "get_sw lost its probe switch"
+    assert "RevisionNumber" in body, (
+        "no liveness probe — a stale dispatcher is handed out forever")
+    assert "_SW = None" in body, "the probe never drops the stale cache"
+    assert "LIVENESS_PROBE_INTERVAL_S" in body, (
+        "the probe runs unconditionally (18 ms on every get_sw call)")
+    interval = _module_constant(tree, "LIVENESS_PROBE_INTERVAL_S")
+    assert interval is not None and 0.5 <= interval <= 10, (
+        "probe interval should stay sane (each probe measures 18 ms)")
+    reconnect_body = ast.get_source_segment(src, _function_node(tree, "reconnect")) or ""
+    assert "reconnects" in reconnect_body, "reconnects are not counted for ping()"
+    assert "probe=False" in reconnect_body, (
+        "reconnect probes a dispatcher it just created — 18 ms wasted per reconnect")
+    state = _module_constant(tree, "_BRIDGE_STATE")
+    assert isinstance(state, dict) and "stale_drops" in state, (
+        "_BRIDGE_STATE must expose stale_drops for ping()")
+    return "probe every %.1fs, stale cache dropped, reconnects counted" % interval
+
+
+def assert_com_failures_are_classified():
+    """0.8.22 / P0-1 — retrying a dead pointer wastes a session; not retrying a busy
+    SolidWorks loses work. The two cases must be distinguished, and neither may loop.
+    """
+    src = _read("sw_session.py")
+    tree = ast.parse(src)
+    body = ast.get_source_segment(src, _function_node(tree, "call_method")) or ""
+    assert "COM_RETRIES" in body and "time.sleep" in body, (
+        "no bounded retry for a busy server (RPC_E_CALL_REJECTED)")
+    assert "is_bridge_lost_error" in body and "BridgeLost" in body, (
+        "a lost link must drop the cache and tell the caller to retry the tool")
+    assert "is_transient_com_error" in body, "busy-vs-dead classification is gone"
+    transient = _module_constant(tree, "TRANSIENT_HRESULTS")
+    lost = _module_constant(tree, "BRIDGE_LOST_HRESULTS")
+    assert transient and lost, "error tables are missing or empty"
+    assert all(v < 0 for v in transient) and all(v < 0 for v in lost), (
+        "hresults must be stored signed")
+    assert not set(transient) & set(lost), (
+        "the two classes overlap — one failure would be both retried and treated as fatal")
+    retries = _module_constant(tree, "COM_RETRIES")
+    assert retries is not None and 0 < retries <= 5, "retry budget must stay bounded"
+    hooks = ""
+    for fn in ("is_transient_com_error", "is_bridge_lost_error", "_hresult", "_error_text"):
+        fnode = _function_node(tree, fn)
+        assert fnode is not None, "%s is gone" % fn
+        hooks += (ast.get_source_segment(src, fnode) or "")
+    assert "hint" in hooks and "args" in hooks, (
+        "classification ignores the error text; hresult alone misses localised messages")
+    return "busy retried <=%dx, dead link reconnects once, classes disjoint" % retries
+
+
+def assert_ping_and_excepthook_present():
+    """0.8.22 / P0-1 — the report asked for ping() and for errors to reach stderr."""
+    session_tree = ast.parse(_read("sw_session.py"))
+    assert _function_node(session_tree, "ping") is not None, "sw_session.ping is missing"
+    ping_body = ast.get_source_segment(
+        _read("sw_session.py"), _function_node(session_tree, "ping")) or ""
+    assert "RevisionNumber" in ping_body, "ping does not perform a real round trip"
+    assert "reconnect" in ping_body, (
+        "ping reports a dead cache instead of rebuilding the link (a cached pointer "
+        "proves nothing)")
+    assert "recovered" in ping_body, "ping cannot report that it healed the link"
+    assert "bridge" in ping_body, "ping does not expose the self-healing counters"
+
+    server_src = _read("server.py")
+    server_tree = ast.parse(server_src)
+    wrapper = _function_node(server_tree, "ping")
+    assert wrapper is not None, "server.ping is missing"
+    wrapper_body = ast.get_source_segment(server_src, wrapper) or ""
+    assert "sw_session.ping" in wrapper_body, "the wrapper does not call sw_session.ping"
+    assert "_install_excepthook()" in server_src, "excepthook is defined but never installed"
+    assert "sys.excepthook = hook" in server_src, "excepthook is not wired"
+    assert "stderr.flush()" in server_src, (
+        "unhandled tracebacks are not flushed — invisible inside an MCP host")
+
+    session_src = _read("sw_session.py")
+    assert "_LAST_CALL = {" in session_src, (
+        "_LAST_CALL has no import-time default: the FIRST failure — exactly when the link "
+        "dies — made the failure logger raise NameError")
+    return "ping tool (real round trip + self-heal) + flushed excepthook"
+
+
+def assert_outline_has_single_truth():
+    """0.8.22 / P2-13 — one deflated outline, and no silently-dead per-vertex variant.
+
+    `ink_outline` could never return a box: GetVisibleEntities2 yields silhouette edges
+    (GetStartVertex -> None), IBody2.GetVertices is empty for an all-circular body, and
+    ICurve on this build has no GetEndPoint / GetTessPoints. Keeping it implied a
+    cross-check that never ran, so it is removed and every measurement goes through
+    precise_outline.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    assert _function_node(tree, "ink_outline") is None, (
+        "ink_outline is back — it cannot return a box on this build")
+    node = _function_node(tree, "precise_outline")
+    assert node is not None, "precise_outline is gone"
+    assert "OUTLINE_MARGIN_M" in (ast.get_source_segment(src, node) or ""), (
+        "the measured constant is not applied")
+    constant = _module_constant(tree, "OUTLINE_MARGIN_M")
+    assert constant is not None and abs(constant - 0.0119) < 1e-9, (
+        "OUTLINE_MARGIN_M drifted from the measured 11.9 mm (got %r)" % (constant,))
+    for fn in ("_projection_axes", "_view_at_point"):
+        fnode = _function_node(tree, fn)
+        assert fnode is not None, "%s is gone" % fn
+        assert "precise_outline" in (ast.get_source_segment(src, fnode) or ""), (
+            "%s still measures the inflated outline (an 11.9 mm margin distorts the "
+            "aspect ratio and the hit test)" % fn)
+    detail = ast.get_source_segment(src, _function_node(tree, "add_detail_view")) or ""
+    assert "precise_outline_m" in detail, "detail views do not report the deflated box"
+    assert "precise_width_m" in src and "precise_height_m" in src, (
+        "drawing_audit no longer reports precise sizes per view")
+    return "single deflated outline; ratio + hit test use it; ink_outline removed"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -814,6 +953,10 @@ STATIC_REGRESSIONS = [
     ("0.8.21 section cut plane", assert_section_cut_plane_maps_model_coordinates),
     ("0.8.21 section sanity", assert_section_sanity_uses_kept_dimension),
     ("0.8.21 section wrapper", assert_section_wrapper_forwards_cut_plane),
+    ("0.8.22 bridge self-heal", assert_bridge_self_heals_stale_dispatcher),
+    ("0.8.22 com error classes", assert_com_failures_are_classified),
+    ("0.8.22 ping + excepthook", assert_ping_and_excepthook_present),
+    ("0.8.22 single outline truth", assert_outline_has_single_truth),
 ]
 
 

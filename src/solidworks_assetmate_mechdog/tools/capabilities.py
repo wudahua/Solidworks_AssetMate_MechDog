@@ -21,6 +21,43 @@ CAPABILITIES = [
         "evidence": "2026-10-28 实测 4 视图 2x2：layout {fits: True, columns: 4, explicit: True}",
     },
     {
+        "id": "outline_precision",
+        "status": "verified",
+        "summary": "视图 outline 恒定虚胖 11.9 mm，已用常数内缩统一修正",
+        "why": ("`IView.GetOutline` 对每个视图的宽高各多报 11.9 mm（1:1 与 2:1 实测相同，"
+                "是固定偏移而非投影误差）。所有判断——打包、重叠、出界、投影轴推断、"
+                "点命中——统一走 `precise_outline()` 常数内缩，实测与真实投影吻合："
+                "三视图 59.0×28.0 / 59.0×80.0 / 80.0×28.0（误差 <0.1 mm），"
+                "detail 视图比虚胖值窄 11.92 mm。**没有逐顶点版本**："
+                "`GetVisibleEntities2` 返回的是轮廓边（`GetStartVertex` 为 None）、"
+                "`IBody2.GetVertices` 对全圆边实体返回 None、`ICurve` 在该版本没有 "
+                "GetEndPoint/GetTessPoints，三条取点路均已实测排除。"),
+        "workaround": ("需要原始值时仍读 `outline`，工具同时返回 `precise_outline_m`；"
+                       "图纸尺寸（`ISheet`/`GetFirstView.GetOutline`）是精确的，"
+                       "实测 420×297 mm，不受该偏移影响"),
+        "evidence": ("2026-10-31 实测 灌装阀阀体 59×28×80：raw 70.88×39.88 → precise "
+                     "58.98×27.98；drawing_audit 每行带 precise_width_m/precise_height_m；"
+                     "detail 11.92 mm 差值"),
+    },
+    {
+        "id": "bridge_resilience",
+        "status": "verified",
+        "summary": "COM 桥接自愈：存活探针 + 忙时有限重试 + 断线重连 + ping",
+        "why": ("曾出现「连续约 50 分钟后所有调用报 Not connected，而 SolidWorks 本身正常」："
+                "缓存的 dispatcher 变成死指针却永不刷新。现在 `get_sw()` 用 `RevisionNumber`"
+                "（实测 18 ms）做存活探针，最多每 2 s 一次，失败立即丢缓存重新 GetActiveObject；"
+                "`call_method()` 区分两类失败——忙（RPC_E_CALL_REJECTED）退避重试最多 2 次，"
+                "断线（CO_E_OBJNOTCONNECTED 等）**不重试**而是丢缓存并抛 `BridgeLost` "
+                "提示重试该工具；`ping()` 做真实往返，失败即重连重试一次并报 `recovered`。"
+                "未处理的异常会 flush 到 stderr 并写入 logs/mcp-YYYYMMDD.log。"),
+        "workaround": ("没有线程级硬超时：pywin32 在拥有对象的 STA 线程上派发，把调用丢到工作线程"
+                       "再超时放弃会破坏 COM 公寓而不是取消调用。单次真正挂死仍会阻塞，"
+                       "属 SolidWorks 侧状态，客户端无法安全中断"),
+        "evidence": ("2026-10-31 实测：ping ok / 32.4.0 / 239.5 ms；污染缓存后 get_sw 自动丢弃"
+                     "（stale_drops 0→1）并返回活连接；ping 报 recovered=true（reconnects 1→2）；"
+                     "错误分类三例（busy / not connected / member not found）判定正确"),
+    },
+    {
         "id": "dimension_edit",
         "status": "partial",
         "summary": "尺寸删除、去重与单个移动",

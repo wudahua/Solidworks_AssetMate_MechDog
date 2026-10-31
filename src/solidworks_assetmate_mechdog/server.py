@@ -47,6 +47,43 @@ def _json(payload):
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _install_excepthook():
+    """Flush unhandled tracebacks to stderr AND the failure log (P0-1, suggestion 4).
+
+    The report noted there was no error output at all before the outage, so the user could
+    not tell whether the MCP process or SolidWorks had broken. A bare traceback on stderr
+    is also invisible inside most MCP hosts, so it is mirrored into
+    logs/mcp-YYYYMMDD.log where `recent_failures` can read it back after the fact.
+    """
+    import sys
+    import traceback
+
+    previous = sys.excepthook
+
+    def hook(exc_type, exc, tb):
+        try:
+            sys.stderr.write("".join(traceback.format_exception(exc_type, exc, tb)))
+            sys.stderr.flush()
+        except Exception:
+            pass
+        try:
+            sw_session.log_failure(
+                "unhandled", {"stage": "excepthook"},
+                exc=exc if isinstance(exc, BaseException) else None,
+                extra={"exc_type": getattr(exc_type, "__name__", None)})
+        except Exception:
+            pass
+        try:
+            previous(exc_type, exc, tb)
+        except Exception:
+            pass
+
+    sys.excepthook = hook
+
+
+_install_excepthook()
+
+
 @mcp.tool()
 def health_check(deep: bool = False) -> str:
     """Report whether the MCP bridge and SolidWorks are both alive.
@@ -56,6 +93,18 @@ def health_check(deep: bool = False) -> str:
     `deep=True` also reads ActiveDoc, which is where a stale pointer usually surfaces.
     """
     return json.dumps(sw_session.health(deep=deep), ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def ping() -> str:
+    """Cheapest possible "is it alive" probe (P0-1).
+
+    Answers in ~18 ms and never touches ActiveDoc, so it cannot hang on a modal dialog.
+    Returns the SolidWorks revision, the round-trip latency, the last tool that ran, and
+    the self-healing counters (`bridge.stale_drops` / `bridge.reconnects`). Use it to tell
+    "alive but busy" from "dead"; use health(deep=True) when you also need ActiveDoc.
+    """
+    return _json(sw_session.ping())
 
 
 @mcp.tool()

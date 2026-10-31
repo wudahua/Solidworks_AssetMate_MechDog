@@ -929,3 +929,50 @@ DWG 是矢量、没有像素通道，只能检查文件非空，可见性以 PDF
 法向 +X → `vertical` / ratio 1.04；法向平行视线 → `cut_plane_not_in_view_plane`；
 斜切 0.707 → `cut_plane_oblique`；错位 offset → `section_suspicious`；offset 0 → ok。
 6/6 通过。
+
+## 十八、COM 桥接自愈与 outline 单一真源（0.8.22，P0-1 / P2-13）
+
+### 桥接：缓存的 dispatcher 会变成死指针
+
+症状：连续约 50 分钟后所有调用报 `Not connected`，持续 120 s 以上不恢复，而 SolidWorks
+本体完全正常（`GetActiveObject` 拿到的 `RevisionNumber` 仍是 32.4.0）。
+根因：`get_sw()` 缓存 dispatcher 后**永不验证**，死指针一路复用。
+
+三条实测支撑的实现决策：
+
+1. **存活探针 18 ms**：`RevisionNumber` 一次往返实测 17.97 ms（20 次平均）。
+   这个成本不能每次 `get_sw()` 都付（`open_document` 在一个工具里会调好几次），
+   所以节流到 `LIVENESS_PROBE_INTERVAL_S = 2.0` 秒；探针失败立即丢缓存重新
+   `GetActiveObject`。
+2. **`pythoncom.CoRegisterMessageFilter` 在本机不存在**（`hasattr` 为 False），
+   所以「SW 忙 → 拒绝调用」不能靠 COM message filter 自动重试，只能手工分类：
+   - 忙（`RPC_E_CALL_REJECTED` 0x80010001 等）→ 退避 0.25 s / 0.5 s 重试，最多 2 次
+   - 断线（`CO_E_OBJNOTCONNECTED` 0x800401FD 等）→ **不重试**，丢缓存 + 抛 `BridgeLost`
+   - `DISP_E_MEMBERNOTFOUND`（0x80020003）两者都不属：既不重试也不重连
+3. **不做线程级硬超时**：pywin32 在拥有对象的 STA 线程上派发，把调用丢到工作线程
+   再「超时放弃」会破坏 COM 公寓，而不是取消调用。所以覆盖的是「失败后永不恢复」
+   这个真实症状，而不是「单次调用挂死」（后者是 SolidWorks 侧状态，客户端无法安全中断）。
+
+顺带修掉一个更早的坑：`_LAST_CALL` 只在第一次 `note_last_call()` 之后才存在，而
+`log_failure()` 会读它——**最早那次失败**（正是断线时刻）会让日志函数自己抛
+`NameError`，写进 `_logger_error.log` 而不是 `mcp-*.log`。现在模块级有默认值。
+
+### outline：11.9 mm 是唯一真源，逐顶点路全部堵死
+
+`IView.GetOutline` 宽高各多报 11.9 mm（固定偏移）。曾写过 `ink_outline()` 想用可见边
+顶点算精确 bbox 做交叉校验，2026-10-31 实测**四条路全断**：
+
+| 路 | 结果 |
+|---|---|
+| `IView.GetVisibleEntities2(comp, 1)` | 返回**轮廓边**，`GetStartVertex` → None，只有 `GetCurve` |
+| `IBody2.GetVertices` | 该阀体 31 面 / 32 边全是闭合圆边，返回 **None** |
+| `IEdge.GetStartVertex`（走 call_method） | 仍返回 None（32 条边、0 个顶点） |
+| `ICurve.GetEndPoint` / `GetTessPoints` | 该版本**没有**这些成员（AttributeError / UNKNOWNNAME） |
+
+所以 `ink_outline()` 从来只会返回 None——一个静默失效的「交叉校验」，已删除。
+`precise_outline()` 常数内缩不是捷径，而是唯一可行解，精度实测三视图
+59.0×28.0 / 59.0×80.0 / 80.0×28.0（真值 59×28 / 59×80 / 80×28，误差 <0.1 mm），
+detail 视图差值 11.92 mm。
+
+注意 `ISheet` / `GetFirstView.GetOutline` 是**精确的**（实测 420×297 mm），不受该偏移
+影响——所以像素映射（`px = x / sheet_w * W`）不用改。

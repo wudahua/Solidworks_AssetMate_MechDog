@@ -4,12 +4,14 @@ Rules baked in from real debugging (see docs/com-quirks.md):
 - OpenDoc6 Errors/Warnings must be byref VARIANTs.
 - Reuse the already-active document; never reopen blindly (memory vs disk).
 - GetComponents is slow: callers fetch once, then group in memory.
+- A cached dispatcher can die silently: probe it, and drop it on the first failure.
 
 pywin32 is imported lazily so the package stays importable off-Windows.
 """
 from __future__ import annotations
 
 import os
+import time
 
 SW_DOC_PART = 1
 SW_DOC_ASSEMBLY = 2
@@ -17,6 +19,17 @@ SW_DOC_DRAWING = 3
 SW_OPEN_SILENT = 1
 
 _SW = None
+_LAST_PROBE = 0.0
+# Measured 18 ms for a RevisionNumber round trip: cheap for a human, too expensive to pay
+# on every get_sw() call (open_document calls it several times per tool).
+LIVENESS_PROBE_INTERVAL_S = 2.0
+# P0-1: enough state for ping() to distinguish "alive but busy" from "link is dead".
+_BRIDGE_STATE = {"stale_drops": 0, "reconnects": 0, "last_error": None,
+                 "last_reconnect": None}
+# Must exist from import time: log_failure() and ping() read it, and the FIRST failure is
+# exactly when no tool has called note_last_call() yet. Without this default the failure
+# logger itself raised NameError and wrote to _logger_error.log instead of mcp-*.log.
+_LAST_CALL = {"tool": None, "args": None}
 # Measured: GetComponents costs ~130 s on a 46-component assembly (2026-10-26).
 # Cache per document path so tree -> dry-run -> apply -> tree stays interactive.
 # Pass refresh=True after the user adds/removes components outside this server.
@@ -51,7 +64,7 @@ def sw_version(sw=None):
         return None
 
 
-def get_sw():
+def get_sw(probe=True):
     """Connect to the running SolidWorks instance, or start one. Cached.
 
     Always wrapped in a DYNAMIC (late-bound) dispatcher on purpose. If
@@ -60,10 +73,27 @@ def get_sw():
     plain byref ints and calls int() on our byref VARIANT — every tool dies with
     "int() argument must be ... not 'VARIANT'". Late binding accepts the VARIANT
     and does not depend on whether some other program generated gen_py.
+
+    P0-1 (0.8.22): the cached dispatcher used to be returned forever. When the COM link
+    died, every later call kept failing against the same dead pointer for minutes — the
+    reported "all calls fail while SolidWorks itself is fine" outage. The cache is now
+    probed with `RevisionNumber` at most once per LIVENESS_PROBE_INTERVAL_S and dropped on
+    the first failure, so the next call re-acquires through GetActiveObject. `probe=False`
+    skips the check when the caller already knows the link works (e.g. reconnect()).
     """
-    global _SW
+    global _SW, _LAST_PROBE
     if _SW is not None:
-        return _SW
+        if not probe or (time.time() - _LAST_PROBE) < LIVENESS_PROBE_INTERVAL_S:
+            return _SW
+        _LAST_PROBE = time.time()
+        try:
+            _SW.RevisionNumber
+            return _SW
+        except Exception as exc:
+            _BRIDGE_STATE["stale_drops"] = _BRIDGE_STATE.get("stale_drops", 0) + 1
+            _BRIDGE_STATE["last_error"] = "stale dispatcher: %s" % str(exc)[:180]
+            log_failure("get_sw", {"stage": "liveness_probe"}, exc=exc)
+            _SW = None
     _, win, _ = _com()
     from win32com.client import dynamic as dyn
 
@@ -86,17 +116,30 @@ def get_sw():
     return _SW
 
 
-def reconnect():
+def reconnect(reason=None):
     """Drop the cached dispatcher and connect again.
 
     The cached `_SW` never noticed when the COM connection died: after a `Not connected`
     every subsequent call kept failing against a dead pointer for minutes, which is exactly
     what a report described ("all calls fail, SolidWorks itself is fine"). Clearing the
     cache lets the next `get_sw()` re-acquire through GetActiveObject.
+
+    P0-1 (0.8.22): `reason` is recorded so ping() can explain why the link was rebuilt;
+    `probe=False` avoids paying for a liveness check on a dispatcher that was just created.
     """
-    global _SW
+    global _SW, _LAST_PROBE
     _SW = None
-    return get_sw()
+    _LAST_PROBE = 0.0
+    _BRIDGE_STATE["reconnects"] = _BRIDGE_STATE.get("reconnects", 0) + 1
+    try:
+        from datetime import datetime
+
+        _BRIDGE_STATE["last_reconnect"] = datetime.now().isoformat(timespec="seconds")
+    except Exception:
+        pass
+    if reason:
+        _BRIDGE_STATE["last_error"] = str(reason)[:200]
+    return get_sw(probe=False)
 
 
 def health(deep=False):
@@ -211,6 +254,64 @@ def double_array(values):
     return variant(list(values), pythoncom.VT_ARRAY | pythoncom.VT_R8)
 
 
+# P0-1: COM failures need two different responses, and conflating them is why the reported
+# outage lasted minutes.
+#   transient   — SolidWorks is busy and refused the call; waiting then retrying works.
+#   bridge lost — the dispatcher itself is dead; retrying the same pointer can never work,
+#                 so the cache must be dropped and the caller told to retry the tool.
+TRANSIENT_HRESULTS = (
+    -2147418111,  # 0x80010001 RPC_E_CALL_REJECTED        "Call was rejected by callee"
+    -2147417846,  # 0x8001010A RPC_E_SERVERCALL_RETRYLATER
+    -2147417847,  # 0x80010109 RPC_E_SERVERCALL_RETRYLATER variant
+    -2147417849,  # 0x80010107 RPC_E_SERVERCALL_RETRYLATER variant
+)
+BRIDGE_LOST_HRESULTS = (
+    -2147220995,  # 0x800401FD CO_E_OBJNOTCONNECTED        "Not connected"
+    -2147417848,  # 0x80010108 RPC_E_DISCONNECTED
+    -2147023170,  # 0x800706BE RPC_S_CALL_FAILED
+    -2147023174,  # 0x800706BA RPC_S_SERVER_UNAVAILABLE
+)
+TRANSIENT_HINTS = ("call was rejected", "server busy", "retry later", "被调用方拒绝", "忙")
+BRIDGE_LOST_HINTS = ("not connected", "object is not connected",
+                     "rpc server unavailable", "remote procedure call failed",
+                     "rpc 服务器", "服务器运行失败")
+
+COM_RETRIES = 2
+COM_RETRY_BACKOFF_S = 0.25
+
+
+class BridgeLost(RuntimeError):
+    """The cached COM dispatcher is dead. The cache has already been dropped.
+
+    Raised after a `Not connected`-class failure so the caller can say "retry this call"
+    instead of surfacing a raw COM hresult. Retrying the same tool will re-acquire the link
+    through GetActiveObject.
+    """
+
+
+def _hresult(exc):
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], int):
+        return args[0]
+    return None
+
+
+def _error_text(exc):
+    return " ".join(v for v in getattr(exc, "args", ()) if isinstance(v, str)).lower()
+
+
+def is_transient_com_error(exc):
+    """SolidWorks refused the call because it is busy — safe to retry."""
+    return _hresult(exc) in TRANSIENT_HRESULTS or any(
+        hint.lower() in _error_text(exc) for hint in TRANSIENT_HINTS)
+
+
+def is_bridge_lost_error(exc):
+    """The COM link itself is gone — retrying the same pointer cannot help."""
+    return _hresult(exc) in BRIDGE_LOST_HRESULTS or any(
+        hint.lower() in _error_text(exc) for hint in BRIDGE_LOST_HINTS)
+
+
 def call_method(obj, name, *args):
     """Invoke a SolidWorks method through DISPATCH_METHOD, bypassing pywin32's guesswork.
 
@@ -227,6 +328,19 @@ def call_method(obj, name, *args):
     So: for any of those (and anything that reports MEMBERNOTFOUND on a method that the
     documentation says exists) use this instead of attribute access. `static_check.py`
     fails the build when a known trap is called directly.
+
+    P0-1 (0.8.22): bounded retry, and the two failure classes are handled differently.
+    A busy SolidWorks answers "Call was rejected by callee"; sleeping 0.25 s then 0.5 s and
+    asking again succeeds (observed while a rebuild was running). A dead link is NOT
+    retried — the dispatcher is worthless — so the cache is dropped and `BridgeLost` is
+    raised with a message that says the next call will reconnect.
+
+    Note on timeouts: this is not a thread-level watchdog. pywin32 dispatches on the STA
+    thread that owns the object, so running the call on a worker thread and abandoning it
+    after N seconds risks corrupting the COM apartment rather than cancelling anything. The
+    bounded retry plus the liveness probe in get_sw() cover the reported failure mode (a
+    bus/link failure that never recovers); a single genuinely hung call still blocks, which
+    is a SolidWorks-side condition no client can safely interrupt.
     """
     import pythoncom
 
@@ -238,9 +352,79 @@ def call_method(obj, name, *args):
             flag(name)
         except Exception:
             pass
-    if args:
-        return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True, *args)
-    return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True)
+    last = None
+    for attempt in range(COM_RETRIES + 1):
+        try:
+            if args:
+                return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True, *args)
+            return ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True)
+        except Exception as exc:
+            last = exc
+            if is_bridge_lost_error(exc):
+                _BRIDGE_STATE["last_error"] = "%s.%s: %s" % (
+                    type(obj).__name__, name, str(exc)[:160])
+                try:
+                    reconnect(reason="%s.%s lost the link" % (type(obj).__name__, name))
+                except Exception:
+                    pass
+                raise BridgeLost(
+                    "SolidWorks COM link was lost during %s(); the cached dispatcher has "
+                    "been dropped, so calling this tool again will reconnect. Original: %s"
+                    % (name, str(exc)[:180])) from exc
+            if not is_transient_com_error(exc) or attempt >= COM_RETRIES:
+                raise
+            time.sleep(COM_RETRY_BACKOFF_S * (attempt + 1))
+    raise last if last is not None else RuntimeError("call_method exhausted retries")
+
+
+def ping():
+    """Cheap liveness report: is the bridge alive, and is SolidWorks answering?
+
+    P0-1 asked for a `ping()` so the host can tell "alive but busy" from "dead". Unlike
+    `health(deep=True)` this never touches ActiveDoc, so it answers in ~18 ms and cannot
+    itself hang on a modal dialog.
+
+    It always performs a real round trip (a cached pointer proves nothing), and if that
+    fails it rebuilds the link once and asks again — so a stale dispatcher makes ping
+    report `recovered: true` instead of a false outage. `bridge` carries the counters
+    behind the self-healing: stale dispatchers dropped and reconnects performed.
+    """
+    started = time.time()
+    payload = {
+        "sw_version": None,
+        "latency_ms": None,
+        "last_call": dict(_LAST_CALL) if isinstance(_LAST_CALL, dict) else None,
+        "bridge": None,
+        "probe_interval_s": LIVENESS_PROBE_INTERVAL_S,
+        "recovered": False,
+    }
+    for attempt in (0, 1):
+        try:
+            app = get_sw(probe=False)
+            payload["sw_version"] = str(app.RevisionNumber)
+            payload["latency_ms"] = round((time.time() - started) * 1000, 1)
+            payload["recovered"] = attempt > 0
+            payload["bridge"] = dict(_BRIDGE_STATE)
+            return ok(**payload)
+        except Exception as exc:
+            payload["bridge"] = dict(_BRIDGE_STATE)
+            if attempt == 0:
+                payload["first_error"] = str(exc)[:160]
+                try:
+                    reconnect(reason="ping: %s" % str(exc)[:120])
+                except Exception as reconnect_exc:
+                    payload["reconnect_error"] = str(reconnect_exc)[:160]
+                    break
+                continue
+            break
+    log_failure("ping", {"stage": "ping"}, exc=None,
+                extra={"payload": {k: v for k, v in payload.items() if k != "bridge"}})
+    return error(
+        "sw_unreachable",
+        "SolidWorks is not answering: %s" % (payload.get("first_error") or "unknown"),
+        "Start SolidWorks or close a modal dialog, then call ping again. "
+        "health(deep=True) additionally reads ActiveDoc.",
+        **payload)
 
 
 # Members win32com dispatches as properties although they are methods. Kept here so the
