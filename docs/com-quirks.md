@@ -1077,3 +1077,54 @@ detail 视图差值 11.92 mm。
 版本号无法澄清这一点，**路径可以**。所以 `ping` 的 `runtime` 与 `check_capabilities`
 都回显 `server_path` / `python_executable` / `python_version` / `pid`——
 一次调用就能确认口径，不必再去翻 `.pth` 文件。
+
+## 二十一、裸名字 NameError 被 `except` 吞掉：一个藏了五个版本的 P0（0.8.25）
+
+### 现象
+
+`auto_dimension(eliminate_duplicates=True)` 从 0.8.19 起一直报
+`duplicates_removed: 0`，看起来像"这张图本来就没有重复尺寸"。
+实际上每一次删除都抛 `NameError`，被外层 `except` 吞掉，一条也没删成。
+
+### 根因
+
+`drawing.py` 里有 5 处 `_call_method(doc, "EditDelete")`，但**模块级从未定义 `_call_method`**——
+只有一处 `from ..sw_session import call_method as _call_method_sf`（别名不同）。
+Python 在运行时才解析裸名字，于是：
+
+- 删除 → `NameError: name '_call_method' is not defined`
+- 外层 `try/except Exception` → 静默跳过
+- 汇总 → `removed=0`，**看起来完全正常**
+
+同一个坑在 `layout.py` 的 `_find_annotation_by_name` 上出现过一次（v0.8.14 的"四类标注全失效"），
+这次是第二次。
+
+### 为什么两道防线都没抓到
+
+| 防线 | 为什么漏 |
+|---|---|
+| `static_check.py` | 只校验 `module.attribute` 形式（`name.attr` 的 `name` 有没有 import），**裸函数名不在范围内** |
+| `regressions.py` 的 smoke 契约 | 断言写的是 `isinstance(duplicates_removed, int)` —— `isinstance(0, int)` 也是 True |
+
+### 修法与新增防线
+
+1. `drawing.py` 模块级 `_call_method = call_method`（并在 import 列表里加 `call_method`）。
+2. `auto_dimension` 补 `dedupe_failed_count`（原来只有截断到 10 条的 `dedupe_failed` 列表，
+   "删 0 失败 23"和"干净的空操作"无法区分）。
+3. **新回归断言 `assert_no_undefined_bare_calls`**：遍历 `src/` 全部 21 个模块，收集每个
+   `ast.Call` 的裸函数名，要求它能解析到内置函数 / import / 定义 / 参数 / 赋值 / `global`。
+   这是**整类 bug 的通用防线**，不再依赖"记得给某个函数加断言"。
+4. smoke 的断言从 `isinstance(...)` 改成「`removed == 0` 且 `failed > 0` 即失败」，
+   把那次的签名直接写成判据。
+
+### 同类第二次：定义被整段删掉
+
+同一份 v0.8.24 补丁在插入两个新函数时，把 `_EDGE_CACHE = {}` / `EDGE_CACHE_LIMIT = 32`
+当上下文行一起删了，`list_drawing_edges` 立刻报 `_EDGE_CACHE is not defined`，
+整条边坐标读取失效。所以通用检查必须覆盖 **`ast.Name`（Load）**，不能只看 `Call`——
+变量引用不会出现在 `Call` 里，定义被删时也一样静默到运行期才炸。
+
+### 一条通用规则
+
+**任何 `except` 吞掉的分支，都要有一个"结果不可能为 0"的断言。**
+失败的删除和没有可删的对象，返回值必须能区分——否则静默失败会伪装成正常空操作。

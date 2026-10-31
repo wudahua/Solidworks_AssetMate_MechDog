@@ -456,6 +456,12 @@ def main():
             "auto_dimension did not apply the dedupe pass: %r" % deduped)
         assert isinstance(deduped.get("duplicates_removed"), int), (
             "auto_dimension omitted duplicates_removed count: %r" % deduped)
+        # 0.8.25: `isinstance(0, int)` passed for five versions while every delete raised
+        # NameError. "0 removed + N failed" is the exact signature of that regression.
+        assert not (deduped.get("duplicates_removed") == 0
+                    and (deduped.get("dedupe_failed_count") or 0) > 0), (
+            "dedupe removed 0 and failed %r — the delete path is raising again"
+            % deduped.get("dedupe_failed_count"))
         checked = require(drawing.verify_dimension_attachments(drw))
         unique = checked.get("unique_dimension_count")
         dupes = checked.get("duplicates_skipped")

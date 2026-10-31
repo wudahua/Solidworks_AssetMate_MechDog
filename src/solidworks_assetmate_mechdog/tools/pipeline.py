@@ -81,7 +81,7 @@ def _callout_warning(callouts):
 
 def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     category=None, do_hole_callouts=None, do_surface_finish=None,
-                    do_derived_check=True, hole_budget_s=45.0):
+                    do_derived_check=True, hole_budget_s=45.0, prune_to_plan=True):
     """Run the whole chain and report each step plus the delivery verdict.
 
     Steps (each failure is recorded, not fatal — a partial drawing beats no drawing):
@@ -93,6 +93,11 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     a 20 s budget silently truncated a 35 s job to zero callouts — which then flipped the
     verdict to "仅供参考". A timed-out callout run must never look like "this part has no
     holes" (reported 2026-10-28).
+
+    prune_to_plan=True (N3) feeds `plan.keep_dimensions` into auto_dimension's
+    `dimension_filter`, so the sheet really ends up with ~keep_count dimensions instead of
+    every dimension the model marks for drawing. Set False to get the old insert-everything
+    behaviour; `dimension_gap` still reports planned vs actual either way.
     """
     from . import drawing as drawing_tools
     from . import ledger as ledger_tools
@@ -139,9 +144,15 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         return error("create_failed", created.get("message") or "view creation failed",
                      "Drawing not produced; see create_drawing errors.")
 
-    # 4) dimensions
-    dims = record("dimensions", drawing_tools.auto_dimension(target, all_views=True),
-                  "")
+    # 4) dimensions — N3: feed the plan back in, so "keep N" is what lands on the sheet.
+    keep_list = plan_raw.get("keep_dimensions") or []
+    if prune_to_plan and keep_list:
+        dims = record("dimensions",
+                      drawing_tools.auto_dimension(target, all_views=True,
+                                                   dimension_filter=keep_list),
+                      "")
+    else:
+        dims = record("dimensions", drawing_tools.auto_dimension(target, all_views=True), "")
 
     # 5) center marks
     if defaults["center_marks"]:
@@ -215,7 +226,13 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         dimension_gap=(None if keep_dimensions is None else {
             "planned": keep_dimensions,
             "inserted": (summary or {}).get("dimension"),
-            "note": "规划按启发式筛选；实际导入的是模型全部标记为工程图用的尺寸，需人工删减或按需补标。",
+            "pruned_to_plan": bool(prune_to_plan),
+            "note": ("规划已生效：插入后按 keep_dimensions 删除多余尺寸，"
+                     if prune_to_plan else
+                     "规划未生效（prune_to_plan=False）：实际导入的是模型全部标记为工程图用的尺寸，"
+                     "需人工删减或按需补标。")
+                    + ("filter 失败/未命中时不会删除，见 dimensions 步骤的 filter_aborted。"
+                       if prune_to_plan else ""),
         }),
         annotations=summary,
         layout_warnings=layout_warnings,

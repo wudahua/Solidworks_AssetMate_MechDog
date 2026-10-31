@@ -1178,6 +1178,139 @@ def assert_runtime_identifies_the_running_copy():
     return "runtime path + interpreter surfaced by ping and check_capabilities"
 
 
+def assert_no_undefined_bare_calls():
+    """0.8.25 — the bug class that hid for five versions.
+
+    `drawing.py` called `_call_method(...)` in five places but only ever imported it under
+    the name `_call_method_sf`. Every delete raised NameError, the surrounding `except`
+    swallowed it, and `duplicates_removed` reported 0 as if that were an answer.
+    `static_check` misses this: it validates `module.attribute` references, not bare names.
+
+    This walks every module and asserts each bare call resolves to a builtin, an import,
+    a definition, a parameter or an assignment.
+    """
+    import builtins
+
+    DUNDER_NAMES = {"__name__", "__file__", "__doc__", "__class__", "__all__",
+                    "__builtins__", "__spec__", "__package__", "__loader__"}
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src_dir = os.path.join(root, "src", "solidworks_assetmate_mechdog")
+    scanned, problems = 0, []
+    for dirpath, _dirs, files in os.walk(src_dir):
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            defined = set(dir(builtins))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    defined.add(node.name)
+                elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                    defined.add(node.id)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        defined.add(alias.asname or alias.name.split(".")[0])
+                elif isinstance(node, ast.arg):
+                    defined.add(node.arg)
+                elif isinstance(node, ast.ExceptHandler) and node.name:
+                    defined.add(node.name)
+                elif isinstance(node, ast.Global):
+                    defined.update(node.names)
+            # Check every bare NAME, not just call targets: a definition can be deleted by
+            # a careless edit (the v0.8.24 bundle swallowed `_EDGE_CACHE = {}` that way),
+            # and `_EDGE_CACHE[stamp]` is a Name(Load), not a Call.
+            loaded = {n.id for n in ast.walk(tree)
+                      if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+            missing = sorted(loaded - defined - DUNDER_NAMES)
+            if missing:
+                problems.append("%s: %s" % (os.path.relpath(path, src_dir), missing))
+            scanned += 1
+    assert not problems, "undefined bare calls — a NameError will be swallowed: %s" % problems
+    return "%d modules, every bare call resolves" % scanned
+
+
+def assert_duplicate_delete_uses_defined_alias():
+    """0.8.25 / P0 — `eliminate_duplicates` must call a name that actually exists."""
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    assert _module_constant(tree, "_call_method") is None, (
+        "_call_method is now a literal; re-check that it aliases sw_session.call_method")
+    module_alias = any(
+        isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "_call_method"
+                                             for t in node.targets)
+        and isinstance(node.value, ast.Name) and node.value.id == "call_method"
+        for node in tree.body)
+    assert module_alias, (
+        "_call_method is not bound to call_method at module level — the delete passes will "
+        "raise NameError again (that is what kept duplicates_removed at 0 for five versions)")
+    imported = any(
+        isinstance(node, ast.ImportFrom) and any(a.name == "call_method" for a in node.names)
+        for node in ast.walk(tree))
+    assert imported, "call_method is never imported in drawing.py"
+    body = ast.get_source_segment(src, _function_node(tree, "auto_dimension")) or ""
+    assert "eliminate_duplicates" in body, "auto_dimension dropped the dedupe pass"
+    # The counts are produced by the delete helper, not inline — check the whole module.
+    assert "duplicates_removed" in src, "the receipt no longer reports removed"
+    assert "dedupe_failed_count" in src, (
+        "no failure count: `dedupe_failed` is truncated to 10, so 'removed 0 / failed 23' "
+        "looks the same as a clean no-op")
+    return "_call_method aliased; dedupe reports removed AND failed"
+
+
+def assert_plan_filter_reaches_auto_dimension():
+    """0.8.25 / N3 — plan_drawing said "keep 8" while 24 landed on the sheet."""
+    draw_src = _read("tools/drawing.py")
+    tree = ast.parse(draw_src)
+    node = _function_node(tree, "auto_dimension")
+    assert node is not None, "auto_dimension is gone"
+    assert "dimension_filter" in [a.arg for a in node.args.args], (
+        "auto_dimension accepts no dimension_filter — the plan cannot bind")
+    body = ast.get_source_segment(draw_src, node) or ""
+    assert "_filter_inserted_dimensions" in body, "no filter pass"
+    helper = _function_node(tree, "_filter_inserted_dimensions")
+    assert helper is not None, "_filter_inserted_dimensions is missing"
+    hbody = ast.get_source_segment(draw_src, helper) or ""
+    assert "before_names" in hbody, (
+        "the filter does not exclude dimensions the user placed")
+    assert "aborted" in hbody and "deleted nothing" in hbody.replace("\n", " ") , (
+        "no safety valve: a filter matching nothing must delete nothing")
+    pipe = _read("tools/pipeline.py")
+    assert "prune_to_plan" in pipe, "produce_drawing has no prune_to_plan switch"
+    assert 'get("keep_dimensions")' in pipe, "produce_drawing does not read the plan"
+    return "filter wired, user dimensions protected, no-match aborts"
+
+
+def assert_place_views_accepts_both_vocabularies():
+    """0.8.25 / N5 — passing set_view's key names to place_views dropped every field."""
+    src = _read("tools/layout.py")
+    node = _function_node(ast.parse(src), "place_views")
+    assert node is not None, "place_views is gone"
+    body = ast.get_source_segment(src, node) or ""
+    assert 'get("view", item.get("view_name"))' in body, (
+        "view / view_name are not both accepted")
+    assert 'get("x", item.get("x_m"))' in body, "x / x_m are not both accepted"
+    assert "missing_view_key" in body, (
+        "an entry without a view name is forwarded as None instead of being reported")
+    return "view|view_name and x|x_m both accepted, missing key reported"
+
+
+def assert_delivery_check_formats_its_counts():
+    """0.8.25 / N1 — a `%d` with no `%` operator printed literally to the caller."""
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    node = _function_node(tree, "delivery_check")
+    assert node is not None, "delivery_check is gone"
+    body = ast.get_source_segment(src, node) or ""
+    assert "%d 个尺寸均已关联" in body, "the attachment message changed; re-check formatting"
+    assert '"%d 个尺寸均已关联" % dim_count' in body or "(\"%d 个尺寸均已关联\" % dim_count)" in body, (
+        "the else-branch message is not formatted — callers see a literal %d")
+    for name in ("_format_check_detail",):
+        assert name not in body, "unexpected indirection"
+    return "every count-bearing message is formatted"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -1225,6 +1358,11 @@ STATIC_REGRESSIONS = [
     ("0.8.24 note avoidance", assert_add_note_can_avoid_collisions),
     ("0.8.24 title block cell", assert_title_block_reports_cell),
     ("0.8.24 runtime identity", assert_runtime_identifies_the_running_copy),
+    ("0.8.25 no undefined calls", assert_no_undefined_bare_calls),
+    ("0.8.25 dedupe alias defined", assert_duplicate_delete_uses_defined_alias),
+    ("0.8.25 plan filter wired", assert_plan_filter_reaches_auto_dimension),
+    ("0.8.25 place_views vocabularies", assert_place_views_accepts_both_vocabularies),
+    ("0.8.25 delivery_check formats", assert_delivery_check_formats_its_counts),
 ]
 
 

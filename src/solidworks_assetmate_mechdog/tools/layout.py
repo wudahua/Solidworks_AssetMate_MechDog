@@ -120,11 +120,31 @@ def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True)
 
 
 def place_views(drawing_path, placements, save=True):
-    """Place several views at once: [{"view": name, "x": , "y": , "scale": }] (metres)."""
+    """Place several views at once: [{"view": name, "x": , "y": , "scale": }] (metres).
+
+    Accepts `set_view`'s key names too (`view_name` / `x_m` / `y_m`), because passing one
+    tool's vocabulary to the other used to drop every field and report "no view named
+    None" (N5). An entry with neither key is reported as `missing_view_key` instead of
+    being forwarded as None.
+    """
     results = []
-    for item in placements or []:
-        results.append(set_view(drawing_path, item.get("view"),
-                                x_m=item.get("x"), y_m=item.get("y"),
+    for index, item in enumerate(placements or []):
+        if not isinstance(item, dict):
+            results.append({"ok": False, "index": index, "error": "placement_not_object"})
+            continue
+        name = item.get("view", item.get("view_name"))
+        if name is None:
+            results.append({
+                "ok": False, "index": index, "error": "missing_view_key",
+                "message": "这是第 %d 条 placement，缺视图名" % index,
+                "hint": ("键名用 view 或 view_name 都可以；坐标用 x/y 或 x_m/y_m（单位：米）。"
+                         "示例：[{\"view\": \"工程图视图1\", \"x\": 0.1, \"y\": 0.2}]"),
+            })
+            continue
+        x = item.get("x", item.get("x_m"))
+        y = item.get("y", item.get("y_m"))
+        results.append(set_view(drawing_path, name,
+                                x_m=x, y_m=y,
                                 scale=item.get("scale"), save=False))
     if save:
         try:

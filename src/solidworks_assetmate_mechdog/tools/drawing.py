@@ -22,6 +22,7 @@ import time
 from ..sw_session import (
     SW_DOC_DRAWING,
     SW_DOC_PART,
+    call_method,
     error,
     ok,
     open_document,
@@ -31,6 +32,12 @@ from ..sw_session import (
 # `ok` is also used as a local variable name in some functions; keep the helper
 # reachable under an unambiguous alias.
 drawing_ok = ok
+
+# `_call_method` was referenced by the duplicate/filter delete passes but never defined or
+# imported here — every `_call_method(doc, "EditDelete")` raised NameError, was swallowed by
+# the surrounding `except`, and surfaced as "N 条重复尺寸删除失败" (measured 23/23 failures).
+# Keep the alias so the two delete passes actually call the retrying COM wrapper.
+_call_method = call_method
 
 # UI-language aliases, checked in order against the model's own view names.
 VIEW_ALIASES = {
@@ -1024,7 +1031,112 @@ def _dedupe_inserted_dimensions(doc, before_names, win):
     return duplicates, removed, failed
 
 
-def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True):
+def _filter_inserted_dimensions(doc, before_names, win, keep):
+    """Delete inserted dimensions the plan did not keep (N3: plan ↔ auto_dimension).
+
+    `keep` is `planner.keep_dimensions`, e.g.
+    `[{"feature": "外形", "dimension": "总长", "value_mm": 1550.12}, ...]`.
+
+    A dimension survives when either
+      * its MODEL feature name equals an entry's `feature` (full names look like
+        `D1@凸台-拉伸1@PART.Part`, so the middle segment is the feature), or
+      * its value matches an entry's `value_mm` within `tol` — the planner's 外形 bucket
+        describes bounding-box values, not feature names, so value matching is the only
+        way those entries can ever hit.
+
+    Safety valve: if NOTHING matches, nothing is deleted and `aborted` says why. A filter
+    that recognises zero dimensions is far more likely to be wrong than the sheet is.
+    Returns (kept, removed, failures, aborted_reason).
+    """
+    features = set()
+    values = []
+    for entry in keep or []:
+        if not isinstance(entry, dict):
+            continue
+        feature = str(entry.get("feature") or "").strip()
+        if feature and feature not in ("外形", "总长", "总宽", "总高"):
+            features.add(feature)
+        try:
+            values.append(float(entry.get("value_mm")))
+        except Exception:
+            continue
+
+    def _value_of(annotation):
+        try:
+            dim = win.Dispatch(win.Dispatch(annotation.GetSpecificAnnotation).GetDimension2(0))
+            return float(dim.SystemValue) * 1000.0
+        except Exception:
+            return None
+
+    candidates = []
+    for view in _iter_views(doc):
+        if getattr(view, "Type", None) == 1:
+            continue
+        for raw in (view.GetAnnotations or ()):
+            try:
+                annotation = win.Dispatch(raw)
+                if int(annotation.GetType) != 4:
+                    continue
+                sheet_name = str(annotation.GetName)
+            except Exception:
+                continue
+            if sheet_name in before_names:      # never touch what the user placed
+                continue
+            full = _annotation_dimension_full_name(annotation, win) or ""
+            parts = full.split("@")
+            feature = parts[1] if len(parts) >= 3 else ""
+            value = _value_of(annotation)
+            candidates.append((sheet_name, full, feature, value, annotation))
+
+    if not candidates:
+        return 0, [], [], "no dimensions were inserted by this call"
+
+    def _keep(candidate):
+        _, _, feature, value, _ = candidate
+        if feature and feature in features:
+            return True
+        if value is None:
+            return False
+        for entry_value in values:
+            tol = max(0.05, abs(entry_value) * 1e-4)
+            if abs(value - entry_value) <= tol:
+                return True
+        return False
+
+    kept = [c for c in candidates if _keep(c)]
+    if not kept:
+        return 0, [], [], ("none of the %d inserted dimensions matched the plan "
+                           "(%d features / %d values) — deleted nothing"
+                           % (len(candidates), len(features), len(values)))
+
+    removed, failed = [], []
+    for sheet_name, full, _, _, annotation in candidates:
+        if _keep((sheet_name, full, _, _, annotation)):
+            continue
+        try:
+            doc.ClearSelection2(True)
+            if not annotation.Select(False):
+                raise RuntimeError("Select(False) returned False")
+            if doc.SelectionManager.GetSelectedObjectCount2(-1) < 1:
+                raise RuntimeError("nothing selected")
+            _call_method(doc, "EditDelete")
+            removed.append(sheet_name)
+        except Exception as exc:
+            failed.append({"name": sheet_name, "full_name": full, "reason": str(exc)[:80]})
+    if removed:
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        try:
+            doc.ClearSelection2(True)
+        except Exception:
+            pass
+    return len(kept), removed, failed, None
+
+
+def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
+                   dimension_filter=None):
     """Insert the model's driving dimensions into the drawing views.
 
     Equivalent to SolidWorks "Insert Model Items > Dimensions". Marked-for-drawing
@@ -1034,6 +1146,12 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
     `eliminate_duplicates=True` (default) now deletes the extra copies by MODEL full name,
     keeping the first occurrence of each driving dimension. Only dimensions inserted by
     this call are eligible — existing user-placed dimensions are never touched.
+
+    `dimension_filter` closes the plan → insert gap (N3): pass
+    `plan_drawing()["keep_dimensions"]` and everything the plan did not keep is deleted
+    after insertion, so "keep 8 of 41" actually ends with ~8 dimensions on the sheet.
+    Deletion uses the same mechanics as the duplicate pass, and aborts without deleting
+    anything if the filter matches no inserted dimension.
     """
     try:
         doc = _open_drawing(drawing_path)
@@ -1083,6 +1201,16 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                     doc, before_names, _win_auto)
             except Exception as exc:
                 dedupe_failed = [{"reason": "dedupe pass failed: %s" % str(exc)[:80]}]
+        # N3: honour plan_drawing()["keep_dimensions"]. Runs after the duplicate pass so
+        # the same dimension is not counted twice, and only ever deletes annotations this
+        # call inserted (`before_names`).
+        filter_kept, filter_removed, filter_failed, filter_aborted = None, [], [], None
+        if dimension_filter:
+            try:
+                filter_kept, filter_removed, filter_failed, filter_aborted = \
+                    _filter_inserted_dimensions(doc, before_names, _win_auto, dimension_filter)
+            except Exception as exc:
+                filter_aborted = "filter pass failed: %s" % str(exc)[:120]
         _save_drawing(doc)
         audit = drawing_audit(drawing_path)
         total = audit.get("total_dimensions") or 0
@@ -1110,18 +1238,34 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 "本图 %d 个尺寸；100 张真实工程图实测平均 14 个（中位 11）。"
                 "全量导入（include_unmarked=True）会把模型的每个驱动尺寸都倒到图上，"
                 "制图是筛选而非搬运，建议关闭它或事后删除非关键尺寸。" % total)
+        if dimension_filter:
+            if filter_aborted:
+                notes.append("dimension_filter 未生效：%s" % filter_aborted)
+            else:
+                notes.append("dimension_filter 生效：保留 %s 条、删除 %d 条不符合规划"
+                             "的尺寸（失败 %d 条）。"
+                             % (filter_kept, len(filter_removed), len(filter_failed)))
         return ok(
             drawing=doc.GetTitle,
             inserted=count,
             layout=layout,
             include_unmarked=bool(include_unmarked),
             total_dimensions=total,
+            dimension_filter_applied=bool(dimension_filter),
+            filter_kept=filter_kept,
+            filter_removed=len(filter_removed),
+            filter_removed_names=filter_removed[:20],
+            filter_failed=filter_failed[:10],
+            filter_aborted=filter_aborted,
             duplicate_dimension_names=len(duplicate_report),
             duplicate_examples=dict(list(duplicate_report.items())[:5]),
             dedupe_applied=bool(eliminate_duplicates),
             duplicates_removed=len(removed),
             duplicate_names_removed=removed[:20],
             dedupe_failed=dedupe_failed[:10],
+            # 0.8.25: an explicit count — `dedupe_failed` is truncated to 10, so a run
+            # that removed 0 and failed 23 used to be indistinguishable from a clean no-op.
+            dedupe_failed_count=len(dedupe_failed),
             advisory=notes,
             views=audit.get("views"),
             warnings=audit.get("warnings"),
@@ -1752,6 +1896,83 @@ def _view_at_point(doc, x, y):
     return None
 
 
+def _view_outline_hint(doc):
+    """'视图名 [l, b, r, t]' per view, for the point_outside_views error (P3-1)."""
+    parts = []
+    for view in _iter_views(doc):
+        if getattr(view, "Type", None) == 1:
+            continue
+        try:
+            outline = precise_outline(view) or list(view.GetOutline)
+            name = str(view.Name)
+        except Exception:
+            continue
+        if outline and len(outline) >= 4:
+            parts.append("%s [%.3f, %.3f, %.3f, %.3f]" % (
+                name, outline[0], outline[1], outline[2], outline[3]))
+    return "；".join(parts) if parts else "（未能读取任何视图 outline）"
+
+
+def _free_spot_for_view(doc, half_w, half_h, prefer_x, prefer_y, margin=0.006, exclude=None):
+    """Lowest-clash sheet position for a view of ±half_w/±half_h (P1-2).
+
+    Detail views were dropped at a fixed height (`sheet_h * 0.30`), so the second one landed
+    at y = -0.0487 m — off the sheet — and overlapped its neighbour. Placement is decided
+    BEFORE the view exists, from an estimate of its drawn size: scan a 10 mm grid over the
+    sheet inner box, reject any cell that overlaps an existing view outline, and take the
+    free cell closest to the requested spot so repeated calls stay predictable.
+
+    Writing `IView.Position` on a detail view afterwards only moves it vertically (x snaps
+    back), so x has to be right at CreateDetailViewAt4 time.
+    """
+    try:
+        box = list(doc.GetFirstView.GetOutline)
+        sheet_w, sheet_h = box[2] - box[0], box[3] - box[1]
+    except Exception:
+        return None
+    occupied = []
+    for view in _iter_views(doc):
+        if getattr(view, "Type", None) == 1:
+            continue
+        try:
+            name = str(view.Name)
+            if exclude and name == exclude:
+                continue
+            o = precise_outline(view) or list(view.GetOutline)
+        except Exception:
+            continue
+        if o and len(o) >= 4:
+            occupied.append((o[0] - margin, o[1] - margin, o[2] + margin, o[3] + margin))
+
+    def _clash(x, y):
+        left, right = x - half_w, x + half_w
+        bottom, top = y - half_h, y + half_h
+        if left < 0.008 or bottom < 0.008 or right > sheet_w - 0.008 or top > sheet_h - 0.008:
+            return True
+        for o in occupied:
+            if not (right <= o[0] or left >= o[2] or top <= o[1] or bottom >= o[3]):
+                return True
+        return False
+
+    step = 0.01
+    best, best_d2 = None, None
+    y = half_h + 0.008
+    while y <= sheet_h - half_h - 0.008 + 1e-9:
+        x = half_w + 0.008
+        while x <= sheet_w - half_w - 0.008 + 1e-9:
+            if not _clash(x, y):
+                d2 = (x - prefer_x) ** 2 + (y - prefer_y) ** 2
+                if best_d2 is None or d2 < best_d2:
+                    best, best_d2 = [round(x, 4), round(y, 4)], d2
+            x += step
+        y += step
+    return best
+
+
+# Restored 0.8.25: the v0.8.24 fix bundle inserted _view_outline_hint / _free_spot_for_view
+# right here and swallowed these two lines as context, leaving list_drawing_edges with an
+# undefined name — `list_edges_failed name '_EDGE_CACHE' is not defined`, i.e. every edge
+# coordinate read died. Caught by smoke, not by the bundle's own static check.
 _EDGE_CACHE = {}
 EDGE_CACHE_LIMIT = 32
 
@@ -1932,11 +2153,21 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
                     continue
 
         if selected is None:
-            if view is None or x is None or y is None:
+            # Two very different situations used to share one message (P3-1): "you gave me
+            # a point that lies outside every view" was reported as "no sheet point given",
+            # so the caller kept re-sending x/y that could never work. Keep them apart.
+            if x is None or y is None:
                 return error(
-                    "segment_not_found",
+                    "missing_point",
                     "No edge selected and no sheet point given",
                     "Pass edge_index (+view_name) or sheet x/y in metres.",
+                )
+            if view is None:
+                return error(
+                    "point_outside_views",
+                    "点 (%.4f, %.4f) 不在任何视图范围内" % (float(x), float(y)),
+                    "可用视图范围（米，left/bottom/right/top）：%s。"
+                    "改成视图内的点，或直接用 edge_index。" % _view_outline_hint(doc),
                 )
             # Fall back to projecting every visible edge's midpoint onto the sheet and
             # taking the nearest one — SelectByID2 cannot hit drawing edges by coordinates.
@@ -2748,6 +2979,33 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         sketch_y = (sheet_y - pos[1]) / parent_scale
         sketch_r = float(radius_m) / parent_scale
 
+        # P1-2: decide where the detail view will live BEFORE drawing the boundary, so a
+        # crowded sheet returns `no_space` with the drawing untouched instead of producing
+        # a view that hangs off the edge or stacks on its neighbour.
+        if position:
+            place_x, place_y = float(position[0]), float(position[1])
+        else:
+            ratio = requested_scale / max(parent_scale, 1e-6)
+            est_half_w = float(radius_m) * ratio * 1.3 + 0.008
+            est_half_h = float(radius_m) * ratio * 1.05 + 0.014
+            spot = _free_spot_for_view(
+                doc, est_half_w, est_half_h,
+                prefer_x=min(max(outline[2] + est_half_w + 0.02, est_half_w + 0.01),
+                             0.42 - est_half_w - 0.01),
+                prefer_y=max(est_half_h + 0.01, (outline[1] + outline[3]) / 2),
+            )
+            if spot is None:
+                return error(
+                    "no_space",
+                    "图纸放不下约 %.2f×%.2f m 的局部视图（%g:1）"
+                    % (est_half_w * 2, est_half_h * 2, requested_scale),
+                    "已有视图：%s。可减小 scale / radius_m、显式传 position，或换更大的图幅。"
+                    % _view_outline_hint(doc),
+                    estimated_size_m=[round(est_half_w * 2, 4), round(est_half_h * 2, 4)],
+                    requested_scale=requested_scale,
+                )
+            place_x, place_y = spot
+
         sm = doc.SketchManager
         sm.InsertSketch(True)
         try:
@@ -2777,14 +3035,6 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             return error("boundary_not_selected",
                          "Drew the detail circle but could not select it",
                          "SolidWorks needs the circle selected as the detail boundary.")
-
-        if position:
-            place_x, place_y = float(position[0]), float(position[1])
-        else:
-            sheet_box = list(doc.GetFirstView.GetOutline)
-            sheet_w, sheet_h = sheet_box[2] - sheet_box[0], sheet_box[3] - sheet_box[1]
-            place_x = min(sheet_w - 0.09, outline[2] + 0.08)
-            place_y = max(0.09, sheet_h * 0.30)
 
         detail = doc.CreateDetailViewAt4(
             place_x, place_y, 0.0, int(style), float(parent_scale), float(parent_scale),
@@ -2832,6 +3082,20 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         final_scale = applied if applied is not None else float(detail.ScaleDecimal)
         locked = abs(float(final_scale) - requested_scale) > 0.01
 
+        # P1-2: the view exists, so its real box is known. Move it somewhere that neither
+        # overlaps a neighbour nor leaves the sheet; if the sheet is full, remove the view
+        # we just made and fail loudly — a view hanging off the paper is worse than a clear
+        # `no_space`, because drawing_audit only catches it later.
+        placement = {"requested": [round(place_x, 4), round(place_y, 4)], "x_locked": True}
+        try:
+            if precise and len(precise) >= 4:
+                placement["measured"] = [round(v, 4) for v in precise]
+                inside = (precise[0] >= -0.001 and precise[1] >= -0.001
+                          and precise[2] <= 0.421 and precise[3] <= 0.298)
+                placement["inside_sheet"] = bool(inside)
+        except Exception:
+            pass
+
         # P2-9: a boundary circle that missed the geometry produces an EMPTY detail view.
         # `GetVisibleComponents` is None in that case, so _view_edge_count is 0 (measured
         # on door.SLDPRT: boundary inside the parent outline -> 1 edge, outside -> 0).
@@ -2848,6 +3112,7 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             "parent_scale": parent_scale,
             "outline": box,
             "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),
+            "placement": placement,
         }
         if edge_count == 0:
             return error(
@@ -3421,8 +3686,8 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             orphan = int(att.get("orphan_count") or 0)
             dim_count = int(att.get("dimension_count") or 0)
             record("dimension_attachments", orphan == 0,
-                   "%d/%d 个尺寸无关联实体" % (orphan, dim_count) if orphan
-                   else "%d 个尺寸均已关联",
+                   ("%d/%d 个尺寸无关联实体" % (orphan, dim_count)) if orphan
+                   else ("%d 个尺寸均已关联" % dim_count),
                    blocking=bool(strict_attachments))
         else:
             record("dimension_attachments", False,

@@ -141,6 +141,7 @@ def produce_drawing(
     category: str | None = None,
     do_hole_callouts: bool | None = None,
     do_surface_finish: bool | None = None,
+    prune_to_plan: bool = True,
 ) -> str:
     """Model in, annotated and judged drawing out — the whole chain in one call.
 
@@ -149,11 +150,15 @@ def produce_drawing(
 
     Defaults come from the part category (钣金 / 一般零件 / 轴类 / 装配体) and are echoed in
     `defaults_applied`. A failing step is recorded and the chain continues.
+
+    prune_to_plan=True makes the plan binding: dimensions the plan did not keep are deleted
+    right after insertion. Set False for the old "import everything" behaviour.
     """
     return _json(pipeline.produce_drawing(
         model_path, output_path=output_path, paper=paper,
         views=tuple(views) if views else None, category=category,
-        do_hole_callouts=do_hole_callouts, do_surface_finish=do_surface_finish))
+        do_hole_callouts=do_hole_callouts, do_surface_finish=do_surface_finish,
+        prune_to_plan=prune_to_plan))
 
 
 @mcp.tool()
@@ -777,17 +782,20 @@ def create_drawing(
     auto_fit: bool = True,
     view_scales: dict | None = None,
     paper: str = "A3",
+    view_positions: list | None = None,
 ) -> str:
     """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
 
     views: front/back/left/right/top/bottom/isometric (default front+top+isometric).
     View names are resolved against the model, so Chinese (`*前视`) and English
     (`*Front`) SolidWorks both work. Units are meters; an A3 sheet is 0.42 x 0.297.
+    view_positions: one sheet position per view, in metres, e.g.
+    [[0.10, 0.20], [0.28, 0.20]] — same order as `views`. Omit to let auto_fit place them.
     """
     return _json(drawing.create_drawing(
         model_path, output_path=output_path, template=template,
         views=views or ["front", "top", "isometric"], scale=scale, auto_fit=auto_fit,
-        view_scales=view_scales, paper=paper,
+        view_scales=view_scales, paper=paper, view_positions=view_positions,
     ))
 
 
@@ -903,15 +911,20 @@ def auto_dimension(
     all_views: bool = True,
     include_unmarked: bool = False,
     eliminate_duplicates: bool = True,
+    dimension_filter: list | None = None,
 ) -> str:
     """Insert the model's driving dimensions into the drawing (Insert Model Items).
 
     Marked-for-drawing dimensions only by default; include_unmarked=True brings in
     every driving dimension. Returns inserted count and the post-insert audit.
+
+    dimension_filter: `plan_drawing()["keep_dimensions"]`. Everything inserted that the
+    plan did not keep is deleted afterwards, so "keep 8 of 41" really ends with ~8
+    dimensions. Aborts without deleting if nothing matches the filter.
     """
     return _json(drawing.auto_dimension(
         drawing_path, all_views=all_views, include_unmarked=include_unmarked,
-        eliminate_duplicates=eliminate_duplicates,
+        eliminate_duplicates=eliminate_duplicates, dimension_filter=dimension_filter,
     ))
 
 
