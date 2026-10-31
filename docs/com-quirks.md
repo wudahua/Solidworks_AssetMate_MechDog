@@ -877,3 +877,55 @@ GD&T 几何符号**，出正式图纸仍需在界面替换。（另注：`GetFra
 实测修好位置后 diff bbox `(1684,493)-(1736,551)` 正好落在目标像素
 `(1701,549)`，窗口 changed=265；未修位置前 diff 只在左下角原点。
 DWG 是矢量、没有像素通道，只能检查文件非空，可见性以 PDF 为准。
+
+## 十七、模型坐标 → 视图坐标：三条 API 路都堵死，最后靠尺寸匹配（0.8.21，P1-4）
+
+要支持「用模型坐标指定剖切面」，必须先知道**图纸的两个轴分别对应模型的哪个轴**。
+2026-10-31 在 SW2026 + 灌装阀阀体（59×28×80）上依次排除了三条路：
+
+| 试的路 | 结果 |
+|---|---|
+| `IView.GetViewPlaneNormal` | 属性访问 `AttributeError`，按方法调用 `DISP_E_UNKNOWNNAME`（未知名称）——该版本不存在此 API |
+| `IView.ModelToViewTransform` | **存在**，返回 16 个 double，但**不是行主序 4×4**：平移量与一个孤立的 `-1` 对不上，按任何常见分组都凑不出正交矩阵 |
+| `IMathPoint.MultiplyTransform` | `DISP_E_MEMBERNOTFOUND`（找不到成员），无法让 SolidWorks 自己算变换 |
+
+**还有一条更隐蔽的坑**：`IView.GetVisibleEntities2(component, 1)` 返回的是
+**轮廓边（silhouette edge）**，不是 `IEdge`——`GetStartVertex` 返回 `None`，
+只有 `GetCurve` 有值。实测 3 个视图各 10/14/11 个实体，取顶点全军覆没。
+这直接意味着 `ink_outline()` 里的 `edge.GetStartVertex.GetPoint` **永远拿不到顶点**，
+它只能返回 `None`；该函数保留为"理论上的精确交叉校验"，**不要依赖它出数**。
+要数顶点只能走 `IBody2.GetEdges`（从零件本体拿），那是另一条更慢的路。
+
+**最终方案：尺寸匹配（唯一可行且可解释的路）**
+
+1. `IView.GetReferencedModelName` 拿模型路径（属性、方法都可用）；
+2. `open_document` 打开零件，`GetPartBox(True)` 拿包围盒 → extent + centre；
+3. 视图的 **deflated outline**（`GetOutline` 减 11.9 mm，见第十六节 P2-13）宽高，
+   去和包围盒三轴 extent 的**两两组合**做匹配，误差最小且唯一者胜；
+4. 误差超 `max(w,h)×5%` → `axes_mismatch`；两组误差相同（正立方体）→ `axes_ambiguous`，
+   **拒绝而不是猜**——猜错就是切错平面，比报错严重得多。
+
+**读 part box 会切换 ActiveDoc**：`open_document(model_path)` 之后必须重新
+`_open_drawing(drawing_path)` + `Doc.ActivateView(name)` 才碰视图草图，
+否则 `doc.SketchManager` 画到零件上去。
+
+**offset 语义（实测锁定）**：`offset_m = (origin[dominant] - centre[dominant]) × scale`，
+图纸米；`orientation != "vertical"` 时内部仍取反（0.8.10 的 top 视图草图 y 指向 -Z 那条）。
+所以调用方始终按「模型坐标 − 零件中心」思考，不需要关心符号。
+
+**剖切 sanity 的几何依据（不是启发式）**：剖切平面垂直于图纸**水平轴**时，
+它**不可能**改变图纸水平方向的尺寸——剖视图的宽必须等于源视图的宽（竖切则比高）。
+容差 10%，实测：
+
+| 场景 | 源视图 deflated 宽 | 剖视 deflated 宽 | ratio | 判定 |
+|---|---|---|---|---|
+| 法向 +Y 过中心（正确） | 58.98 mm | 58.98 mm | 1.000 | ok |
+| offset +0.012（切进 Ø20 孔，错） | 58.98 mm | 14.40 mm | 0.244 | `section_suspicious` |
+
+`depth > 0` 的部分剖尺寸**本来就该缩小**，所以 sanity 记 `checked=false` 并写明原因，
+不做判定——这与「宁可 not_checked 不要错数」一致。
+
+**六场景真机结果（2026-10-31）**：法向 +Y → `horizontal` / 轴映射 `[0,1]` / ratio 1.000；
+法向 +X → `vertical` / ratio 1.04；法向平行视线 → `cut_plane_not_in_view_plane`；
+斜切 0.707 → `cut_plane_oblique`；错位 offset → `section_suspicious`；offset 0 → ok。
+6/6 通过。

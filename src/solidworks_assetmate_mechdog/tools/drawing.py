@@ -2266,8 +2266,133 @@ def add_flat_pattern_view(drawing_path, model_path, config_name=None, position=N
         return error("flat_pattern_failed", str(exc))
 
 
+def _view_axis_map(view):
+    """Which two MODEL axes does this view display? (P1-4)
+
+    A cut plane given in model coordinates must be translated into the view's sketch, so
+    the tool has to know which model axis each sheet axis shows. There is no reliable API
+    for this on SW2024/2026 (measured 2026-10-31):
+      - `IView.GetViewPlaneNormal` does not exist (property and method both fail);
+      - `IView.ModelToViewTransform` returns 16 doubles that are NOT a plain row-major 4x4,
+        and `IMathPoint.MultiplyTransform` does not exist either.
+
+    So the mapping is matched by SIZE: the view's deflated outline (GetOutline minus the
+    measured 11.9 mm constant, P2-13) must equal the part box extent along the two
+    displayed axes. Returns (info, reason); info carries axes / centre / extent / path.
+    An ambiguous match (e.g. a cube) is refused rather than guessed.
+
+    The caller must re-activate the DRAWING afterwards: reading the part box goes through
+    open_document(model_path), which switches SolidWorks' active document.
+    """
+    from ..sw_session import call_method
+
+    try:
+        model_path = str(call_method(view, "GetReferencedModelName") or "")
+    except Exception:
+        try:
+            model_path = str(view.GetReferencedModelName or "")
+        except Exception:
+            model_path = ""
+    if not model_path or not os.path.exists(model_path):
+        return None, "no_referenced_model"
+
+    # Read the view's own outline BEFORE switching documents.
+    box = precise_outline(view)
+    if not box:
+        return None, "outline_too_small"
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+
+    try:
+        model = open_document(model_path)
+        raw = list(model.GetPartBox(True) or ())
+    except Exception:
+        return None, "model_box_failed"
+    if len(raw) < 6:
+        return None, "model_box_missing"
+    lo = [float(raw[i]) for i in range(3)]
+    hi = [float(raw[i]) for i in range(3, 6)]
+    extent = [hi[i] - lo[i] for i in range(3)]
+    if min(extent) <= 1e-6:
+        return None, "model_box_degenerate"
+    centre = [(lo[i] + hi[i]) / 2 for i in range(3)]
+
+    pairs = ((0, 1), (0, 2), (2, 1), (1, 0), (2, 0), (1, 2))
+    scored = []
+    for a, b in pairs:
+        if extent[a] <= 1e-6 or extent[b] <= 1e-6:
+            continue
+        scored.append((abs(extent[a] - width) + abs(extent[b] - height), (a, b)))
+    if not scored:
+        return None, "axes_not_found"
+    scored.sort(key=lambda item: item[0])
+    best_err, best = scored[0]
+    if best_err > max(width, height) * 0.05:
+        return None, "axes_mismatch"
+    if len(scored) > 1 and abs(scored[1][0] - best_err) < 1e-6:
+        return None, "axes_ambiguous"
+    return {
+        "axes": [int(best[0]), int(best[1])],
+        "centre_m": centre,
+        "extent_m": extent,
+        "model_path": model_path,
+        "outline_m": [width, height],
+    }, None
+
+
+SECTION_KEEP_TOLERANCE = 0.10
+
+
+def _section_sanity(source_view, section, orientation, depth):
+    """Did the cut land on a real cross-section? (P1-4)
+
+    A section plane perpendicular to the view's horizontal axis cannot change the extent
+    along that axis, so the section's WIDTH must match the source view's width; same idea
+    for a vertical cut and the height. Comparing exactly that dimension is geometry, not a
+    heuristic.
+
+    Measured 2026-10-31 on 灌装阀阀体 (source 59x28 mm after deflation):
+      horizontal, offset -0.012 -> section 59x80, kept width 59.0 -> ratio 1.000 (correct)
+      horizontal, offset +0.012 -> section 14x50, kept width 14.4 -> ratio 0.244 (wrong)
+    A 10% tolerance separates those without flagging ordinary cross-sections. Partial
+    sections (depth>0) legitimately shrink, so they are reported as not_checked.
+    """
+    src = precise_outline(source_view)
+    sec = precise_outline(section)
+    if not src or not sec:
+        return {"checked": False,
+                "reason": "outline too small for a deflated comparison"}
+    src_w, src_h = src[2] - src[0], src[3] - src[1]
+    sec_w, sec_h = sec[2] - sec[0], sec[3] - sec[1]
+    info = {
+        "checked": True,
+        "method": "kept_dimension",
+        "orientation": str(orientation),
+        "source_size_mm": [round(src_w * 1000, 2), round(src_h * 1000, 2)],
+        "section_size_mm": [round(sec_w * 1000, 2), round(sec_h * 1000, 2)],
+        "tolerance": SECTION_KEEP_TOLERANCE,
+    }
+    if depth and float(depth) > 0:
+        info["checked"] = False
+        info["reason"] = ("partial section (depth>0) shrinks the view by design, so the "
+                          "kept dimension is not comparable")
+        return info
+    if str(orientation) == "vertical":
+        keep_src, keep_sec, which = src_h, sec_h, "height"
+    else:
+        keep_src, keep_sec, which = src_w, sec_w, "width"
+    ratio = (keep_sec / keep_src) if keep_src else 0.0
+    info["kept_dimension"] = which
+    info["source_kept_mm"] = round(keep_src * 1000, 2)
+    info["section_kept_mm"] = round(keep_sec * 1000, 2)
+    info["ratio"] = round(ratio, 3)
+    info["verdict"] = "ok" if abs(ratio - 1.0) <= SECTION_KEEP_TOLERANCE else "suspicious"
+    return info
+
+
 def add_section_view(drawing_path, view_name=None, orientation="horizontal",
-                     offset_m=0.0, position=None, label="A", flip=False, depth=0.0):
+                     offset_m=0.0, position=None, label="A", flip=False, depth=0.0,
+                     cut_plane_normal=None, cut_plane_origin=None, verify_cut=True):
     """Create a SECTION VIEW through a model view.
 
     Sign convention (measured on the 灌装阀阀体 top view, 59x28x80, bypass hole at z=28):
@@ -2280,8 +2405,11 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                                points at -Z for a top view, so the sign is inverted inside
                                this function. Callers pass the model-space offset: to cut
                                at z=28 on a 0..80 part (centre 40) you pass -0.012, and
-                               the tool negates it internally. Measured: -0.012 -> 59x28
-                               (correct), +0.012 -> 20x20 (Ø20 bore, wrong plane).
+                               the tool negates it internally. Measured: -0.012 -> 59x80
+                               (correct cross-section), +0.012 -> 14x50 (wrong plane).
+
+    Both orientations take `offset_m` as model-space distance from the part centre, i.e.
+    `offset_m = (target_model_coordinate - centre) * scale` in SHEET metres.
 
     The cut line is drawn in the view's own sketch — the view sketch coordinate system is
     `sketch = (paper - view.Position) / view.ScaleDecimal` (calibrated with Convert
@@ -2291,6 +2419,28 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
     orientation: "horizontal" cuts left-right (shows the vertical section), "vertical"
     cuts top-bottom. offset_m shifts the line off the view centre (sheet metres).
     flip reverses the viewing direction (Options = 4). depth > 0 gives a partial section.
+
+    P1-4 (0.8.21) — two additions, both aimed at "one wrong parameter must not require
+    rebuilding the whole sheet":
+
+    cut_plane_normal / cut_plane_origin
+        MODEL coordinates (metres), given together. They override orientation + offset_m:
+        the normal picks the cut direction (dominant part axis, must be >= 0.9 aligned;
+        oblique planes have no single-line sketch representation and are refused) and the
+        origin supplies the position. Mapping model -> view requires knowing which model
+        axis each sheet axis shows; that is matched by size against the part box. Refusals
+        are structured: `cut_plane_incomplete`, `cut_plane_oblique`,
+        `cut_plane_not_in_view_plane`, `cut_plane_unmapped` (with `mapping_reason` such as
+        `axes_ambiguous` for a cube, where guessing would silently cut the wrong plane).
+
+    verify_cut (default True)
+        After creation, compare the section's deflated outline against the source view's:
+        a cut perpendicular to the sheet's horizontal axis cannot change the width, so
+        `section_width / source_width` must be 1.0 ± 10% (height for vertical cuts).
+        `edge_count == 0` means an empty view. Both failures return errors
+        (`section_empty`, `section_suspicious`) WITH the view kept on the sheet, so you can
+        inspect it instead of re-cutting blindly. Partial sections (depth>0) report
+        `sanity.checked=false` because they shrink by design.
     """
     try:
         import win32com.client as win
@@ -2314,12 +2464,80 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         outline = list(target.GetOutline)
         width = outline[2] - outline[0]
         height = outline[3] - outline[1]
+
+        # P1-4: a cut plane in model coordinates has to be translated into the view sketch.
+        cut_plane = None
+        if cut_plane_normal is not None or cut_plane_origin is not None:
+            if cut_plane_normal is None or cut_plane_origin is None:
+                return error("cut_plane_incomplete",
+                             "cut_plane_normal and cut_plane_origin must be passed together")
+            try:
+                normal = [float(v) for v in cut_plane_normal]
+                origin = [float(v) for v in cut_plane_origin]
+            except Exception:
+                return error("bad_input", "cut_plane_normal/origin must be 3 numbers each")
+            if len(normal) != 3 or len(origin) != 3:
+                return error("bad_input", "cut_plane_normal/origin must be 3 numbers each")
+            length = sum(v * v for v in normal) ** 0.5
+            if length <= 1e-9:
+                return error("bad_input", "cut_plane_normal has zero length")
+            unit = [v / length for v in normal]
+
+            axis_map, reason = _view_axis_map(target)
+            # _view_axis_map reads the part through open_document, which switches the
+            # active document; bring the drawing back before touching its sketch.
+            doc = _open_drawing(drawing_path)
+            doc.ActivateView(target.Name)
+            if axis_map is None:
+                return error(
+                    "cut_plane_unmapped",
+                    "Cannot map model coordinates onto view %r (%s)" % (target.Name, reason),
+                    "Pass orientation + offset_m instead, or pick a view whose displayed "
+                    "axes match the part box unambiguously.",
+                    cut_plane_normal=normal, cut_plane_origin=origin,
+                    mapping_reason=reason)
+            axes = axis_map["axes"]
+            centre_m = axis_map["centre_m"]
+            dominant = max(range(3), key=lambda i: abs(unit[i]))
+            if abs(unit[dominant]) < 0.9:
+                return error(
+                    "cut_plane_oblique",
+                    "cut_plane_normal %r is not axis-aligned (dominant component %.3f)"
+                    % (normal, abs(unit[dominant])),
+                    "Only planes perpendicular to a part axis are supported — an oblique "
+                    "plane has no single-line representation in the view sketch.",
+                    cut_plane_normal=normal, cut_plane_origin=origin,
+                    mapping=axis_map)
+            if dominant == axes[0]:
+                orientation = "vertical"
+            elif dominant == axes[1]:
+                orientation = "horizontal"
+            else:
+                return error(
+                    "cut_plane_not_in_view_plane",
+                    "cut_plane_normal is parallel to the viewing direction of %r"
+                    % target.Name,
+                    "A plane parallel to the sheet cannot be drawn as a cut line; pick a "
+                    "normal along one of the two displayed axes.",
+                    cut_plane_normal=normal, cut_plane_origin=origin,
+                    mapping=axis_map)
+            offset_m = (origin[dominant] - centre_m[dominant]) * scale
+            cut_plane = {
+                "normal_model": [round(v, 6) for v in normal],
+                "origin_model": [round(v, 6) for v in origin],
+                "dominant_axis": int(dominant),
+                "derived_orientation": str(orientation),
+                "derived_offset_m": round(float(offset_m), 6),
+                "mapping": axis_map,
+            }
+        doc.ActivateView(target.Name)
+
         half = (max(width, height) * 0.62) / scale
         offset = float(offset_m) / scale
         # A top view's sketch y axis runs at -Z, so a model-space offset applied to the
         # horizontal cut line lands mirrored. Measured on 灌装阀阀体: offset -0.012 produced
-        # a 20x20 (Ø20 bore) section while +0.012 produced the correct 59x28. Negate here so
-        # callers can think in model coordinates for both orientations.
+        # a 59x80 cross-section while +0.012 produced 14x50. Negate here so callers can
+        # think in model coordinates for both orientations.
         if str(orientation).lower() != "vertical":
             offset = -offset
 
@@ -2379,6 +2597,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 "CreateSectionViewAt5 returned null for %r" % target.Name,
                 "The cut line must lie inside the view and cross its geometry; "
                 "or an earlier failed attempt left the view in a bad state — reopen the drawing.",
+                cut_plane=cut_plane,
             )
         try:
             section.ScaleDecimal = scale
@@ -2398,11 +2617,37 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             box = {"width_m": round(so[2] - so[0], 4), "height_m": round(so[3] - so[1], 4)}
         except Exception:
             box = None
-        return drawing_ok(
-            drawing=doc.GetTitle, section=section.Name, source_view=target.Name,
-            label=str(label), orientation=str(orientation), flip=bool(flip),
-            outline=box, layout=layout,
-        )
+        precise = precise_outline(section)
+        edge_count = _view_edge_count(section)
+        sanity = (_section_sanity(target, section, orientation, depth)
+                  if verify_cut else
+                  {"checked": False, "reason": "verify_cut=False"})
+        diag = {
+            "drawing": doc.GetTitle, "section": section.Name, "source_view": target.Name,
+            "label": str(label), "orientation": str(orientation), "flip": bool(flip),
+            "offset_m": round(float(offset_m), 6), "outline": box,
+            "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),
+            "edge_count": edge_count, "sanity": sanity, "cut_plane": cut_plane,
+            "layout": layout,
+        }
+        if edge_count == 0:
+            return error(
+                "section_empty",
+                "The section view has 0 visible edges — the cut line missed the geometry.",
+                "Move `offset_m` inside the view's outline, or pass cut_plane_origin at "
+                "real geometry. The empty view is left on the sheet for inspection.",
+                **diag)
+        if sanity.get("checked") and sanity.get("verdict") == "suspicious":
+            return error(
+                "section_suspicious",
+                "The section kept %s mm of %s mm (ratio %.3f) — the cut plane probably "
+                "missed the intended cross-section."
+                % (sanity.get("section_kept_mm"), sanity.get("source_kept_mm"),
+                   sanity.get("ratio") or 0.0),
+                "Check offset_m sign and magnitude against the source view, or pass "
+                "cut_plane_origin in model coordinates. The view is kept for inspection.",
+                **diag)
+        return drawing_ok(**diag)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

@@ -715,6 +715,41 @@ def main():
         # sectionable view.
         assert "section" in section or section.get("ok") is False, (
             "section result neither warns nor fails — the sanity check may be gone")
+        # P1-4: verify_cut defaults to True, so every call reports a sanity block and an
+        # edge count. A cut that keeps the wrong dimension must be a structured error
+        # (section_suspicious), never ok:true.
+        assert "sanity" in section, "add_section_view omitted sanity (P1-4 verify_cut)"
+        assert "edge_count" in section, "add_section_view omitted edge_count (P1-4)"
+        if section.get("ok"):
+            assert section["edge_count"] > 0, "ok:true section has 0 visible edges"
+            sane = section.get("sanity") or {}
+            if sane.get("checked"):
+                assert abs(float(sane.get("ratio") or 0) - 1.0) <= 0.10, (
+                    "ok:true section kept the wrong dimension: %r" % (sane,))
+
+        # P1-4: an explicit MODEL-coordinate cut plane. Either it maps — and the receipt
+        # names the derived orientation, offset and axis mapping — or it refuses with a
+        # machine-readable reason. A silent wrong cut is the failure mode being guarded.
+        plane = drawing.add_section_view(
+            drw, cut_plane_normal=[0, 1, 0], cut_plane_origin=[0.0, 0.0, 0.0],
+            label="M", position=[0.30, 0.20], verify_cut=True)
+        assert plane.get("ok") is not None, "cut_plane call returned no verdict"
+        if plane.get("ok"):
+            cp = plane.get("cut_plane") or {}
+            assert cp.get("derived_orientation") in ("horizontal", "vertical"), cp
+            assert cp.get("derived_offset_m") is not None, "no derived offset in receipt"
+            assert (cp.get("mapping") or {}).get("axes") is not None, (
+                "receipt omits the model-axis mapping")
+        else:
+            allowed = ("cut_plane_unmapped", "cut_plane_not_in_view_plane",
+                       "cut_plane_oblique", "cut_plane_incomplete", "section_empty",
+                       "section_suspicious", "section_failed", "no_views",
+                       "view_not_found")
+            assert plane.get("error") in allowed, (
+                "unexpected cut_plane failure: %r" % plane.get("error"))
+            if plane.get("error") == "cut_plane_unmapped":
+                assert plane.get("mapping_reason"), (
+                    "cut_plane_unmapped must name the mapping_reason")
 
         # detail view (P2-9): aim the boundary at the CENTRE of the source view so it
         # lands on real geometry; an empty view must now return detail_empty, and a

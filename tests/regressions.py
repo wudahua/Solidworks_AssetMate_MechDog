@@ -701,6 +701,88 @@ def assert_surface_finish_position_and_pixel_check():
 
 # ---------------------------------------------------------------- registry
 
+def assert_section_cut_plane_maps_model_coordinates():
+    """0.8.21 / P1-4 — a cut plane in MODEL coordinates must be mapped, not guessed.
+
+    There is no usable API for model->view here (GetViewPlaneNormal does not exist;
+    ModelToViewTransform's 16 doubles are not a row-major 4x4; IMathPoint has no
+    MultiplyTransform — all measured 2026-10-31), so the mapping is matched by SIZE against
+    the part box. Guard the whole chain: both parameters in the signature, the size match,
+    and a structured refusal for every unmappable case instead of a silently wrong cut.
+    """
+    src = _read("tools/drawing.py")
+    node = _function_node(ast.parse(src), "add_section_view")
+    assert node is not None, "add_section_view not found"
+    body = ast.get_source_segment(src, node) or ""
+    args = [a.arg for a in node.args.args]
+    for want in ("cut_plane_normal", "cut_plane_origin", "verify_cut"):
+        assert want in args, "add_section_view signature is missing %r" % want
+    assert "_view_axis_map" in body, (
+        "no model->view axis mapping — cut_plane_* cannot be translated into the sketch")
+    for token in ("cut_plane_oblique", "cut_plane_not_in_view_plane",
+                  "cut_plane_unmapped", "cut_plane_incomplete"):
+        assert token in body, "missing structured refusal %r" % token
+    assert "derived_orientation" in body, "receipt omits the derived orientation"
+    assert "derived_offset_m" in body, "receipt omits the derived offset"
+    helper = _function_node(ast.parse(src), "_view_axis_map")
+    assert helper is not None, "_view_axis_map is gone"
+    hbody = ast.get_source_segment(src, helper) or ""
+    assert "GetReferencedModelName" in hbody, (
+        "axis mapping does not resolve the referenced model")
+    assert "axes_ambiguous" in hbody, (
+        "an ambiguous axis match must be refused — guessing cuts the wrong plane")
+    return "model coordinates mapped by size, every unmappable case refused"
+
+
+def assert_section_sanity_uses_kept_dimension():
+    """0.8.21 / P1-4 — a wrong cut plane used to be invisible until someone eyed the PDF.
+
+    A cut perpendicular to the sheet's horizontal axis cannot change the width, so the
+    section must keep the source width (height for vertical cuts). Measured on 灌装阀阀体:
+    correct cut ratio 1.000, wrong plane 0.244 — a 10% tolerance separates them without
+    flagging ordinary cross-sections.
+    """
+    src = _read("tools/drawing.py")
+    helper = _function_node(ast.parse(src), "_section_sanity")
+    assert helper is not None, "_section_sanity is gone"
+    hbody = ast.get_source_segment(src, helper) or ""
+    assert "kept_dimension" in hbody, "sanity no longer reports which dimension is kept"
+    assert "ratio" in hbody, "sanity reports no ratio"
+    assert "SECTION_KEEP_TOLERANCE" in hbody, (
+        "tolerance is hard-coded instead of the measured constant")
+    assert "depth" in hbody and "checked" in hbody, (
+        "partial sections (depth>0) must degrade to checked=false, not a false verdict")
+    node = _function_node(ast.parse(src), "add_section_view")
+    body = ast.get_source_segment(src, node) or ""
+    assert "sanity" in body, "add_section_view does not return the sanity block"
+    assert "section_suspicious" in body, (
+        "a section that kept the wrong dimension must be an error, not ok:true")
+    assert "section_empty" in body, "no section_empty error for a 0-edge view"
+    assert "_view_edge_count" in body, "section view does not count visible edges"
+    constant = None
+    for item in ast.parse(src).body:
+        if isinstance(item, ast.Assign) and any(
+                getattr(t, "id", "") == "SECTION_KEEP_TOLERANCE" for t in item.targets):
+            constant = ast.literal_eval(item.value)
+    assert constant is not None and 0.0 < constant <= 0.2, (
+        "SECTION_KEEP_TOLERANCE should stay tight (0.244 vs 1.000 needs <= 0.2)")
+    return "kept-dimension ratio + depth degradation, tolerance %.2f" % constant
+
+
+def assert_section_wrapper_forwards_cut_plane():
+    """0.8.21 / P1-4 — the wrapper is where a newly added parameter usually gets dropped."""
+    src = _read("server.py")
+    node = _function_node(ast.parse(src), "add_section_view")
+    assert node is not None, "server.add_section_view not found"
+    body = ast.get_source_segment(src, node) or ""
+    for want in ("cut_plane_normal", "cut_plane_origin", "verify_cut"):
+        assert want in body, (
+            "wrapper drops %r before calling drawing.add_section_view" % want)
+    assert any(isinstance(d, ast.Constant) and d.value is True
+               for d in node.args.defaults), "verify_cut should default to True"
+    return "cut_plane_normal / cut_plane_origin / verify_cut forwarded"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -729,6 +811,9 @@ STATIC_REGRESSIONS = [
     ("0.8.20 detail empty/scale guard", assert_detail_view_validates_edges_and_scale),
     ("0.8.20 GTOL text fallback", assert_gtol_symbol_text_fallback),
     ("0.8.20 surface finish visibility", assert_surface_finish_position_and_pixel_check),
+    ("0.8.21 section cut plane", assert_section_cut_plane_maps_model_coordinates),
+    ("0.8.21 section sanity", assert_section_sanity_uses_kept_dimension),
+    ("0.8.21 section wrapper", assert_section_wrapper_forwards_cut_plane),
 ]
 
 

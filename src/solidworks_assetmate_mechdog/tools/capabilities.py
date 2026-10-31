@@ -191,6 +191,27 @@ CAPABILITIES = [
                      "`_apply_detail_scale(2.0)` 生效，视图名变为 2 : 1"),
     },
     {
+        "id": "section_view",
+        "status": "partial",
+        "summary": "剖视图（模型坐标剖切面 + 剖切 sanity 校验）",
+        "why": ("0.8.21 起 `cut_plane_normal` / `cut_plane_origin` 可用**模型坐标**指定剖切面；"
+                "内部按「视图 deflated outline 与零件包围盒的尺寸匹配」确定图纸轴 ↔ 模型轴"
+                "（`GetViewPlaneNormal` 不存在、`ModelToViewTransform` 的 16 个数不是行主序 "
+                "4x4、`IMathPoint` 没有 MultiplyTransform，三者均已实测排除）。"
+                "法向必须轴对齐（主分量 ≥0.9），斜切 / 平行图面 / 映射歧义分别返回 "
+                "`cut_plane_oblique` / `cut_plane_not_in_view_plane` / `cut_plane_unmapped`。"
+                "`verify_cut=True` 默认开启：垂直于图纸水平轴的剖切不改变宽度，故剖视宽必须"
+                "等于源视图宽（竖切比高），容差 10%；超出返回 `section_suspicious`，"
+                "`edge_count==0` 返回 `section_empty`，两者都保留视图供检查。"),
+        "workaround": ("映射靠尺寸匹配，正立方体这类各向等长的零件会 `axes_ambiguous`，"
+                       "此时改传 orientation + offset_m；部分剖（depth>0）尺寸本就缩小，"
+                       "sanity 记 checked=false 不判定"),
+        "evidence": ("2026-10-31 实测 灌装阀阀体 59×28×80：法向 +Y 过中心 → 轴映射 [0,1]、"
+                     "horizontal、剖视 58.98×79.98、ratio 1.000；已知错位 offset +0.012 → "
+                     "截面 14.4×49.98、ratio 0.244，被 `section_suspicious` 拦下；"
+                     "法向 +X → vertical、ratio 1.04；法向平行视线 / 斜切均结构化拒绝"),
+    },
+    {
         "id": "assembly_bounding_box",
         "status": "partial",
         "summary": "装配体包围盒",

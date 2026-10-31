@@ -735,16 +735,29 @@ def add_section_view(
     label: str = "A",
     flip: bool = False,
     depth: float = 0.0,
+    cut_plane_normal: list[float] | None = None,
+    cut_plane_origin: list[float] | None = None,
+    verify_cut: bool = True,
 ) -> str:
     """Create a SECTION VIEW through a model view (exposes internal features).
 
     The cut line is drawn in the view's sketch automatically. orientation is
     "horizontal" or "vertical"; offset_m shifts it off the view centre; flip reverses
     the viewing direction; depth > 0 gives a partial section.
+
+    cut_plane_normal / cut_plane_origin (MODEL metres, pass together) override
+    orientation + offset_m with an explicit axis-aligned plane; unmappable or oblique
+    planes are refused with a structured error instead of cutting the wrong plane.
+
+    verify_cut (default True) checks the result: `edge_count == 0` -> `section_empty`,
+    and a section that does not keep the source view's width (or height, for vertical
+    cuts) within 10% -> `section_suspicious`. Both keep the view on the sheet.
     """
     return _json(drawing.add_section_view(
         drawing_path, view_name=view_name, orientation=orientation,
         offset_m=offset_m, position=position, label=label, flip=flip, depth=depth,
+        cut_plane_normal=cut_plane_normal, cut_plane_origin=cut_plane_origin,
+        verify_cut=verify_cut,
     ))
 
 
