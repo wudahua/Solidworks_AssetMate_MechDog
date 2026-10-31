@@ -70,7 +70,7 @@ A3 最多 3 视图、批量读图必须逐张关闭、`material_library` 解析�
 | **v0.5** | 孔标注可用化 / 能力声明 / 出图前规划 | ✅ 已发布 |
 | **v0.6** | 形位公差可创建 / 一站式出图流水线 `produce_drawing` | ✅ 已发布（0.6.1） |
 | **v0.7** | 排版能力（视图摆位/尺寸删减/注记/件号/图纸直线）+ 钣金 QC + 展开依据声明 | ✅ 已发布（0.7.0） |
-| **v0.8** | **BOM 明细栏可用**（10 行 4 列含数量列）+ 第四道静态防线 | ✅ 已发布（0.8.0–0.8.22） |
+| **v0.8** | **BOM 明细栏可用**（10 行 4 列含数量列）+ 第四道静态防线 | ✅ 已发布（0.8.0–0.8.23） |
 | v0.9 | 几何测距（最小折弯边/孔到折弯线）、尺寸精准筛选、图面利用率、形位公差符号 | 🔜 下一个 |
 | v1.0 | 接口冻结、多配置与显示状态、升级说明 | 远期 |
 
@@ -102,6 +102,7 @@ A3 最多 3 视图、批量读图必须逐张关闭、`material_library` 解析�
 | ~~v0.8.6 反馈收尾（补）~~ | ✅ 0.8.20：P2-9 `add_detail_view` 请求比例不再被父视图覆盖 + 空视图/比例被锁结构化报错、P2-10 形位公差符号格改中文文字 fallback（`GetFrameSymbols2` 回读校验，写不进就删框）、P2-11 表面粗糙度修正位置谎报（`SetPosition` + 回读）+ PDF 像素可见性自检；回归断言 24 → 27、smoke 30 → 31 |
 | ~~P1-4 剖切算法~~ | ✅ 0.8.21：`add_section_view` 支持模型坐标剖切面（`cut_plane_normal`/`cut_plane_origin`，按视图 outline 与零件包围盒尺寸匹配定轴，斜切/平行图面/歧义全部结构化拒绝）+ 默认 `verify_cut` 用「剖切不改变未切方向尺寸」做 sanity（切错返回 `section_suspicious`，空剖返回 `section_empty`）；回归断言 27 → 30 |
 | ~~P0-1 / P2-13 全面收尾~~ | ✅ 0.8.22：**P0-1** `get_sw` 用 18 ms 探针每 2 s 校验缓存、失败即丢；`call_method` 区分忙/断线（忙退避重试 2 次、断线丢缓存抛 `BridgeLost`）；新增 `ping` 工具做真实往返并报 `recovered`；未处理异常 flush stderr + 写日志；修掉 `_LAST_CALL` 无初值导致**首次失败**日志写不出。**P2-13** outline 单一真源：删死代码 `ink_outline`（三条取点路实测失败），投影轴推断与点命中改用 `precise_outline`，detail 视图返回 `precise_outline_m`；回归断言 30 → 34、smoke 31 → 32、工具 54 → 55 |
+| ~~v0.8.14 反馈（标注删除 / 自检可信度）~~ | ✅ 0.8.23：**P0** `delete_annotation` 成功判定改为跨**全部视图**计数（删尺寸不改变图纸视图计数，旧的只看 `GetFirstView` 会把成功报成 `delete_failed`），四类标注实测可删、`position_m` 可区分 19 个同名 `D1`；**P1-1** 直径判定改用 `dimension_type == 5`（`GetText()` 无槽号对尺寸返回空，Ø 计数曾恒为 0），`list_drawing_annotations` 补 `dimension_type` / `raw_text` / 解析后 `text`；**P1-3** `pypdfium2` / `Pillow` 升为硬依赖且提示点名解释器；**P2-5** `model_clean` 由 blocker 降为 pending；**P3-5** reconcile 剔除 0.0 草图约束值；回归断言 34 → 39 |
 
 ### v0.9 待做
 

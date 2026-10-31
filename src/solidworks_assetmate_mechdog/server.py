@@ -377,24 +377,33 @@ def delete_view(drawing_path: str, view_name: str, save: bool = True) -> str:
 
 
 @mcp.tool()
-def delete_annotation(drawing_path: str, name: str, save: bool = True) -> str:
-    """Delete one annotation (hole callout / GT / surface finish / note) by name.
+def delete_annotation(drawing_path: str, name: str, save: bool = True,
+                      position_m: list[float] | None = None) -> str:
+    """Delete one annotation (hole callout / GT / surface finish / note / dimension) by name.
 
-    Names come from `list_drawing_annotations` (e.g. "细节项目272"). The tool tries
-    ANNOTATION then DIMENSION selection, so dimensions work too.
+    Names come from `list_drawing_annotations` (e.g. "细节项目272"). All four kinds are
+    verified: note, geometric tolerance, surface finish and dimension. Success is measured
+    across every view, because deleting a dimension does not change the sheet's own count.
+
+    `position_m` disambiguates repeated names — SolidWorks reuses D1/D2/D3 per sketch, so
+    one sheet can hold eight annotations called "D1"; pass the position the listing reported.
     """
-    return _json(layout.delete_annotation(drawing_path, name, save=save))
+    return _json(layout.delete_annotation(drawing_path, name, save=save,
+                                          position_m=position_m))
 
 
 @mcp.tool()
 def move_annotation(drawing_path: str, name: str, x_m: float, y_m: float,
-                    save: bool = True) -> str:
+                    save: bool = True, position_m: list[float] | None = None) -> str:
     """Move an annotation or dimension to a sheet position in metres.
 
     Returns `requested` vs `position_after_m` separately — section and detail views keep
     projection alignment and may refuse the requested spot.
+
+    `position_m` disambiguates repeated names (see delete_annotation).
     """
-    return _json(layout.move_annotation(drawing_path, name, x_m, y_m, save=save))
+    return _json(layout.move_annotation(drawing_path, name, x_m, y_m, save=save,
+                                        position_m=position_m))
 
 
 @mcp.tool()

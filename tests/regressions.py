@@ -922,6 +922,117 @@ def assert_outline_has_single_truth():
     return "single deflated outline; ratio + hit test use it; ink_outline removed"
 
 
+def assert_delete_annotation_counts_all_views():
+    """0.8.23 — a successful DIMENSION delete was reported as `delete_failed`.
+
+    `doc.GetFirstView.GetAnnotations` is the SHEET, and its count does not change when a
+    dimension is removed (measured 2026-10-31: sheet stayed 83, 工程图视图1 went 8 -> 7,
+    total 122 -> 121). The old success test compared only the sheet, so a delete that had
+    worked answered failure — worse than failing, because it invites a pointless retry.
+    """
+    src = _read("tools/layout.py")
+    tree = ast.parse(src)
+    helper = _function_node(tree, "_annotation_total")
+    assert helper is not None, (
+        "_annotation_total is gone — the success test is back to counting the sheet alone")
+    hbody = ast.get_source_segment(src, helper) or ""
+    assert "_iter_views" in hbody and "GetAnnotations" in hbody, (
+        "the counter must sum every view, not just GetFirstView")
+    node = _function_node(tree, "delete_annotation")
+    body = ast.get_source_segment(src, node) or ""
+    assert "_annotation_total" in body, "delete_annotation does not use the all-view counter"
+    assert "GetFirstView.GetAnnotations" not in body, (
+        "delete_annotation is back to the sheet-only count")
+    assert "counted_scope" in body, "the receipt does not say what was counted"
+    args = [a.arg for a in node.args.args]
+    assert "position_m" in args, (
+        "no position_m: repeated D1/D2/D3 names cannot be told apart")
+    finder = ast.get_source_segment(src, _function_node(tree, "_find_annotation_by_name")) or ""
+    assert "position_m" in finder, "the finder ignores position_m"
+    move_args = [a.arg for a in _function_node(tree, "move_annotation").args.args]
+    assert "position_m" in move_args, "move_annotation cannot disambiguate either"
+    return "all-view count + position_m disambiguation"
+
+
+def assert_dimension_display_text_reads_value_slot():
+    """0.8.23 / P1-1 — `GetText()` with NO slot returns '' for a dimension.
+
+    The value and its display codes live in slot 1 (measured: GetText(0)='',
+    GetText(1)='<MOD-DIAM>', GetType=5 for a Ø20 dimension). Reading no slot made
+    delivery_check report "0 处 Ø 尺寸" on a sheet that printed Ø28/Ø23/Ø12/Ø18/Ø13, and
+    that false blocker downgraded the verdict to 仅供参考/未完成.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    resolver = _function_node(tree, "_resolve_display_text")
+    assert resolver is not None, "_resolve_display_text is gone"
+    rbody = ast.get_source_segment(src, resolver) or ""
+    assert "MOD-DIAM" in rbody and "Ø" in rbody, "the resolver no longer maps <MOD-DIAM> to Ø"
+    assert "DIM" in rbody, "the resolver does not fill the <DIM> value placeholder"
+    body = ast.get_source_segment(src, _function_node(tree, "list_drawing_annotations")) or ""
+    assert "GetText(index)" in body or "GetText(1)" in body, (
+        "list_drawing_annotations reads GetText() with no slot — dimensions come back empty")
+    assert "dimension_type" in body, "no dimension_type on dimension rows"
+    assert "raw_text" in body, "no raw_text on dimension rows"
+    delivery = ast.get_source_segment(src, _function_node(tree, "delivery_check")) or ""
+    assert "dimension_type" in delivery, (
+        "delivery_check still decides diameters from display text alone")
+    assert "== 5" in delivery, "the diameter type code (5) is not used"
+    assert "raw_text" in delivery, "no raw_text fallback for builds that report no type"
+    return "value slot 1 + dimension_type 5 + resolved text"
+
+
+def assert_render_dependency_is_hard():
+    """0.8.23 / P1-3 — the first render on a fresh install failed with missing_dependency.
+
+    Rendering is part of the self-check loop (PDF -> PNG -> look at it), not a nicety, and
+    the fix — installing into the SERVER's venv rather than the system Python — was not
+    discoverable. The deps ship with the package and the hint names the interpreter.
+    """
+    text = _read("../../pyproject.toml")
+    head = text.split("[project.optional-dependencies]")[0]
+    assert "pypdfium2" in head, (
+        "pypdfium2 is not a hard dependency — a fresh install still cannot render")
+    assert "Pillow" in head, "Pillow is not a hard dependency (PNG output + pixel diff need it)"
+    body = _read("tools/drawing.py")
+    assert "missing_dependency" in body, "the render guard is gone"
+    assert "_sys.executable" in body or "sys.executable" in body, (
+        "the missing_dependency hint does not name the interpreter that runs the server")
+    return "pypdfium2 + Pillow are hard dependencies; hint names sys.executable"
+
+
+def assert_model_clean_is_not_a_blocker():
+    """0.8.23 / P2-5 — a source model flagged needs_rebuild blocked the verdict forever.
+
+    This toolkit makes and checks drawings; it deliberately does not rebuild models, so a
+    blocker the caller cannot clear from inside it made 可制造 unreachable by construction.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "delivery_check")) or ""
+    marker = 'record("model_clean"'
+    assert marker in body, "the model_clean check is gone"
+    segment = body[body.index(marker):body.index(marker) + 360]
+    assert "blocking=False" in segment, (
+        "model_clean is still a blocker — the verdict can never reach 可制造 for a model "
+        "this toolkit cannot rebuild")
+    return "model_clean is a pending item, not a blocker"
+
+
+def assert_reconcile_skips_zero_constraints():
+    """0.8.23 / P3-5 — 0.0 "dimensions" are sketch relations, not lengths.
+
+    Counting them as gaps that no drawing can close inflated the coverage denominator and
+    made a clean sheet look incomplete. They are reported in their own bucket instead.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "reconcile_ledger")) or ""
+    assert "skipped_zero" in body, "zero-value ledger rows are not separated"
+    assert "skipped_zero_value" in body, "the receipt does not report them"
+    assert "comparable_dimensions" in body, "the coverage denominator is not explained"
+    assert "1e-9" in body, "the zero test is not a tolerance test"
+    return "0.0 constraints excluded from coverage and reported separately"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -957,6 +1068,11 @@ STATIC_REGRESSIONS = [
     ("0.8.22 com error classes", assert_com_failures_are_classified),
     ("0.8.22 ping + excepthook", assert_ping_and_excepthook_present),
     ("0.8.22 single outline truth", assert_outline_has_single_truth),
+    ("0.8.23 delete counts all views", assert_delete_annotation_counts_all_views),
+    ("0.8.23 dimension text slot", assert_dimension_display_text_reads_value_slot),
+    ("0.8.23 render deps hard", assert_render_dependency_is_hard),
+    ("0.8.23 model_clean not blocker", assert_model_clean_is_not_a_blocker),
+    ("0.8.23 reconcile zero filter", assert_reconcile_skips_zero_constraints),
 ]
 
 

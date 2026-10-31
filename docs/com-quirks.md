@@ -976,3 +976,54 @@ detail 视图差值 11.92 mm。
 
 注意 `ISheet` / `GetFirstView.GetOutline` 是**精确的**（实测 420×297 mm），不受该偏移
 影响——所以像素映射（`px = x / sheet_w * W`）不用改。
+
+## 十九、标注删除的成功判定与尺寸显示文本（0.8.23，P0 / P1-1 / P3-3）
+
+### 删除成功不能只看图纸视图的注解数
+
+`doc.GetFirstView` 是**图纸**（Type 1），它的 `GetAnnotations` 数量在删除**尺寸**时
+**不变**——尺寸属于模型视图。实测（2026-10-31，灌装阀阀体）：
+
+| 时机 | 图纸1 | 工程图视图1 | 全视图合计 |
+|---|---|---|---|
+| 删除前 | 83 | 8 | 122 |
+| 删掉一个 D1 后 | **83（不变）** | **7** | **121** |
+
+所以 `removed = after < before` 若只比图纸，会把**成功的删除报成 `delete_failed`**——
+比失败更糟：调用方会重试，然后误以为"这工具删不掉"。现在改为跨全部视图求和，
+并在回执里写 `counted_scope: all_views`。
+
+附带一个更隐蔽的事实：`IAnnotation.Select(False)` 对尺寸**是有效的**
+（`GetSelectedObjectCount2` 返回 1），`EditDelete` **也确实删掉了**。v0.8.14 之所以
+"四类全失效"，根因与类型无关——`_find_annotation_by_name` 里写了未导入的
+`call_method`，`NameError` 被外层 `except` 吞成"没有候选"，于是对**刚被列出过的名字**
+回 `annotation_not_found`。
+
+**重名**：SolidWorks 按草图复用 `D1`/`D2`/`D3`，一张图实测有 **19 个 `D1`**。
+`delete_annotation` / `move_annotation` 现在接受 `position_m`，用
+`list_drawing_annotations` 报告的位置精确定位具体那一个。
+
+### 尺寸的显示文本在槽 1，不是 `GetText()`
+
+| 调用 | Ø20 直径尺寸 | 线性尺寸 |
+|---|---|---|
+| `IDisplayDimension.GetText()` | `''` | `''` |
+| `GetText(0)` | `''` | `''` |
+| `GetText(1)` | **`'<MOD-DIAM>'`** | `''` |
+| `GetText(2)` | `''` | `''` |
+| `GetType` | **5** | 2 |
+
+`GetText()` 不带槽号对尺寸返回空串——尺寸的值与格式码都在**槽 1**。
+`delivery_check` 之前用"文本里有没有 `Ø` / `MOD-DIAM`"判直径，于是恒为 0 处，
+把一张印着 Ø28/Ø23/Ø12/Ø18/Ø13 的图判成「仅供参考/未完成」。
+
+现在两条路并用：`dimension_type`（`IDisplayDimension.GetType`，5 = 直径）作主判据，
+`raw_text`（槽 1 原文）+ 解析后 `text`（`<MOD-DIAM>`→`Ø`、`<DIM>`→数值）作兜底。
+实测 38 个尺寸里 18 个 `dimension_type == 5`，`delivery_check` 从「0 处 Ø 尺寸」
+变为「17 处 Ø 尺寸」。
+
+### 0.0 不是长度
+
+`reconcile_ledger` 会把值为 0.0 的台账项当成"图纸缺项"，但 0.0 是草图几何关系/约束值，
+任何图纸都标不出来。现在分离到 `skipped_zero_value`，覆盖率分母改用
+`comparable_dimensions`（实测 45 个台账项里 2 个是 0.0 → 43 个可比项）。

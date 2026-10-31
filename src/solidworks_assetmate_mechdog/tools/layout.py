@@ -515,7 +515,27 @@ def add_bom_table(drawing_path, view_name=None, configuration="Default",
 DELETABLE_SELECT_TYPES = ("NOTE", "GTOL", "SFSYMBOL", "DIMENSION", "ANNOTATION")
 
 
-def _find_annotation_by_name(doc, name):
+def _annotation_total(doc):
+    """Annotation count summed over EVERY view.
+
+    The v0.8.14 report's P0 was partly a measurement bug: `doc.GetFirstView.GetAnnotations`
+    is the SHEET, and its count does not change when a DIMENSION is deleted, because
+    dimensions belong to the model views. Comparing only the sheet made a successful
+    delete answer `delete_failed`. Measured 2026-10-31 on a real sheet: the sheet stayed at
+    83 while 工程图视图1 went 8 -> 7 and the total went 122 -> 121.
+    """
+    total = 0
+    counted = False
+    for view in _iter_views(doc):
+        try:
+            total += len(list(view.GetAnnotations or ()))
+            counted = True
+        except Exception:
+            continue
+    return total if counted else None
+
+
+def _find_annotation_by_name(doc, name, position_m=None):
     """Return (annotation, position_m) for an annotation with this reported name.
 
     Iterates EVERY view, not just the first one. `doc.GetFirstView` is the sheet, and its
@@ -524,6 +544,10 @@ def _find_annotation_by_name(doc, name):
     list_drawing_annotations, e.g. "细节项目256", does appear here). Sweeping all views is
     still the correct approach: it costs one extra loop and covers the case where an
     annotation belongs to a model view.
+
+    `position_m` disambiguates repeated names: SolidWorks names dimensions D1/D2/D3 per
+    sketch, so one sheet can hold eight annotations called "D1". Passing the position that
+    list_drawing_annotations reported selects that specific one instead of the first hit.
     """
     import win32com.client
     try:
@@ -540,9 +564,17 @@ def _find_annotation_by_name(doc, name):
         for raw in candidates:
             annotation = win32com.client.Dispatch(raw)
             try:
-                if str(annotation.GetName) == name:
-                    position = [float(v) for v in annotation.GetPosition]
-                    return annotation, position
+                if str(annotation.GetName) != name:
+                    continue
+                position = [float(v) for v in annotation.GetPosition]
+                if position_m is not None:
+                    try:
+                        if not all(abs(position[i] - float(position_m[i])) <= 1e-3
+                                   for i in range(2)):
+                            continue
+                    except Exception:
+                        continue
+                return annotation, position
             except Exception:
                 continue
     except Exception:
@@ -606,23 +638,34 @@ def delete_view(drawing_path, view_name, save=True):
         return error("delete_view_failed", str(exc))
 
 
-def delete_annotation(drawing_path, name, save=True):
+def delete_annotation(drawing_path, name, save=True, position_m=None):
     """Delete one annotation by name (broken hole callout, unwanted GT, stray note).
 
     Uses `IAnnotation.Select(False)` then EditDelete. Measured on a real sheet:
     Select3 returned False and selected nothing; Select(False) selected exactly one object
-    and EditDelete removed it (82 -> 81 annotations). SelectByID2 with the reported name
-    never worked either — `<unknown>`-style names like "细节项目34" are not resolvable ids.
+    and EditDelete removed it. SelectByID2 with the reported name never worked either —
+    `<unknown>`-style names like "细节项目34" are not resolvable ids.
+
+    All four kinds were re-verified on 2026-10-31 against a report that claimed every type
+    failed: note, geometric tolerance, surface finish and dimension all delete. Dimensions
+    are the reason the success test now counts EVERY view instead of the sheet: deleting a
+    dimension leaves the sheet's own annotation count untouched, so the old check answered
+    `delete_failed` for a delete that had worked (sheet stayed 83, 工程图视图1 went 8 -> 7).
+
+    `position_m` selects among repeated names — SolidWorks reuses D1/D2/D3 per sketch, so
+    one sheet can hold eight annotations called "D1". Pass the `position_m` that
+    `list_drawing_annotations` reported for the one you mean.
     """
     try:
         from ..sw_session import error
 
         doc = _open_drawing(drawing_path)
         doc.ClearSelection2(True)
-        annotation, position = _find_annotation_by_name(doc, name)
+        annotation, position = _find_annotation_by_name(doc, name, position_m)
         if annotation is None:
             return error("annotation_not_found",
-                         "no annotation named %r on this sheet" % name,
+                         "no annotation named %r%s on this sheet"
+                         % (name, " at %r" % (position_m,) if position_m else ""),
                          "list names first with list_drawing_annotations")
         try:
             selected = annotation.Select(False)
@@ -637,31 +680,33 @@ def delete_annotation(drawing_path, name, save=True):
                          "Select(False) did not select %r" % name,
                          "selected count=%r" % count)
 
-        before = None
-        try:
-            before = len(list(doc.GetFirstView.GetAnnotations or ()))
-        except Exception:
-            pass
+        before = _annotation_total(doc)
         _call_method(doc, "EditDelete")
         try:
             _call_method(doc, "EditRebuild3")
         except Exception:
             pass
-        after = None
-        try:
-            after = len(list(doc.GetFirstView.GetAnnotations or ()))
-        except Exception:
-            pass
+        after = _annotation_total(doc)
         doc.ClearSelection2(True)
-        removed = (before is not None and after is not None and after < before)
-        if before is not None and after is not None and not removed:
+        removed = bool(before is not None and after is not None and after < before)
+        if not removed and position is not None:
+            # Fallback: a view can hand back a cached annotation list, leaving the total
+            # unchanged. Re-find the exact object instead of trusting the count.
+            again, again_position = _find_annotation_by_name(doc, name, position)
+            if again is None or again_position is None:
+                removed = True
+            else:
+                removed = not all(abs(again_position[i] - position[i]) <= 1e-3
+                                  for i in range(2))
+        if not removed and before is not None and after is not None:
             return error("delete_failed",
                          "EditDelete did not remove %r" % name,
-                         "annotation count %s -> %s" % (before, after))
+                         "annotation count %s -> %s (all views)" % (before, after))
         if save:
             _save_drawing(doc)
         return drawing_ok(deleted=name, removed=removed,
                           annotations_before=before, annotations_after=after,
+                          counted_scope="all_views",
                           position_m=[round(v, 4) for v in position] if position else None,
                           saved=bool(save))
     except (FileNotFoundError, ValueError) as exc:
@@ -670,18 +715,23 @@ def delete_annotation(drawing_path, name, save=True):
         return error("delete_annotation_failed", str(exc))
 
 
-def move_annotation(drawing_path, name, x_m, y_m, save=True):
+def move_annotation(drawing_path, name, x_m, y_m, save=True, position_m=None):
     """Move an annotation or dimension to a sheet position (metres).
 
     Dimensions pile up on the centre line when auto_dimension runs on a section view; there
     was no way to pull them apart, which made the output unreadable.
+
+    `position_m` selects among repeated names (SolidWorks reuses D1/D2/D3 per sketch) —
+    pass the position `list_drawing_annotations` reported. Verified on 2026-10-31 for a
+    note: `move_annotation` returned the new position, which a v0.8.14 report said was
+    impossible.
     """
     try:
         from ..sw_session import byref_dispatch_null, error
 
         doc = _open_drawing(drawing_path)
         doc.ClearSelection2(True)
-        annotation, before = _find_annotation_by_name(doc, name)
+        annotation, before = _find_annotation_by_name(doc, name, position_m)
         if annotation is None:
             return error("annotation_not_found",
                          "no annotation named %r on this sheet" % name,

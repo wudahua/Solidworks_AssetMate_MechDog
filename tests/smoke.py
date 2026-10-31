@@ -543,9 +543,61 @@ def main():
             placed = require(layout.set_dimension_position(drw, dim_name, 0.20, 0.20))
             for key in ("dimension_value_mm", "position_after_m", "requested", "applied"):
                 assert key in placed, "set_dimension_position missing %r: %r" % (key, placed)
+            # 0.8.23 / P1-1: dimension rows must carry the VALUE SLOT. GetText() with no
+            # slot returns '' for a dimension (the codes live in slot 1), which made
+            # delivery_check report "0 处 Ø 尺寸" on a sheet that visibly printed diameters.
+            typed = [r for r in dim_rows if r.get("dimension_type") is not None]
+            assert len(typed) == len(dim_rows), (
+                "dimension rows missing dimension_type: %d of %d"
+                % (len(typed), len(dim_rows)))
+            assert any(r.get("raw_text") for r in dim_rows), (
+                "no dimension reported raw_text — value slot 1 is not being read")
+            diameters = [r for r in dim_rows if int(r["dimension_type"]) == 5]
+            if diameters:
+                assert any("Ø" in str(r.get("text") or "") for r in diameters), (
+                    "diameter rows do not resolve <MOD-DIAM> to Ø")
+            # 0.8.23 / P0: a DIMENSION delete must be confirmed across ALL views — the
+            # sheet's own count does not move when a dimension is removed.
+            # Re-list first: set_dimension_position just moved dim_name, so the position
+            # recorded above is stale (deleting by a stale position is exactly the
+            # annotation_not_found this test must not confuse with a real defect).
+            refreshed = require(drawing.list_drawing_annotations(drw))
+            fresh = [r for r in (refreshed.get("annotations") or [])
+                     if r.get("kind") == "dimension" and r.get("position_m")
+                     and r.get("name") != dim_name]
+            victim = fresh[0] if fresh else None
+            if victim:
+                res = require(layout.delete_annotation(
+                    drw, victim["name"], position_m=victim["position_m"]))
+                assert res.get("removed") is True, (
+                    "DIMENSION delete not confirmed: %r" % res)
+                assert res.get("counted_scope") == "all_views", (
+                    "delete_annotation still counts only the sheet: %r" % res)
         pruned = require(layout.delete_dimensions(drw, view_name="__SMOKE_NO_VIEW__"))
         for key in ("removed", "kept", "failed"):
             assert key in pruned, "delete_dimensions missing %r bucket" % key
+
+        # 0.8.23 / P0: geometric tolerance and surface finish must delete too — all four
+        # kinds are the acceptance criterion of the v0.8.14 report.
+        gt = drawing.add_geometric_tolerance(drw, 0.30, 0.22)
+        if gt.get("ok"):
+            gt_rows = [a for a in (require(drawing.list_drawing_annotations(drw))
+                                   .get("annotations") or [])
+                       if a.get("kind") == "geometric_tolerance"]
+            if gt_rows:
+                res = require(layout.delete_annotation(
+                    drw, gt_rows[0]["name"], position_m=gt_rows[0].get("position_m")))
+                assert res.get("removed") is True, "GTOL delete not confirmed: %r" % res
+        sf = drawing.add_surface_finish(drw, 0.34, 0.22, "3.2")
+        if sf.get("ok"):
+            sf_rows = [a for a in (require(drawing.list_drawing_annotations(drw))
+                                   .get("annotations") or [])
+                       if a.get("kind") == "surface_finish"]
+            if sf_rows:
+                res = require(layout.delete_annotation(
+                    drw, sf_rows[0]["name"], position_m=sf_rows[0].get("position_m")))
+                assert res.get("removed") is True, (
+                    "surface finish delete not confirmed: %r" % res)
 
         # set_view: position readback must reflect the request (or say why it did not)
         views = [v for v in drawing._iter_views(drawing._open_drawing(drw))
@@ -924,8 +976,43 @@ def main():
             raise FixtureMissing("drawing chain output smoke.SLDDRW (needs drawing chain)")
         rec = drawing.reconcile_ledger(part, drw)
         assert rec.get("ok") is not None, "reconcile_ledger returned no verdict"
+        # 0.8.23 / P3-5: 0.0 entries are sketch constraints, not lengths — they must not sit
+        # in unmatched_ledger nor inflate the coverage denominator.
+        if rec.get("ok"):
+            zero = int(rec.get("skipped_zero_value") or 0)
+            assert "comparable_dimensions" in rec, (
+                "reconcile_ledger does not report the comparable denominator")
+            assert int(rec.get("comparable_dimensions") or 0) == (
+                int(rec.get("ledger_dimensions") or 0) - zero), (
+                "comparable_dimensions != ledger_dimensions - skipped_zero_value")
+            leftovers = [r for r in (rec.get("unmatched_ledger") or [])
+                         if abs(float(r.get("value_mm") or 1)) < 1e-9]
+            assert not leftovers, "0.0 constraints are still listed as missing items"
         verdict = drawing.delivery_check(part, drw)
         assert verdict.get("ok") is not None, "delivery_check returned no verdict"
+        # 0.8.23 / P2-5: model_clean must never be a blocker — this toolkit cannot rebuild
+        # a model, so a blocker there makes 可制造 unreachable by construction.
+        blocker_names = [b.get("check") for b in (verdict.get("blockers") or [])]
+        assert "model_clean" not in blocker_names, (
+            "model_clean is a blocker again: %r" % blocker_names)
+        # 0.8.23 / P1-1: Ø counting comes from dimension_type, not display text. If any row
+        # says dimension_type==5, the delivery check must not report zero diameters.
+        hole = (verdict.get("checks") or {}).get("hole_callouts") or {}
+        detail = str(hole.get("detail") or "")
+        if hole and "Ø 尺寸" in detail:
+            listing = drawing.list_drawing_annotations(drw)
+            dims = [r for r in (listing.get("annotations") or [])
+                    if r.get("kind") == "dimension"]
+            diameters = [r for r in dims if int(r.get("dimension_type") or -1) == 5]
+            if diameters:
+                try:
+                    counted = int("".join(
+                        ch for ch in detail.split("+")[1] if ch.isdigit()) or 0)
+                except Exception:
+                    counted = -1
+                assert counted > 0, (
+                    "delivery_check reports 0 Ø dimensions while %d rows have "
+                    "dimension_type==5: %r" % (len(diameters), detail))
         return "reconcile ok=%r, delivery ok=%r, verdict=%r" % (
             rec.get("ok"), verdict.get("ok"), verdict.get("verdict"))
 

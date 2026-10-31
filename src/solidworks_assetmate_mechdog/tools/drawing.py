@@ -781,8 +781,17 @@ def render_drawing(pdf_path, output_dir=None, scale=2.0):
         try:
             import pypdfium2 as pdfium
         except ImportError:
-            return error("missing_dependency", "pypdfium2 is required to render PDF pages",
-                         "Install with: pip install pypdfium2")
+            import sys as _sys
+
+            # A report noted the obvious-looking fix (install into the system Python) does
+            # nothing, because the MCP host runs this server from its own venv. Naming the
+            # exact interpreter removes the guesswork.
+            return error(
+                "missing_dependency", "pypdfium2 is required to render PDF pages",
+                "Install it into the interpreter that RUNS this server, not the system "
+                "Python: \"%s\" -m pip install pypdfium2 . Since 0.8.23 it is a hard "
+                "dependency, so reinstalling this package also fixes it."
+                % _sys.executable)
         out_dir = os.path.abspath(output_dir) if output_dir else os.path.dirname(pdf_path)
         os.makedirs(out_dir, exist_ok=True)
         stem = os.path.splitext(os.path.basename(pdf_path))[0]
@@ -2965,6 +2974,55 @@ TEMPLATE_TEXT = {
     "共 张", "第 张", "图样名称", "图样代号", "材料", "数量", "更改单号",
 }
 
+# SolidWorks display format codes that reach us through IDisplayDimension.GetText(slot).
+# `GetText()` with NO slot returns '' for a dimension; the value and its codes live in
+# slot 1 (measured 2026-10-31: a Ø20 dimension answers GetText(0)='' and
+# GetText(1)='<MOD-DIAM>'). Downstream code that only reads GetText() therefore concludes
+# "this drawing has no diameter dimension" on a sheet full of Ø28/Ø23/… — that is exactly
+# what delivery_check reported as P1-1.
+DISPLAY_CODE_MAP = {
+    "<MOD-DIAM>": "Ø",
+    "<MOD-RAD>": "R",
+    "<MOD-DEG>": "°",
+    "<MOD-PM>": "±",
+    "<MOD-SQ>": "□",
+    "<MOD-SPH>": "S",
+}
+
+
+def _resolve_display_text(raw_text, value_mm=None):
+    """Turn display format codes into what the sheet actually prints (P3-3 / P1-1).
+
+    Returns the human-readable string. Callers keep the original as `raw_text` so a
+    mismatch between code and rendering stays visible instead of being papered over.
+    `<DIM>` is the value placeholder; when `value_mm` is known it is filled in, which is
+    how "Ø20" is reconstructed from "<MOD-DIAM>" + SystemValue.
+    """
+    text = str(raw_text or "")
+    if not text:
+        return None
+    upper = text.upper()
+    for code, symbol in DISPLAY_CODE_MAP.items():
+        if code in upper:
+            start = 0
+            while True:
+                index = upper.find(code, start)
+                if index < 0:
+                    break
+                text = text[:index] + symbol + text[index + len(code):]
+                upper = text.upper()
+                start = index + len(symbol)
+    if "<DIM>" in upper and value_mm is not None:
+        number = ("%.3f" % float(value_mm)).rstrip("0").rstrip(".")
+        start = 0
+        while True:
+            upper = text.upper()
+            index = upper.find("<DIM>")
+            if index < 0:
+                break
+            text = text[:index] + number + text[index + 5:]
+    return text or None
+
 
 def list_drawing_annotations(drawing_path, view_name=None):
     """Inventory every annotation on the sheet, classified by kind.
@@ -3100,16 +3158,49 @@ def list_drawing_annotations(drawing_path, view_name=None):
                     except Exception:
                         pass
                 if kind in ("dimension", "hole_callout"):
+                    dimension_value = None
+                    specific = None
                     try:
-                        dim = ann.GetSpecificAnnotation.GetDimension2(0)
+                        specific = ann.GetSpecificAnnotation
+                        dim = specific.GetDimension2(0)
                         if dim is not None:
-                            row["value_mm"] = round(float(dim.SystemValue) * 1000, 3)
+                            dimension_value = round(float(dim.SystemValue) * 1000, 3)
+                            row["value_mm"] = dimension_value
                             try:
                                 row["tolerance_type"] = int(dim.GetToleranceType)
                             except Exception:
                                 pass
                     except Exception:
-                        pass
+                        specific = None
+                    if specific is not None:
+                        # P1-1 / P3-3: `GetText()` with NO slot returns '' for a dimension —
+                        # the value and its display codes live in slot 1 (measured
+                        # 2026-10-31: a Ø20 dimension answers GetText(0)='' and
+                        # GetText(1)='<MOD-DIAM>'). Reading no slot meant every plain
+                        # dimension looked text-less, so delivery_check counted 0 Ø
+                        # dimensions on a sheet that visibly printed Ø28/Ø23/Ø12/Ø18/Ø13.
+                        try:
+                            row["dimension_type"] = int(specific.GetType)
+                        except Exception:
+                            pass
+                        if kind == "dimension":
+                            raw_value_text = ""
+                            for index in (1, 0, 2):
+                                try:
+                                    probe = str(specific.GetText(index) or "")
+                                except Exception:
+                                    probe = ""
+                                if probe:
+                                    raw_value_text = probe
+                                    break
+                            if raw_value_text:
+                                row["raw_text"] = raw_value_text
+                                resolved = _resolve_display_text(
+                                    raw_value_text, dimension_value)
+                                if resolved:
+                                    row["text"] = resolved
+                                if "<MOD-" in raw_value_text.upper():
+                                    row["text_is_format_code"] = True
                 if kind == "note":
                     try:
                         text = ann.GetSpecificAnnotation.GetText
@@ -3224,8 +3315,14 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         model_stats = led.get("stats") or {}
         record("model_readable", True, "类别 %s" % led.get("category"))
         doubts = led.get("doubts") or []
+        # P2-5: this tool makes and checks drawings; it deliberately does NOT rebuild
+        # models. A source part SolidWorks flags as needing a rebuild is not a drawing
+        # defect, yet it was a BLOCKER the caller could never clear from inside this
+        # toolkit — so the verdict could never reach 可制造. It stays visible as a pending
+        # item instead of a blocker.
         record("model_clean", not doubts,
-               "; ".join(str(d.get("kind")) for d in doubts) or None)
+               "; ".join(str(d.get("kind")) for d in doubts) or None,
+               blocking=False)
 
         # ---- drawing side -----------------------------------------------------
         audit = drawing_audit(drawing_path)
@@ -3267,8 +3364,18 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             holes_in_drawing = int(totals.get("hole_callout", holes_in_drawing) or 0)
             diameter_dims = 0
             for row in anns.get("annotations") or []:
-                text = str(row.get("text") or "")
-                if row.get("kind") == "dimension" and ("Ø" in text or "MOD-DIAM" in text.upper()):
+                if row.get("kind") != "dimension":
+                    continue
+                # P1-1: never decide this from display text alone. `GetText()` with no
+                # slot returns '' for a dimension, so the old text test found 0 diameters
+                # on a sheet that printed Ø28/Ø23/Ø12/Ø18/Ø13. The reliable signal is the
+                # dimension type (5 = diameter, measured 2026-10-31); the raw value-slot
+                # string stays as a fallback for builds that report no type.
+                if int(row.get("dimension_type") or -1) == 5:
+                    diameter_dims += 1
+                    continue
+                marker = (str(row.get("raw_text") or "") + str(row.get("text") or "")).upper()
+                if "Ø" in marker or "MOD-DIAM" in marker:
                     diameter_dims += 1
             covered = holes_in_drawing + diameter_dims
             record("hole_callouts", covered > 0,
@@ -3950,10 +4057,16 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
                     "dimension_type": kind,
                 })
 
-        matched, unmatched = [], []
+        matched, unmatched, skipped_zero = [], [], []
         for row in ledger_rows:
             value = row.get("value_mm")
             if value is None:
+                continue
+            # P3-5: a 0.0 "dimension" is a sketch relation/constraint value, not a length —
+            # no drawing can dimension it, so reporting it as a missing item is a false
+            # gap. It is kept in its own bucket rather than silently dropped.
+            if abs(float(value)) < 1e-9:
+                skipped_zero.append(row)
                 continue
             hit = next((v for v in sheet_values if abs(v - value) <= tol), None)
             if hit is None:
@@ -3961,7 +4074,9 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
             else:
                 matched.append(dict(row, drawing_value_mm=hit))
 
-        ledger_values = {round(r["value_mm"], 2) for r in ledger_rows if r.get("value_mm") is not None}
+        ledger_values = {round(r["value_mm"], 2) for r in ledger_rows
+                         if r.get("value_mm") is not None
+                         and abs(float(r["value_mm"])) > 1e-9}
         sheet_only = [v for v in sheet_values
                       if not any(abs(v - lv) <= tol for lv in ledger_values)]
 
@@ -3976,20 +4091,27 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
             drawing_dimensions=len(sheet_values),
             matched=len(matched),
             unmatched_count=len(unmatched),
-            coverage=round(len(matched) / len(ledger_rows), 3) if ledger_rows else None,
+            coverage=(round(len(matched) / (len(ledger_rows) - len(skipped_zero)), 3)
+                      if (len(ledger_rows) - len(skipped_zero)) else None),
             unmatched_by_feature={
                 k: sorted({round(v, 2) for v in vals if v is not None})
                 for k, vals in sorted(by_feature.items())
             },
             skipped_non_length=len(skipped_non_length),
             skipped_oversize=len(skipped_oversize),
+            # 0.0 entries are sketch relations, not lengths: excluded from coverage so the
+            # ratio measures what a drawing could actually dimension (P3-5).
+            skipped_zero_value=len(skipped_zero),
+            zero_value_examples=skipped_zero[:6],
+            comparable_dimensions=len(ledger_rows) - len(skipped_zero),
             oversize_examples=skipped_oversize[:6],
             skipped_examples=skipped_non_length[:8],
             unmatched_ledger=unmatched[:60],
             drawing_only_values=sheet_only[:40],
             note="unmatched_ledger 是「台账有、图纸没有对应值」的候选缺项；"
                  "drawing_only_values 是图上有但台账没有的（多为投影尺寸或参考尺寸）。"
-                 "投影关系会让同一尺寸在不同视图取值不同，因此按值匹配只能作为待确认清单。",
+                 "投影关系会让同一尺寸在不同视图取值不同，因此按值匹配只能作为待确认清单。"
+                 "skipped_zero_value 是 0.0 的草图约束值，不是长度，已从覆盖率分母剔除。",
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

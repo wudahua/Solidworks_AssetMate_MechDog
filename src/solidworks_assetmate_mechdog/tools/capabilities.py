@@ -88,18 +88,37 @@ CAPABILITIES = [
     {
         "id": "delete_annotation",
         "status": "verified",
-        "summary": "删除/移动标注（按 name）",
-        "why": ("`delete_view` 与 `delete_annotation` / `move_annotation` 均可用；"
-                "`set_dimension_position`（0.8.19）只对尺寸生效（GetType==4），会拒绝"
-                "note/GTOL/粗糙度，避免名字打错时移动错对象，并回读尺寸值与前后位置。"
+        "summary": "删除/移动标注（按 name；可用 position_m 区分重名）",
+        "why": ("四类标注均已实测可删：note / 形位公差 / 表面粗糙度 / 尺寸，note 也已实测可移。"
                 "关键是用 `IAnnotation.Select(False)` 选中——`Select3` 返回 False、"
                 "`SelectByID2` 对「细节项目34」这类名字根本解析不到。"
-                "删除后回读 annotation 计数确认（82 → 81），不只信 EditDelete 的返回值。"),
-        "workaround": ("按 name 操作前先用 `list_drawing_annotations` 取名字——"
-                       "名字是 `细节项目N` 形式，每次建图编号不同，不能硬编码。"),
-        "evidence": ("2026-10-30 实测：delete 82→81 removed=True；"
-                     "move [0.005,0.057]→[0.16,0.16] applied=True；"
-                     "0.8.19 set_dimension_position 单尺寸移动 + 类型守卫 smoke 覆盖。"),
+                "**成功判定必须跨全部视图计数**：删除尺寸不改变图纸视图自身的注解数"
+                "（实测图纸恒 83、工程图视图1 从 8→7、总数 122→121），只看 `GetFirstView` "
+                "会把成功的删除误报成 `delete_failed`。"
+                "SolidWorks 按草图复用 D1/D2/D3，一张图可能有 19 个同名 `D1`，"
+                "这时传 `position_m` 指定具体那一个。"),
+        "workaround": ("按 name 操作前先用 `list_drawing_annotations` 取名与 `position_m`——"
+                       "名字是 `细节项目N` 形式，每次建图编号不同，不能硬编码；"
+                       "重名尺寸务必带 `position_m`"),
+        "evidence": ("2026-10-31 实测：note 移到 [0.045,0.15] 生效；GTOL 删除 125→124、"
+                     "SFSYMBOL 删除、DIMENSION 删除 123→122 全部 removed=True；"
+                     "重名 D1 用两组 position 分别定位到不同对象。"),
+    },
+    {
+        "id": "dimension_display_text",
+        "status": "verified",
+        "summary": "尺寸的显示文本与类型（值槽是 GetText(1)，不是 GetText()）",
+        "why": ("`IDisplayDimension.GetText()` **不带槽号返回空串**——尺寸的值与格式码在槽 1："
+                "实测 Ø20 尺寸 `GetText(0)=''`、`GetText(1)='<MOD-DIAM>'`、"
+                "`GetType=5`（直径；线性尺寸为 2）。0.8.23 起 `list_drawing_annotations` "
+                "对尺寸返回 `dimension_type`、`raw_text`（原始槽 1）与解析后的 `text`"
+                "（`<MOD-DIAM>`→`Ø`、`<DIM>`→数值）；`delivery_check` 的 Ø 判定改用 "
+                "`dimension_type`，不再依赖显示文本。此前正因只读 `GetText()`，"
+                "一张印着 Ø28/Ø23/Ø12/Ø18/Ø13 的图被判「0 处 Ø 尺寸」并降级 verdict。"),
+        "workaround": ("判断是否直径看 `dimension_type == 5`；要比对文字用 `text`；"
+                       "要核对原始编码用 `raw_text`"),
+        "evidence": ("2026-10-31 实测：38 个尺寸里 18 个 `dimension_type==5`，解析后 text 为 Ø；"
+                     "`delivery_check` 的 hole_callouts 由「0 处 Ø 尺寸」变为「17 处 Ø 尺寸」"),
     },
     {
         "id": "annotation_write",
