@@ -1154,6 +1154,30 @@ def assert_title_block_reports_cell():
     return "receipt names each title-block cell and its position"
 
 
+def assert_runtime_identifies_the_running_copy():
+    """0.8.24 — a version number cannot tell WHICH copy is running.
+
+    A report spent a round chasing fixes already in the repo: the MCP host pointed at an
+    editable install of an older copy while the tree held a newer one, with three source
+    directories side by side. `runtime_info()` echoes the package path and interpreter, and
+    both `ping` and `check_capabilities` surface it.
+    """
+    session_src = _read("sw_session.py")
+    node = _function_node(ast.parse(session_src), "runtime_info")
+    assert node is not None, "runtime_info is gone"
+    body = ast.get_source_segment(session_src, node) or ""
+    for want in ("server_path", "python_executable", "server_version", "pid"):
+        assert want in body, "runtime_info does not report %r" % want
+    assert "__file__" in body, "runtime_info does not resolve the package location"
+    ping_body = ast.get_source_segment(
+        session_src, _function_node(ast.parse(session_src), "ping")) or ""
+    assert "runtime_info" in ping_body, "ping does not say which copy is running"
+    caps = _read("tools/capabilities.py")
+    assert "server_path" in caps, "check_capabilities omits the running package path"
+    assert "python_executable" in caps, "check_capabilities omits the interpreter"
+    return "runtime path + interpreter surfaced by ping and check_capabilities"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -1200,6 +1224,7 @@ STATIC_REGRESSIONS = [
     ("0.8.24 layout avoids notes", assert_layout_dimensions_avoids_notes),
     ("0.8.24 note avoidance", assert_add_note_can_avoid_collisions),
     ("0.8.24 title block cell", assert_title_block_reports_cell),
+    ("0.8.24 runtime identity", assert_runtime_identifies_the_running_copy),
 ]
 
 

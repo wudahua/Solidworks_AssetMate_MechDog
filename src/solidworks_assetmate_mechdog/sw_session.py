@@ -377,6 +377,34 @@ def call_method(obj, name, *args):
     raise last if last is not None else RuntimeError("call_method exhausted retries")
 
 
+def runtime_info():
+    """Report WHICH copy of this package is actually running, not just its version.
+
+    A report burned a whole round chasing fixes that were already in the repository: the MCP
+    host pointed at an editable install of an older copy (0.8.14) while the working tree held
+    a newer one, and three source directories existed side by side. A version number alone
+    cannot settle that — the path can. Echoed by `check_capabilities` and `ping`.
+    """
+    import sys
+
+    info = {"server_version": None, "server_path": None,
+            "python_executable": None, "python_version": None, "pid": None}
+    try:
+        import solidworks_assetmate_mechdog as package
+
+        info["server_version"] = getattr(package, "__version__", None)
+        info["server_path"] = os.path.dirname(os.path.abspath(package.__file__))
+    except Exception:
+        pass
+    try:
+        info["python_executable"] = sys.executable
+        info["python_version"] = sys.version.split()[0]
+        info["pid"] = os.getpid()
+    except Exception:
+        pass
+    return info
+
+
 def ping():
     """Cheap liveness report: is the bridge alive, and is SolidWorks answering?
 
@@ -397,6 +425,8 @@ def ping():
         "bridge": None,
         "probe_interval_s": LIVENESS_PROBE_INTERVAL_S,
         "recovered": False,
+        # Which copy is running — see runtime_info() for why the path matters.
+        "runtime": runtime_info(),
     }
     for attempt in (0, 1):
         try:

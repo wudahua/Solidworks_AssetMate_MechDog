@@ -312,7 +312,7 @@ def check_capabilities(operation=None):
     Call this before a long pipeline. It answers in milliseconds what would otherwise cost
     a full SolidWorks run to discover.
     """
-    from ..sw_session import error, ok, sw_version
+    from ..sw_session import error, ok, runtime_info, sw_version
 
     entries = CAPABILITIES
     if operation:
@@ -332,11 +332,18 @@ def check_capabilities(operation=None):
         row["status_label"] = STATUS_LABEL.get(item["status"], item["status"])
         payload.append(row)
 
+    # Version context belongs in the answer: "verified" means verified on one SolidWorks
+    # build, and bom_table is SW2024 SP4 only. The PATH matters just as much — several copies
+    # of this package can coexist on one machine, and an editable install pinned to an old
+    # checkout is exactly what once sent a report after fixes that were already in the repo.
+    runtime = runtime_info()
     return ok(
-        # Version context belongs in the answer: "verified" means verified on one SolidWorks
-        # build, and bom_table is SW2024 SP4 only.
         server_name="Solidworks_AssetMate_MechDog",
-        server_version=__import__("solidworks_assetmate_mechdog").__version__,
+        server_version=runtime.get("server_version"),
+        server_path=runtime.get("server_path"),
+        python_executable=runtime.get("python_executable"),
+        python_version=runtime.get("python_version"),
+        pid=runtime.get("pid"),
         sw_version=sw_version(),
         platform=__import__("platform").platform(),
         operation=operation,

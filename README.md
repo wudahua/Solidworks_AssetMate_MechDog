@@ -114,7 +114,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `flat_pattern_report` | 展开尺寸**谁算的**、工具没做什么、图上该写什么措辞 |
 | `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 |
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
-| `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案 |
+| `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案；回显**运行中的版本 + 源码路径 + 解释器** |
 | `ping` | **最轻的存活探针**（约 18 ms，不碰 ActiveDoc）：SW 版本、往返延迟、上一个工具、自愈计数 |
 | `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
 | `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
@@ -226,7 +226,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 45 条历史回归
+python tests/check_all.py     # 秒级：语法 + 结构 + 46 条历史回归
 python tests/smoke.py         # 需 SolidWorks：行为层
 ```
 
