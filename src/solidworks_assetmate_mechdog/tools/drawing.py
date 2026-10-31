@@ -1395,6 +1395,22 @@ def _note_at(sheet, target, tolerance=0.006):
     return best[1] if best else None
 
 
+def _note_name(note):
+    """Reported name of a title-block cell, so the caller can verify what was written.
+
+    P3-4: the field locator falls back to coordinates, and on a GB template those cells are
+    easy to confuse — one report found the `material` slot occupied by the drawing code
+    (GZ1000/8.06-02) until it was corrected. Echoing the cell's own annotation name plus its
+    position makes that kind of mix-up visible in the receipt instead of only in the PDF.
+    """
+    if note is None:
+        return None
+    try:
+        return str(_call_method(note, "GetAnnotation").GetName)
+    except Exception:
+        return None
+
+
 def set_title_block(drawing_path, name=None, code=None, material=None, apply=False,
                    include_reversed=True, scale=None):
     """Fill title-block placeholders such as the literal text “图样名称” / “图样代号”.
@@ -1514,7 +1530,11 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
 
         result = {
             "drawing": doc.GetTitle,
-            "planned": [{k: v for k, v in p.items() if k != "note"} for p in planned],
+            "planned": [dict({k: v for k, v in p.items() if k != "note"},
+                             note_name=_note_name(p.get("note")),
+                             cell_position_m=([round(v, 4) for v in ann_position(p["note"])]
+                                              if p.get("note") is not None else None))
+                        for p in planned],
             "unmatched": unmatched,
             "skipped_reversed": skipped_reversed,
             "applied": False,
@@ -1526,12 +1546,18 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
 
         written = []
         for item in planned:
+            cell = {
+                "note_name": _note_name(item.get("note")),
+                "cell_position_m": ([round(v, 4) for v in ann_position(item["note"])]
+                                    if item.get("note") is not None else None),
+            }
             try:
                 item["note"].SetText(item["after"])
-                written.append({"field": item["field"], "before": item["before"],
-                                "after": item["after"], "ok": True})
+                written.append(dict({"field": item["field"], "before": item["before"],
+                                     "after": item["after"], "ok": True}, **cell))
             except Exception as exc:
-                written.append({"field": item["field"], "ok": False, "error": str(exc)})
+                written.append(dict({"field": item["field"], "ok": False,
+                                     "error": str(exc)}, **cell))
         try:
             doc.GraphicsRedraw2()
         except Exception:
@@ -3619,22 +3645,92 @@ def verify_dimension_attachments(drawing_path, view_name=None):
         return error("attachment_check_failed", str(exc))
 
 
+def prune_orphan_dimensions(drawing_path, view_name=None, dry_run=True, save=True):
+    """Delete dimensions that are attached to no geometry (P2-4).
+
+    `auto_dimension` imports every driving dimension; on real parts a share of them land
+    unattached — `GetAttachedEntities2` returns nothing for roughly half of them whatever
+    the import parameters are. There was no way to clear those: `delete_dimensions` works by
+    VALUE, so it cannot tell two 23 mm dimensions apart (a valve body held three).
+
+    Dry-run by default and it reports view / name / value / position for each candidate.
+    `dry_run=False` deletes by name + position (position is what separates repeated D1/D2
+    names) and then RE-RUNS the attachment check, so the receipt carries the remaining
+    orphan count instead of assuming the deletes worked.
+    """
+    try:
+        from . import layout as _layout
+
+        before = verify_dimension_attachments(drawing_path, view_name=view_name)
+        if not before.get("ok"):
+            return error("attachments_unreadable", before.get("message") or "failed")
+        orphans = before.get("orphans") or []
+        targets = [{"view": row.get("view"), "name": row.get("name"),
+                    "value_mm": row.get("value_mm"),
+                    "position_m": row.get("position_m")} for row in orphans]
+        payload = {
+            "drawing": before.get("drawing"),
+            "orphan_count_before": len(targets),
+            "orphan_count": len(targets),
+            "dimension_count": before.get("dimension_count"),
+            "dry_run": bool(dry_run),
+            "targets": targets,
+            "removed_count": 0,
+        }
+        if dry_run or not targets:
+            if not dry_run and not targets:
+                payload["note"] = "没有 orphan 尺寸需要清理。"
+            return drawing_ok(**payload)
+
+        removed, failed = [], []
+        for row in targets:
+            name = row.get("name")
+            if not name:
+                failed.append({"name": None, "reason": "no name reported"})
+                continue
+            result = _layout.delete_annotation(drawing_path, name, save=False,
+                                               position_m=row.get("position_m"))
+            if result.get("ok"):
+                removed.append({"name": name, "view": row.get("view"),
+                                "value_mm": row.get("value_mm")})
+            else:
+                failed.append({"name": name, "reason": result.get("error"),
+                               "message": str(result.get("message") or "")[:120]})
+        if save:
+            _save_drawing(_open_drawing(drawing_path))
+        after = verify_dimension_attachments(drawing_path, view_name=view_name)
+        payload.update({
+            "removed": removed,
+            "failed": failed,
+            "removed_count": len(removed),
+            "orphan_count_after": (int(after.get("orphan_count") or 0)
+                                   if after.get("ok") else None),
+            "orphan_count": (int(after.get("orphan_count") or 0)
+                             if after.get("ok") else None),
+        })
+        return drawing_ok(**payload)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("prune_failed", str(exc))
+
+
 def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
     """Circular edges of a view, with sheet position and diameter.
 
-    Performance: reading `edge.GetCurve` on every visible edge is the expensive part
-    (260 edges took over 300 s). The chord length between an edge's two vertices is free
-    to compute and is an upper bound on nothing — but a short chord means a small circle,
-    so edges shorter than `min_diameter_mm * 0.5` are skipped before any curve is read.
-    Pass a min_diameter_mm to get a large speed-up on hole-heavy views.
+    Reads ONLY `ICurve.CircleParams` — never vertices. That matters: a view's visible
+    entities are SILHOUETTE edges and `GetStartVertex` returns None for every one of them,
+    so the previous vertex-based scan answered "0 circles" on a valve body that visibly had
+    thirteen (measured 2026-10-31). CircleParams returns centre, axis and radius in one
+    call, which is also cheaper than two vertex reads per edge.
 
-    `edge.GetCurve` returns a dispatch pointer that must be wrapped before reading
-    IsCircle — calling it on the raw pointer fails silently and made an earlier version
-    report "no circles" on a view holding 82 of them.
+    Sheet positions use the same size-matched axis mapping as `add_section_view`: the
+    model's own bounding box, not a vertex bounding box. When the mapping is unavailable
+    (an ambiguous box, a section/detail view, a missing referenced model) the row keeps its
+    diameter and reports `x: null` plus `position_unavailable` — a made-up coordinate is
+    worse than none, because callers feed it straight into `add_hole_callout`.
     """
     try:
-        import math
-
         import win32com.client as win
 
         doc = _open_drawing(drawing_path)
@@ -3644,53 +3740,55 @@ def list_circular_edges(drawing_path, view_name=None, min_diameter_mm=0.0):
                 continue
             if view_name and view.Name != view_name:
                 continue
-            edges = [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]
+            try:
+                edges = [win.Dispatch(e) for e in (view.GetVisibleEntities2(view, 1) or ())]
+            except Exception:
+                continue
 
-            # Cheap pass: vertex positions only (no curve, no surface).
-            endpoints = []
+            circles = []
             for edge in edges:
-                try:
-                    a, b = edge.GetStartVertex, edge.GetEndVertex
-                    if a is None or b is None:
-                        continue
-                    pa, pb = a.GetPoint, b.GetPoint
-                    chord = math.dist(pa, pb)
-                    endpoints.append((edge, pa, pb, chord))
-                except Exception:
-                    continue
-
-            # min_diameter_mm is in MILLIMETRES but chord length is in METRES: convert,
-            # otherwise min_diameter_mm=40 becomes a 20 m threshold and kills every circle.
-            floor = max(float(min_diameter_mm) * 0.0005, 1e-4)
-            rows = []
-            for edge, pa, pb, chord in endpoints:
-                if chord < floor:
-                    continue
                 try:
                     curve = win.Dispatch(edge.GetCurve)
                     if curve is None or not curve.IsCircle:
                         continue
-                    diameter = round(float(list(curve.CircleParams)[6]) * 2000, 2)
+                    params = list(curve.CircleParams)
+                    radius_m = float(params[6])
+                    diameter = round(radius_m * 2000, 2)
                     if diameter < float(min_diameter_mm):
                         continue
-                    rows.append((edge, pa, diameter))
+                    circles.append({
+                        "diameter_mm": diameter,
+                        "centre_model": [float(params[0]), float(params[1]),
+                                         float(params[2])],
+                    })
                 except Exception:
                     continue
-            if not rows:
+            if not circles:
                 continue
-            axes = _projection_axes(view, [r[0] for r in rows])
+
+            axis_map, reason = _view_axis_map(view)
+            # Reading the part box switches SolidWorks' active document; come back.
+            doc = _open_drawing(drawing_path)
+            try:
+                doc.ActivateView(view.Name)
+            except Exception:
+                pass
             pos = list(view.Position)
             scale = float(view.ScaleDecimal)
-            all_pts = [p for _, pa, pb, _ in endpoints for p in (pa, pb)]
-            lo = [min(p[i] for p in all_pts) for i in range(3)]
-            hi = [max(p[i] for p in all_pts) for i in range(3)]
-            for edge, point, diameter in rows:
-                out.append({
-                    "view": view.Name,
-                    "diameter_mm": diameter,
-                    "x": pos[0] + (point[axes[0]] - (lo[axes[0]] + hi[axes[0]]) / 2) * scale,
-                    "y": pos[1] + (point[axes[1]] - (lo[axes[1]] + hi[axes[1]]) / 2) * scale,
-                })
+
+            for item in circles:
+                row = {"view": view.Name, "diameter_mm": item["diameter_mm"],
+                       "x": None, "y": None}
+                if axis_map:
+                    axes = axis_map["axes"]
+                    centre_m = axis_map["centre_m"]
+                    row["x"] = round(pos[0] + (item["centre_model"][axes[0]]
+                                               - centre_m[axes[0]]) * scale, 5)
+                    row["y"] = round(pos[1] + (item["centre_model"][axes[1]]
+                                               - centre_m[axes[1]]) * scale, 5)
+                else:
+                    row["position_unavailable"] = reason
+                out.append(row)
         return drawing_ok(drawing=doc.GetTitle, count=len(out), circles=out)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -3994,6 +4092,21 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             saved=bool(save),
             note=("孔标注用 IsHoleCallout 判定；同一孔的上下两条圆边只标一条（优先完整圆、"
                   "再取最靠观察者的一面）。hidden_side=true 表示该边在背面，SolidWorks 不给标注。"),
+            # P1-2: "0 created / 8 failed" used to read as an ordinary partial result, so
+            # callers retried with different offsets and burned whole rounds. Measured
+            # 2026-10-31 on a valve body: the edge IS selectable, its adjacent face IS
+            # selectable, the callout point sits exactly on the circle, and AddHoleCallout2
+            # still returns null for every edge — while the same call succeeds on sheet-metal
+            # cut holes. That is a geometry/build limit, not a parameter problem, so name it.
+            verdict=("ok" if created else
+                     ("no_native_callout" if groups_total and not created
+                      else "nothing_to_annotate")),
+            native_callout_note=(
+                None if created or not groups_total else
+                ("%d 个孔的圆边全部返回 null。实测：边与相邻面都能选中、锚点就在圆上，"
+                 "AddHoleCallout2 仍是 None；同一调用在钣金拉伸孔上可用。属几何/构建限制，"
+                 "换 offset 或换视图不会改变结果——改用 add_drawing_dimension 或手动补 Ø 标注。"
+                 % len(failed))),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -4529,15 +4642,53 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
             if not views:
                 return error("view_not_found", "no view named %r" % view_name)
 
+        def annotation_type(annotation):
+            """IAnnotation.GetType is an int PROPERTY under late binding; calling it raises.
+
+            The old `int(annotation.GetType())` therefore always raised, and the surrounding
+            `except: pass` let EVERY annotation through the filter — notes included, which
+            the sweep then moved around as if they were dimensions.
+            """
+            for getter in (lambda: annotation.GetType, lambda: annotation.GetType()):
+                try:
+                    return int(getter())
+                except Exception:
+                    continue
+            return None
+
         items = []
+        fixed = []
         for view in views:
             for raw in (view.GetAnnotations or ()):
                 annotation = win.Dispatch(raw)
-                try:
-                    if int(annotation.GetType()) not in (0, 1, 2):
+                kind = annotation_type(annotation)
+                if kind == 6:
+                    # P3-1: a view's own label ("2:1", "A—A") is a NOTE. Once a Ø8
+                    # dimension was pushed into it the sheet printed "2Ø8¹" and the scale
+                    # became unreadable. Notes are FIXED obstacles: seeded into `placed`
+                    # and never moved, so the sweep has to go around them.
+                    try:
+                        position = [float(v) for v in annotation.GetPosition]
+                    except Exception:
                         continue
-                except Exception:
-                    pass
+                    text, char_h = "", 0.0035
+                    try:
+                        specific = win.Dispatch(annotation.GetSpecificAnnotation)
+                        text = str(specific.GetText or "")
+                        try:
+                            char_h = float(specific.GetTextFormat.CharHeight) or 0.0035
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                    width = (max(char_h * 0.8, len(text) * char_h * 0.75)
+                             if text else char_h * 3)
+                    fixed.append({"annotation": annotation, "view": str(view.Name),
+                                  "x": position[0], "y": position[1], "text": text,
+                                  "w": width, "h": char_h, "fixed": True})
+                    continue
+                if kind != 4:
+                    continue
                 try:
                     position = [float(v) for v in annotation.GetPosition]
                 except Exception:
@@ -4592,8 +4743,10 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
 
         items.sort(key=lambda i: (round(i["x"] / cluster_tol_m), i["y"]))
         moves = []
-        # Sweep in reading order; push each item up until it clears every earlier one.
-        placed = []
+        # Sweep in reading order; push each item up until it clears every earlier one, and
+        # AROUND the fixed notes. Pushing up into a view label only trades one overlap for
+        # another, so a note clash sends the dimension DOWN instead (P3-1).
+        placed = list(fixed)
         for item in items:
             for _attempt in range(40):
                 clash = None
@@ -4603,9 +4756,13 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
                         break
                 if clash is None:
                     break
-                item["y"] = clash["y"] + clash["h"] + item["h"] + min_gap_m * 0.25
+                if clash.get("fixed"):
+                    item["y"] = clash["y"] - clash["h"] - item["h"] - min_gap_m
+                else:
+                    item["y"] = clash["y"] + clash["h"] + item["h"] + min_gap_m * 0.25
                 moves.append({"view": item["view"], "text": item["text"][:10],
-                              "x": round(item["x"], 4), "to_y": round(item["y"], 4)})
+                              "x": round(item["x"], 4), "to_y": round(item["y"], 4),
+                              "around": "note" if clash.get("fixed") else "dimension"})
             placed.append(item)
 
         # One pass fixes 64% (14 collisions -> 5): pushing one dimension up can create a new
@@ -4634,10 +4791,13 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
 
         return drawing_ok(dimension_count=len(items), collisions=len(moves),
                           moved=applied, dry_run=bool(dry_run),
+                          fixed_obstacles=len(fixed),
                           min_gap_mm=min_gap_m * 1000,
                           sample_moves=moves[:5],
                           note=("按 x 聚类后沿 y 推开，间距 %.0f mm。只动真正重叠的，"
-                                "已经清楚的尺寸不碰。" % (min_gap_m * 1000)))
+                                "已经清楚的尺寸不碰。"
+                                "视图标签 note 视为固定障碍（%d 个）：撞上时尺寸向下让，"
+                                "不会再把比例标签压成「2Ø8¹」。" % (min_gap_m * 1000, len(fixed))))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

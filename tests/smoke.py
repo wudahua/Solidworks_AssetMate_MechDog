@@ -463,7 +463,18 @@ def main():
         assert unique == len(checked.get("dimensions") or []), (
             "unique_dimension_count=%r but len(dimensions)=%r"
             % (unique, len(checked.get("dimensions") or [])))
-        return "unique=%s duplicates_skipped=%s" % (unique, dupes)
+        # 0.8.24 / P2-4: orphan dimensions need a targeted remover — delete_dimensions works
+        # by VALUE and cannot tell three 23 mm dimensions apart. Dry-run must name each
+        # candidate with a position so the caller can act on it.
+        pruned = require(drawing.prune_orphan_dimensions(drw, dry_run=True))
+        assert pruned.get("ok") is not None, "prune_orphan_dimensions returned no verdict"
+        assert "orphan_count_before" in pruned, (
+            "prune_orphan_dimensions omitted orphan_count_before: %r" % pruned)
+        assert pruned.get("dry_run") is True, "prune_orphan_dimensions ignored dry_run"
+        for row in (pruned.get("targets") or [])[:3]:
+            assert "name" in row, "orphan target without a name: %r" % row
+        return "unique=%s duplicates_skipped=%s orphans=%s" % (
+            unique, dupes, pruned.get("orphan_count_before"))
 
     def _bom_table():
         # Use the sheet-metal assembly, not --assembly: the BOM path goes through

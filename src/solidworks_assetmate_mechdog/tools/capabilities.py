@@ -64,7 +64,9 @@ CAPABILITIES = [
         "why": ("`delete_dimensions` 按值保留/删除；`auto_dimension(eliminate_duplicates=True)` "
                 "（0.8.19）按模型 full name 自动删除多视图重复副本，只动本次插入的尺寸、"
                 "不碰用户已有尺寸；`set_dimension_position` 可把单个尺寸移到图纸坐标并回读数值。"
-                "SolidWorks 无批量删除接口，实测 14 条一次调用 < 5 s（早期文档高估约 100 倍）"),
+                "SolidWorks 无批量删除接口，实测 14 条一次调用 < 5 s（早期文档高估约 100 倍）；"
+                "`prune_orphan_dimensions`（0.8.24）按 name + position 清掉挂不到实体的尺寸，"
+                "`delete_dimensions` 按值删无法区分同值不同位置（一张阀体图有三个 23 mm）"),
         "workaround": "先用 plan_drawing 拿短名单再删；单条微调尺寸位置用 set_dimension_position",
         "evidence": ("2026-10-29 实测 14 条一次调用 < 5 s；2026-10-28 实测 17 条 → 2 条，"
                      "removed 15 / failed 0；0.8.19 full-name dedupe + 单尺寸移动 smoke 覆盖"),
@@ -194,10 +196,18 @@ CAPABILITIES = [
     {
         "id": "hole_callout_batch",
         "status": "pilot",
-        "summary": "批量孔标注",
-        "why": "按孔去重（同圆心同径只标一次），单视图 25 秒预算，超时返回 budget_exceeded",
-        "workaround": "多孔零件按 plan_drawing 的配额标注，同规格孔只标一处写 n×",
-        "evidence": "2026-10-28 实测",
+        "summary": "批量孔标注（带 verdict：能否标注由几何决定）",
+        "why": ("按孔去重（同圆心同径只标一次），单视图 25 秒预算，超时返回 budget_exceeded。"
+                "0.8.24 起返回 `verdict`：`ok` / `no_native_callout` / `nothing_to_annotate`。"
+                "`no_native_callout` 表示找到了孔但 `AddHoleCallout2` 全部返回 null——"
+                "实测（阀体）边与相邻面都能选中、锚点就在圆上仍为 null，而同一调用在"
+                "钣金拉伸孔上可用，属几何/构建限制，换 offset 或换视图不会改变，"
+                "`native_callout_note` 会把这一点写清楚。"),
+        "workaround": ("看到 `no_native_callout` 就不要再调参数重试：改用 Ø 尺寸或手动补标；"
+                       "`list_circular_edges`（0.8.24 修好，改用 CircleParams 而非顶点）"
+                       "可先列出圆边判断值不值得试"),
+        "evidence": ("2026-10-28 实测钣金门板 Ø8/Ø15 成功；2026-10-31 实测阀体 8/8 全 null"
+                     "（边/面均选中），`list_circular_edges` 由 0 条修正为 23 条"),
     },
     {
         "id": "geometric_tolerance",

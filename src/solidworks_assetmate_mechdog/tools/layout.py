@@ -237,15 +237,64 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
         return error("delete_dimensions_failed", str(exc))
 
 
-def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True):
+def _note_bbox(text, x, y, height_m):
+    """Conservative bounding box for a note anchored at (x, y) with its TOP-LEFT there.
+
+    Chinese glyphs are roughly square, Latin roughly 0.55 em; 0.75 is the safe middle and
+    over-estimating only costs a slightly larger keep-out, never a missed collision.
+    """
+    lines = str(text).splitlines() or [""]
+    line_h = height_m * 1.6
+    width = max(1, max(len(line) for line in lines)) * height_m * 0.75
+    return [float(x), float(y) - line_h * len(lines), float(x) + width, float(y)]
+
+
+def _boxes_overlap(a, b, pad=0.0):
+    return (a[0] - pad < b[2] and b[0] - pad < a[2]
+            and a[1] - pad < b[3] and b[1] - pad < a[3])
+
+
+def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True,
+             avoid_collisions=False):
     """Add a drawing note (技术要求 lines). x/y are sheet metres.
 
     `InsertNote` returns an INote; positioning it needs GetAnnotation invoked as a METHOD —
     pywin32 otherwise dispatches it as PROPERTYGET and the call fails.
+
+    `avoid_collisions=True` (P3-2) walks the note DOWN until its estimated box clears every
+    model view. A report showed the first line of a 技术要求 block being overprinted by a
+    section view's arrow, and `move_annotation` was the only cure — which meant a rebuild if
+    it failed. The note box is estimated from line count and height; views are taken from
+    `precise_outline`, so the 11.9 mm phantom margin does not push notes away for no reason.
     """
     try:
         doc = _open_drawing(drawing_path)
         doc.ClearSelection2(True)
+
+        collisions_avoided = 0
+        position_requested = [round(float(x_m), 4), round(float(y_m), 4)]
+        if avoid_collisions:
+            from .drawing import precise_outline
+
+            height_m = (float(height_mm) / 1000.0) if height_mm else 0.0035
+            obstacles = []
+            for view in _iter_views(doc):
+                if getattr(view, "Type", None) == 1:
+                    continue
+                box = precise_outline(view)
+                if box:
+                    obstacles.append(box)
+            while collisions_avoided < 24:
+                box = _note_bbox(text, x_m, y_m, height_m)
+                if not any(_boxes_overlap(box, obstacle, pad=0.002)
+                           for obstacle in obstacles):
+                    break
+                step = (box[3] - box[1]) + 0.004
+                if float(y_m) - step < 0.02:
+                    break
+                y_m = float(y_m) - step
+                collisions_avoided += 1
+
         created = doc.InsertNote(str(text))
         if created is None:
             return error("note_failed", "InsertNote returned null",
@@ -288,7 +337,10 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
         except Exception:
             pass
         return drawing_ok(drawing=doc.GetTitle, note=name, text=str(text),
-                          position_m=[round(float(x_m), 4), round(float(y_m), 4)])
+                          position_m=[round(float(x_m), 4), round(float(y_m), 4)],
+                          position_requested_m=position_requested,
+                          adjusted=bool(collisions_avoided),
+                          collisions_avoided=collisions_avoided)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

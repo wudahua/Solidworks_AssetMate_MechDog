@@ -1027,3 +1027,45 @@ detail 视图差值 11.92 mm。
 `reconcile_ledger` 会把值为 0.0 的台账项当成"图纸缺项"，但 0.0 是草图几何关系/约束值，
 任何图纸都标不出来。现在分离到 `skipped_zero_value`，覆盖率分母改用
 `comparable_dimensions`（实测 45 个台账项里 2 个是 0.0 → 43 个可比项）。
+
+## 二十、圆边枚举、标注碰版与注记避让（0.8.24，P1-2 / P2-4 / P3-1 / P3-2 / P3-4）
+
+### 视图里的"边"没有顶点，`GetStartVertex` 恒为 None
+
+`list_circular_edges` 早期用 `edge.GetStartVertex` / `GetEndVertex` 算弦长做预筛，
+在阀体上返回 **0 条**——因为视图可见实体是**轮廓边（silhouette edge）**，没有顶点
+（与第十八节同源）。改用 `ICurve.CircleParams`（一次调用给出圆心/轴/半径）后同一张图
+返回 **23 条**，坐标由 `_view_axis_map` 的尺寸匹配投影；映射不可用时给 `x: null`
+而不是编一个坐标。
+
+### `AddHoleCallout2` 的失败与选择方式无关
+
+同一张图、同一批圆边，三种选择方式全部返回 null：
+
+| 方式 | 选中 | `AddHoleCallout2` |
+|---|---|---|
+| `SelectByID2("", "EDGE", 边位置)` | ✅ | **null** |
+| `edge.Select2(False, 0)` | ✅ | **null** |
+| 相邻面 `face.Select2(False, 0)` | ✅ | **null** |
+
+而同一调用在钣金拉伸孔（门板 Ø8/Ø15）上成功。所以判据不是"选没选中"，而是**几何类型**。
+0.8.24 起返回 `verdict: no_native_callout` 并附 `native_callout_note`，
+让调用方不要再换 offset 反复重试。
+
+### 布局避让：标签 note 是障碍，不是尺寸
+
+两个独立 bug 叠在一起：
+
+1. `int(annotation.GetType())` —— `GetType` 在晚绑定下是**属性**，加括号必抛
+   `TypeError`，而外层 `except: pass` 把它吞了 → **类型过滤从未生效**，note 被当成尺寸搬动。
+2. 即便 note 不被移动，sweep 也只避让尺寸，把 Ø8 推进了 "2:1" 标签，渲染成 `2Ø8¹`。
+
+修法：`annotation_type()` 属性优先 / 方法回退；`kind != 4` 才当尺寸；note（`kind == 6`）
+作为 **fixed** 障碍塞进 `placed`，撞上时尺寸**向下**让（向上会撞回视图）。
+
+### 注记避让的估计口径
+
+`add_note(avoid_collisions=True)` 按「行数 × 字高 × 1.6 行距」估高，
+按「最长行 × 字高 × 0.75」估宽（中文近方、拉丁约 0.55，取中偏保守）。
+障碍用 `precise_outline`，所以 11.9 mm 虚胖不会把注记无故推走。
+实测：注记放在视图中心会被下移 3 次（`0.253 → 0.2074`）落到视图下方。

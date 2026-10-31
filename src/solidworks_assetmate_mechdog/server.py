@@ -339,10 +339,17 @@ def delete_dimensions(
 def add_note(
     drawing_path: str, text: str, x_m: float, y_m: float,
     height_mm: float | None = None, bold: bool = False, save: bool = True,
+    avoid_collisions: bool = False,
 ) -> str:
-    """Add a drawing note (技术要求). x/y are sheet metres."""
+    """Add a drawing note (技术要求). x/y are sheet metres.
+
+    `avoid_collisions=True` walks the note DOWN until it clears every model view, so the
+    first line is not overprinted by a section arrow. The receipt reports
+    `position_requested_m` vs `position_m` plus `collisions_avoided`.
+    """
     return _json(layout.add_note(drawing_path, text, x_m, y_m,
-                                 height_mm=height_mm, bold=bold, save=save))
+                                 height_mm=height_mm, bold=bold, save=save,
+                                 avoid_collisions=avoid_collisions))
 
 
 @mcp.tool()
@@ -555,6 +562,25 @@ def verify_dimension_attachments(drawing_path: str, view_name: str | None = None
     Dimensions with no attachment are untraceable and count as incomplete (process §6.1).
     """
     return _json(drawing.verify_dimension_attachments(drawing_path, view_name=view_name))
+
+
+@mcp.tool()
+def prune_orphan_dimensions(
+    drawing_path: str, view_name: str | None = None,
+    dry_run: bool = True, save: bool = True,
+) -> str:
+    """Delete dimensions attached to no geometry, which `delete_dimensions` cannot target.
+
+    `auto_dimension` imports every driving dimension and some land unattached. Clearing them
+    used to be impossible: `delete_dimensions` works by VALUE, so it cannot tell three 23 mm
+    dimensions apart. This deletes by name + position instead.
+
+    Dry-run by default — returns view / name / value / position per candidate. With
+    `dry_run=False` it deletes them and RE-RUNS the attachment check, so `orphan_count_after`
+    is measured, not assumed.
+    """
+    return _json(drawing.prune_orphan_dimensions(drawing_path, view_name=view_name,
+                                                 dry_run=dry_run, save=save))
 
 
 @mcp.tool()

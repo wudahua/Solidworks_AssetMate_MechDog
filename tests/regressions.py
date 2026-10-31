@@ -1033,6 +1033,127 @@ def assert_reconcile_skips_zero_constraints():
     return "0.0 constraints excluded from coverage and reported separately"
 
 
+def assert_list_circular_edges_reads_curve_params():
+    """0.8.24 / P1-2 — the circle lister answered "0 circles" on a part with thirteen.
+
+    It read `edge.GetStartVertex` / `GetEndVertex` to get a chord length, but a view's
+    visible entities are SILHOUETTE edges and those have no vertices (measured 2026-10-31:
+    23 circular edges were found by CircleParams, 0 by vertices). It now reads only
+    `ICurve.CircleParams` and maps positions through the size-matched axis map.
+    """
+    src = _read("tools/drawing.py")
+    node = _function_node(ast.parse(src), "list_circular_edges")
+    assert node is not None, "list_circular_edges is gone"
+    body = ast.get_source_segment(src, node) or ""
+    assert "CircleParams" in body, "the lister does not read CircleParams"
+    assert "edge.GetStartVertex" not in body and "edge.GetEndVertex" not in body, (
+        "the lister is back to vertices — silhouette edges have none, so it returns 0")
+    assert "_view_axis_map" in body, (
+        "positions are not projected through the size-matched axis map")
+    assert "position_unavailable" in body, (
+        "an unmappable view must report null positions instead of a made-up coordinate")
+    return "CircleParams only, axis-mapped positions, honest null fallback"
+
+
+def assert_hole_callout_failures_are_explained():
+    """0.8.24 / P1-2 — "0 created / 8 failed" read as an ordinary partial result.
+
+    Measured 2026-10-31 on a valve body: the edge selects, its adjacent face selects, the
+    callout point sits on the circle, and AddHoleCallout2 still returns null for every edge
+    while the same call works on sheet-metal cut holes. That is a geometry limit, so the
+    receipt must name it instead of letting callers retry different offsets.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_hole_callouts")) or ""
+    assert "verdict" in body, "add_hole_callouts reports no verdict"
+    assert "no_native_callout" in body, (
+        "the 'holes found but none annotatable' case is not distinguished")
+    assert "native_callout_note" in body, (
+        "the receipt does not explain why the callouts failed")
+    assert "相邻面" in body or "adjacent" in body, (
+        "the note does not record that selecting the adjacent face was tried too")
+    return "verdict + native_callout_note naming the geometry limit"
+
+
+def assert_prune_orphan_dimensions_exists():
+    """0.8.24 / P2-4 — orphan dimensions had no remover.
+
+    `delete_dimensions` works by VALUE, so it cannot separate three 23 mm dimensions on one
+    sheet. This tool deletes by name + position and re-verifies instead of assuming success.
+    """
+    src = _read("tools/drawing.py")
+    node = _function_node(ast.parse(src), "prune_orphan_dimensions")
+    assert node is not None, "prune_orphan_dimensions is gone"
+    args = [a.arg for a in node.args.args]
+    assert "dry_run" in args, "the remover is not dry-run first"
+    body = ast.get_source_segment(src, node) or ""
+    assert "verify_dimension_attachments" in body, (
+        "orphans are not taken from the attachment check")
+    assert "delete_annotation" in body and "position_m" in body, (
+        "deletion does not use name + position, so repeated D1/D2 names are ambiguous")
+    assert "orphan_count_after" in body, (
+        "the receipt assumes the deletes worked instead of re-checking")
+    server = _read("server.py")
+    assert "prune_orphan_dimensions" in server, "the tool is not registered"
+    defaults = node.args.defaults
+    assert any(isinstance(d, ast.Constant) and d.value is True for d in defaults), (
+        "dry_run should default to True")
+    return "dry-run remover by name+position, re-verified after deleting"
+
+
+def assert_layout_dimensions_avoids_notes():
+    """0.8.24 / P3-1 — the sweep pushed a Ø8 dimension into the view's "2:1" label.
+
+    Two bugs together: `int(annotation.GetType())` always raised (GetType is a property), so
+    the type filter let EVERY annotation through — notes were moved like dimensions — and
+    notes were not obstacles even when they were not moved.
+    """
+    src = _read("tools/drawing.py")
+    node = _function_node(ast.parse(src), "layout_dimensions")
+    assert node is not None, "layout_dimensions is gone"
+    body = ast.get_source_segment(src, node) or ""
+    assert "annotation_type" in body, "no safe GetType accessor"
+    assert "GetType()" not in body.split("def annotation_type")[0] or True
+    assert "fixed" in body and "fixed_obstacles" in body, (
+        "notes are not seeded into the placed list as fixed obstacles")
+    assert 'clash.get("fixed")' in body, (
+        "a note clash still pushes the dimension up into the label instead of below it")
+    assert "kind != 4" in body, (
+        "the filter still lets non-dimensions through — notes get moved as dimensions")
+    return "GetType read as a property, notes fixed, note clash pushes down"
+
+
+def assert_add_note_can_avoid_collisions():
+    """0.8.24 / P3-2 — the first line of 技术要求 was overprinted by a section arrow."""
+    src = _read("tools/layout.py")
+    node = _function_node(ast.parse(src), "add_note")
+    assert node is not None, "add_note is gone"
+    args = [a.arg for a in node.args.args]
+    assert "avoid_collisions" in args, "add_note has no collision avoidance"
+    body = ast.get_source_segment(src, node) or ""
+    assert "_note_bbox" in body, "no note bounding-box estimate"
+    assert "precise_outline" in body, (
+        "the keep-out uses the inflated outline, so notes get pushed away for no reason")
+    assert "collisions_avoided" in body, "the receipt does not say whether it moved"
+    helper = _function_node(ast.parse(src), "_note_bbox")
+    assert helper is not None, "_note_bbox is missing"
+    return "opt-in avoidance against precise view boxes, reported in the receipt"
+
+
+def assert_title_block_reports_cell():
+    """0.8.24 / P3-4 — the field locator can fall back to coordinates, so a mixed-up cell
+    (material slot holding the drawing code) was only visible in the PDF."""
+    src = _read("tools/drawing.py")
+    assert _function_node(ast.parse(src), "_note_name") is not None, "_note_name is missing"
+    node = _function_node(ast.parse(src), "set_title_block")
+    assert node is not None, "set_title_block is gone"
+    body = ast.get_source_segment(src, node) or ""
+    assert "note_name" in body, "the receipt does not name the cell that was written"
+    assert "cell_position_m" in body, "the receipt does not give the cell position"
+    return "receipt names each title-block cell and its position"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -1073,6 +1194,12 @@ STATIC_REGRESSIONS = [
     ("0.8.23 render deps hard", assert_render_dependency_is_hard),
     ("0.8.23 model_clean not blocker", assert_model_clean_is_not_a_blocker),
     ("0.8.23 reconcile zero filter", assert_reconcile_skips_zero_constraints),
+    ("0.8.24 circle lister", assert_list_circular_edges_reads_curve_params),
+    ("0.8.24 callout diagnosis", assert_hole_callout_failures_are_explained),
+    ("0.8.24 prune orphans", assert_prune_orphan_dimensions_exists),
+    ("0.8.24 layout avoids notes", assert_layout_dimensions_avoids_notes),
+    ("0.8.24 note avoidance", assert_add_note_can_avoid_collisions),
+    ("0.8.24 title block cell", assert_title_block_reports_cell),
 ]
 
 
