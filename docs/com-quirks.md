@@ -827,3 +827,53 @@ if curve.IsCircle: ...
 **`EditRebuild3` 是方法不是属性。** `auto_dimension` 里曾写成裸 `doc.EditRebuild3`
 属性访问，插入后 `view.GetAnnotations` 仍是旧集合，去重遍历扑空；必须
 `call_method(doc, "EditRebuild3")` 真正调用才会刷新。
+
+## 十六、局部视图、形位公差符号与表面粗糙度（0.8.20，P2-9 / P2-10 / P2-11）
+
+### 局部视图：`scale` 参数曾被父视图比例覆盖
+
+`add_detail_view` 里写过 `scale = float(target.ScaleDecimal)`，把用户请求的
+2.0（2:1）直接换成父视图的 0.5，于是 `requested_scale` 也报 0.5、
+`scale_locked` 恒为 False——一个永远抓不到的"锁"。修法：请求比例存
+`requested_scale`，父视图比例单独存 `parent_scale`，**只**用来换算边界圈草图坐标
+（`(paper - view.Position) / parent_scale`）；创建后 `_apply_detail_scale(doc,
+detail, requested_scale)` 设 `UseParentScale=False` + `ScaleDecimal` 并回读。
+实测 `_apply_detail_scale(2.0)` 生效，视图名从 `局部视图 A (1 : 2)` 变成
+`局部视图 A (2 : 1)`。
+
+**判空信号**：`IView.GetVisibleComponents` 在边界圈落在源视图几何之内时返回
+1 个组件、`GetVisibleEntities2(component, 1)` 得到 1 条边；落在几何之外返回
+`None`、0 条边。`GetVisibleEntities2(None, 1)` 会报"类型不匹配"，
+`GetPolylines7` / `GetEdgeCount` / `IDisplayData.GetEdgeCount` 在这个晚绑定环境
+不可用，别用它们判空。所以创建后数一次可见边，0 条就返回 `detail_empty`
+（视图是空的，别报 ok:true）；比例被锁则返回 `detail_scale_locked` error。
+
+### 形位公差：`<MOD-*-PAR>` 不是符号，是字面文本
+
+`IGtol.SetFrameSymbols2(1, code, ...)` **返回 None**，成功失败都靠回读判定：
+`GetFrameSymbols2(1)` 返回 6 元组，第一格就是刚写入的内容。实测
+`SetFrameSymbols2(1, "<MOD-POS-PAR>", ...)` 回读 `('<MOD-POS-PAR>', ...)`——
+格式码不会被解析成位置度符号，只会原样显示在框格里；而
+`SetFrameSymbols2(1, "位置度", ...)` 回读 `('位置度', ...)`。
+因此 0.8.20 起 `GTOL_SYMBOLS` 全部改成可读中文文字，写入后用
+`GetFrameSymbols2` 校验，不一致就 `IAnnotation.Select(False)` + `EditDelete`
+删掉刚建的框格并返回 `gtol_symbol_not_applied`。**这是文字标签，不是真正的
+GD&T 几何符号**，出正式图纸仍需在界面替换。（另注：`GetFrameValues2` 在新建的
+空 Gtol 上报成员找不到，回退 `GetFrameValues` 可用。）
+
+### 表面粗糙度：`InsertSurfaceFinishSymbol3` 忽略 x/y
+
+14 参调用能创建符号、`list_drawing_annotations` 也能列出 `surface_finish: 1`，
+但 annotation 的 `GetPosition` 实测是 `[0.0, 0.0, 0.0]`（type 7）——
+传入的 x/y 被忽略，符号落在图纸原点。早期只回显请求值
+`position_m=[x,y]` 属于谎报。修法：创建后 `IAnnotation.SetPosition(x, y, 0)`
+（实测返回 True、回读 `[0.3, 0.2, 0]`），再 `EditRebuild3`。
+
+**像素可见性自检的坐标映射**：SolidWorks 图纸原点在**左下**，渲染出的 PNG
+原点在**左上**，所以 y 要翻转：
+`px = x / sheet_w * image.width`，`py = (1 - y / sheet_h) * image.height`。
+在插入符号前后各 `SaveAsSilent` 一份 PDF、`render_drawing` 成 PNG，
+用 `ImageChops.difference` 在 (px,py) 的 ±50 px 窗口统计变化像素。
+实测修好位置后 diff bbox `(1684,493)-(1736,551)` 正好落在目标像素
+`(1701,549)`，窗口 changed=265；未修位置前 diff 只在左下角原点。
+DWG 是矢量、没有像素通道，只能检查文件非空，可见性以 PDF 为准。

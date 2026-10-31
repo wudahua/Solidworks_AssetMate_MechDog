@@ -145,26 +145,50 @@ CAPABILITIES = [
     },
     {
         "id": "geometric_tolerance",
-        "status": "pilot",
-        "summary": "形位公差框格",
+        "status": "partial",
+        "summary": "形位公差框格（符号为文字）",
         "why": ("**可以做**（2026-10-28 突破）。此前判定「不可创建」是调用方式错误："
                 "pywin32 把 InsertGtol 当作属性派发（PROPERTYGET），必然报 "
-                "DISP_E_MEMBERNOTFOUND。改用 ole.Invoke(dispid, 0, DISPATCH_METHOD, True) "
-                "即可拿到 Gtol 对象，SetFrameValues2 写入公差与基准，回读确认。"
-                "局限：框架内的公差**符号**（平面度/位置度等）用格式码 <MOD-*-PAR> 未生效"),
-        "workaround": ("用 add_geometric_tolerance 创建框格（公差值/基准可靠）；"
-                       "符号需界面补，或后续找到正确的符号写入方式"),
-        "evidence": ("2026-10-28 实测 door.SLDPRT：插入 2 个框格，回读 "
-                     "frame1=['0.05','','A','',''] 与 ['0.1','','B','C','']，位置正确，"
-                     "list_drawing_annotations 计到 geometric_tolerance: 2"),
+                "DISP_E_MEMBERNOTFOUND，改用 DISPATCH_METHOD 即可拿到 Gtol 对象，"
+                "SetFrameValues2 写入公差与基准并回读确认。"
+                "0.8.20：符号格改用**可读文字**（位置度/平面度…）写入第一格，"
+                "再用 GetFrameSymbols2 回读校验；`<MOD-*-PAR>` 格式码实测只会被存成"
+                "字面文本、不解析成几何符号，故已弃用。写入不生效会删除框格并返回 "
+                "`gtol_symbol_not_applied`，不再谎报符号已标注。"),
+        "workaround": ("符号是文字不是真正的 GD&T 几何符号，出正式图纸请在界面替换；"
+                       "或用 symbol='none' 只写公差值与基准"),
+        "evidence": ("2026-10-28 实测 door.SLDPRT：2 个框格 frame1 回读正确；"
+                     "2026-10-31 实测 GetFrameSymbols2 回读 ('位置度','','','','','')，"
+                     "SetFrameSymbols2 返回 None 必须以回读判定"),
+    },
+    {
+        "id": "surface_finish",
+        "status": "partial",
+        "summary": "表面粗糙度符号（位置修正 + 像素可见性自检）",
+        "why": ("`InsertSurfaceFinishSymbol3` 14 参可创建符号，但**忽略传入的 x/y**——"
+                "符号实际落在图纸原点 (0,0)，早期只回显请求值 position_m 造成谎报。"
+                "0.8.20 起创建后用 `IAnnotation.SetPosition` 移到请求点并回读 "
+                "`position_actual_m`；`verify_render=True` 前后各导出 PDF 渲染 PNG，"
+                "在 (x,y) 窗口做像素差分证明符号确实可见（`visibility.visible`）。"
+                "`verify_dwg=True` 只检查 DWG 文件非空——矢量格式无像素通道。"),
+        "workaround": ("要看符号是否真在图面上，传 verify_render=True；"
+                       "像素检查依赖 pypdfium2 + Pillow，缺失时 visibility.checked=false 诚实降级"),
+        "evidence": ("2026-10-31 实测 door.SLDPRT：未修位置前 PDF diff 只在原点 "
+                     "(0,1626)-(34,1684)；SetPosition 后 diff bbox=(1684,493)-(1736,551) "
+                     "落在目标像素 (1701,549)，窗口 changed=265"),
     },
     {
         "id": "detail_view_scale",
         "status": "partial",
-        "summary": "局部放大比例",
-        "why": "局部视图默认 UseParentScale，创建时设置 ScaleDecimal 会被吞掉",
-        "workaround": "返回值带 scale_locked 标记；需要非父视图比例时保存重开后再设一次",
-        "evidence": "2026-10-28 实测",
+        "summary": "局部放大视图：空视图与比例锁定诊断",
+        "why": ("局部视图默认 UseParentScale，创建时设置 ScaleDecimal 会被吞掉。"
+                "0.8.20 起 `scale` 不再被父视图比例覆盖，创建后重试设置并回读；"
+                "仍被锁则返回 `detail_scale_locked` error 而非静默；`edge_count==0` "
+                "返回 `detail_empty`（边界圈落在源视图几何之外，视图是空的）。"),
+        "workaround": ("`center` 必须落在源视图 outline 内的真实几何上；返回 detail_scale_locked "
+                       "时保存重开后在 UI 设比例，或让 scale 等于父视图比例"),
+        "evidence": ("2026-10-31 实测 door.SLDPRT：边界在内 edges=1、在外 edges=0；"
+                     "`_apply_detail_scale(2.0)` 生效，视图名变为 2 : 1"),
     },
     {
         "id": "assembly_bounding_box",

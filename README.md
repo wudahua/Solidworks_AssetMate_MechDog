@@ -75,7 +75,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `set_view` | 移动/缩放单个视图（`DISPATCH_PROPERTYPUT` + VARIANT，直接赋值会静默写错） |
 | `place_views` | 批量摆视图：`[{view, x, y, scale}]` |
 | `add_section_view` | 剖视图（自动画剖切线） |
-| `add_detail_view` | 局部放大（圆圈边界 + 独立比例） |
+| `add_detail_view` | 局部放大（圆圈边界 + 独立比例）；请求比例不再被父视图覆盖，创建后数可见边，空视图返回 `detail_empty`、比例被锁返回 `detail_scale_locked` |
 | `add_flat_pattern_view` | 钣金展开（下料尺寸 + 折弯线） |
 | `auto_dimension` | 导入模型驱动尺寸，超 30 个会提示冗余；**按模型 full name 自动删除重复副本** |
 | `delete_dimensions` | **按值保留/删除尺寸**，消费 `plan_drawing` 的短名单（实测 14 条一次调用 < 5 s） |
@@ -85,8 +85,8 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_hole_callouts` | **批量孔标注**：单视图可见边 → `AddHoleCallout2`，`IsHoleCallout` 判定（pilot），可指定引线落点 |
 | `add_drawing_dimension` | 按边索引/坐标补标单个尺寸（失败返回最近边模型/图纸坐标 + 距离） |
 | `add_dimension_tolerance` | 原生尺寸公差（双边/对称/极限/配合） |
-| `add_geometric_tolerance` | **原生形位公差**（公差值 + 多基准 + 引线，pilot） |
-| `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数） |
+| `add_geometric_tolerance` | **原生形位公差**（公差值 + 多基准 + 引线）；符号格写中文文字并回读校验，写不进就删框返回 `gtol_symbol_not_applied` |
+| `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数）；`InsertSurfaceFinishSymbol3` 会忽略 x/y，用 `SetPosition` 修正后回读，可选 PDF 像素 diff 自检 |
 | `add_note` | 技术要求注记（sheet 空间坐标，米） |
 | `layout_dimensions` | **拆开叠在一起的尺寸**（按 x 聚类后沿 y 推开） |
 | `delete_view` | **删除视图**（错切的剖视 / 空白局部放大） |
@@ -206,7 +206,7 @@ pending:   27/53 尺寸读不到关联
 
 | 限制 | 原因 | 影响 |
 |---|---|---|
-| **形位公差框格内的符号为空** | `SetFrameSymbols2` 传 `<MOD-FLAT-PAR>` 这类格式码无效；公差值与基准正常写入 | 框格有、数值对，符号格需界面补（v0.6.0 已解决"能不能创建"） |
+| **形位公差框格第一格是文字，不是几何符号** | `SetFrameSymbols2` 传 `<MOD-FLAT-PAR>` 这类格式码只会被当字面文本，不会解析成 GD&T 符号；v0.8.20 起改写中文文字（如「位置度」）并用 `GetFrameSymbols2` 回读校验，写不进就删框报错 | 框格有、数值对、第一格可读；真正的几何符号仍需界面补 |
 | **孔标注只覆盖朝向观察者的孔边** | 同一孔的两个面只有正面能标，背面返回 null（实测 door.SLDPRT：Ø8/Ø15 成功，Ø6 背面 8 条全失败） | 记 `hidden_side`，用 Ø 尺寸补；或换视图 |
 | **`material_library` 按文件名查找不可靠** | 传绝对路径可用（UTF-16 已修）；按文件名在 PROGRAMDATA/APPDATA 下遍历可能漏 | 建议传完整路径 |
 | **A3 最多 3 个视图** | 剖视图 x 与父视图锁定，无法横向移开 | 钣金件拆两张图（结构 + 展开） |
@@ -222,7 +222,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 14 条历史回归
+python tests/check_all.py     # 秒级：语法 + 结构 + 27 条历史回归
 python tests/smoke.py         # 需 SolidWorks：行为层
 ```
 
@@ -364,7 +364,7 @@ python tests/smoke.py
 python tests/static_check.py     # 单独跑，秒级
 ```
 
-默认 **30 项**（另可用 `--eng-cases` 加跑真实零件链路）：连接/版本、组件树与错误信息、BOM+CSV、质量属性、上色 dry-run/零匹配/apply、实体列表/分色、预览 PNG、STEP 导出、工程图链路（建图→PDF→渲染→审计）、孔标注清单（P0）、**孔标注引线落点（P1-7）**、尺寸去重、**auto_dimension 按 full name 自动去重**、原生 BOM 表、按名编辑（移动/删除标注、删尺寸、移视图、尺寸排版、删视图、**单尺寸移动 + 类型守卫**）、`health`、标注写入（形位公差/粗糙度/尺寸公差）、规划入口、视图/明细/标题栏、零件工具、单孔标注、重命名 dry-run、展开视图、材料写入诚实性、台账对账+交付判定、**server 包装层签名契约**。全部只读或写临时目录。
+默认 **31 项**（另可用 `--eng-cases` 加跑真实零件链路）：连接/版本、组件树与错误信息、BOM+CSV、质量属性、上色 dry-run/零匹配/apply、实体列表/分色、预览 PNG、STEP 导出、工程图链路（建图→PDF→渲染→审计）、孔标注清单（P0）、**孔标注引线落点（P1-7）**、尺寸去重、**auto_dimension 按 full name 自动去重**、原生 BOM 表、按名编辑（移动/删除标注、删尺寸、移视图、尺寸排版、删视图、**单尺寸移动 + 类型守卫**）、`health`、标注写入（形位公差**符号文字 fallback（P2-10）**/粗糙度/尺寸公差）、**表面粗糙度位置与像素可见性（P2-11）**、规划入口、视图/明细/标题栏（含**局部视图判空与比例守卫（P2-9）**）、零件工具、单孔标注、重命名 dry-run、展开视图、材料写入诚实性、台账对账+交付判定、**server 包装层签名契约**。全部只读或写临时目录。
 
 **仓库不含测试模型**（`测试用例/` 因体积与版权未入库），裸跑会因文件不存在直接退出。用 `--assembly` / `--part` 指定自己的模型：
 

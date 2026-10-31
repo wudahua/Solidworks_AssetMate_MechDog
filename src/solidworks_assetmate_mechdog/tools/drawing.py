@@ -2409,6 +2409,28 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         return error("section_failed", str(exc))
 
 
+def _view_edge_count(view):
+    """Count a view's visible edges without re-opening the document (P2-9).
+
+    A DETAIL view whose boundary circle missed the parent geometry reports NO visible
+    components, so this returns 0 — that is a genuinely empty view, not an API quirk.
+    Measured 2026-10-31 on door.SLDPRT: boundary inside the parent outline -> 1 edge,
+    boundary outside -> 0 edges. Used to reject empty detail views instead of returning
+    ok:true for a view that shows nothing.
+    """
+    try:
+        comps = list(view.GetVisibleComponents or ())
+    except Exception:
+        comps = []
+    total = 0
+    for comp in comps:
+        try:
+            total += len(list(view.GetVisibleEntities2(comp, 1) or ()))
+        except Exception:
+            continue
+    return total
+
+
 def _apply_detail_scale(doc, detail, scale):
     """Set a detail view's scale, clearing the parent-scale lock first. Returns readback."""
     applied = None
@@ -2452,10 +2474,20 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
     the source view's sketch
     (coordinates = (paper - view.Position) / view.ScaleDecimal) and selected before the
     call — otherwise SolidWorks has no boundary to enlarge.
+
+    P2-9 (0.8.20): `scale` is the REQUESTED detail scale and is no longer overwritten by
+    the parent's scale (that bug made a 2:1 request silently come out 1:2). After creation
+    the new view's visible edges are counted: 0 means the boundary missed the geometry and
+    the call returns `detail_empty`. If SolidWorks keeps the parent scale instead of the
+    requested one, the call returns `detail_scale_locked` rather than ok:true with a quiet
+    `scale_locked` flag.
     """
     try:
         import win32com.client as win
 
+        # P2-9: `scale` is the REQUESTED detail scale. Never overwrite it with the
+        # parent view's scale — that old bug made a 2:1 request silently come out 1:2.
+        requested_scale = float(scale)
         doc = _open_drawing(drawing_path)
         views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
         if not views:
@@ -2471,16 +2503,18 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
 
         doc.ActivateView(target.Name)
         pos = list(target.Position)
-        scale = float(target.ScaleDecimal)
+        parent_scale = float(target.ScaleDecimal)
         outline = list(target.GetOutline)
         if center:
             sheet_x, sheet_y = float(center[0]), float(center[1])
         else:
             sheet_x = (outline[0] + outline[2]) / 2
             sheet_y = (outline[1] + outline[3]) / 2
-        sketch_x = (sheet_x - pos[0]) / scale
-        sketch_y = (sheet_y - pos[1]) / scale
-        sketch_r = float(radius_m) / scale
+        # The boundary circle is drawn in the PARENT view's sketch, so convert with the
+        # parent's scale, not the detail's requested one.
+        sketch_x = (sheet_x - pos[0]) / parent_scale
+        sketch_y = (sheet_y - pos[1]) / parent_scale
+        sketch_r = float(radius_m) / parent_scale
 
         sm = doc.SketchManager
         sm.InsertSketch(True)
@@ -2521,8 +2555,9 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             place_y = max(0.09, sheet_h * 0.30)
 
         detail = doc.CreateDetailViewAt4(
-            place_x, place_y, 0.0, int(style), float(scale), float(scale), str(label),
-            bool(show_label), bool(flip), False, int(shape), int(circle_segments),
+            place_x, place_y, 0.0, int(style), float(parent_scale), float(parent_scale),
+            str(label), bool(show_label), bool(flip), False, int(shape),
+            int(circle_segments),
         )
         if detail is None:
             return error(
@@ -2533,15 +2568,17 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             )
         # A detail view inherits the parent's scale (UseParentScale = True by default) and
         # silently ignores ScaleDecimal until that flag is cleared. Setting both right
-        # after creation can be swallowed, so retry until the read-back matches.
-        applied = _apply_detail_scale(doc, detail, scale)
-        if applied is None or abs(applied - float(scale)) > 0.01:
+        # after creation can be swallowed, so retry against the REQUESTED scale until the
+        # read-back matches. Measured: _apply_detail_scale(2.0) does take effect and the
+        # view is renamed "局部视图 A (2 : 1)".
+        applied = _apply_detail_scale(doc, detail, requested_scale)
+        if applied is None or abs(applied - requested_scale) > 0.01:
             # A freshly created detail view refuses the scale until it is committed once.
             try:
                 doc.SaveSilent
             except Exception:
                 pass
-            applied = _apply_detail_scale(doc, detail, scale)
+            applied = _apply_detail_scale(doc, detail, requested_scale)
             try:
                 doc.SaveSilent
             except Exception:
@@ -2557,17 +2594,54 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         except Exception:
             box = None
         final_scale = applied if applied is not None else float(detail.ScaleDecimal)
-        locked = abs(float(final_scale) - float(scale)) > 0.01
+        locked = abs(float(final_scale) - requested_scale) > 0.01
+
+        # P2-9: a boundary circle that missed the geometry produces an EMPTY detail view.
+        # `GetVisibleComponents` is None in that case, so _view_edge_count is 0 (measured
+        # on door.SLDPRT: boundary inside the parent outline -> 1 edge, outside -> 0).
+        edge_count = _view_edge_count(detail)
+        diag = {
+            "detail": detail.Name,
+            "source_view": target.Name,
+            "boundary_center_m": [round(sheet_x, 4), round(sheet_y, 4)],
+            "boundary_radius_m": float(radius_m),
+            "source_outline_m": [round(v, 4) for v in outline],
+            "edge_count": edge_count,
+            "scale": final_scale,
+            "requested_scale": requested_scale,
+            "parent_scale": parent_scale,
+            "outline": box,
+        }
+        if edge_count == 0:
+            return error(
+                "detail_empty",
+                "The detail view was created but has 0 visible edges — its boundary "
+                "circle fell outside the source view's geometry.",
+                "Point `center` at real geometry (a hole, corner or bend) inside the "
+                "source view's outline; use drawing_audit / list_drawing_edges to find it.",
+                **diag)
+        if locked:
+            return error(
+                "detail_scale_locked",
+                "The detail view kept scale %.4g, not the requested %.4g — SolidWorks "
+                "locked it to the parent view's scale."
+                % (float(final_scale), requested_scale),
+                "Save and reopen the drawing, then set the scale in the UI; or pass a "
+                "scale equal to the parent's to create without a scale conflict.",
+                scale_locked=True,
+                scale_note=("局部视图默认继承父视图比例（UseParentScale）；本次请求的 "
+                            "%.4g 未生效，实际 %.4g。" % (requested_scale, float(final_scale))),
+                **diag)
         return drawing_ok(
             drawing=doc.GetTitle, detail=detail.Name, source_view=target.Name,
             label=str(label), boundary_center_m=[round(sheet_x, 4), round(sheet_y, 4)],
             boundary_radius_m=float(radius_m),
             scale=final_scale,
-            requested_scale=float(scale),
-            scale_locked=locked,
-            scale_note=("局部视图默认继承父视图比例（UseParentScale），ScaleDecimal 需在保存后"
-                        "二次设置才生效；scale_locked=true 表示本次仍按父视图比例，"
-                        "需要不同比例时在 UI 中改或先保存重开再调一次。") if locked else None,
+            requested_scale=requested_scale,
+            parent_scale=parent_scale,
+            edge_count=edge_count,
+            scale_locked=False,
+            scale_note=None,
             outline=box,
         )
     except (FileNotFoundError, ValueError) as exc:
@@ -3734,10 +3808,63 @@ SURFACE_FINISH_TYPES = {"machining": 1, "prohibited": 2, "none": 0}
 LEADER_STYLES = {"none": 0, "straight": 1, "bent": 2}
 
 
+def _sf_render_page(doc, out_pdf, work_dir):
+    """Export the CURRENT in-memory drawing to PDF and render page 1 to a PIL image.
+
+    P2-11: used twice (before and after inserting the symbol) so a pixel diff can prove
+    the symbol really rendered. Raises on any missing dependency so the caller can
+    degrade to visibility.checked=false instead of failing the whole tool.
+    """
+    from PIL import Image
+
+    doc.SaveAsSilent(out_pdf, False)
+    if not os.path.exists(out_pdf):
+        raise RuntimeError("SaveAsSilent wrote no PDF")
+    rendered = render_drawing(out_pdf, work_dir, scale=2.0)
+    if not rendered.get("ok"):
+        raise RuntimeError(rendered.get("error") or "render failed")
+    page = (rendered.get("pages") or [None])[0]
+    if not page:
+        raise RuntimeError("no page rendered")
+    return Image.open(page["path"]).convert("L")
+
+
+def _sf_visibility_check(doc, x, y, before_img, after_img):
+    """Pixel-diff two rendered pages in a window around the requested sheet point.
+
+    SolidWorks sheet origin is bottom-left while a rendered image origin is top-left,
+    so y must be flipped. Measured 2026-10-31 on door.SLDPRT: a correctly placed
+    surface finish changed 265 pixels in a +/-40 px window at (x, y).
+    """
+    from PIL import ImageChops
+
+    sheet = list(doc.GetFirstView.GetOutline)
+    sw_m, sh_m = sheet[2] - sheet[0], sheet[3] - sheet[1]
+    if sw_m <= 0 or sh_m <= 0:
+        raise RuntimeError("bad sheet outline")
+    px = int(float(x) / sw_m * before_img.width)
+    py = int((1.0 - float(y) / sh_m) * before_img.height)
+    half = 50
+    box = (max(0, px - half), max(0, py - half),
+           min(before_img.width, px + half), min(before_img.height, py + half))
+    diff = ImageChops.difference(before_img.crop(box), after_img.crop(box))
+    changed = sum(1 for v in diff.getdata() if v > 25)
+    return {
+        "checked": True,
+        "method": "pdf_render_diff",
+        "pixel": [px, py],
+        "window_px": [box[2] - box[0], box[3] - box[1]],
+        "changed_pixels": changed,
+        "visible": changed >= 20,
+        "sheet_m": [round(sw_m, 4), round(sh_m, 4)],
+    }
+
+
 def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining",
                        leader_type="none", lay_symbol=0, arrow_type=0,
                        prod_method="", sample_len="", min_roughness="",
-                       roughness_spacing="", save=True):
+                       roughness_spacing="", save=True, verify_render=False,
+                       verify_dwg=False):
     """Insert a NATIVE surface finish symbol (Ra value) at a sheet point.
 
     `IModelDocExtension.InsertSurfaceFinishSymbol3` takes FOURTEEN arguments — that count
@@ -3746,67 +3873,174 @@ def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining"
        ProdMethod, SampleLen, MaxRoughness, MinRoughness, RoughnessSpacing)
 
     x/y are sheet metres. roughness is the Ra value as text (e.g. "3.2").
+
+    P2-11 (0.8.20): InsertSurfaceFinishSymbol3 IGNORES the x/y arguments — the symbol
+    actually lands at the sheet origin (0,0), so echoing position_m=[x,y] was a lie. The
+    annotation is now moved with SetPosition and read back as `position_actual_m`.
+    `verify_render=True` exports a PDF before and after, renders both to PNG and pixel-
+    diffs a window at (x,y) to prove the symbol is visible there (`visibility.visible`).
+    `verify_dwg=True` additionally exports a DWG and checks it is non-empty; DWG is
+    vector data with no pixel channel, so visibility is proven through the PDF path.
     """
     try:
+        import shutil as _shutil
+        import tempfile as _tempfile
+
         doc = _open_drawing(drawing_path)
         sym = SURFACE_FINISH_TYPES.get(str(sym_type).lower(), sym_type)
         leader = LEADER_STYLES.get(str(leader_type).lower(), leader_type)
+        work_dir = None
         try:
-            symbol = doc.Extension.InsertSurfaceFinishSymbol3(
-                int(sym), int(leader), float(x), float(y), 0.0,
-                int(lay_symbol), int(arrow_type),
-                "", "", str(prod_method), str(sample_len),
-                str(roughness), str(min_roughness), str(roughness_spacing),
+            before_img = None
+            visibility = None
+            dwg_check = None
+            if verify_render:
+                try:
+                    work_dir = _tempfile.mkdtemp(prefix="assetmate_sf_")
+                    before_img = _sf_render_page(
+                        doc, os.path.join(work_dir, "before.pdf"), work_dir)
+                except Exception as exc:
+                    visibility = {"checked": False,
+                                  "reason": "PDF render unavailable: %s" % str(exc)[:120]}
+            try:
+                symbol = doc.Extension.InsertSurfaceFinishSymbol3(
+                    int(sym), int(leader), float(x), float(y), 0.0,
+                    int(lay_symbol), int(arrow_type),
+                    "", "", str(prod_method), str(sample_len),
+                    str(roughness), str(min_roughness), str(roughness_spacing),
+                )
+            except Exception as exc:
+                return error("surface_finish_failed", str(exc),
+                             "Check the 14-argument order; this signature is easy to mismatch.")
+            if symbol is None:
+                return error("surface_finish_failed",
+                             "SolidWorks returned null for the surface finish symbol",
+                             "Verify the point is on the sheet and the symbol type is valid.")
+
+            # P2-11: the API put the symbol at (0,0). Move it and read the REAL position.
+            position_actual_m = None
+            position_applied = False
+            try:
+                annotation = symbol.GetAnnotation
+                if annotation is not None:
+                    position_applied = bool(annotation.SetPosition(float(x), float(y), 0.0))
+                    position_actual_m = [round(float(v), 4) for v in annotation.GetPosition]
+            except Exception:
+                pass
+            from ..sw_session import call_method as _call_method_sf
+            try:
+                _call_method_sf(doc, "EditRebuild3")
+            except Exception:
+                pass
+            try:
+                doc.GraphicsRedraw2()
+            except Exception:
+                pass
+            readback = {}
+            try:
+                readback["annotation_name"] = str(symbol.GetAnnotation.GetName)
+            except Exception:
+                pass
+            if save:
+                _save_drawing(doc)
+
+            # P2-11: render AFTER and diff against the before image.
+            if verify_render and before_img is not None and visibility is None:
+                try:
+                    after_img = _sf_render_page(
+                        doc, os.path.join(work_dir, "after.pdf"), work_dir)
+                    visibility = _sf_visibility_check(doc, x, y, before_img, after_img)
+                except Exception as exc:
+                    visibility = {"checked": False,
+                                  "reason": "PDF render unavailable: %s" % str(exc)[:120]}
+            if verify_dwg:
+                try:
+                    if work_dir is None:
+                        work_dir = _tempfile.mkdtemp(prefix="assetmate_sf_")
+                    dwg_path = os.path.join(work_dir, "surface_finish.dwg")
+                    doc.SaveAsSilent(dwg_path, False)
+                    size = os.path.getsize(dwg_path) if os.path.exists(dwg_path) else 0
+                    dwg_check = {
+                        "checked": True, "path": dwg_path, "bytes": size,
+                        "nonempty": size > 1000,
+                        "note": ("DWG is vector data — only file size is checked here; "
+                                 "pixel visibility is proven through the PDF path "
+                                 "(verify_render)."),
+                    }
+                except Exception as exc:
+                    dwg_check = {"checked": False, "reason": str(exc)[:120]}
+            return drawing_ok(
+                created=True, saved=bool(save), roughness=str(roughness),
+                sym_type=str(sym_type), leader_type=str(leader_type),
+                position_m=[round(float(x), 4), round(float(y), 4)],
+                position_actual_m=position_actual_m,
+                position_applied=position_applied,
+                visibility=visibility,
+                dwg_check=dwg_check,
+                readback=readback,
+                note=("0.8.20：InsertSurfaceFinishSymbol3 会忽略传入的 x/y，符号实际落在图纸原点；"
+                      "创建后用 IAnnotation.SetPosition 移到请求点并回读 position_actual_m。"
+                      "verify_render=True 时前后各导出 PDF 渲染 PNG 做像素差分，证明符号确实"
+                      "出现在请求位置（visible=true）；verify_dwg=True 只检查 DWG 文件非空"
+                      "（矢量无像素通道，可见性以 PDF 为准）。"),
             )
-        except Exception as exc:
-            return error("surface_finish_failed", str(exc),
-                         "Check the 14-argument order; this signature is easy to mismatch.")
-        if symbol is None:
-            return error("surface_finish_failed",
-                         "SolidWorks returned null for the surface finish symbol",
-                         "Verify the point is on the sheet and the symbol type is valid.")
-        try:
-            doc.GraphicsRedraw2()
-        except Exception:
-            pass
-        readback = {}
-        try:
-            readback["annotation_name"] = str(symbol.GetAnnotation.GetName)
-        except Exception:
-            pass
-        if save:
-            _save_drawing(doc)
-        return drawing_ok(
-            created=True, saved=bool(save), roughness=str(roughness),
-            sym_type=str(sym_type), leader_type=str(leader_type),
-            position_m=[round(float(x), 4), round(float(y), 4)],
-            readback=readback,
-        )
+        finally:
+            if work_dir:
+                _shutil.rmtree(work_dir, ignore_errors=True)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("surface_finish_failed", str(exc))
 
 
-# swGdtSym_e is not reachable through late binding on this build either; the symbol inside
-# the frame is written with SolidWorks format codes instead (same mechanism as <MOD-DIAM>).
+# P2-10 (0.8.20): SolidWorks does NOT parse "<MOD-*-PAR>" format codes passed to
+# SetFrameSymbols2 — it stores them as LITERAL TEXT, so a frame would show the string
+# "<MOD-POS-PAR>" instead of a position symbol. Measured 2026-10-31 on SW2026:
+#   SetFrameSymbols2(1, "位置度", ...) -> GetFrameSymbols2(1) == ('位置度','',...)
+# SetFrameSymbols2 returns None even on success, so a read-back is the only proof.
+# These are readable WORDS in the first frame cell, not true GD&T glyphs.
 GTOL_SYMBOLS = {
-    "position": "<MOD-POS-PAR>",
-    "concentricity": "<MOD-CONC-PAR>",
-    "perpendicularity": "<MOD-PERP-PAR>",
-    "parallelism": "<MOD-PAR-PAR>",
-    "flatness": "<MOD-FLAT-PAR>",
-    "straightness": "<MOD-STR-PAR>",
-    "circularity": "<MOD-CIRC-PAR>",
-    "cylindricity": "<MOD-CYL-PAR>",
-    "profile_line": "<MOD-PROF-LINE-PAR>",
-    "profile_surface": "<MOD-PROF-SURF-PAR>",
-    "angularity": "<MOD-ANG-PAR>",
-    "symmetry": "<MOD-SYM-PAR>",
-    "runout": "<MOD-RUN-PAR>",
-    "total_runout": "<MOD-TRUN-PAR>",
+    "position": "位置度",
+    "concentricity": "同轴度",
+    "perpendicularity": "垂直度",
+    "parallelism": "平行度",
+    "flatness": "平面度",
+    "straightness": "直线度",
+    "circularity": "圆度",
+    "cylindricity": "圆柱度",
+    "profile_line": "线轮廓度",
+    "profile_surface": "面轮廓度",
+    "angularity": "倾斜度",
+    "symmetry": "对称度",
+    "runout": "圆跳动",
+    "total_runout": "全跳动",
     "none": "",
 }
+
+
+def _delete_gtol(doc, gtol):
+    """Best-effort removal of a frame whose symbol could not be written (P2-10).
+
+    Leaving a frame whose first cell is empty or a raw format code would be worse than
+    failing: the caller would believe a geometric symbol is on the sheet when it is not.
+    """
+    from ..sw_session import call_method
+
+    try:
+        annotation = gtol.GetAnnotation
+        if annotation is None:
+            return False
+        doc.ClearSelection2(True)
+        if not annotation.Select(False):
+            return False
+        if doc.SelectionManager.GetSelectedObjectCount2(-1) < 1:
+            return False
+        call_method(doc, "EditDelete")
+        call_method(doc, "EditRebuild3")
+        doc.ClearSelection2(True)
+        return True
+    except Exception:
+        return False
 
 
 def _invoke_as_method(obj, name, *args):
@@ -3867,10 +4101,27 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
         gtol = win.Dispatch(raw)
 
         code = GTOL_SYMBOLS.get(str(symbol).lower(), "")
+        symbol_written = ""
         try:
             gtol.SetFrameSymbols2(1, code, False, "", False, "", "", "", "")
+            # P2-10: SetFrameSymbols2 returns None even on success — the ONLY reliable
+            # proof is a read-back. A "<MOD-*" code stored as literal text (or an ignored
+            # write) must not be reported as a real geometric symbol.
+            symbol_written = str(gtol.GetFrameSymbols2(1)[0] or "")
         except Exception as exc:
             return error("gtol_symbol_failed", str(exc)[:120])
+        if code and symbol_written != code:
+            # Refuse to leave a half-built frame that claims a symbol it does not show.
+            removed = _delete_gtol(doc, gtol)
+            return error(
+                "gtol_symbol_not_applied",
+                "Requested symbol %r but the first frame cell reads back %r — the symbol "
+                "was not applied on this SolidWorks build." % (code, symbol_written),
+                "Use symbol='none' to create a values-only frame, or add the geometric "
+                "symbol manually in the UI. Do not treat this frame as a complete GD&T "
+                "callout.",
+                symbol_requested=code, symbol_readback=symbol_written,
+                symbol_is_text=True, frame_removed=removed)
         try:
             wrote = bool(gtol.SetFrameValues2(1, str(tolerance), "", str(datum),
                                               str(second_datum), str(third_datum)))
@@ -3894,7 +4145,7 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
             pass
 
         # Read back field by field: one unsupported accessor must not blank the whole block.
-        readback = {}
+        readback = {"symbol_written": symbol_written}
         if annotation is not None:
             try:
                 readback["name"] = str(annotation.GetName)
@@ -3923,8 +4174,12 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
             created=True, saved=bool(save), attached_to=attached,
             tolerance=str(tolerance), datum=str(datum), symbol=str(symbol),
             values_written=wrote, position_set=position_ok, readback=readback,
+            symbol_written=symbol_written, symbol_is_text=bool(code),
             note=("形位公差是原生对象，可用 list_drawing_annotations 读出（kind="
-                  "geometric_tolerance）。符号用格式码写入，symbol 传 none 时只有公差值与基准。"),
+                  "geometric_tolerance）。0.8.20：符号格以可读文字写入第一格并回读校验"
+                  "（<MOD-*> 格式码在本环境只会被当字面文本，不解析成几何符号）；"
+                  "写入不生效会删除框格并返回 gtol_symbol_not_applied。"
+                  "symbol=none 时不写符号，只有公差值与基准。"),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

@@ -441,7 +441,10 @@ def add_geometric_tolerance(
 
     symbol: none / position / flatness / perpendicularity / parallelism / concentricity /
     circularity / cylindricity / profile_line / profile_surface / angularity / symmetry /
-    runout / total_runout. Pass view_name + edge_index to attach the leader to geometry.
+    runout / total_runout. The symbol is written as readable TEXT into the first frame
+    cell (SolidWorks does not parse <MOD-*> format codes here) and verified by read-back;
+    a failed write returns gtol_symbol_not_applied instead of a frame with no symbol.
+    Pass view_name + edge_index to attach the leader to geometry.
     """
     return _json(drawing.add_geometric_tolerance(
         drawing_path, x, y, tolerance=tolerance, datum=datum, symbol=symbol,
@@ -464,17 +467,26 @@ def add_surface_finish(
     min_roughness: str = "",
     roughness_spacing: str = "",
     save: bool = True,
+    verify_render: bool = False,
+    verify_dwg: bool = False,
 ) -> str:
     """Insert a NATIVE surface finish symbol (Ra value) at a sheet point.
 
     x/y are sheet metres; roughness is text like "3.2". Needs InsertSurfaceFinishSymbol3's
     full 14 arguments — a shorter call fails with "non-optional parameter".
+
+    The API ignores x/y and drops the symbol at the sheet origin, so the tool moves it
+    with SetPosition and reports the real `position_actual_m`. Set verify_render=True to
+    diff a before/after PDF render at (x,y) and prove the symbol is visible on the sheet
+    (`visibility.visible`); verify_dwg=True additionally checks a DWG export is non-empty
+    (DWG is vector data, so visibility itself is proven through the PDF).
     """
     return _json(drawing.add_surface_finish(
         drawing_path, x, y, roughness=roughness, sym_type=sym_type,
         leader_type=leader_type, lay_symbol=lay_symbol, arrow_type=arrow_type,
         prod_method=prod_method, sample_len=sample_len,
         min_roughness=min_roughness, roughness_spacing=roughness_spacing, save=save,
+        verify_render=verify_render, verify_dwg=verify_dwg,
     ))
 
 
@@ -754,8 +766,11 @@ def add_detail_view(
     """Add a DETAIL (enlarged) view around a circular area of a model view.
 
     center/radius_m are sheet metres (default: the view centre, 20 mm radius).
-    scale is the detail's own scale (2.0 = 2:1). circle_segments must be > 0 —
-    passing 0 is what makes SolidWorks reject the call.
+    scale is the REQUESTED detail scale (2.0 = 2:1); it is no longer overwritten by the
+    parent view's scale. circle_segments must be > 0 — passing 0 is what makes
+    SolidWorks reject the call. Returns error(detail_empty) if the new view has zero
+    visible edges, and error(detail_scale_locked) if SolidWorks refuses the requested
+    scale — neither is reported as a silent ok:true anymore.
     """
     return _json(drawing.add_detail_view(
         drawing_path, view_name=view_name, center=center, radius_m=radius_m,

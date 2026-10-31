@@ -609,6 +609,96 @@ def assert_hole_callout_leader_is_parameterized():
     return "leader anchor parameter end-to-end with position readback"
 
 
+def assert_detail_view_validates_edges_and_scale():
+    """0.8.20 / P2-9 — requested scale was overwritten and empty views said ok:true.
+
+    `add_detail_view` used to do `scale = float(target.ScaleDecimal)`, silently replacing
+    a requested 2:1 with the parent's 1:2, then returned ok:true with a quiet
+    `scale_locked` flag. Guard that the request survives, the new view's visible edges are
+    counted (0 -> detail_empty), and a refused scale returns detail_scale_locked.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    node = _function_node(tree, "add_detail_view")
+    assert node is not None, "add_detail_view not found"
+    body = ast.get_source_segment(src, node) or ""
+    assert "requested_scale = float(scale)" in body, (
+        "add_detail_view still overwrites the requested scale with the parent's")
+    assert "parent_scale" in body, "no separate parent scale for the sketch conversion"
+    assert "_view_edge_count" in body, (
+        "detail view does not count visible edges — an empty view would report ok:true")
+    assert "detail_empty" in body, "no detail_empty error for a 0-edge view"
+    assert "detail_scale_locked" in body, (
+        "a refused scale is still reported as ok:true with scale_locked instead of an error")
+    assert "edge_count" in body, "edge_count not returned for the caller to judge"
+    return "request preserved, empty -> detail_empty, locked scale -> error"
+
+
+def assert_gtol_symbol_text_fallback():
+    """0.8.20 / P2-10 — <MOD-*-PAR> was stored as literal text, not a symbol.
+
+    `SetFrameSymbols2` returns None even on success, so the write must be verified with
+    GetFrameSymbols2. A failed write must delete the frame and return
+    gtol_symbol_not_applied rather than claiming a geometric symbol is on the sheet.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    sym_node = None
+    for sub in tree.body:
+        if isinstance(sub, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "GTOL_SYMBOLS" for t in sub.targets):
+            sym_node = sub
+            break
+    assert sym_node is not None, "GTOL_SYMBOLS not found"
+    sym_src = ast.get_source_segment(src, sym_node) or ""
+    assert "<MOD-" not in sym_src, (
+        "GTOL_SYMBOLS still uses <MOD-*> format codes — these are stored as literal text, "
+        "not resolved into geometric symbols")
+    assert "位置度" in sym_src, "GTOL_SYMBOLS has no readable Chinese text fallback"
+    node = _function_node(tree, "add_geometric_tolerance")
+    assert node is not None, "add_geometric_tolerance not found"
+    body = ast.get_source_segment(src, node) or ""
+    assert "GetFrameSymbols2" in body, (
+        "symbol write is not verified by read-back — SetFrameSymbols2 returns None on success")
+    assert "gtol_symbol_not_applied" in body, (
+        "a failed symbol write does not return an explicit error")
+    assert "_delete_gtol" in body, "a failed symbol write leaves a half-built frame"
+    return "text fallback + read-back verification + refusal on failure"
+
+
+def assert_surface_finish_position_and_pixel_check():
+    """0.8.20 / P2-11 — position_m echoed the request while the symbol sat at (0,0).
+
+    InsertSurfaceFinishSymbol3 ignores x/y; the tool must move the annotation with
+    SetPosition and read back position_actual_m. verify_render must do a before/after
+    PDF pixel diff, and verify_dwg must at least check the DWG file is non-empty.
+    """
+    from solidworks_assetmate_mechdog.tools import drawing
+
+    sig = set(inspect.signature(drawing.add_surface_finish).parameters)
+    for param in ("verify_render", "verify_dwg"):
+        assert param in sig, "add_surface_finish has no %s parameter" % param
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    node = _function_node(tree, "add_surface_finish")
+    assert node is not None, "add_surface_finish not found"
+    body = ast.get_source_segment(src, node) or ""
+    assert "position_actual_m" in body, (
+        "no read-back of the real symbol position — position_m would still be a lie")
+    assert "SetPosition" in body, "symbol is not moved to the requested point"
+    assert "_sf_visibility_check" in body and "_sf_render_page" in body, (
+        "verify_render does not do a before/after PDF pixel diff")
+    assert "visible" in body, "no visibility verdict"
+    assert "dwg_check" in body, "verify_dwg has no file-level verdict"
+    srv = _read("server.py")
+    wnode = _function_node(ast.parse(srv), "add_surface_finish")
+    assert wnode is not None, "server.add_surface_finish wrapper missing"
+    wparams = {a.arg for a in wnode.args.args} | {a.arg for a in wnode.args.kwonlyargs}
+    for param in ("verify_render", "verify_dwg"):
+        assert param in wparams, "server.add_surface_finish does not forward %s" % param
+    return "position read-back + PDF pixel diff + DWG size, end-to-end"
+
+
 # ---------------------------------------------------------------- registry
 
 STATIC_REGRESSIONS = [
@@ -636,6 +726,9 @@ STATIC_REGRESSIONS = [
     ("0.8.19 full-name dedupe", assert_full_name_dedupe_deletes_copies),
     ("0.8.19 dimension type guard", assert_dimension_position_validates_type),
     ("0.8.19 leader anchor parameter", assert_hole_callout_leader_is_parameterized),
+    ("0.8.20 detail empty/scale guard", assert_detail_view_validates_edges_and_scale),
+    ("0.8.20 GTOL text fallback", assert_gtol_symbol_text_fallback),
+    ("0.8.20 surface finish visibility", assert_surface_finish_position_and_pixel_check),
 ]
 
 

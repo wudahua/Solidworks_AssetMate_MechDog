@@ -611,6 +611,17 @@ def main():
             # `symbol_written`); a missing readback would hide a failed symbol write.
             assert "symbol" in gt and "values_written" in gt, (
                 "GT result omits the symbol/values readback")
+            # P2-10: the first frame cell must read back the TEXT we wrote, never a raw
+            # <MOD-*> format code, and never empty for a requested symbol.
+            rb = gt.get("readback") or {}
+            assert rb.get("symbol_written") == "位置度", (
+                "GT symbol cell was not written/verified: %r" % rb)
+            assert "<MOD-" not in str(rb.get("symbol_written") or "").upper(), (
+                "GT symbol cell still holds a raw format code: %r" % rb)
+        else:
+            assert gt.get("error") in ("gtol_symbol_not_applied", "gtol_failed",
+                                       "gtol_symbol_failed", "gtol_value_failed"), (
+                "unexpected GT failure: %r" % gt)
 
         # surface finish: created flag must be explicit
         sf = drawing.add_surface_finish(drw, 0.12, 0.10, "3.2")
@@ -628,6 +639,34 @@ def main():
             except Exception:
                 pass
         return "sheet_line + place_views + circular_edges + GT + finish + tolerance"
+
+    def _surface_finish_visibility():
+        """P2-11: the symbol must really land at (x,y) and show up in an exported PDF."""
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_sf.SLDPRT")
+        drw = os.path.join(workdir, "smoke_sf.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        sf = drawing.add_surface_finish(drw, 0.30, 0.20, "3.2",
+                                        verify_render=True, verify_dwg=True)
+        assert sf.get("ok") is not None, "add_surface_finish returned no verdict"
+        if sf.get("ok"):
+            actual = sf.get("position_actual_m")
+            assert actual and abs(actual[0] - 0.30) < 0.01 and abs(actual[1] - 0.20) < 0.01, (
+                "surface finish ignored the requested position (P2-11): %r" % sf)
+            vis = sf.get("visibility") or {}
+            assert "checked" in vis, "no visibility verdict (P2-11)"
+            if vis.get("checked"):
+                assert vis.get("visible") is True, (
+                    "surface finish did not render at the requested point (P2-11): %r" % vis)
+            dwg = sf.get("dwg_check") or {}
+            assert "checked" in dwg, "no DWG verdict (P2-11)"
+        for name in ("smoke_sf.SLDDRW", "smoke_sf.SLDPRT"):
+            try:
+                get_sw().CloseDoc(name)
+            except Exception:
+                pass
+        return "position readback + PDF pixel diff + DWG size"
 
     # --- planning and inspection entry points ----------------------------------------
     def _planning():
@@ -652,6 +691,7 @@ def main():
         return "capabilities + plan + ledger + qc(is_sheet_metal=%s)" % qc.get("is_sheet_metal")
 
     r.check("annotation writers (sheet/GT/finish/tolerance)", _annotation_writers)
+    r.check("surface finish visibility (P2-11)", _surface_finish_visibility)
     r.check("planning entry points", _planning)
 
     # --- views, dimensions and title block ------------------------------------------
@@ -676,13 +716,31 @@ def main():
         assert "section" in section or section.get("ok") is False, (
             "section result neither warns nor fails — the sanity check may be gone")
 
-        # detail view: scale may be rejected by the parent, but must be reported
-        detail = drawing.add_detail_view(drw, center=[0.10, 0.15], radius_m=0.008,
-                                        position=[0.28, 0.10], scale=2, label="D")
+        # detail view (P2-9): aim the boundary at the CENTRE of the source view so it
+        # lands on real geometry; an empty view must now return detail_empty, and a
+        # refused scale must return detail_scale_locked — never a silent ok:true.
+        src_doc = drawing._open_drawing(drw)
+        model_views = [v for v in drawing._iter_views(src_doc)
+                       if getattr(v, "Type", None) != 1]
+        v_outline = list(model_views[0].GetOutline)
+        v_center = [(v_outline[0] + v_outline[2]) / 2,
+                    (v_outline[1] + v_outline[3]) / 2]
+        detail = drawing.add_detail_view(drw, center=v_center, radius_m=0.008,
+                                         position=[0.28, 0.10], scale=2, label="D")
         assert detail.get("ok") is not None, "add_detail_view returned no verdict"
+        assert detail.get("edge_count") is not None, (
+            "add_detail_view omitted edge_count (P2-9 empty-view guard)")
         if detail.get("ok"):
-            assert "scale" in detail and "scale_locked" in detail, (
+            assert detail["edge_count"] > 0, "ok:true detail view has 0 edges (P2-9)"
+            assert "requested_scale" in detail and "scale_locked" in detail, (
                 "detail result omits the scale readback")
+            assert abs(detail["requested_scale"] - 2.0) < 0.01, (
+                "detail view overwrote the requested scale (P2-9): %r" % detail)
+        else:
+            assert detail.get("error") in ("detail_empty", "detail_scale_locked",
+                                           "detail_failed", "boundary_not_selected",
+                                           "boundary_failed", "no_views", "view_not_found"), (
+                "unexpected detail view failure: %r" % detail)
 
         # edges + edge-anchored dimension: the only manual placement path
         edges = require(drawing.list_drawing_edges(drw, include_points=False))
