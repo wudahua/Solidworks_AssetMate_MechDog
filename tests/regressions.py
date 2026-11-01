@@ -1965,6 +1965,27 @@ def assert_filter_prefers_full_names():
     return "exact names win, values only when no names were given"
 
 
+def assert_scale_choice_is_explained():
+    """0.8.43 — `create_drawing` picked 1:5 on an A3 and said nothing.
+
+    Reported: a 210 mm part at 1:5 with 90% of the sheet blank, `auto_scale_adjustments: []`
+    as the only clue. Two defects: 1:2.5 was missing from the ladder, and a strict
+    `candidate <= fit` dropped a whole step on a 3.4% overshoot. Now the receipt says which
+    standard scale was picked, from what raw fit, and whether it was stepped down again.
+    """
+    src = _read("tools/drawing.py")
+    ladder = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "_standard_scale")) or ""
+    assert "0.4" in ladder, "1:2.5 is missing from the preferred series"
+    assert "1.0 + float(tolerance)" in ladder, (
+        "a strict <= fit still drops a whole step on a trivial overshoot")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "create_drawing")) or ""
+    for key in ("scale_reason", "raw_fit", "final_scale", "stepped_down"):
+        assert key in body, "the receipt does not report %s" % key
+    return "scale picked from a full ladder and explained"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2051,6 +2072,7 @@ STATIC_REGRESSIONS = [
     ("0.8.41 orphans near view", assert_orphans_near_view_not_excused),
     ("0.8.42 crash handler", assert_crash_handler_installed),
     ("0.8.42 filter full names", assert_filter_prefers_full_names),
+    ("0.8.43 scale explained", assert_scale_choice_is_explained),
 ]
 
 

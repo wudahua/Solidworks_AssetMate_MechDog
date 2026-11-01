@@ -293,10 +293,18 @@ def _model_box(model):
     return None
 
 
-def _standard_scale(fit):
-    """Nearest standard drawing scale not larger than the available fit."""
-    for candidate in (1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002):
-        if candidate <= fit + 1e-9:
+def _standard_scale(fit, tolerance=0.05):
+    """Largest standard drawing scale that still fits, within a small overshoot.
+
+    GB/T 14690 preferred series; 1:2.5 (0.4) was missing, so anything between 1:2 and 1:5
+    snapped down to 1:5 — a report got a 210 mm part at 1:5 on an A3 with 90% blank.
+    A strict `candidate <= fit` was the other half of the problem: raw_fit 0.1934 against
+    a 0.2 candidate is a 3.4% overshoot, which `_fit_scale`'s double-counted gap easily
+    absorbs, yet the strict test dropped a whole step to 1:10. The caller still gets the
+    post-build `auto_scale_adjustments` stepper if the guess was too generous.
+    """
+    for candidate in (1.0, 0.5, 0.4, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002):
+        if candidate <= fit * (1.0 + float(tolerance)) + 1e-9:
             return candidate
     return 0.002
 
@@ -459,10 +467,25 @@ def create_drawing(
             return min(avail_w / max(width_need, 1e-6),
                        avail_h / max(height_need, 1e-6), 1.0)
 
+        # Why this scale: callers had no way to tell "chosen because the model is big"
+        # from "chosen by accident" — a report saw a 210 mm part land at 1:5 with the
+        # sheet 90% empty and `auto_scale_adjustments: []` as the only clue.
+        scale_reason = None
         if chosen_scale is None and auto_fit and box and box[0] > 0 and box[1] > 0:
-            chosen_scale = _standard_scale(_fit_scale(box))
+            raw_fit = _fit_scale(box)
+            chosen_scale = _standard_scale(raw_fit)
+            scale_reason = {
+                "model_box_m": [round(float(v), 4) for v in box],
+                "views": [str(v) for v in views],
+                "raw_fit": round(float(raw_fit), 4),
+                "standard_scale": chosen_scale,
+                "ratio": "1:%g" % round(1.0 / chosen_scale, 3) if chosen_scale else None,
+                "rule": "largest standard scale not exceeding raw_fit",
+            }
         elif chosen_scale is None:
             chosen_scale = 1.0
+            if auto_fit:
+                scale_reason = {"standard_scale": 1.0, "rule": "model box unavailable"}
 
         def _layout(scale_value):
             ww, hh, dd = (box or (0.15, 0.08, 0.08))
@@ -492,6 +515,13 @@ def create_drawing(
                     break
                 chosen_scale = smaller
 
+        if scale_reason is not None:
+            chosen_scale = float(chosen_scale)
+            scale_reason["final_scale"] = chosen_scale
+            scale_reason["final_ratio"] = "1:%g" % round(1.0 / chosen_scale, 3)
+            scale_reason["stepped_down"] = bool(
+                scale_reason.get("standard_scale")
+                and abs(chosen_scale - float(scale_reason["standard_scale"])) > 1e-9)
         col1, col2, front_y, top_y, w, h, d, _overflow = _layout(chosen_scale)
         positions = {
             "front": (col1, front_y), "back": (col1, front_y),
@@ -712,6 +742,12 @@ def create_drawing(
             },
             box_used_m=[round(v, 4) for v in box] if box else None,
             auto_scale_adjustments=auto_scale_adjustments,
+            # Record the FINAL scale too: the pre-layout step above can still step down
+            # (a 0.2 that overflowed became 0.1 on the 履带轮 test while scale_reason kept
+            # saying "1:5"), and a receipt that contradicts itself is worse than none.
+            chosen_scale=chosen_scale,
+            # Why the sheet got that scale (model box / view count / raw fit / the rule).
+            scale_reason=scale_reason,
             outline_note=("`outline` 来自 IView.GetOutline，宽高各虚胖 %.1f mm（恒定常数，"
                           "非投影误差）；`precise_outline_m` 已内缩该常数，实测与渲染 ink bbox "
                           "吻合（58.98 mm vs 59.2 mm，0.4%%）。没有逐顶点版本："
