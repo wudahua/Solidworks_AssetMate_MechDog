@@ -1049,13 +1049,19 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
     Returns (kept, removed, failures, aborted_reason).
     """
     features = set()
+    full_prefixes = set()
     values = []
     for entry in keep or []:
         if not isinstance(entry, dict):
             continue
         feature = str(entry.get("feature") or "").strip()
         if feature and feature not in ("外形", "总长", "总宽", "总高"):
-            features.add(feature)
+            if "@" in feature:
+                # `plan_drawing` returns full names like "D1@草图19". Keeping only the
+                # feature segment ("草图19") never matched `parts[1]`, so the filter fell
+                # through to value matching and kept every Ø42 — three copies of it.
+                full_prefixes.add(feature)
+            features.add(feature.split("@")[-1] if "@" in feature else feature)
         try:
             values.append(float(entry.get("value_mm")))
         except Exception:
@@ -1092,7 +1098,12 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
         return 0, [], [], "no dimensions were inserted by this call"
 
     def _keep(candidate):
-        _, _, feature, value, _ = candidate
+        _, full, feature, value, _ = candidate
+        # An exact identity wins outright: when the caller named specific dimensions
+        # ("D1@草图19"), do NOT fall back to value matching — that is exactly how a plan
+        # that kept one Ø42 ended up keeping all three.
+        if full_prefixes:
+            return any(full.startswith(prefix) for prefix in full_prefixes)
         if feature and feature in features:
             return True
         if value is None:

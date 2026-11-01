@@ -1930,6 +1930,41 @@ def assert_orphans_near_view_not_excused():
     return "proximity reported, never used to clear a blocker"
 
 
+def assert_crash_handler_installed():
+    """0.8.42 — `add_section_view` took the whole server process with it.
+
+    Reported: "Not connected", process gone, no traceback, no error payload, log stopped
+    mid-run. A Python exception cannot do that — only native code (COM/pywin32) can. Without
+    faulthandler the next occurrence is equally silent.
+    """
+    server = _read("server.py")
+    assert "faulthandler" in server, (
+        "no faulthandler: a native fault still kills the server with no evidence")
+    assert "faulthandler.enable" in server, "faulthandler is imported but never enabled"
+    assert "crash.log" in server, (
+        "the crash stack is not written anywhere findable")
+    assert "all_threads=True" in server, (
+        "single-thread mode would miss a fault on the COM worker thread")
+    return "native faults land in logs/crash.log"
+
+
+def assert_filter_prefers_full_names():
+    """0.8.42 — a plan that kept ONE Ø42 ended up keeping all three.
+
+    `plan_drawing` returns full names ("D1@草图19"). The filter took `parts[1]` ("草图19")
+    and compared it with the feature segment, which never matched, so it silently fell back
+    to value matching — and every dimension with that value survived.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_filter_inserted_dimensions")) or ""
+    assert "full_prefixes" in body, (
+        "full names are not treated as identities")
+    assert "if full_prefixes:" in body and "return any(full.startswith" in body, (
+        "the filter still falls back to value matching when exact names were given")
+    return "exact names win, values only when no names were given"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2014,6 +2049,8 @@ STATIC_REGRESSIONS = [
     ("0.8.38 static check bare names", assert_static_check_covers_bare_names),
     ("0.8.39 circle annotatability", assert_circular_edges_predict_annotatability),
     ("0.8.41 orphans near view", assert_orphans_near_view_not_excused),
+    ("0.8.42 crash handler", assert_crash_handler_installed),
+    ("0.8.42 filter full names", assert_filter_prefers_full_names),
 ]
 
 

@@ -1598,3 +1598,33 @@ suffix = "（其中 %d 条位置在视图附近，但引线未验证）" % near_
 
 真正的判据在 `IAnnotation.GetLeader` 那一侧（引线指向哪个实体），下一轮探。
 探不到就老实标 `unknown`，**不要当成"有"**。
+
+## 三十六、服务被一次 COM 调用带走（0.8.42）
+
+反馈现场：调 `add_section_view` 返回 `Not connected`，随后所有工具同样，`Win32_Process`
+里**服务进程已不存在**，`logs/mcp-*.log` 停在那一刻，**没有 traceback、没有 error payload**。
+
+**Python 的异常做不到这件事**——它会被 FastMCP 包成 error payload。进程无声消失只有一种解释：
+**原生代码（COM/pywin32）里发生了 fault**。
+
+### 能做的第一件事：让下次有证据
+
+```python
+faulthandler.enable(file=open("logs/crash.log", "a", buffering=1), all_threads=True)
+```
+
+`all_threads=True` 是必须的——COM 调用跑在 STA 工作线程上，只看主线程等于不看。
+写文件而不是 stderr，因为 MCP 走 stdio，stderr 常常没人接。
+
+这不是修复，是**把"静默消失"变成"可诊断"**。真正的定位需要下一次复现时的 C 级调用栈。
+
+### 附带：`dimension_filter` 的全名陷阱
+
+`plan_drawing` 返回 `{"feature": "D1@草图19", "value_mm": 42}`，而 filter 里写的是
+`parts = full.split("@"); feature = parts[1]` → `"草图19"`，拿它去比 `"D1@草图19"` 永远不中。
+
+于是**静默退化**到按 `value_mm` 匹配：计划只留 1 条 Ø42，实际 3 条全留，
+调用方以为"按特征精确裁剪"，其实是"按数值粗筛"。
+
+现在的规则：**给了全名就只按全名**（`full.startswith(prefix)`），不退化到数值。
+"精确指定"和"模糊兜底"不能同时生效——两者混在一起时，永远是模糊的那个赢。

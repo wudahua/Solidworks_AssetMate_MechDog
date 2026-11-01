@@ -5,6 +5,22 @@ Every tool returns a JSON string (never prose) so agents can keep reasoning.
 from __future__ import annotations
 
 import json
+import os
+
+# A report had `add_section_view` take the whole server process with it: "Not connected",
+# no traceback, no error payload, and the log stopped mid-run. A Python exception cannot do
+# that — only a fault in native code (COM/pywin32) can. faulthandler writes the C-level
+# stack to logs/crash.log so the next occurrence is diagnosable instead of silent.
+import faulthandler
+
+try:
+    _CRASH_DIR = os.path.join(os.getcwd(), "logs")
+    os.makedirs(_CRASH_DIR, exist_ok=True)
+    _CRASH_FILE = open(os.path.join(_CRASH_DIR, "crash.log"), "a", buffering=1,
+                       encoding="utf-8")
+    faulthandler.enable(file=_CRASH_FILE, all_threads=True)
+except Exception:  # a read-only cwd must not stop the server from starting
+    faulthandler.enable(all_threads=True)
 
 from mcp.server.fastmcp import FastMCP
 
