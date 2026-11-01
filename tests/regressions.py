@@ -1986,6 +1986,31 @@ def assert_scale_choice_is_explained():
     return "scale picked from a full ladder and explained"
 
 
+def assert_outside_stack_respects_sheet():
+    """0.8.44 / P1 — the outside stack was unbounded and printed over the title block.
+
+    Measured 2026-11-01: 16 dimensions on one side gave offset 0.012 + 15*0.008 = 0.132,
+    from a view at y≈0.15 that lands at y≈0.018 while the A3 safe area starts at 0.065.
+    Now the per-side room is measured against the sheet frame, overflow spills to the
+    opposite side, the step compresses, and the offset is hard-capped at the room left —
+    on door.SLDPRT the worst y went from 0.337 to 0.293 (the view's own top edge).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_push_dimensions_outside")) or ""
+    assert "GetFirstView" in body, (
+        "the sheet frame is not read (GetSheets alone returned nothing on SW2024)")
+    assert "opposite" in body and "capacity" in body, (
+        "overflow does not spill to the opposite side")
+    assert "offset = min(gap_m + slot * eff_step, max(room, 0.0))" in body, (
+        "the offset is not hard-capped at the remaining room")
+    auto_body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                          "auto_dimension")) or ""
+    assert "outside_spills" in auto_body, (
+        "the receipt does not say the stack had to change sides")
+    return "bounded stack with spill and a compressed step"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2073,6 +2098,7 @@ STATIC_REGRESSIONS = [
     ("0.8.42 crash handler", assert_crash_handler_installed),
     ("0.8.42 filter full names", assert_filter_prefers_full_names),
     ("0.8.43 scale explained", assert_scale_choice_is_explained),
+    ("0.8.44 outside stack bounded", assert_outside_stack_respects_sheet),
 ]
 
 

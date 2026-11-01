@@ -1260,6 +1260,62 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             buckets.setdefault((str(view.Name), side), []).append(
                 (order, annotation, position, owner_box))
 
+    # ---- capacity per side, measured against the sheet frame ---------------------
+    # The stack was unbounded: 16 dimensions on one side gave offset 0.012 + 15*0.008 =
+    # 0.132, which from a view at y≈0.15 lands at y≈0.018 — inside the title block, far
+    # below the A3 safe area (0.065). A report saw exactly that ("引线从视图底边斜拉到
+    # 图纸左下角"). Spill to the opposite side first, then compress the step.
+    safe = None
+    # `doc.GetSheets` returned nothing usable on SW2024 (the cap never engaged and a stack
+    # of 10 still printed past the frame). The sheet itself is the Type 1 view — its outline
+    # is the frame, verified against a rendered 420x297 mm A3 elsewhere in this file.
+    for source in ("GetFirstView", "GetSheets"):
+        if safe is not None:
+            break
+        try:
+            candidate = getattr(doc, source)
+            if source == "GetSheets":
+                sheets = list(candidate or ())
+                candidate = sheets[0] if sheets else None
+            if candidate is None:
+                continue
+            frame = list(candidate.GetOutline or ())
+            if len(frame) >= 4 and (frame[2] - frame[0]) > 0.05:
+                inset = 0.010
+                safe = (frame[0] + inset, frame[1] + inset,
+                        frame[2] - inset, frame[3] - inset)
+        except Exception:
+            continue
+
+    opposite = {"bottom": "top", "top": "bottom", "left": "right", "right": "left"}
+
+    def _room(owner_box, side):
+        if safe is None:
+            return 0.20
+        if side == "bottom":
+            return max(owner_box[1] - safe[1], 0.0)
+        if side == "top":
+            return max(safe[3] - owner_box[3], 0.0)
+        if side == "left":
+            return max(owner_box[0] - safe[0], 0.0)
+        return max(safe[2] - owner_box[2], 0.0)
+
+    overflow_notes = []
+    for (view_name, side), items in list(buckets.items()):
+        if not items:
+            continue
+        box = items[0][3]
+        room = _room(box, side)
+        capacity = max(int((room - gap_m) / max(step_m, 1e-6)) + 1, 1)
+        if len(items) <= capacity:
+            continue
+        keep, spill = items[:capacity], items[capacity:]
+        buckets[(view_name, side)] = keep
+        buckets.setdefault((view_name, opposite[side]), []).extend(spill)
+        overflow_notes.append("%s:%s 只放得下 %d 条，%d 条改去 %s"
+                              % (view_name, side, len(keep), len(spill),
+                                 opposite[side]))
+
     placed = 0
     sides_used = {}
     for (view_name, side), items in buckets.items():
@@ -1267,8 +1323,19 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
         # distance from the outline, so equal-order items still separate.
         items.sort(key=lambda entry: entry[0], reverse=(side in ("right", "top")))
         sides_used["%s:%s" % (view_name, side)] = len(items)
+        # If the side is still over capacity after the spill, compress the step rather
+        # than push past the frame — a shorter leader is readable, an off-sheet one is not.
+        room = _room(items[0][3], side)
+        eff_step = step_m
+        if len(items) > 1 and room > gap_m:
+            fit_step = (room - gap_m) / float(len(items) - 1)
+            eff_step = min(step_m, max(fit_step, step_m * 0.35))
         for slot, (_order, annotation, position, box) in enumerate(items):
-            offset = gap_m + slot * step_m
+            # Hard cap at the room actually available: `max(room, gap_m)` still pushed a
+            # view that already touched the frame 12 mm past it (y reached 0.305 on a
+            # 0.297 sheet). A dimension hugging the outline is readable; an off-sheet one
+            # is not.
+            offset = min(gap_m + slot * eff_step, max(room, 0.0))
             if side == "left":
                 target = (box[0] - offset, position[1])
             elif side == "right":
@@ -1283,7 +1350,7 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             except Exception as exc:
                 failures.append({"view": view_name, "side": side,
                                  "reason": str(exc)[:70]})
-    return placed, failures, sides_used
+    return placed, failures, sides_used, overflow_notes
 
 
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
@@ -1422,7 +1489,8 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         outside_failed = []
         outside_sides = {}
         if place_outside:
-            outside_placed, outside_failed, outside_sides = _push_dimensions_outside(
+            (outside_placed, outside_failed, outside_sides,
+             outside_spills) = _push_dimensions_outside(
                 doc, _win_auto, before_names,
                 gap_m=float(outside_gap_m), step_m=float(outside_step_m))
             try:
@@ -1443,6 +1511,10 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 "place_outside：%d 条尺寸已推到视图外按侧分层（外扩 %.0f mm + n×%.0f mm），"
                 "失败 %d 条。" % (outside_placed, float(outside_gap_m) * 1000,
                                  float(outside_step_m) * 1000, len(outside_failed)))
+            if outside_spills:
+                # Say when the stack had to change sides or compress — otherwise the caller
+                # sees a layout it did not ask for and cannot tell why.
+                notes.append("分层受安全区限制：%s。" % "；".join(outside_spills))
 
         return ok(
             drawing=doc.GetTitle,
