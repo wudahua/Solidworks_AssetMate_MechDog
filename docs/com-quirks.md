@@ -1712,3 +1712,40 @@ offset = min(gap_m + slot * eff_step, max(room, gap_m))    # 错
 三个细节每一个单看都"合理"：无上限是"简单"，`GetSheets` 是"按文档写的"，
 `max(room, gap)` 是"防止贴太近"。**但它们凑在一起，限额一次都没生效。**
 加约束时，要验证约束**真的生效了**——不是写完代码就算。
+
+## 三十九、布局预测的两个错，以及一个还没找到的第三方（0.8.45）
+
+视图贴着图纸边（顶 0.293，安全区 0.287），两个预测层面的错：
+
+### ① 拿模型尺寸和图纸尺寸直接比
+
+`_fit_scale` / `_layout` 用 `box`（`GetPartBox`，模型米）去算布局，但真实视图轮廓
+每条边都有恒定 **11.9 mm** 的虚胖（`OUTLINE_MARGIN_M`，P2-13 实测）。
+于是预测每向少 24 mm——**图越规整，贴边越明显**。
+
+修：两边都加 `inflate = 2 * OUTLINE_MARGIN_M`。
+
+### ② 网格恒按 2×2 算
+
+```python
+total_w = ww + gap + dd      # 永远是两列
+total_h = hh + gap + dd      # 永远是两行
+```
+只请求 1 个视图时，它被放进**两行框的顶行**，于是顶部天然贴边。
+
+修：网格跟随 `views` 的数量——1 个用单格，2 个用单列，3 个以上才用 2×2。
+
+### ③ 但视图位置还是没变
+
+改完实测仍是 `0.1855..0.2930`。`positions` 确实取自 `_layout` 的 `c1/fy`：
+
+```python
+positions = {"front": (col1, front_y), ...}
+CreateDrawViewFromModelView3(model, view_name, x, y, 0)
+```
+
+所以**还有第三方在覆盖它**——候选是 `CreateDrawViewFromModelView3` 自己按模板
+重排，或者后面某一步动了视图。**没定位，不猜。**
+
+**这条教训**：改完预测要**回读实际值**再收工。`fits: false` 和实际 outline 摆在一起时，
+我第一版还以为改对了。

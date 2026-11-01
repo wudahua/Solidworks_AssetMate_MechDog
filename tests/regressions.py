@@ -2011,6 +2011,28 @@ def assert_outside_stack_respects_sheet():
     return "bounded stack with spill and a compressed step"
 
 
+def assert_layout_prediction_matches_reality():
+    """0.8.45 — the layout predictor ignored the outline margin AND the view count.
+
+    Two errors that both pushed views onto the frame:
+      * `box` is the MODEL size, but a real outline carries 11.9 mm per side of phantom
+        margin, so every prediction was ~24 mm short;
+      * the grid always assumed the 2x2 packer, so a single view was placed in the top row
+        of a two-row frame.
+    Measured on door.SLDPRT: view top 0.293 vs a 0.287 safe edge on a 0.297 sheet.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "create_drawing")) or ""
+    assert "inflate = 2.0 * OUTLINE_MARGIN_M" in body, (
+        "the phantom outline margin is still ignored")
+    assert "candidate_box[0] + inflate" in body, (
+        "_fit_scale compares model size against sheet size unscaled")
+    assert "cols = 1 if count <= 2 else 2" in body, (
+        "the grid still assumes the 2x2 packer regardless of how many views were asked for")
+    return "prediction accounts for the outline margin and the view count"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2099,6 +2121,7 @@ STATIC_REGRESSIONS = [
     ("0.8.42 filter full names", assert_filter_prefers_full_names),
     ("0.8.43 scale explained", assert_scale_choice_is_explained),
     ("0.8.44 outside stack bounded", assert_outside_stack_respects_sheet),
+    ("0.8.45 layout prediction", assert_layout_prediction_matches_reality),
 ]
 
 

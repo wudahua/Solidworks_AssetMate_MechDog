@@ -461,9 +461,15 @@ def create_drawing(
         avail_h = max(safe_y1 - safe_y0, 0.05)
         gap = 0.022
 
+        # `box` is the MODEL size, but a real view outline carries a constant 11.9 mm of
+        # phantom margin per side (OUTLINE_MARGIN_M). Ignoring it made every prediction
+        # ~24 mm short in each direction, so views landed on the frame: measured view top
+        # 0.293 vs a 0.287 safe edge on a 0.297 sheet.
+        inflate = 2.0 * OUTLINE_MARGIN_M
+
         def _fit_scale(candidate_box):
-            width_need = candidate_box[0] + gap + candidate_box[2]
-            height_need = candidate_box[1] + gap + candidate_box[2]
+            width_need = (candidate_box[0] + inflate) + gap + (candidate_box[2] + inflate)
+            height_need = (candidate_box[1] + inflate) + gap + (candidate_box[2] + inflate)
             return min(avail_w / max(width_need, 1e-6),
                        avail_h / max(height_need, 1e-6), 1.0)
 
@@ -489,15 +495,22 @@ def create_drawing(
 
         def _layout(scale_value):
             ww, hh, dd = (box or (0.15, 0.08, 0.08))
-            ww, hh, dd = ww * scale_value, hh * scale_value, dd * scale_value
-            # Two columns (front+top on the left, right+iso on the right), centred inside
-            # the measured safe area — so the prediction matches where views really land.
-            total_w = ww + gap + dd
-            total_h = hh + gap + dd
+            ww, hh, dd = (ww * scale_value + inflate, hh * scale_value + inflate,
+                          dd * scale_value + inflate)
+            # The grid follows the REQUESTED views. It used to always assume the 2x2 packer
+            # (front+top / right+iso), so a single view was placed in the TOP row of a
+            # 2-row frame and touched it: measured view top 0.293 vs a 0.287 safe edge.
+            # One view -> one cell, two -> one column, three or more -> the 2x2 grid.
+            wanted = [v for v in views if str(v).strip().lower() in VIEW_ALIASES]
+            count = max(len(wanted), 1)
+            cols = 1 if count <= 2 else 2
+            rows = 1 if count <= 1 else 2
+            total_w = ww if cols == 1 else (ww + gap + dd)
+            total_h = hh if rows == 1 else (hh + gap + dd)
             over = (total_w > avail_w + 1e-6) or (total_h > avail_h + 1e-6)
             x_start = safe_x0 + (avail_w - total_w) / 2
             y_start = safe_y0 + (avail_h - total_h) / 2
-            c1 = x_start + ww / 2
+            c1 = (x_start + total_w / 2) if cols == 1 else (x_start + ww / 2)
             c2 = x_start + ww + gap + dd / 2
             fy = y_start + total_h - hh / 2
             ty = y_start + dd / 2
