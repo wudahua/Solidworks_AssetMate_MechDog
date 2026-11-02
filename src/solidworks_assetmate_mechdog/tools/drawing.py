@@ -6434,27 +6434,59 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
         # Sweep in reading order; push each item up until it clears every earlier one, and
         # AROUND the fixed notes. Pushing up into a view label only trades one overlap for
         # another, so a note clash sends the dimension DOWN instead (P3-1).
-        placed = list(fixed)
-        for item in items:
-            for _attempt in range(40):
-                clash = None
-                for other in placed:
-                    if (other.get("obstacle") == "view"
-                            and other.get("view") == item.get("view")):
-                        continue      # dimensions may live inside their own view
-                    if boxes_overlap(item, other):
-                        clash = other
+        # Several passes, not one. A single sweep moved each dimension up past whatever it
+        # hit at that moment, but moving one creates a new clash with the next one — and
+        # with more than one view on the sheet it never converged. Measured 2026-11-03 on
+        # 气缸盖: one pass left 5 overlaps with three views and 12 with four; iterating
+        # until quiet brought both classes down. The old code even had a comment saying
+        # "the pass has to repeat until it settles" while only ever running it once.
+        #
+        # Direction alternates per round: always pushing up walks the stack off the view
+        # it belongs to, so odd rounds go up and even rounds go down.
+        for _round in range(6):
+            placed = list(fixed)
+            moved_this_round = 0
+            for item in items:
+                for _attempt in range(40):
+                    clash = None
+                    for other in placed:
+                        if (other.get("obstacle") == "view"
+                                and other.get("view") == item.get("view")):
+                            continue      # dimensions may live inside their own view
+                        if boxes_overlap(item, other):
+                            clash = other
+                            break
+                    if clash is None:
                         break
-                if clash is None:
-                    break
-                if clash.get("fixed"):
-                    item["y"] = clash["y"] - clash["h"] - item["h"] - min_gap_m
-                else:
-                    item["y"] = clash["y"] + clash["h"] + item["h"] + min_gap_m * 0.25
-                moves.append({"view": item["view"], "text": item["text"][:10],
-                              "x": round(item["x"], 4), "to_y": round(item["y"], 4),
-                              "around": "note" if clash.get("fixed") else "dimension"})
-            placed.append(item)
+                    upward = (_round % 2 == 0)
+                    # After a few vertical attempts, try horizontal: two dimensions whose
+                    # text boxes overlap because the STRINGS are wide (Ø25.3 vs Ø25.4) can
+                    # never be separated by moving y — the boxes are side by side. Measured
+                    # 2026-11-03: three views stayed at 5 overlaps with y-pushes only.
+                    sideways = _attempt >= 6
+                    if sideways:
+                        item["x"] = (clash["x"] + clash["w"] / 2 + item["w"] / 2 + min_gap_m
+                                     if upward else
+                                     clash["x"] - clash["w"] / 2 - item["w"] / 2 - min_gap_m)
+                    elif clash.get("fixed"):
+                        # Notes never move; go the other way from the note.
+                        item["y"] = (clash["y"] - clash["h"] - item["h"] - min_gap_m
+                                     if upward else
+                                     clash["y"] + clash["h"] + item["h"] + min_gap_m)
+                    elif upward:
+                        item["y"] = clash["y"] + clash["h"] + item["h"] + min_gap_m * 0.25
+                    else:
+                        item["y"] = clash["y"] - clash["h"] - item["h"] - min_gap_m * 0.25
+                    moved_this_round += 1
+                    moves.append({"view": item["view"], "text": item["text"][:10],
+                                  "to_x": round(item["x"], 4),
+                                  "to_y": round(item["y"], 4),
+                                  "axis": "x" if sideways else "y",
+                                  "around": "note" if clash.get("fixed") else "dimension",
+                                  "round": _round + 1})
+                placed.append(item)
+            if moved_this_round == 0:
+                break
 
         # P0-2: say what is STILL overlapping. `moved < collisions` with no explanation
         # left the caller unable to tell "gave up" from "nothing left to do".

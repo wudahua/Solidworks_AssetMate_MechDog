@@ -2436,6 +2436,37 @@ def assert_weld_symbol_is_declared_as_sketch():
     assert "sketch_block" in segment, "the capability does not name the representation"
     return "weld symbol declared as sketch geometry, scaled correctly, types refused"
 
+def assert_layout_iterates_and_uses_both_axes():
+    """0.8.68 / 3.3 — the sweep ran ONCE and only pushed up, so multi-view sheets kept overlaps.
+
+    Measured 2026-11-03 on 气缸盖 (39 dimensions):
+      * one vertical pass, 3 views   -> still 5 overlapping pairs
+      * one vertical pass, 4 views   -> 12
+      * iterating until quiet        -> both classes converge, 4 views down to 4
+
+    Two independent defects, both visible in the old code:
+      * the comment said "the pass has to repeat until it settles" while the loop body ran
+        exactly once
+      * every push was `y = clash.y + ...`, so two boxes that overlap because the STRINGS
+        are wide (Ø25.3 beside Ø25.4) could never separate — they sit side by side
+
+    The guard is structural on purpose: this behaviour is a loop shape, not a value.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "layout_dimensions")) or ""
+    assert "for _round in range(" in body, (
+        "the sweep is back to a single pass — multi-view sheets will keep overlaps")
+    assert "moved_this_round" in body, (
+        "the loop cannot tell 'settled' from 'did nothing'")
+    assert "_round % 2" in body, (
+        "direction no longer alternates — always pushing up walks the stack off its view")
+    assert "sideways" in body and 'item["x"]' in body, (
+        "no horizontal fallback — wide text boxes side by side can never be separated by y")
+    assert "unresolved" in body, (
+        "the receipt no longer reports what is still overlapping after the sweep")
+    return "layout iterates until quiet, alternates direction, and falls back to x"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2541,6 +2572,7 @@ STATIC_REGRESSIONS = [
     ("0.8.61 param descriptions", assert_every_param_is_documented),
     ("0.8.64 datum is GB circle", assert_datum_symbol_is_gb_circle),
     ("0.8.67 weld is sketch", assert_weld_symbol_is_declared_as_sketch),
+    ("0.8.68 layout iterates", assert_layout_iterates_and_uses_both_axes),
 ]
 
 
