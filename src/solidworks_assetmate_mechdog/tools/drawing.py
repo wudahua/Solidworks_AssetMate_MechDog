@@ -5908,6 +5908,30 @@ def _invoke_as_method(obj, name, *args):
     return call_method(obj, name, *args)
 
 
+# Unicode geometric-tolerance glyphs. Used because the symbol CELL cannot be filled on
+# this build: `IGtol.SetFrameSymbols2` is documented as "valid only if this Gtol was created
+# in a version of SOLIDWORKS earlier than 2022", and the 2022+ replacement
+# (`IGtol.GetFrame` -> `IGtolFrame.SetSymbolXml`) returns None through this binding
+# (measured 2026-11-02 on SW 32.4.0). Writing "<MOD-*>" stores literal text that never
+# renders. So the glyph goes into the tolerance text, where it does render.
+_GD_T_GLYPHS = {
+    "straightness": "\u2014",         # —
+    "flatness": "\u25B1",             # ▱
+    "circularity": "\u25CB",          # ○
+    "cylindricity": "\u232D",         # ⌭
+    "profile_line": "\u2312",         # ⌒
+    "profile_surface": "\u25D4",      # ◔
+    "perpendicularity": "\u22A5",     # ⊥
+    "angularity": "\u2220",           # ∠
+    "parallelism": "\u2225",          # ∥
+    "position": "\u2316",             # ⌖
+    "concentricity": "\u25CE",        # ◎
+    "symmetry": "\u232F",             # ⌯
+    "circular_runout": "\u2197",      # ↗
+    "total_runout": "\u2197\u2197",   # ↗↗
+}
+
+
 def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                             symbol="none", view_name=None, edge_index=None,
                             second_datum="", third_datum="", save=True):
@@ -5958,16 +5982,33 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                          "Select an edge/face first; without a selection the frame is free-standing.")
         gtol = win.Dispatch(raw)
 
-        code = GTOL_SYMBOLS.get(str(symbol).lower(), "")
-        symbol_written = ""
-        try:
-            gtol.SetFrameSymbols2(1, code, False, "", False, "", "", "", "")
-            # P2-10: SetFrameSymbols2 returns None even on success — the ONLY reliable
-            # proof is a read-back. A "<MOD-*" code stored as literal text (or an ignored
-            # write) must not be reported as a real geometric symbol.
-            symbol_written = str(gtol.GetFrameSymbols2(1)[0] or "")
-        except Exception as exc:
-            return error("gtol_symbol_failed", str(exc)[:120])
+        # A known GD&T name goes into the tolerance TEXT as its Unicode glyph, and the
+        # symbol cell is left alone. Reason: on SW 2022+ the cell cannot be filled —
+        # `SetFrameSymbols2` is documented as valid only for Gtol created before 2022, and
+        # the 2022+ path (`IGtol.GetFrame` -> `IGtolFrame.SetSymbolXml`) returns None through
+        # this binding. Writing "<MOD-*>" stores literal text that never renders, which is
+        # exactly the "符号格是空的" report. The glyph renders and is standard enough for
+        # suppliers; the frame itself stays a native Gtol.
+        glyph = _GD_T_GLYPHS.get(str(symbol).lower())
+        if glyph:
+            tolerance = "%s %s" % (glyph, str(tolerance))
+            code = ""
+            symbol_written = glyph
+            symbol_is_text = False
+            _skip_symbol_cell = True
+        else:
+            code = GTOL_SYMBOLS.get(str(symbol).lower(), "")
+            symbol_written = ""
+            _skip_symbol_cell = False
+        if not _skip_symbol_cell:
+            try:
+                gtol.SetFrameSymbols2(1, code, False, "", False, "", "", "", "")
+                # P2-10: SetFrameSymbols2 returns None even on success — the ONLY reliable
+                # proof is a read-back. A "<MOD-*" code stored as literal text (or an
+                # ignored write) must not be reported as a real geometric symbol.
+                symbol_written = str(gtol.GetFrameSymbols2(1)[0] or "")
+            except Exception as exc:
+                return error("gtol_symbol_failed", str(exc)[:120])
         if code and symbol_written != code:
             # Refuse to leave a half-built frame that claims a symbol it does not show.
             removed = _delete_gtol(doc, gtol)
