@@ -194,6 +194,26 @@ CAPABILITIES = [
                      "引线自动引出），失败 8 个全为 Ø6 背面边（z=6.0）"),
     },
     {
+        "id": "datum_feature_symbol",
+        "status": "verified",
+        "summary": "基准要素符号：能插入、能指定字母、能挂在指定边上；形状是圆形，这是 GB 的正确样式",
+        "why": ("`add_datum_feature` 走 `IModelDoc2.InsertDatumTag2`（`IDrawingDoc.InsertDatumTag` "
+                "已标 Obsolete），**在当前位置的选择集上插入**，所以必须挂到边上——参数是 "
+                "`view_name` + `edge_index` 而不是自由图纸点，因为基准必须指向真实几何。"
+                "实测 2026-11-02：`ok: True`、`attached_to: 工程图视图1[0]`、"
+                "`GetLabel` 默认是 'B'、`SetLabel('A')` 读回一致。"
+                "**形状是圆形里带字母，这对 GB 是正确的**——文档属性里「显示类型」三选一"
+                "（依照标准 / 方形 / 圆形(GB)），三角形的「定位样式」属于**方形**基准点"
+                "（ANSI / 部分企业标准），圆形基准点用的是垂直/竖直/水平，没有三角。"
+                "实测该符号 `GetTriangleCount` 为 0、`GetLineCount` 1、`GetArcCount` 1，"
+                "几何上本就没有三角。"),
+        "workaround": ("不需要 workaround。**不要试图从代码里逼出三角形**：`FilledTriangle` "
+                       "只填充已有三角；制图标准（整数偏好 188）与 187/189/190/191/199 "
+                       "都改不了显示类型。真要方形三角样式，得改模板 "
+                       "`gb_a3.drwdot` → 文档属性 → 注解 → 基准点 → 显示类型 → 方形，"
+                       "那是模板改动，会影响所有用该模板新建的图纸。"),
+    },
+    {
         "id": "section_line_follows_view",
         "status": "verified",
         "summary": "移动父视图时剖面切割线跟着走（0.8.57 起；此前线画在图纸坐标里，移了就断联）",

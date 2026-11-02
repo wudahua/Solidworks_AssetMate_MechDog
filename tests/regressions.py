@@ -2368,6 +2368,39 @@ def assert_every_param_is_documented():
     assert not problems, "parameters without a description: %s" % problems[:3]
     return "every tool parameter carries a schema description"
 
+def assert_datum_symbol_is_gb_circle():
+    """0.8.64 — "基准符号没有三角形" is not a bug; GB uses a circle.
+
+    `add_datum_feature` inserts through `IModelDoc2.InsertDatumTag2`. The resulting tag
+    reports GetTriangleCount 0 / GetLineCount 1 / GetArcCount 1 — a circle by construction.
+
+    The triangle people expect comes from the 方形 display type (ANSI / some company
+    standards); 圆形(GB) uses 垂直/竖直/水平 instead. Three code paths were tried and none
+    change it: FilledTriangle (only fills an existing triangle), the drafting standard
+    (integer pref 188), prefs 187/189/190/191/199.
+
+    This assertion keeps the CONCLUSION on record so the next reader does not re-run the
+    same three experiments — and so nobody "fixes" it by forcing a triangle from code.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_datum_feature")) or ""
+    assert "InsertDatumTag2" in body, "the datum tag entry point changed"
+    assert "GetTriangleCount" in body, (
+        "the docstring no longer records that there is no triangle in the geometry")
+    assert "圆形(GB)" in body, (
+        "the docstring no longer explains that a circle is correct for GB")
+    assert "FilledTriangle" in body, "the docstring lost the ruled-out attempts"
+    caps = _read("tools/capabilities.py")
+    assert '"datum_feature_symbol"' in caps, "the capability is not declared"
+    index = caps.index('"datum_feature_symbol"')
+    end = caps.find('"id":', index + 10)
+    segment = caps[index:end if end > 0 else index + 2000]
+    assert '"verified"' in segment, "datum symbol capability is not marked verified"
+    assert "GB" in segment and "圆形" in segment, (
+        "the entry does not say that the circle is the GB shape")
+    return "datum symbol is GB-correct (circle), and the ruled-out paths are on record"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2471,6 +2504,7 @@ STATIC_REGRESSIONS = [
     ("0.8.56 section hatch checked", assert_section_hatch_is_checked),
     ("0.8.57 cut line coords", assert_cut_line_uses_view_sketch),
     ("0.8.61 param descriptions", assert_every_param_is_documented),
+    ("0.8.64 datum is GB circle", assert_datum_symbol_is_gb_circle),
 ]
 
 

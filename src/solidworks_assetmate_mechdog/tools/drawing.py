@@ -5977,6 +5977,20 @@ def add_datum_feature(drawing_path, view_name=None, edge_index=None, label="A",
     label: the datum letter. x_m / y_m move the tag afterwards (sheet metres) when the
     default placement collides with something. filled_triangle: True for a filled triangle,
     False for hollow, None leaves the document default.
+
+    The rendered shape is a CIRCLE with the letter, and that is correct for GB.
+
+    (文档属性 → 注解 → 基准点 → 显示类型 gives three choices: 依照标准 / 方形 / 圆形(GB);
+    the 定位样式 for a 方形 datum is 实三角形/虚三角形..., while a 圆形 datum uses
+    垂直/竖直/水平 instead. So the triangle people expect belongs to the ANSI square style,
+    not to GB. Measured 2026-11-02: the inserted tag reports GetTriangleCount 0,
+    GetLineCount 1, GetArcCount 1 — there is no triangle in its geometry at all, by design.
+
+    Do not try to force a triangle from code: `FilledTriangle` only fills an existing
+    triangle, and neither the drafting standard (integer pref 188 = ANSI/ISO/DIN/JIS/BSI/
+    GOST/GB) nor prefs 187/189/190/191/199 change the display type. Switching to 方形 has to
+    be done in the TEMPLATE (gb_a3.drwdot → 文档属性 → 注解 → 基准点), which then affects
+    every drawing made from it.)
     """
     import win32com.client as win
 
