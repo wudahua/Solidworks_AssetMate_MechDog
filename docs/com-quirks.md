@@ -1971,3 +1971,37 @@ return _layout.set_view(drawing_path, view_name, x_m=..., y_m=...)
 
 smoke 里的图纸要**自己建**（顶层的 `drw` 是各函数内的局部变量，跨函数看不到）——
 用 `part_copy` + `create_drawing` 造一张临时图，两个工具各测一次。
+
+## 四十六、剖切线按长边算，非方视图必然溢出（0.8.54）
+
+```python
+half = max(view_w, view_h) * 0.62      # 一律按长边
+```
+
+一个 116.9 × 114.3 mm 的视图，半长算出 72.5 mm，而视图半高只有 57 mm——
+**上下各溢出 ~15 mm**，下方箭头正好落在技术要求第 2 行上，只能把技术要求整体右移 98 mm。
+
+修：
+
+```python
+half = min(max(view_w, view_h) * cut_line_ratio,   # 0.55
+           min(view_w, view_h) * 0.5)              # 短边兜底
+```
+
+**按长边取比例，在任何一个非正方形视图上都会溢出**——这条本身没什么可争的。
+补上短边约束后，视图越扁，线越短，箭头就待在图里。
+
+同时暴露 `cut_line_ratio`：默认值只是合理起点，具体图纸还得调。
+
+### 顺带记一次正则改签名的坑
+
+用 `re.sub` 往 MCP wrapper 的多行签名里插参数，把逗号拼成了：
+
+```python
+    verify_cut: bool = True,
+,                                  # ← 孤立的逗号
+                        cut_line_ratio: float = 0.55) -> str:
+```
+
+`static_check` 没拦（它做 AST 解析，语法错就直接抛），是 import 时炸的。
+**改多行签名别用正则**，直接锚定最后一行替换。

@@ -864,6 +864,7 @@ def add_section_view(
     cut_plane_normal: list[float] | None = None,
     cut_plane_origin: list[float] | None = None,
     verify_cut: bool = True,
+    cut_line_ratio: float = 0.55,
 ) -> str:
     """Create a SECTION VIEW through a model view (exposes internal features).
 
@@ -883,8 +884,7 @@ def add_section_view(
         drawing_path, view_name=view_name, orientation=orientation,
         offset_m=offset_m, position=position, label=label, flip=flip, depth=depth,
         cut_plane_normal=cut_plane_normal, cut_plane_origin=cut_plane_origin,
-        verify_cut=verify_cut,
-    ))
+        verify_cut=verify_cut, cut_line_ratio=cut_line_ratio))
 
 
 @mcp.tool()

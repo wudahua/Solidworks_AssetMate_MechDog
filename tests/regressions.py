@@ -2224,6 +2224,24 @@ def assert_empty_views_are_reported():
     return "empty views are named, explained, and given a workaround"
 
 
+def assert_cut_line_is_clamped():
+    """0.8.54 / P13 — the section cut line was 0.62 x the LONG edge, always.
+
+    A report's arrows stuck ~15 mm past the view and landed on the technical requirements
+    block, forcing the notes to be moved 98 mm. On any non-square view that ratio overshoots;
+    it is now clamped to half the SHORT edge as well, and exposed as `cut_line_ratio`.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_section_view")) or ""
+    assert "cut_line_ratio" in body, "the ratio is not configurable"
+    assert "min(view_w, view_h) * 0.5" in body, (
+        "the line is still sized from the long edge alone")
+    server = _read("server.py")
+    assert "cut_line_ratio=cut_line_ratio" in server, "the wrapper does not forward it"
+    return "cut line clamped to the short edge and configurable"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2322,6 +2340,7 @@ STATIC_REGRESSIONS = [
     ("0.8.52 edges sheet coords", assert_edges_carry_sheet_coordinates),
     ("0.8.53 plan driving/derived", assert_plan_separates_driving_from_derived),
     ("0.8.53 empty views", assert_empty_views_are_reported),
+    ("0.8.54 cut line clamped", assert_cut_line_is_clamped),
 ]
 
 

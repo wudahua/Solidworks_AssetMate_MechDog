@@ -3417,7 +3417,8 @@ def _section_sanity(source_view, section, orientation, depth):
 
 def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                      offset_m=0.0, position=None, label="A", flip=False, depth=0.0,
-                     cut_plane_normal=None, cut_plane_origin=None, verify_cut=True):
+                     cut_plane_normal=None, cut_plane_origin=None, verify_cut=True,
+                     cut_line_ratio=0.55):
     """Create a SECTION VIEW through a model view.
 
     Sign convention (measured on the 灌装阀阀体 top view, 59x28x80, bypass hole at z=28):
@@ -3569,8 +3570,13 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         # reported). Use the deflated outline so the 11.9 mm phantom margin does not
         # stretch the line either.
         precise_box = precise_outline(target) or outline
-        half = max(precise_box[2] - precise_box[0],
-                   precise_box[3] - precise_box[1]) * 0.62
+        view_w = precise_box[2] - precise_box[0]
+        view_h = precise_box[3] - precise_box[1]
+        # 0.62 of the LONG edge overshoots on any non-square view: a report's arrows stuck
+        # out ~15 mm and landed on the technical-requirements block. Clamp to half the SHORT
+        # edge as well, and let the caller shrink it further.
+        half = min(max(view_w, view_h) * float(cut_line_ratio),
+                   min(view_w, view_h) * 0.5)
         offset = float(offset_m) / scale
         # A top view's sketch y axis runs at -Z, so a model-space offset applied to the
         # horizontal cut line lands mirrored. Measured on 灌装阀阀体: offset -0.012 produced
