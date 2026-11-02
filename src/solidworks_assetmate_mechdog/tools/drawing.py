@@ -1623,6 +1623,39 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         return error("auto_dimension_failed", str(exc))
 
 
+def close_document(drawing_path):
+    """Close a document SolidWorks still holds open.
+
+    A report's `out/` kept two abandoned drafts it could not delete: "Device or resource
+    busy" because SolidWorks still had them open, and the toolkit had no way to close
+    anything. Every tool here opens documents; none of them ever let go.
+    """
+    try:
+        from ..sw_session import get_sw
+
+        software = get_sw()
+        want = os.path.normcase(os.path.abspath(str(drawing_path)))
+        closed = []
+        for document in (software.GetDocuments or ()):
+            try:
+                if os.path.normcase(document.GetPathName or "") != want:
+                    continue
+                title = str(document.GetTitle)
+                software.CloseDoc(title)
+                closed.append(title)
+            except Exception:
+                continue
+        return drawing_ok(
+            drawing=os.path.basename(str(drawing_path)),
+            closed=closed, closed_count=len(closed),
+            note=("未找到已打开的该文档（可能本来就没开）。" if not closed
+                  else "已关闭 %d 个。" % len(closed)),
+        )
+    except Exception as exc:
+        return error("close_failed", str(exc)[:120],
+                     "Check that SolidWorks is reachable; a busy dialog blocks CloseDoc.")
+
+
 def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view_name=None):
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 

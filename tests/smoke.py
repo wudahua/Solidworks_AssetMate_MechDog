@@ -1103,6 +1103,15 @@ def main():
     r.check("flat pattern view", _flat_pattern_view)
     r.check("material write honesty (0.8.6)", _material_write_honesty)
     r.check("reconcile ledger + delivery verdict", _reconcile_delivery)
+    def _close_document():
+        # A non-existent path must be a clean no-op: proves the tool is callable and that it
+        # only closes a path match, never an unrelated document.
+        res = drawing.close_document(os.path.join(workdir, "no_such_smoke_document.SLDDRW"))
+        assert res.get("ok"), res
+        assert res.get("closed_count") == 0, res
+        return "clean no-op on an unknown path"
+
+    r.check("close document", _close_document)
     r.check("server wrapper contract", _server_wrapper_contract)
     # Last on purpose — see the docstring: this one deliberately poisons the COM cache.
     r.check("bridge self-heal (P0-1)", _bridge_selfheal)

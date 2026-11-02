@@ -1006,6 +1006,16 @@ def add_drawing_dimension(
 
 
 @mcp.tool()
+def close_document(drawing_path: str) -> str:
+    """Close a document SolidWorks still holds open (frees the file for delete/replace).
+
+    Tools here open documents and never closed them; a report ended up with two abandoned
+    drafts it could not delete ("Device or resource busy").
+    """
+    return _json(drawing.close_document(drawing_path))
+
+
+@mcp.tool()
 def add_center_marks(
     drawing_path: str,
     include_slots: bool = True,

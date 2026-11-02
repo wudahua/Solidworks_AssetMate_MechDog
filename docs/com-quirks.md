@@ -1904,3 +1904,34 @@ debug = {"views": ..., "annotations": ..., "skip_before": ...,
 **回读能证明的只是"数据进去了"，不是"用户能看到"。**
 凡是把东西写进**渲染后才可见**的容器（符号格、字体格、模板占位符），
 回读一致就应该配一句"渲染未验证"。
+
+## 四十四、只开不关：`close_document`（0.8.50）
+
+工具集里每个工具都 `_open_drawing`，**没有一个会关**。
+
+后果在反馈里很具体：`out/` 里两个作废草稿删不掉——`Device or resource busy`，
+因为 SolidWorks 还开着它们；重启 SW 才能删。
+
+### 实现要点
+
+```python
+want = os.path.normcase(os.path.abspath(str(drawing_path)))
+for document in (software.GetDocuments or ()):
+    if os.path.normcase(document.GetPathName or "") != want:
+        continue
+    software.CloseDoc(str(document.GetTitle))
+```
+
+两个细节：
+
+1. **`normcase` 两边都做**：Windows 路径大小写不敏感，只规范化一边就永远匹配不上。
+2. **只关路径完全一致的那一个**。全局 `CloseAllDocuments` 会把用户正在编辑的东西一起关掉，
+   那是不可接受的副作用。
+
+未打开时返回 `closed_count: 0` 的干净空操作——smoke 就靠这点验证「不误关」：
+传一个不存在的路径，断言 `ok: true` 且 `closed_count: 0`。
+
+### 还没做的
+
+`add_model_view` / `move_view` / `set_view_scale` 仍在账上。它们比 `close_document` 重，
+而且 `move_view` 会撞上 0.8.46 记录的那个「新建视图写 Position 变成 (0, x)」的坑。

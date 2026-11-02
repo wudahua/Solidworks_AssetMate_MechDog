@@ -2121,6 +2121,27 @@ def assert_gtol_symbol_render_flagged():
     return "readback success no longer implies a visible symbol"
 
 
+def assert_close_document_exists():
+    """0.8.50 — nothing in the toolkit ever closed a document.
+
+    A report ended up with two abandoned drafts it could not delete: "Device or resource
+    busy" because SolidWorks still had them open. Every tool here opens documents.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "close_document")) or ""
+    assert "CloseDoc" in body, "close_document never calls CloseDoc"
+    assert "os.path.normcase" in body, (
+        "the path is not normalised — a case-only mismatch would close nothing")
+    server = _read("server.py")
+    assert "def close_document(" in server, "no MCP wrapper"
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "README.md"), encoding="utf-8") as handle:
+        readme = handle.read()
+    assert "`close_document`" in readme, "README does not list it"
+    return "documents can be closed and the file freed"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2214,6 +2235,7 @@ STATIC_REGRESSIONS = [
     ("0.8.48 stack by value", assert_stack_ordered_by_value),
     ("0.8.49 center marks view", assert_center_marks_take_a_view),
     ("0.8.49 gtol symbol render", assert_gtol_symbol_render_flagged),
+    ("0.8.50 close document", assert_close_document_exists),
 ]
 
 
