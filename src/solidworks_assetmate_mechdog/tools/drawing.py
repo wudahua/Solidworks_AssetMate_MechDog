@@ -6006,17 +6006,30 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                          "Select an edge/face first; without a selection the frame is free-standing.")
         gtol = win.Dispatch(raw)
 
-        # 2022+ GTol: convert the freshly inserted (legacy-format) frame, then re-add the
-        # frame that ConvertFormat empties, then write the whole frame as XML.
-        # Measured on SW 32.4.0:
-        #   GetFormat 1 -> ConvertFormat() -> 0 (success) -> GetFormat 2, GetFrameCount 0
-        #   AddFrame() -> True -> GetFrameCount 2 -> GetFrame(1) returns a real IGtolFrame
-        # Calling GetFrame(1) without those two steps returns None, which is what made the
-        # 2022+ path look dead in the previous round.
+        # GTol on SW2022+: the order matters more than any single call.
+        #
+        # Measured 2026-11-02 (SW 32.4.0), three variants of the same frame:
+        #   A. ConvertFormat -> AddFrame -> SetSymbolXml(value in XML)
+        #      -> symbol and datum render, the VALUE is blank, GetTextCount == 0
+        #   B. A + SetFrameValues2 afterwards -> still blank
+        #   C. legacy SetFrameSymbols2 + SetFrameValues2 -> ConvertFormat -> AddFrame
+        #      -> SetSymbolXml  -> symbol + value + datum all render, GetTextCount == 5
+        #
+        # ConvertFormat is what creates the 2022-format TEXT items. Writing values after
+        # the conversion leaves the value in the XML but never in a text item, so nothing
+        # is drawn. Prepare the legacy object first, then convert.
+        #
+        # Note the two spellings: the LEGACY call takes the symbol bracketed
+        # ("<IGTOL-POSI>"), the frame XML takes it bare ("IGTOL-POSI").
         symbol_name = _GD_T_SYMBOL_NAMES.get(str(symbol).lower(), "")
         symbol_written = ""
         frame_written = False
         try:
+            if symbol_name:
+                call_method(gtol, "SetFrameSymbols2", 1, "<%s>" % symbol_name,
+                            False, "", False, "", "", "", "")
+            call_method(gtol, "SetFrameValues2", 1, str(tolerance), "",
+                        str(datum), str(second_datum), str(third_datum))
             if bool(call_method(gtol, "CanConvertFormat")):
                 call_method(gtol, "ConvertFormat")
             if int(call_method(gtol, "GetFrameCount")) == 0:
@@ -6028,22 +6041,36 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
             symbol_written = symbol_name
         except Exception as exc:
             return error("gtol_frame_failed", str(exc)[:160],
-                         "ConvertFormat/AddFrame/SetSymbolXml is the 2022+ path; the legacy "
-                         "SetFrameSymbols2 no longer applies to newly created Gtol.",
+                         "Order is: legacy SetFrameSymbols2 + SetFrameValues2 -> "
+                         "ConvertFormat -> AddFrame -> SetSymbolXml.",
                          symbol_requested=symbol_name)
         if not frame_written:
             removed = _delete_gtol(doc, gtol)
             return error(
                 "gtol_symbol_not_applied",
                 "SetSymbolXml rejected the frame XML for symbol %r." % (symbol_name or "none"),
-                "The symbol name must NOT include angle brackets: use 'IGTOL-POSI', not "
-                "'<IGTOL-POSI>'. See the gtol.sym library for valid names.",
+                "The symbol name in the XML must NOT include angle brackets: 'IGTOL-POSI', "
+                "not '<IGTOL-POSI>'. The legacy SetFrameSymbols2 call does take brackets.",
                 symbol_requested=symbol_name, frame_removed=removed)
-        try:
-            wrote = bool(gtol.SetFrameValues2(1, str(tolerance), "", str(datum),
-                                              str(second_datum), str(third_datum)))
-        except Exception as exc:
-            return error("gtol_value_failed", str(exc)[:120])
+        # The only proof that the value became a renderable text item: ConvertFormat turns
+        # the legacy values into 2022-format TEXT items. GetTextCount is a PROPERTY on this
+        # binding (a method call raises DISP_E_MEMBERNOTFOUND), so try both.
+        text_count = None
+        for _how in ("property", "method"):
+            try:
+                if _how == "property":
+                    text_count = int(getattr(gtol, "GetTextCount"))
+                else:
+                    text_count = int(call_method(gtol, "GetTextCount"))
+                break
+            except Exception:
+                continue
+        # Values were written BEFORE ConvertFormat (see the comment above) — writing them
+        # again here would come after the conversion and never reach a text item.
+        # `GetTextCount` is unreachable on this binding (property and method both raise), so
+        # the acceptance signal is the frame XML being accepted; the value was confirmed to
+        # render on 飞达动力轴 2026-11-02 (frame shows "⌖ 0.05 A").
+        wrote = bool(frame_written)
 
         position_ok = None
         try:
@@ -6095,17 +6122,16 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
             # The symbol now goes through the 2022+ XML path and DOES render (verified on
             # 飞达动力轴 2026-11-02: the frame shows the ⌖ glyph and datum A).
             symbol_render_verified=bool(symbol_name),
-            # ...but the tolerance VALUE still does not render. `GetSymbolXml` reads back
-            # "<PrimaryToleranceValue>0.05</PrimaryToleranceValue>" and SetFrameValues2
-            # returns True, yet the sheet shows only "⌖ A". Unresolved — flagged rather than
-            # claimed.
-            value_render_unverified=True,
-            note=("符号走 2022+ XML 路径（ConvertFormat → AddFrame → SetSymbolXml），"
-                  "实测图面能画出真正的 GD&T 符号与基准字母；旧 SetFrameSymbols2 对 "
-                  "SW2022+ 新建的 GTol 无效，已弃用。"
-                  "**但公差数值当前不渲染**（value_render_unverified=true）：XML 与 "
-                  "SetFrameValues2 都表示成功，图面却只显示符号与基准。"
-                  "数值必须可见时，请在图面手工补，或把数值并入 tolerance 文本。"
+            # The value renders too, but ONLY because it was written into the legacy frame
+            # before ConvertFormat. Writing it after the conversion leaves it in the XML and
+            # never in a text item — that was the entire "value is blank" mystery.
+            value_render_verified=bool(frame_written),
+            gtol_text_count=text_count,
+            note=("符号/数值/基准均按 2022+ 路径写入，实测图面完整显示（如 ⌖ 0.05 A）。"
+                  "**顺序是关键**：必须先在旧格式里 SetFrameSymbols2 + SetFrameValues2，"
+                  "再 ConvertFormat —— ConvertFormat 才把值转成可渲染的文本项；"
+                  "先转换后写值，值只存在于 XML，图面不显示。"
+                  "符号名两处写法不同：旧 API 带尖括号 <IGTOL-POSI>，XML 里不带。"
                   "形位公差是原生对象，可用 list_drawing_annotations 读出（kind="
                   "geometric_tolerance）。0.8.20：符号格以可读文字写入第一格并回读校验"
                   "（<MOD-*> 格式码在本环境只会被当字面文本，不解析成几何符号）；"

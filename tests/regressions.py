@@ -2109,23 +2109,36 @@ def assert_center_marks_take_a_view():
 
 
 def assert_gtol_symbol_render_flagged():
-    """0.8.49 -> 0.8.58: the symbol now renders; the VALUE still does not.
+    """0.8.49 -> 0.8.59: symbol, value and datum all render — the ORDER was the bug.
 
-    0.8.49 flagged every symbol write as unverified because the cell was never filled.
-    The XML path actually renders the glyph (verified on 飞达动力轴: the frame shows ⌖ and
-    datum A). What still does not render is the tolerance value — `GetSymbolXml` reads
-    back `PrimaryToleranceValue 0.05` and SetFrameValues2 returns True, yet the sheet shows
-    only "⌖ A". That one stays flagged.
+    Three rounds of misdiagnosis are recorded here because each one looked convincing:
+
+    0.8.49 flagged every symbol write as unverified — the cell was never filled.
+    0.8.58 got the symbol and datum to render through the 2022+ frame XML, but the value
+    stayed blank. Writing it AFTER ConvertFormat (in the XML, or via SetFrameValues2)
+    leaves it in the XML and never in a text item, so nothing is drawn.
+
+    The fix is ordering: write the legacy symbol AND the legacy values FIRST, then
+    ConvertFormat — that call is what turns them into renderable 2022-format text items.
+    Verified on 飞达动力轴 2026-11-02: the frame shows "⌖ 0.05 A".
     """
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                       "add_geometric_tolerance")) or ""
-    assert "symbol_render_verified" in body, (
-        "the receipt still cannot distinguish a rendered symbol from a stored one")
-    assert "value_render_unverified" in body, (
-        "the value does not render and nothing says so")
-    assert "SetSymbolXml" in body, "no 2022+ symbol path"
-    return "symbol verified, value still flagged"
+    # These are dispatched by name, so they appear as string literals, not calls.
+    assert '"SetFrameSymbols2"' in body, (
+        "the legacy symbol write is gone — ConvertFormat needs it as input")
+    assert '"SetFrameValues2"' in body, (
+        "the legacy value write is gone — ConvertFormat needs it to create text items")
+    # order: both legacy writes must come BEFORE ConvertFormat
+    legacy = max(body.find('"SetFrameSymbols2"'), body.find('"SetFrameValues2"'))
+    convert = body.find('"ConvertFormat"')
+    assert 0 < legacy < convert, (
+        "values are written after ConvertFormat — they stay in the XML and never render")
+    assert "SetSymbolXml" in body, "the 2022+ symbol path is missing"
+    assert "symbol_render_verified" in body and "value_render_verified" in body, (
+        "the receipt cannot say whether symbol and value actually render")
+    return "legacy writes precede ConvertFormat, and both render flags are reported"
 
 
 def assert_close_document_exists():

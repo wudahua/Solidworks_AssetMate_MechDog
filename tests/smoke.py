@@ -730,8 +730,8 @@ def main():
                 % rb)
             assert gt.get("symbol_render_verified") is True, (
                 "GT symbol was stored but not verified as rendered: %r" % gt)
-            assert gt.get("value_render_unverified") is True, (
-                "GT value does not render and the receipt does not say so: %r" % gt)
+            assert gt.get("value_render_verified") is True, (
+                "GT value was written but not verified as rendered: %r" % gt)
             assert "<MOD-" not in str(rb.get("symbol_written") or "").upper(), (
                 "GT symbol cell still holds a raw format code: %r" % rb)
         else:
