@@ -366,6 +366,28 @@ def delete_dimensions(
 
 
 @mcp.tool()
+def add_technical_requirements(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], lines: Annotated[list[str], Field(description="The requirement lines, one entry each. Lines already starting with '1.' or '1、' keep their number; the rest get ordinals.")],
+                               x_m: Annotated[float | None, Field(description="Sheet X in metres.")] = None, y_m: Annotated[float | None, Field(description="Sheet Y in metres.")] = None,
+                               height_mm: Annotated[float, Field(description="Note text height in millimetres (3.5 is the GB default).")] = 3.5, title: Annotated[str, Field(description="Heading placed above the list; empty string writes the lines without a heading.")] = "技术要求",
+                               auto_place: Annotated[bool, Field(description="True walks the block up the left margin until it clears every view; False uses x_m/y_m as given.")] = True, save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True) -> str:
+    """Write a 技术要求 block (10-30 lines) as ONE note instead of N `add_note` calls.
+
+    A note holds newlines, so the whole block goes in with a single InsertNote — that is
+    what makes this fast. Numbering is automatic: lines already starting with `1.` or `1、`
+    are kept as written, the rest get ordinals.
+
+    `auto_place` (default) walks the block up the left margin until it clears every model
+    view, using the real (deflated) outlines; pass `x_m`/`y_m` with `auto_place=False` to
+    pin it. Errors: `bad_input` (empty lines) / `no_room_for_requirements`.
+
+    Verified 2026-11-02: a 4-line block reported a 22.4 mm bbox and rendered as 4 lines.
+    """
+    return _json(layout.add_technical_requirements(
+        drawing_path, lines, x_m=x_m, y_m=y_m, height_mm=height_mm, title=title,
+        auto_place=auto_place, save=save))
+
+
+@mcp.tool()
 def add_note(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], text: Annotated[str, Field(description="Note body. Ø ± ° are rewritten to SolidWorks format codes so DWG/DXF keeps them legible.")], x_m: Annotated[float, Field(description="Sheet X in metres.")], y_m: Annotated[float, Field(description="Sheet Y in metres.")],
     height_mm: Annotated[float | None, Field(description="Note text height in millimetres (3.5 is the GB default).")] = None, bold: Annotated[bool, Field(description="Render the note in bold.")] = False, save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,

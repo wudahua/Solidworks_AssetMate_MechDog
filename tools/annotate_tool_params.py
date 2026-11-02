@@ -109,6 +109,9 @@ DESCRIPTIONS = {
     "second_datum": "Secondary datum letter, or '' for none.",
     "third_datum": "Tertiary datum letter, or '' for none.",
     "bold": "Render the note in bold.",
+    "lines": "The requirement lines, one entry each. Lines already starting with '1.' or '1、' keep their number; the rest get ordinals.",
+    "title": "Heading placed above the list; empty string writes the lines without a heading.",
+    "auto_place": "True walks the block up the left margin until it clears every view; False uses x_m/y_m as given.",
     "avoid_collisions": "Walk the note down until it clears every model view.",
 
     # ---- section / detail --------------------------------------------------

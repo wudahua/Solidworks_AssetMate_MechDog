@@ -68,7 +68,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（33）
+### 二、工程图（34）
 
 | 工具 | 作用 |
 |---|---|
@@ -93,6 +93,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_datum_feature` | **基准要素符号**（三角形+字母），形位公差的基准真正指向它；`InsertDatumTag2` 挂在选中边上，用 `view_name`+`edge_index` 定位 |
 | `add_geometric_tolerance` | **原生形位公差**（公差值 + 多基准 + 引线）；符号格写中文文字并回读校验，写不进就删框返回 `gtol_symbol_not_applied` |
 | `add_surface_finish` | **原生表面粗糙度**（Ra 值，14 参数）；`InsertSurfaceFinishSymbol3` 会忽略 x/y，用 `SetPosition` 修正后回读，可选 PDF 像素 diff 自检 |
+| `add_technical_requirements` | **技术要求整块写入**（一个 note 多行，不是 N 次 `add_note`）；自动编号 + 自动找空位（避开视图真实轮廓） |
 | `add_note` | 技术要求注记（sheet 空间坐标，米） |
 | `layout_dimensions` | **拆开叠在一起的尺寸**（按 x 聚类后沿 y 推开） |
 | `delete_view` | **删除视图**（错切的剖视 / 空白局部放大） |

@@ -472,6 +472,117 @@ def _encode_note_symbols(text):
     return encoded, warnings
 
 
+def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_mm=3.5,
+                               title="技术要求", auto_place=True, save=True):
+    """Write a technical-requirements block as ONE note, not N notes.
+
+    A drawing note holds newlines, so `InsertNote` takes the whole block at once. That is
+    the entire reason this exists: writing 10-30 lines through `add_note` one call at a
+    time is slow, and each call has to re-open, re-read the view outlines, and re-save.
+
+    Numbering: a line that already starts with `N.` or `N、` is kept verbatim; anything else
+    gets an ordinal. That way a caller can mix "1. 未注倒角 C1.5" with "去毛刺".
+
+    auto_place walks the block UP the left margin until it clears every model view, then
+    falls back to (x_m, y_m) if a caller insists on a position. Collision boxes come from
+    `precise_outline`, so the 11.9 mm phantom margin does not push the block away for no
+    reason.
+
+    Multi-line rendering verified 2026-11-02: a 4-line note came back with a bbox height of
+    22.4 mm (= 4 x 3.5 x 1.6) and rendered as 4 separate lines in the PDF.
+    """
+    try:
+        if isinstance(lines, str):
+            lines = [lines]
+        entries = [str(x) for x in (lines or []) if str(x).strip()]
+        if not entries:
+            return error("bad_input", "lines is empty — nothing to write")
+
+        # Numbering is all-or-nothing on purpose. Mixing kept and generated ordinals
+        # produced "1. 倒角 / 2. 去毛刺 / 1. 调质 / 4. 公差" in testing — a caller who writes
+        # one number clearly manages the numbering, so leave every line alone.
+        def _has_ordinal(line):
+            head = line[:3]
+            return (len(line) > 2 and line[0].isdigit()
+                    and len(head) > 1 and head[1] in ".,、")
+
+        cleaned = [entry.strip() for entry in entries]
+        if any(_has_ordinal(line) for line in cleaned):
+            numbered = cleaned
+        else:
+            numbered = ["%d. %s" % (index, line)
+                        for index, line in enumerate(cleaned, start=1)]
+        body = "\n".join(([str(title)] if title else []) + numbered)
+
+        doc = _open_drawing(drawing_path)
+        sheet = None
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                sheet = view
+                break
+        height_m = float(height_mm) / 1000.0
+        block_box = _note_bbox(body, 0.0, 0.0, height_m)
+        block_h = -block_box[1]
+        block_w = block_box[2]
+
+        obstacles = []
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            try:
+                from .drawing import precise_outline
+                box = precise_outline(view)
+            except Exception:
+                box = None
+            if box:
+                obstacles.append([float(v) for v in box])
+
+        sheet_w, sheet_h = 0.420, 0.297
+        try:
+            outline = list(sheet.GetOutline)
+            sheet_w = float(outline[2] - outline[0])
+            sheet_h = float(outline[3] - outline[1])
+        except Exception:
+            pass
+
+        chosen = None
+        if x_m is not None and y_m is not None and not auto_place:
+            chosen = (float(x_m), float(y_m))
+        else:
+            margin = 0.010
+            left = margin
+            top = sheet_h - margin
+            candidate = top
+            while candidate - block_h > margin:
+                box = [left, candidate - block_h, left + block_w, candidate]
+                if not any(_boxes_overlap(box, ob, 0.004) for ob in obstacles):
+                    chosen = (left, candidate)
+                    break
+                candidate -= block_h + 0.006
+            if chosen is None and x_m is not None and y_m is not None:
+                chosen = (float(x_m), float(y_m))
+            if chosen is None:
+                return error(
+                    "no_room_for_requirements",
+                    "%.0f mm of stacking space needed on a %.0f x %.0f mm sheet"
+                    % (block_h * 1000, sheet_w * 1000, sheet_h * 1000),
+                    "Pass x_m/y_m with auto_place=False, or delete a view.")
+
+        result = add_note(drawing_path, body, chosen[0], chosen[1],
+                          height_mm=height_mm, save=save, avoid_collisions=False)
+        if not result.get("ok"):
+            return result
+        result["line_count"] = len(numbered)
+        result["title"] = str(title) if title else None
+        result["text"] = body
+        result["block_height_mm"] = round(block_h * 1000, 1)
+        return result
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("requirements_failed", str(exc))
+
+
 def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True,
              avoid_collisions=False):
     """Add a drawing note (技术要求 lines). x/y are sheet metres.

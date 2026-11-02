@@ -710,6 +710,18 @@ def main():
         edges = drawing.list_circular_edges(drw)
         assert edges.get("ok") is not None, "list_circular_edges returned no verdict"
 
+        # technical-requirements block (0.8.65): ONE note, auto-numbered, auto-placed
+        req = layout.add_technical_requirements(
+            drw, ["未注倒角 C1.5", "去毛刺", "调质 HRC28-32"], height_mm=3.5)
+        assert req.get("ok") is not None, "add_technical_requirements returned no verdict"
+        if req.get("ok"):
+            assert req.get("line_count") == 3, "line_count wrong: %r" % req.get("line_count")
+            body = str(req.get("text") or "")
+            assert body.count("\n") == 3, (
+                "the block did not become one multi-line note: %r" % body)
+            assert "1." in body and "3." in body, (
+                "ordinals were not generated for un-numbered lines: %r" % body)
+
         # datum feature symbol (0.8.63): attaches to an edge, and the label must read
         # back — InsertDatumTag2 defaults to 'B', so a silent failure would be easy.
         datum = drawing.add_datum_feature(drw, edge_index=0, label="A")
