@@ -17,6 +17,7 @@ Dependency-free: run with the same Python that runs the server, no pyflakes need
 """
 
 import ast
+import io
 import os
 import pathlib
 import sys
@@ -385,6 +386,62 @@ def check_bare_names(path):
     return problems
 
 
+def check_param_descriptions(server_path):
+    """Every @mcp.tool() parameter must carry a description in the generated schema.
+
+    Why: `inputSchema.properties[*].description` was empty for all 287 parameters. The
+    only explanation of a parameter was the tool's prose docstring, so a new argument that
+    was not mentioned there was — to a model reading `tools/list` — indistinguishable from
+    an argument that does not exist. A report found three such cases in one release
+    (`sheet_start`, `cut_line_ratio`, `hatch_missing`) and called it a structural gap
+    rather than an oversight.
+
+    The fix is `Annotated[T, Field(description=...)]`; this check keeps it that way.
+    It parses the file instead of importing it, so it runs without mcp/pydantic installed.
+    """
+    problems = []
+    try:
+        tree = ast.parse(io.open(server_path, encoding="utf-8").read())
+    except SyntaxError as exc:
+        return ["server.py does not parse: %s" % exc]
+
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if not any(
+            isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "tool"
+            for d in node.decorator_list
+        ):
+            continue
+        for arg in (node.args.posonlyargs + node.args.args + node.args.kwonlyargs):
+            if arg.arg in ("self", "cls"):
+                continue
+            ann = arg.annotation
+            described = False
+            if (
+                isinstance(ann, ast.Subscript)
+                and isinstance(ann.value, ast.Name)
+                and ann.value.id == "Annotated"
+            ):
+                inner = ann.slice
+                # py3.8 wraps the slice in ast.Index; 3.9+ exposes it directly.
+                if isinstance(inner, ast.Tuple):
+                    for part in inner.elts[1:]:
+                        if not isinstance(part, ast.Call):
+                            continue
+                        if getattr(part.func, "id", "") != "Field":
+                            continue
+                        for kw in part.keywords:
+                            if kw.arg == "description" and isinstance(kw.value, ast.Constant):
+                                if str(kw.value.value or "").strip():
+                                    described = True
+            if not described:
+                problems.append(
+                    "server.py:%d: %s(%s) has no Annotated[..., Field(description=...)]"
+                    % (node.lineno, node.name, arg.arg))
+    return problems
+
+
 def main():
     if not os.path.exists(SERVER):
         print("server.py not found at %s" % SERVER)
@@ -403,12 +460,14 @@ def main():
     problems.extend(check_readme([t.name for t in tools]))
     problems.extend(check_stale_roadmap(README, PYPROJECT))
     problems.extend(check_wrapper_signatures(SERVER))
+    problems.extend(check_param_descriptions(SERVER))
     if problems:
         print("static check FAILED (%d issue(s), %d tools scanned):" % (len(problems), len(tools)))
         for item in problems:
             print("  " + item)
         return 1
-    print("static check OK (%d tools, every module reference resolves, README in sync)"
+    print("static check OK (%d tools, every module reference resolves, README in sync, "
+          "every parameter documented)"
           % len(tools))
     return 0
 

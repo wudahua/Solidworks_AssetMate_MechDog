@@ -1641,7 +1641,10 @@ def assert_wrapper_forwards_position_m():
     index = server.index("def set_dimension_position(")
     # Window has to reach past the docstring to the forwarding call.
     segment = server[index:index + 2000]
-    assert "position_m: list[float] | None = None" in segment, (
+    # The signature is now `position_m: Annotated[list[float] | None, Field(...)] = None`,
+    # so match the parameter, not a literal type string — an exact-type assertion here
+    # would fail on every future annotation change while saying nothing useful.
+    assert "position_m:" in segment, (
         "the wrapper still rejects position_m")
     assert "position_m=position_m" in segment, (
         "the wrapper does not forward position_m to the implementation")
@@ -2331,6 +2334,29 @@ def assert_cut_line_uses_view_sketch():
     return "cut line drawn around the view-sketch origin, like the detail view"
 
 
+def assert_every_param_is_documented():
+    """0.8.61 — all 287 tool parameters had an empty schema description.
+
+    `inputSchema.properties[*].description` was blank for every parameter of all 59 tools.
+    The only explanation was the tool's prose docstring, so an argument that was not
+    mentioned there was — to a model reading `tools/list` — the same as an argument that
+    does not exist. One release shipped three such (`sheet_start`, `cut_line_ratio`,
+    `hatch_missing`) and a report called it structural, not accidental.
+
+    The guard lives in static_check. This assertion keeps the guard honest: it must reject
+    a signature that lost its Field(description=...).
+    """
+    import static_check as sc
+
+    src = _read("server.py")
+    assert "from typing import Annotated" in src, (
+        "Annotated is not imported — every annotation would fail to evaluate")
+    assert "from pydantic import Field" in src, "Field is not imported"
+
+    problems = sc.check_param_descriptions(sc.SERVER)
+    assert not problems, "parameters without a description: %s" % problems[:3]
+    return "every tool parameter carries a schema description"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2433,6 +2459,7 @@ STATIC_REGRESSIONS = [
     ("0.8.55 all_views=False loud", assert_all_views_false_is_not_silent),
     ("0.8.56 section hatch checked", assert_section_hatch_is_checked),
     ("0.8.57 cut line coords", assert_cut_line_uses_view_sketch),
+    ("0.8.61 param descriptions", assert_every_param_is_documented),
 ]
 
 
