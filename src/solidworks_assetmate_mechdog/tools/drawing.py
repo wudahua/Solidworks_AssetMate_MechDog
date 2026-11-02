@@ -1527,6 +1527,15 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                          "已按 full name 自动删除 %d 条多余副本（保留首次出现），失败 %d 条。"
                          % (len(duplicate_report), len(worst[1]), worst[0],
                             len(removed), len(dedupe_failed)))
+        _empty = [v.get("name") for v in (audit.get("views") or [])
+                  if int(v.get("dimensions") or 0) == 0]
+        if _empty:
+            # P4: every dimension lands in the first view because InsertModelItems is
+            # document-level. The depth-only features then have nowhere to live and the
+            # caller gets no signal — the sheet simply looks incomplete.
+            notes.append(
+                "空视图：%s 上没有任何尺寸。`InsertModelItems` 是文档级的，尺寸会集中到首个视图；"
+                "深度类尺寸请用 add_drawing_dimension 在侧视/剖视上单独补标。" % "、".join(_empty))
         if dedupe_failed:
             notes.append("%d 条重复尺寸删除失败，见 dedupe_failed；可用 "
                          "delete_dimensions 按视图兜底。" % len(dedupe_failed))
@@ -1608,12 +1617,22 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             # 0.8.25: an explicit count — `dedupe_failed` is truncated to 10, so a run
             # that removed 0 and failed 23 used to be indistinguishable from a clean no-op.
             dedupe_failed_count=len(dedupe_failed),
+            # P3: the plan can contain entries no driving dimension can satisfy (bounding-box
+            # values). Say how many, so "filter_kept: 20" is not mistaken for "all 20 made it".
+            planned_derived_count=sum(
+                1 for e in (dimension_filter or []) if isinstance(e, dict)
+                and e.get("kind") == "derived"),
+            planned_driving_count=sum(
+                1 for e in (dimension_filter or []) if isinstance(e, dict)
+                and e.get("kind") == "driving"),
             place_outside_applied=bool(place_outside),
             outside_debug=outside_debug,
             placed_outside=outside_placed,
             outside_sides=outside_sides,
             outside_failed=outside_failed[:10],
             advisory=notes,
+            empty_views=[v.get("name") for v in (audit.get("views") or [])
+                         if int(v.get("dimensions") or 0) == 0],
             views=audit.get("views"),
             warnings=audit.get("warnings"),
         )

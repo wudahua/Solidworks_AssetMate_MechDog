@@ -2186,6 +2186,44 @@ def assert_edges_carry_sheet_coordinates():
     return "edges carry sheet coordinates, with an explicit projected flag"
 
 
+def assert_plan_separates_driving_from_derived():
+    """0.8.53 / P3 — the plan promised dimensions the model does not have.
+
+    `keep_dimensions` led with 外形/总长/总宽/总高 — BOUNDING-BOX values. There is no such
+    driving dimension, so auto_dimension could never insert them, yet `filter_kept` still
+    counted them and nothing said a word. Measured on door.SLDPRT: 8 kept = 5 driving +
+    3 derived.
+    """
+    src = _read("tools/planner.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_drawing")) or ""
+    assert '"kind"' in body or "entry[\"kind\"]" in body, (
+        "entries are not classified")
+    assert "keep_derived_count" in body and "keep_driving_count" in body, (
+        "the counts are not reported")
+    draw_body = _read("tools/drawing.py")
+    assert "planned_derived_count" in draw_body, (
+        "auto_dimension does not say how many plan entries are unsatisfiable")
+    return "plan entries are driving or derived, and both counts are reported"
+
+
+def assert_empty_views_are_reported():
+    """0.8.53 / P4 — every dimension lands in the first view and nothing said so.
+
+    `InsertModelItems` is document-level, so the side and isometric views get zero dimensions
+    while the caller only sees `warnings: []`. Measured on a 3-view door.SLDPRT sheet:
+    empty_views = ['工程图视图3'].
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "auto_dimension")) or ""
+    assert "empty_views" in body, "no empty-view field"
+    assert "是文档级的" in body, (
+        "the advisory does not explain WHY the view is empty")
+    assert "add_drawing_dimension" in body, "no workaround for depth dimensions"
+    return "empty views are named, explained, and given a workaround"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2282,6 +2320,8 @@ STATIC_REGRESSIONS = [
     ("0.8.50 close document", assert_close_document_exists),
     ("0.8.51 view edit tools", assert_view_edit_tools_exist),
     ("0.8.52 edges sheet coords", assert_edges_carry_sheet_coordinates),
+    ("0.8.53 plan driving/derived", assert_plan_separates_driving_from_derived),
+    ("0.8.53 empty views", assert_empty_views_are_reported),
 ]
 
 

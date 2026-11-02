@@ -111,6 +111,15 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
 
     holes = led.get("holes") or []
     keep = _rank_dimensions(ledger_rows, holes, box)[:TARGET_DIMENSIONS]
+    # Tag every entry as driving / derived. The 外形 rows carry BOUNDING-BOX values
+    # (210 / 204.85 / 98.31 in a report) — there is no such driving dimension in the model,
+    # so auto_dimension can never insert them. Without this tag the caller watches
+    # "filter_kept: 20" and wonders why three headline dimensions are missing from the sheet.
+    for entry in keep:
+        label = str(entry.get("feature") or "") + str(entry.get("dimension") or "")
+        entry["kind"] = ("derived"
+                         if any(word in label for word in ("外形", "总长", "总宽", "总高"))
+                         else "driving")
 
     total_driving = stats.get("driving_dimensions") or len(ledger_rows)
     ratio = round(len(keep) / total_driving, 3) if total_driving else None
@@ -132,6 +141,8 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
         keep_count=len(keep),
         keep_ratio=ratio,
         keep_dimensions=keep,
+        keep_driving_count=sum(1 for e in keep if e.get("kind") == "driving"),
+        keep_derived_count=sum(1 for e in keep if e.get("kind") == "derived"),
         sheets=sheet_plan,
         baseline_note=("100 张真实工程图实测：尺寸中位 11、均值 14.2。"
                        "本方案推荐 %d 个，为全量导入（%d 个）的 %.0f%%。"
