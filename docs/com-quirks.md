@@ -1792,3 +1792,45 @@ CreateDrawViewFromModelView3(model, view_name, x, y, 0)
 
 **如果不拦，它会变成 no-op**——`except` 一包，位置照旧不动，
 和这两轮的"修了但没变化"一模一样。
+
+## 四十一、视图贴边：两套边距口径打架（0.8.47）
+
+0.8.46 我把根因归给 `CreateDrawViewFromModelView3` 忽略 x/y——**只对了一半**。
+它后面还有 `_place_views`，用**真实 outline** 重排，那才是视图的实际位置。
+
+真正的问题是 `_place_views` 的两处口径都太松：
+
+### ① 起排点正好压在边界上
+
+```python
+y = sheet_h - top - pad / 2      # top 来自 template_safe_area
+```
+`template_safe_area` 对这个 GB A3 模板只给 **`top = 4 mm`**，而尺寸那边（`_push_dimensions_outside`）
+用的是 **10 mm inset**。**两个模块对「可打印区从哪开始」意见不一**，
+于是视图顶边落在 0.293，而尺寸那套认为安全线是 0.287。
+
+### ② SW 的 outline 比墨迹大
+
+`precise_outline` 已经内缩了 11.9 mm 的虚胖，但边界仍然紧贴。
+
+### 修法
+
+```python
+inset_floor = 0.010                 # 四边统一取严格值
+left = max(left, inset_floor)  ...
+frame_pad = 0.004                   # 起排再让 4 mm
+y = sheet_h - top - frame_pad - pad / 2
+```
+
+实测：1 视图 `y 0.1755..0.2830`，3 视图 `0.1750..0.2830`，全部在 0.2875 以内。
+
+### 顺手删掉一条误报
+
+0.8.46 在创建循环里记了 `pending_post_create_placement`，
+可 `_place_views` 的重排**一直是好的**——那是一条给正常路径挂的警报。
+现在的注释只说明事实，不再报"未放置"。
+
+### 教训
+
+**同一个概念在两处有不同定义时，先统一再修。** 这里"可打印区"有 4 mm 和 10 mm 两个版本，
+两边各自都对，合起来就是视图压线。

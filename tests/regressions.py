@@ -2033,22 +2033,25 @@ def assert_layout_prediction_matches_reality():
     return "prediction accounts for the outline margin and the view count"
 
 
-def assert_placement_gap_is_reported():
-    """0.8.46 — the view never lands where the layout says, and nothing said so.
+def assert_views_inside_printable_area():
+    """0.8.47 — views were packed starting at `sheet_h - top`, i.e. ON the printable edge.
 
-    Root cause found by experiment: `CreateDrawViewFromModelView3` IGNORES its x/y, and
-    writing `Position` on the freshly created view reproduces the v0.8.9 marshalling trap —
-    requested (0.2374, 0.179), actual (0.0, 0.2374). `set_view` works but reopens the
-    drawing, invalidating the view handles the creation loop is still filling. Until that
-    pass is restructured, the receipt must say the placement did not happen.
+    `template_safe_area` reports top=4 mm for the GB A3 template while the dimension stack
+    uses a 10 mm inset, so views and dimensions disagreed about where the printable area
+    starts. Measured on door.SLDPRT: view top 0.293 on a 0.297 sheet (safe edge 0.287).
+    Now `_place_views` takes the stricter 10 mm inset plus a 4 mm frame pad: 1 and 3 view
+    layouts both land at 0.175..0.283, inside the 0.287 edge.
     """
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                      "create_drawing")) or ""
-    assert "placement_deltas" in body, "the receipt does not mention placement at all"
-    assert "pending_post_create_placement" in body, (
-        "an unplaced view is still reported as placed")
-    return "unplaced views are reported, not silently accepted"
+                                                      "_place_views")) or ""
+    assert "inset_floor = 0.010" in body, (
+        "the template's 4 mm inset is still trusted on its own")
+    assert "frame_pad = 0.004" in body, (
+        "the first view still starts exactly on the printable edge")
+    assert "y = sheet_h - top - frame_pad" in body, (
+        "the frame pad is not applied to the packing start")
+    return "views pack inside the stricter inset"
 
 
 STATIC_REGRESSIONS = [
@@ -2140,7 +2143,7 @@ STATIC_REGRESSIONS = [
     ("0.8.43 scale explained", assert_scale_choice_is_explained),
     ("0.8.44 outside stack bounded", assert_outside_stack_respects_sheet),
     ("0.8.45 layout prediction", assert_layout_prediction_matches_reality),
-    ("0.8.46 placement gap reported", assert_placement_gap_is_reported),
+    ("0.8.47 views inside area", assert_views_inside_printable_area),
 ]
 
 

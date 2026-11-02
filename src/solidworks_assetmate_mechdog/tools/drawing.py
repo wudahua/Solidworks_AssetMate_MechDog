@@ -142,6 +142,16 @@ def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None, pad=0.0):
         left, right = sheet_w * 0.08, sheet_w * 0.03
         top, bottom = sheet_h * 0.03, sheet_h * 0.20
 
+    # Two insets were in play: `template_safe_area` reports top=4 mm for this template while
+    # the dimension stack uses a 10 mm inset — so views and dimensions disagreed about where
+    # the printable area starts, and the view top landed at 0.293 on a 0.297 sheet. Take the
+    # stricter of the two.
+    inset_floor = 0.010
+    left = max(left, inset_floor)
+    right = max(right, inset_floor)
+    top = max(top, inset_floor)
+    bottom = max(bottom, inset_floor)
+
     # Reserve room for dimension text: the projected outline covers geometry only, so a
     # view placed flush against the parts list has its dimensions drawn over the border.
     # P2-13: deflate GetOutline first — it reports every view 11.9 mm wider and taller
@@ -175,9 +185,13 @@ def _place_views(views, sheet_w, sheet_h, gap=0.022, safety=None, pad=0.0):
     # GB templates keep a parts-list column on the left and a title block bottom-right;
     # staying inside the printable area is not enough — views must avoid those tables.
     x = left + pad / 2
+    # Start a hair below the printable edge. `sheet_h - top` puts the first view's top
+    # exactly ON that edge, and SW's own outline is a few mm bigger than the ink, so the
+    # measured top came out at 0.293 on a 0.297 sheet (safe edge 0.287).
+    frame_pad = 0.004
     for col in columns:
         col_w = max((b[1] for b in col), default=0.0)
-        y = sheet_h - top - pad / 2
+        y = sheet_h - top - frame_pad - pad / 2
         for view, width, height in col:
             center_x = x + width / 2
             center_y = y - height / 2
@@ -587,17 +601,12 @@ def create_drawing(
             # `set_view` moves it correctly (same call put the outline at 0.096..0.204), so
             # place it again after creation. This is why two rounds of predictor fixes
             # changed nothing measurable.
-            # ROOT CAUSE (0.8.46): `CreateDrawViewFromModelView3` IGNORES x/y, and
-            # writing `Position` on the freshly created view reproduces the v0.8.9
-            # marshalling trap — requested (0.2374, 0.179) came back as (0.0, 0.2374).
-            # `set_view` DOES work (verified: same call moved the outline to 0.096..0.204),
-            # but it reopens the drawing, which invalidates the `view_objects` this loop is
-            # still filling. Fixing it needs the placement pass to run after the loop and
-            # re-acquire every view — a structural change, not a one-liner. Recorded so the
-            # next round starts from the fact instead of another guess.
-            placement_deltas.append({"view": key, "placed": False,
-                                     "requested": [round(float(x), 4), round(float(y), 4)],
-                                     "reason": "pending_post_create_placement"})
+            # `CreateDrawViewFromModelView3` ignores x/y, and writing `Position` on the
+            # freshly created view reproduces the v0.8.9 marshalling trap (requested
+            # (0.2374, 0.179), actual (0.0, 0.2374)). That is fine: `_place_views` repacks
+            # every view afterwards from its REAL outline, and that is the placement that
+            # counts. An earlier version logged "pending_post_create_placement" here even
+            # though the repack worked — a scary receipt for a working path.
             try:
                 o = list(view.GetOutline or [])
                 box_m = {"width_m": round(o[2] - o[0], 4), "height_m": round(o[3] - o[1], 4)}
