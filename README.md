@@ -68,7 +68,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（35）
+### 二、工程图（36）
 
 | 工具 | 作用 |
 |---|---|
@@ -79,6 +79,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_section_view` | 剖视图（自动画剖切线）；支持**模型坐标剖切面** `cut_plane_normal`/`cut_plane_origin`；`cut_line_ratio`（默认 0.55）按**短边**钳制剖切线长度。错误码：`section_empty` / `section_suspicious` / **`hatch_missing`（剖切面无剖面线，0.8.56 起不再 ok:true）** |
 | `add_detail_view` | 局部放大（圆圈边界 + 独立比例）；请求比例不再被父视图覆盖，创建后数可见边，空视图返回 `detail_empty`、比例被锁返回 `detail_scale_locked` |
 | `add_flat_pattern_view` | 钣金展开（下料尺寸 + 折弯线） |
+| `survey_dimensions_by_view` | **只读诊断**：每个视图的尺寸数、最密的视图、空视图；用于判断「右视图为什么是空的」。**不能改派**——尺寸属于所在视图 |
 | `auto_dimension` | 导入模型驱动尺寸，超 30 个会提示冗余；**按模型 full name 自动删除重复副本** |
 | `delete_dimensions` | **按值保留/删除尺寸**，消费 `plan_drawing` 的短名单（实测 14 条一次调用 < 5 s） |
 | `set_view_scale` | 改单个视图的比例（不必重建整张图） |
@@ -239,7 +240,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 105 条历史回归
+python tests/check_all.py     # 秒级：语法 + 结构 + 106 条历史回归
 python tests/smoke.py         # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
 

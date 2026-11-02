@@ -2467,6 +2467,42 @@ def assert_layout_iterates_and_uses_both_axes():
         "the receipt no longer reports what is still overlapping after the sweep")
     return "layout iterates until quiet, alternates direction, and falls back to x"
 
+def assert_dimension_spread_is_diagnosed_not_faked():
+    """0.8.69 / 3.2 — the "all dimensions pile into the first view" claim does NOT reproduce.
+
+    Measured on 气缸盖 2026-11-03, `auto_dimension(all_views=True)` distributes:
+        3 views: 20 / 10 / 9      4 views: 20 / 10 / 9 / 0 (isometric empty)   2: 20 / 10
+
+    The first view carries the most because SolidWorks puts each dimension where it can be
+    shown. So instead of a `distribute_dimensions` tool that could only pretend, this ships
+    a read-only survey — and the survey must state, in its own words, why it cannot
+    re-assign anything. An IAnnotation belongs to its view; SetPosition only moves it on
+    the sheet; `all_views=False` inserts only what the active view shows.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "survey_dimensions_by_view")) or ""
+    assert "empty_views" in body, "the survey does not name the empty views (the real problem)"
+    assert "total_dimensions" in body and "busiest_view" in body, (
+        "the survey does not report the spread")
+    assert "改派" in body or "re-assign" in body.lower(), (
+        "the docstring does not say that re-assignment is impossible — the next reader "
+        "will build the tool that cannot work")
+    assert "no_dimensions_inserted" in body, (
+        "the all_views=False limitation is no longer recorded")
+    # the tool must stay read-only
+    # The docstring legitimately NAMES SetPosition to explain why re-assignment is
+    # impossible, so match the call form, not the word.
+    assert ".SetPosition(" not in body, "the survey mutates the drawing"
+    assert "_save_drawing(" not in body, "the survey saves the drawing"
+    caps = _read("tools/capabilities.py")
+    assert '"dimension_per_view"' in caps, "the capability is not declared"
+    index = caps.index('"dimension_per_view"')
+    end = caps.find('"id":', index + 10)
+    segment = caps[index:end if end > 0 else index + 1500]
+    assert "20 / 10 / 9" in segment, "the capability lost the measurement that disproves the claim"
+    return "dimension spread is measured and documented, not silently 'fixed'"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2573,6 +2609,7 @@ STATIC_REGRESSIONS = [
     ("0.8.64 datum is GB circle", assert_datum_symbol_is_gb_circle),
     ("0.8.67 weld is sketch", assert_weld_symbol_is_declared_as_sketch),
     ("0.8.68 layout iterates", assert_layout_iterates_and_uses_both_axes),
+    ("0.8.69 dim spread diagnosed", assert_dimension_spread_is_diagnosed_not_faked),
 ]
 
 

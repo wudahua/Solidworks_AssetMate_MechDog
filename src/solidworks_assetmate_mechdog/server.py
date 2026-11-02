@@ -1026,6 +1026,28 @@ def add_flat_pattern_view(
 
 
 @mcp.tool()
+def survey_dimensions_by_view(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")]) -> str:
+    """Report how dimensions are spread across the model views — READ ONLY, changes nothing.
+
+    Use it to answer "why is the right view empty": it lists each view with its dimension
+    count and names the busiest one and the empty ones.
+
+    Measured on 气缸盖 2026-11-03, a claim that every dimension piles into the first view
+    does NOT reproduce — `auto_dimension(all_views=True)` gives 20/10/9 across three views
+    (and 20/10/9/0 with an isometric added). The first view carries the most because
+    SolidWorks puts each dimension in a view that can show it. An isometric view having
+    none is normal; a right/top view having none usually means the sheet lacks the
+    geometry that dimension needs.
+
+    **There is no API to re-assign a dimension to a different view.** An annotation belongs
+    to its view; `SetPosition` only moves it on the sheet. `all_views=False` inserts only
+    what the ACTIVE view can show, so it cannot redistribute either. This tool diagnoses;
+    it does not redistribute.
+    """
+    return _json(drawing.survey_dimensions_by_view(drawing_path))
+
+
+@mcp.tool()
 def auto_dimension(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     all_views: Annotated[bool, Field(description="Insert into every model view. False inserts into the ACTIVE view only and activates one for you.")] = True,

@@ -710,6 +710,14 @@ def main():
         edges = drawing.list_circular_edges(drw)
         assert edges.get("ok") is not None, "list_circular_edges returned no verdict"
 
+        # dimension spread (0.8.69): read-only diagnostic, must not change the drawing
+        spread = drawing.survey_dimensions_by_view(drw)
+        assert spread.get("ok") is not None, "survey_dimensions_by_view returned no verdict"
+        if spread.get("ok"):
+            assert "views" in spread and "empty_views" in spread, (
+                "survey omitted the per-view breakdown: %r" % list(spread))
+            assert int(spread.get("total_dimensions") or 0) >= 0, "total is not a number"
+
         # weld symbol (0.8.67): drawn from sketch lines, NOT a native IWeldSymbol.
         # The receipt must say so — claiming a native annotation would be a lie.
         weld = layout.add_weld_symbol(drw, weld_type="fillet", size_mm=6,

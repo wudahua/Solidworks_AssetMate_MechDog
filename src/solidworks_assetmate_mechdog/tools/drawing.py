@@ -1417,6 +1417,80 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
     return placed, failures, sides_used, overflow_notes, debug
 
 
+def survey_dimensions_by_view(drawing_path):
+    """Report how dimensions are spread across the model views — read-only.
+
+    Why this exists: a report claimed every driving dimension lands in the FIRST view
+    ("文档级幂等，尺寸全集中到首个视图"). Measured on 气缸盖 2026-11-03, that does not
+    reproduce — `auto_dimension(all_views=True)` distributes them:
+
+        3 views : 20 / 10 / 9
+        4 views : 20 / 10 / 9 / 0     (isometric is always empty)
+        2 views : 20 / 10
+
+    The first view does carry the most, but that is SolidWorks putting each dimension in
+    the view that can actually show it, not a bug. What IS worth flagging is a view with
+    ZERO dimensions — an isometric view legitimately has none, but a right/top view with
+    none usually means the sheet is missing the geometry that dimension needs.
+
+    There is no API to re-assign a dimension to a different view: an `IAnnotation` belongs
+    to its view, and `SetPosition` only moves it on the sheet. `all_views=False` inserts
+    only what the ACTIVE view can show (`no_dimensions_inserted` on views that show none),
+    so it cannot be used to push specific dimensions elsewhere either.
+
+    So this is a diagnostic, not a distributor: it tells you the shape of the problem
+    instead of pretending to fix it.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        rows = []
+        total = 0
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            dims = 0
+            others = 0
+            for raw in (view.GetAnnotations or ()):
+                try:
+                    annotation = win.Dispatch(raw)
+                except Exception:
+                    continue
+                kind = None
+                for getter in (lambda: annotation.GetType, lambda: annotation.GetType()):
+                    try:
+                        kind = int(getter())
+                        break
+                    except Exception:
+                        continue
+                if kind == 4:
+                    dims += 1
+                else:
+                    others += 1
+            total += dims
+            rows.append({"view": str(view.Name), "dimensions": dims,
+                         "other_annotations": others})
+        if not rows:
+            return error("no_views", "no model views on this sheet")
+        widest = max(r["dimensions"] for r in rows)
+        empty = [r["view"] for r in rows if r["dimensions"] == 0]
+        return drawing_ok(
+            drawing=doc.GetTitle, views=rows, total_dimensions=total,
+            busiest_view=[r["view"] for r in rows if r["dimensions"] == widest][0],
+            busiest_count=widest,
+            empty_views=empty,
+            note=("只读诊断。尺寸属于所在视图，API 无法把它改派到别的视图"
+                  "（IAnnotation.SetPosition 只改图纸位置）；"
+                  "all_views=False 只插当前视图能显示的那部分，"
+                  "插不到时会返回 no_dimensions_inserted。"
+                  "等轴测视图没有尺寸是正常的；右视/俯视没有尺寸通常说明图纸缺了对应几何。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("survey_failed", str(exc))
+
+
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
                    dimension_filter=None, place_outside=False,
                    outside_gap_m=0.012, outside_step_m=0.008):

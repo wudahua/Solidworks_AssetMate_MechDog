@@ -194,6 +194,24 @@ CAPABILITIES = [
                      "引线自动引出），失败 8 个全为 Ø6 背面边（z=6.0）"),
     },
     {
+        "id": "dimension_per_view",
+        "status": "verified",
+        "summary": "尺寸跨视图分布可诊断，但**不能改派**——尺寸属于所在视图",
+        "why": ("反馈称「文档级幂等，尺寸全集中到首个视图」。**实测不复现**："
+                "气缸盖 `auto_dimension(all_views=True)` 在 3 视图上是 "
+                "**20 / 10 / 9**，4 视图是 **20 / 10 / 9 / 0**（等轴测恒空），"
+                "2 视图是 20 / 10。首视图确实最多——那是 SW 把每条尺寸放进"
+                "**能显示它的**视图，不是缺陷。"
+                "**API 无法改派**：`IAnnotation` 属于它的视图，`SetPosition` 只改图纸位置；"
+                "`all_views=False` 只插当前视图能显示的部分，插不到时返回 "
+                "`no_dimensions_inserted`。所以「按语义分配」（直径→主视图、深度→侧视图）"
+                "在本 binding 下没有入口。"),
+        "workaround": ("用 `survey_dimensions_by_view` 看实际分布："
+                       "**空视图才是真问题**——等轴测没有尺寸正常，"
+                       "右视/俯视没有尺寸通常说明图纸缺对应几何。"
+                       "需要特定分配时，只能在界面手工移动（同视图内改位置）或补建视图。"),
+    },
+    {
         "id": "weld_symbol",
         "status": "partial",
         "summary": "焊接符号：原生 IWeldSymbol 画不出图形；角焊改用草图线绘制（representation=sketch_block）",
