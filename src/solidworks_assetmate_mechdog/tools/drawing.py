@@ -5908,28 +5908,52 @@ def _invoke_as_method(obj, name, *args):
     return call_method(obj, name, *args)
 
 
-# Unicode geometric-tolerance glyphs. Used because the symbol CELL cannot be filled on
-# this build: `IGtol.SetFrameSymbols2` is documented as "valid only if this Gtol was created
-# in a version of SOLIDWORKS earlier than 2022", and the 2022+ replacement
-# (`IGtol.GetFrame` -> `IGtolFrame.SetSymbolXml`) returns None through this binding
-# (measured 2026-11-02 on SW 32.4.0). Writing "<MOD-*>" stores literal text that never
-# renders. So the glyph goes into the tolerance text, where it does render.
-_GD_T_GLYPHS = {
-    "straightness": "\u2014",         # —
-    "flatness": "\u25B1",             # ▱
-    "circularity": "\u25CB",          # ○
-    "cylindricity": "\u232D",         # ⌭
-    "profile_line": "\u2312",         # ⌒
-    "profile_surface": "\u25D4",      # ◔
-    "perpendicularity": "\u22A5",     # ⊥
-    "angularity": "\u2220",           # ∠
-    "parallelism": "\u2225",          # ∥
-    "position": "\u2316",             # ⌖
-    "concentricity": "\u25CE",        # ◎
-    "symmetry": "\u232F",             # ⌯
-    "circular_runout": "\u2197",      # ↗
-    "total_runout": "\u2197\u2197",   # ↗↗
+# Symbol names for the 2022+ GTol XML. Source: the official `gtol.sym` library, where every
+# symbol is `<LibraryName>-<SymbolName>`; the frame XML takes the name WITHOUT angle brackets
+# (the XSD says "Tolerance symbol value string should not include the angle brackets").
+# Measured 2026-11-02 on SW 32.4.0: `SetSymbolXml` returns True for "IGTOL-POSI" and False
+# for "<IGTOL-POSI>".
+#
+# This replaced an earlier attempt that wrote Chinese names ("位置度") into the symbol cell:
+# `SetFrameSymbols2` is documented as valid only for Gtol created before 2022, so the cell
+# accepted the string, read it back, and rendered nothing.
+_GD_T_SYMBOL_NAMES = {
+    "straightness": "IGTOL-STRAIGHT",
+    "flatness": "IGTOL-FLAT",
+    "circularity": "IGTOL-CIRC",
+    "cylindricity": "IGTOL-CYL",
+    "profile_line": "IGTOL-LPROF",
+    "profile_surface": "IGTOL-SPROF",
+    "perpendicularity": "IGTOL-PERP",
+    "angularity": "IGTOL-ANGULAR",
+    "parallelism": "IGTOL-PARA",
+    "position": "IGTOL-POSI",
+    "concentricity": "IGTOL-CONC",
+    "symmetry": "IGTOL-SYMMETRY",
+    "runout": "IGTOL-SRUN",
+    "total_runout": "IGTOL-TRUN",
 }
+
+
+def _gtol_frame_xml(symbol_name, tolerance, datum, second_datum, third_datum):
+    """Build the frame XML for `IGtolFrame.SetSymbolXml` (2022+ GTol architecture)."""
+    parts = ["<GtolFrame>"]
+    if symbol_name:
+        parts.append("<ToleranceSymbol>%s</ToleranceSymbol>" % symbol_name)
+    parts.append(
+        "<ToleranceRangeInfo>"
+        "<PrimaryToleranceValue>%s</PrimaryToleranceValue>"
+        "<PrimaryRangeSymbol></PrimaryRangeSymbol>"
+        "</ToleranceRangeInfo>" % str(tolerance))
+    for letter in (datum, second_datum, third_datum):
+        if letter:
+            parts.append(
+                "<DatumCompartment><DatumDetail><DatumLetter>%s</DatumLetter>"
+                "</DatumDetail></DatumCompartment>" % str(letter))
+        else:
+            parts.append("<DatumCompartment></DatumCompartment>")
+    parts.append("</GtolFrame>")
+    return "".join(parts)
 
 
 def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
@@ -5982,45 +6006,39 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                          "Select an edge/face first; without a selection the frame is free-standing.")
         gtol = win.Dispatch(raw)
 
-        # A known GD&T name goes into the tolerance TEXT as its Unicode glyph, and the
-        # symbol cell is left alone. Reason: on SW 2022+ the cell cannot be filled —
-        # `SetFrameSymbols2` is documented as valid only for Gtol created before 2022, and
-        # the 2022+ path (`IGtol.GetFrame` -> `IGtolFrame.SetSymbolXml`) returns None through
-        # this binding. Writing "<MOD-*>" stores literal text that never renders, which is
-        # exactly the "符号格是空的" report. The glyph renders and is standard enough for
-        # suppliers; the frame itself stays a native Gtol.
-        glyph = _GD_T_GLYPHS.get(str(symbol).lower())
-        if glyph:
-            tolerance = "%s %s" % (glyph, str(tolerance))
-            code = ""
-            symbol_written = glyph
-            symbol_is_text = False
-            _skip_symbol_cell = True
-        else:
-            code = GTOL_SYMBOLS.get(str(symbol).lower(), "")
-            symbol_written = ""
-            _skip_symbol_cell = False
-        if not _skip_symbol_cell:
-            try:
-                gtol.SetFrameSymbols2(1, code, False, "", False, "", "", "", "")
-                # P2-10: SetFrameSymbols2 returns None even on success — the ONLY reliable
-                # proof is a read-back. A "<MOD-*" code stored as literal text (or an
-                # ignored write) must not be reported as a real geometric symbol.
-                symbol_written = str(gtol.GetFrameSymbols2(1)[0] or "")
-            except Exception as exc:
-                return error("gtol_symbol_failed", str(exc)[:120])
-        if code and symbol_written != code:
-            # Refuse to leave a half-built frame that claims a symbol it does not show.
+        # 2022+ GTol: convert the freshly inserted (legacy-format) frame, then re-add the
+        # frame that ConvertFormat empties, then write the whole frame as XML.
+        # Measured on SW 32.4.0:
+        #   GetFormat 1 -> ConvertFormat() -> 0 (success) -> GetFormat 2, GetFrameCount 0
+        #   AddFrame() -> True -> GetFrameCount 2 -> GetFrame(1) returns a real IGtolFrame
+        # Calling GetFrame(1) without those two steps returns None, which is what made the
+        # 2022+ path look dead in the previous round.
+        symbol_name = _GD_T_SYMBOL_NAMES.get(str(symbol).lower(), "")
+        symbol_written = ""
+        frame_written = False
+        try:
+            if bool(call_method(gtol, "CanConvertFormat")):
+                call_method(gtol, "ConvertFormat")
+            if int(call_method(gtol, "GetFrameCount")) == 0:
+                call_method(gtol, "AddFrame")
+            frame = win.Dispatch(call_method(gtol, "GetFrame", 1))
+            xml = _gtol_frame_xml(symbol_name, tolerance, datum,
+                                  second_datum, third_datum)
+            frame_written = bool(call_method(frame, "SetSymbolXml", xml))
+            symbol_written = symbol_name
+        except Exception as exc:
+            return error("gtol_frame_failed", str(exc)[:160],
+                         "ConvertFormat/AddFrame/SetSymbolXml is the 2022+ path; the legacy "
+                         "SetFrameSymbols2 no longer applies to newly created Gtol.",
+                         symbol_requested=symbol_name)
+        if not frame_written:
             removed = _delete_gtol(doc, gtol)
             return error(
                 "gtol_symbol_not_applied",
-                "Requested symbol %r but the first frame cell reads back %r — the symbol "
-                "was not applied on this SolidWorks build." % (code, symbol_written),
-                "Use symbol='none' to create a values-only frame, or add the geometric "
-                "symbol manually in the UI. Do not treat this frame as a complete GD&T "
-                "callout.",
-                symbol_requested=code, symbol_readback=symbol_written,
-                symbol_is_text=True, frame_removed=removed)
+                "SetSymbolXml rejected the frame XML for symbol %r." % (symbol_name or "none"),
+                "The symbol name must NOT include angle brackets: use 'IGTOL-POSI', not "
+                "'<IGTOL-POSI>'. See the gtol.sym library for valid names.",
+                symbol_requested=symbol_name, frame_removed=removed)
         try:
             wrote = bool(gtol.SetFrameValues2(1, str(tolerance), "", str(datum),
                                               str(second_datum), str(third_datum)))
@@ -6073,16 +6091,21 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
             created=True, saved=bool(save), attached_to=attached,
             tolerance=str(tolerance), datum=str(datum), symbol=str(symbol),
             values_written=wrote, position_set=position_ok, readback=readback,
-            symbol_written=symbol_written, symbol_is_text=bool(code),
-            # The readback proves the STRING landed in the cell, not that it renders. A
-            # report exported the PDF and found the symbol cell blank on this build while
-            # GetFrameSymbols2 cheerfully returned "圆柱度" — a readback-verified write that
-            # the sheet never shows.
-            symbol_render_unverified=bool(code),
-            note=("symbol_render_unverified=true 表示：符号格写入了中文名且回读一致，"
-                  "但**未验证渲染**——实测有环境回读为「圆柱度」而 PDF 上是空格。"
-                  "需要图面必须出现符号时，改 symbol='none' 并把符号名并入 tolerance"
-                  "（如 tolerance='圆柱度 0.02'），或界面手工补符号。"
+            symbol_written=symbol_written, symbol_is_text=False,
+            # The symbol now goes through the 2022+ XML path and DOES render (verified on
+            # 飞达动力轴 2026-11-02: the frame shows the ⌖ glyph and datum A).
+            symbol_render_verified=bool(symbol_name),
+            # ...but the tolerance VALUE still does not render. `GetSymbolXml` reads back
+            # "<PrimaryToleranceValue>0.05</PrimaryToleranceValue>" and SetFrameValues2
+            # returns True, yet the sheet shows only "⌖ A". Unresolved — flagged rather than
+            # claimed.
+            value_render_unverified=True,
+            note=("符号走 2022+ XML 路径（ConvertFormat → AddFrame → SetSymbolXml），"
+                  "实测图面能画出真正的 GD&T 符号与基准字母；旧 SetFrameSymbols2 对 "
+                  "SW2022+ 新建的 GTol 无效，已弃用。"
+                  "**但公差数值当前不渲染**（value_render_unverified=true）：XML 与 "
+                  "SetFrameValues2 都表示成功，图面却只显示符号与基准。"
+                  "数值必须可见时，请在图面手工补，或把数值并入 tolerance 文本。"
                   "形位公差是原生对象，可用 list_drawing_annotations 读出（kind="
                   "geometric_tolerance）。0.8.20：符号格以可读文字写入第一格并回读校验"
                   "（<MOD-*> 格式码在本环境只会被当字面文本，不解析成几何符号）；"

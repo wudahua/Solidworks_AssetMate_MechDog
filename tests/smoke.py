@@ -718,11 +718,20 @@ def main():
             # `symbol_written`); a missing readback would hide a failed symbol write.
             assert "symbol" in gt and "values_written" in gt, (
                 "GT result omits the symbol/values readback")
-            # P2-10: the first frame cell must read back the TEXT we wrote, never a raw
-            # <MOD-*> format code, and never empty for a requested symbol.
+            # 0.8.58: the symbol now goes through the 2022+ frame XML, so the receipt
+            # carries the gtol.sym name ("IGTOL-POSI"), not a Chinese label in the cell.
+            # What must hold: the requested symbol produced a name, the frame XML was
+            # accepted (symbol_render_verified), and the value is flagged as unrendered.
             rb = gt.get("readback") or {}
-            assert rb.get("symbol_written") == "位置度", (
-                "GT symbol cell was not written/verified: %r" % rb)
+            assert rb.get("symbol_written"), (
+                "GT produced no symbol name: %r" % rb)
+            assert str(rb.get("symbol_written")).startswith("IGTOL-"), (
+                "GT symbol is not a gtol.sym name — the legacy cell write may be back: %r"
+                % rb)
+            assert gt.get("symbol_render_verified") is True, (
+                "GT symbol was stored but not verified as rendered: %r" % gt)
+            assert gt.get("value_render_unverified") is True, (
+                "GT value does not render and the receipt does not say so: %r" % gt)
             assert "<MOD-" not in str(rb.get("symbol_written") or "").upper(), (
                 "GT symbol cell still holds a raw format code: %r" % rb)
         else:

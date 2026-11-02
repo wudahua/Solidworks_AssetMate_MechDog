@@ -635,35 +635,29 @@ def assert_detail_view_validates_edges_and_scale():
 
 
 def assert_gtol_symbol_text_fallback():
-    """0.8.20 / P2-10 — <MOD-*-PAR> was stored as literal text, not a symbol.
+    """0.8.20 -> 0.8.58: the symbol no longer goes into a cell as literal text.
 
-    `SetFrameSymbols2` returns None even on success, so the write must be verified with
-    GetFrameSymbols2. A failed write must delete the frame and return
-    gtol_symbol_not_applied rather than claiming a geometric symbol is on the sheet.
+    The 0.8.20 version required `SetFrameSymbols2` + a read-back comparison. Both were
+    tied to the legacy GTol format, which `SetFrameSymbols2` cannot touch on SW2022+
+    (official: "valid only if this Gtol was created in a version of SOLIDWORKS earlier
+    than 2022"). The read-back "success" it guarded was a write SolidWorks stored and
+    never rendered.
+
+    Now the symbol goes through ConvertFormat -> AddFrame -> SetSymbolXml, and the guard
+    is that this path exists and the legacy one is gone.
     """
     src = _read("tools/drawing.py")
-    tree = ast.parse(src)
-    sym_node = None
-    for sub in tree.body:
-        if isinstance(sub, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "GTOL_SYMBOLS" for t in sub.targets):
-            sym_node = sub
-            break
-    assert sym_node is not None, "GTOL_SYMBOLS not found"
-    sym_src = ast.get_source_segment(src, sym_node) or ""
-    assert "<MOD-" not in sym_src, (
-        "GTOL_SYMBOLS still uses <MOD-*> format codes — these are stored as literal text, "
-        "not resolved into geometric symbols")
-    assert "位置度" in sym_src, "GTOL_SYMBOLS has no readable Chinese text fallback"
-    node = _function_node(tree, "add_geometric_tolerance")
-    assert node is not None, "add_geometric_tolerance not found"
-    body = ast.get_source_segment(src, node) or ""
-    assert "GetFrameSymbols2" in body, (
-        "symbol write is not verified by read-back — SetFrameSymbols2 returns None on success")
-    assert "gtol_symbol_not_applied" in body, (
-        "a failed symbol write does not return an explicit error")
-    assert "_delete_gtol" in body, "a failed symbol write leaves a half-built frame"
-    return "text fallback + read-back verification + refusal on failure"
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_geometric_tolerance")) or ""
+    assert "ConvertFormat" in body, "the legacy GTol is not converted before SetSymbolXml"
+    assert "AddFrame" in body, (
+        "ConvertFormat empties the frames; without AddFrame GetFrame returns None")
+    assert "SetSymbolXml" in body, "the 2022+ symbol path is missing"
+    assert 'SetFrameSymbols2(' not in body, (
+        "the legacy symbol API is called again — it cannot work on SW2022+ and only stores text")
+    assert "IGTOL-" not in body or "_GD_T_SYMBOL_NAMES" in src, (
+        "symbol names must come from the gtol.sym naming table")
+    return "symbol written as 2022+ frame XML, legacy cell write removed"
 
 
 def assert_surface_finish_position_and_pixel_check():
@@ -2115,19 +2109,23 @@ def assert_center_marks_take_a_view():
 
 
 def assert_gtol_symbol_render_flagged():
-    """0.8.49 — a readback-verified GT symbol can still render blank.
+    """0.8.49 -> 0.8.58: the symbol now renders; the VALUE still does not.
 
-    `GetFrameSymbols2` returns "圆柱度" while the exported PDF shows an empty symbol cell.
-    The readback only proves the string landed in the cell. The success path must say so.
+    0.8.49 flagged every symbol write as unverified because the cell was never filled.
+    The XML path actually renders the glyph (verified on 飞达动力轴: the frame shows ⌖ and
+    datum A). What still does not render is the tolerance value — `GetSymbolXml` reads
+    back `PrimaryToleranceValue 0.05` and SetFrameValues2 returns True, yet the sheet shows
+    only "⌖ A". That one stays flagged.
     """
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                       "add_geometric_tolerance")) or ""
-    assert "symbol_render_unverified" in body, (
-        "a successful symbol write claims more than the readback proves")
-    assert "symbol='none'" in body or 'symbol=\'none\'' in body or "symbol='none'" in body, (
-        "no workaround mentioned for builds where the cell renders blank")
-    return "readback success no longer implies a visible symbol"
+    assert "symbol_render_verified" in body, (
+        "the receipt still cannot distinguish a rendered symbol from a stored one")
+    assert "value_render_unverified" in body, (
+        "the value does not render and nothing says so")
+    assert "SetSymbolXml" in body, "no 2022+ symbol path"
+    return "symbol verified, value still flagged"
 
 
 def assert_close_document_exists():
