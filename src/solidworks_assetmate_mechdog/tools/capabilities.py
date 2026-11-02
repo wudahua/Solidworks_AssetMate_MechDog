@@ -195,8 +195,9 @@ CAPABILITIES = [
     },
     {
         "id": "weld_symbol",
-        "status": "unsupported",
-        "summary": "焊接符号：能插入、能写数字，但焊缝图形符号（角焊三角等）画不出来",
+        "status": "partial",
+        "summary": "焊接符号：原生 IWeldSymbol 画不出图形；角焊改用草图线绘制（representation=sketch_block）",
+        "rendered_as": "sketch_block",
         "why": ("`InsertWeldSymbol3` 必须**无参**调用（带任何参数报 DISP_E_MEMBERNOTFOUND，"
                 "试过 1~6 个空串）。`SetText(Top, Left, Symbol, Right, Stagger, Contour)` "
                 "返回 True、`GetText(2)` 能读回符号名、`GetText(3)` 能读回尺寸，"

@@ -710,6 +710,23 @@ def main():
         edges = drawing.list_circular_edges(drw)
         assert edges.get("ok") is not None, "list_circular_edges returned no verdict"
 
+        # weld symbol (0.8.67): drawn from sketch lines, NOT a native IWeldSymbol.
+        # The receipt must say so — claiming a native annotation would be a lie.
+        weld = layout.add_weld_symbol(drw, weld_type="fillet", size_mm=6,
+                                      x_m=0.05, y_m=0.12)
+        assert weld.get("ok") is not None, "add_weld_symbol returned no verdict"
+        if weld.get("ok"):
+            assert weld.get("representation") == "sketch_block", (
+                "weld symbol does not declare that it is sketch geometry: %r" % weld)
+            assert weld.get("is_native_weld_symbol") is False, (
+                "weld symbol claims to be native: %r" % weld)
+            assert int(weld.get("segments") or 0) >= 4, (
+                "weld geometry is incomplete: %r" % weld)
+        refused = layout.add_weld_symbol(drw, weld_type="butt", size_mm=6,
+                                         x_m=0.10, y_m=0.12)
+        assert refused.get("error") == "weld_type_unsupported", (
+            "unsupported weld types must be refused, not approximated: %r" % refused)
+
         # technical-requirements block (0.8.65): ONE note, auto-numbered, auto-placed
         req = layout.add_technical_requirements(
             drw, ["未注倒角 C1.5", "去毛刺", "调质 HRC28-32"], height_mm=3.5)

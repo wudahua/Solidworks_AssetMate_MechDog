@@ -778,6 +778,154 @@ def add_balloon(drawing_path, view_name, x_m, y_m, text=None, item_number=None,
         return error("balloon_failed", str(exc))
 
 
+# Weld-symbol geometry, as fractions of the weld leg size. A fillet weld in GB/ISO is a
+# right triangle sitting ON the reference line, leg length = the size called out.
+_FILLET_REF_FACTOR = 3.3     # reference line length / leg size
+_FILLET_INSET = 0.6          # distance from the reference line start to the triangle
+
+
+def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
+                    x_m=0.0, y_m=0.0, target_x_m=None, target_y_m=None,
+                    save=True):
+    """Draw a weld symbol as native SKETCH LINES — not as an IWeldSymbol.
+
+    `representation` in the receipt says `sketch_block`, and that is deliberate: this is a
+    faithful drawing of the standard symbol made from sheet lines plus a note, NOT a native
+    SolidWorks weld annotation. It will not update with a weldment feature and it is not
+    queryable as an IWeldSymbol.
+
+    Why it exists: `IWeldSymbol` stores the symbol name as text but never instantiates the
+    geometry on this build (measured 2026-11-02/03, SW 32.4.0, two parts). `SetText`
+    returns True, `GetText(2)` reads back "FILL", and the sheet still shows only a leader
+    and the size number. That is the same shape of failure as the GTol symbol cell, but
+    without the 2022+ XML escape hatch.
+
+    Important correction to the earlier investigation: `GetTriangleCount == 0` was NOT
+    evidence of a missing triangle. In `gtol.sym` the fillet symbol is three LINEs, not a
+    filled triangle object, so that counter would read 0 even when drawn correctly. The
+    only valid check is the rendered sheet.
+
+    Geometry (fillet), all scaled by the leg size `s = size_mm / 1000`:
+        reference line   (x, y) -> (x + 3.3s, y)
+        triangle         (x + 0.6s, y) -> (x + 0.6s, y + s) -> (x + 1.6s, y) -> close
+        size text        left of the triangle, above the reference line
+        leader           (x + 3.3s, y) -> (target_x_m, target_y_m) when a target is given
+
+    `weld_type="butt"` is refused rather than approximated: a groove symbol is a different
+    shape (V/U/J with its own root gap), and drawing it as a triangle would be worse than
+    saying it is not supported.
+    """
+    try:
+        kind = str(weld_type or "").lower()
+        if kind not in ("fillet", "角焊"):
+            return error(
+                "weld_type_unsupported",
+                "weld_type %r is not implemented" % weld_type,
+                "Only 'fillet' is supported. A groove/plug/spot symbol has a different "
+                "geometry and drawing it as a triangle would be a wrong callout.",
+                supported=["fillet"])
+        s = float(size_mm) / 1000.0
+        if s <= 0:
+            return error("bad_input", "size_mm must be positive")
+
+        x = float(x_m)
+        y = float(y_m)
+        ref_len = s * _FILLET_REF_FACTOR
+        gap = s * _FILLET_INSET
+        segments = [
+            (x, y, x + ref_len, y),                       # reference line
+            (x + gap, y, x + gap, y + s),                 # triangle: vertical leg
+            (x + gap, y + s, x + gap + s, y),             # hypotenuse
+            (x + gap + s, y, x + gap, y),                 # base (closes the triangle)
+        ]
+        if target_x_m is not None and target_y_m is not None:
+            segments.append((x + ref_len, y, float(target_x_m), float(target_y_m)))
+
+        doc = _open_drawing(drawing_path)
+        sheet_obj = doc.GetCurrentSheet
+        try:
+            doc.ActivateSheet(sheet_obj.GetName)
+        except Exception:
+            pass
+        # `SketchManager.CreateLine` on a drawing scales by the SHEET SCALE, it does not
+        # take sheet metres directly. Measured 2026-11-03 on a 2:1 sheet: asking for
+        # (0.05, 0.12) put the triangle at (0.11, 0.25) — exactly 2.1x. `add_sheet_line`'s
+        # "sheet metres are already the right unit" note only holds at 1:1.
+        sheet_scale = 1.0
+        try:
+            props = list(sheet_obj.GetProperties)
+            num, den = float(props[2]), float(props[3])
+            if num > 0 and den > 0:
+                sheet_scale = num / den
+        except Exception:
+            sheet_scale = 1.0
+        doc.ClearSelection2(True)
+        try:
+            doc.InsertSketch()
+        except Exception:
+            pass
+        sketch = doc.SketchManager
+        # AddToDB disables snapping and inference. Without it the first line snaps to the
+        # nearest view geometry and the whole symbol lands somewhere else — measured
+        # 2026-11-03: requested (0.05, 0.12), the triangle appeared next to the view at
+        # roughly (0.11, 0.25) while the size text (added separately) stayed correct.
+        try:
+            sketch.AddToDB = True
+        except Exception:
+            pass
+        drawn = 0
+        for x1, y1, x2, y2 in segments:
+            try:
+                sketch.CreateLine(x1 / sheet_scale, y1 / sheet_scale, 0.0,
+                                  x2 / sheet_scale, y2 / sheet_scale, 0.0)
+                drawn += 1
+            except Exception:
+                continue
+        sketch.InsertSketch(True)
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        if drawn < len(segments):
+            if save:
+                _save_drawing(doc)
+            return error("weld_geometry_incomplete",
+                         "drew %d of %d segments" % (drawn, len(segments)),
+                         "The sheet sketch may be locked; the partial geometry is left "
+                         "on the sheet for inspection.",
+                         representation="sketch_block")
+        if save:
+            _save_drawing(doc)
+
+        text_result = add_note(drawing_path, str(size_mm),
+                               x + gap * 0.2, y + s * 1.15,
+                               height_mm=max(2.5, min(5.0, s * 1000 * 0.6)),
+                               save=save)
+        return drawing_ok(
+            drawing=doc.GetTitle,
+            weld_type="fillet",
+            size_mm=float(size_mm),
+            representation="sketch_block",
+            is_native_weld_symbol=False,
+            segments=len(segments),
+            size_text=str(size_mm),
+            text_written=bool((text_result or {}).get("ok")),
+            position_m=[round(x, 4), round(y, 4)],
+            leader=([round(float(target_x_m), 4), round(float(target_y_m), 4)]
+                    if target_x_m is not None and target_y_m is not None else None),
+            note=("representation='sketch_block'：这是用图纸草图线画的角焊符号，"
+                  "不是 IWeldSymbol 原生对象；不随焊件特征更新，也无法按焊接注解查询。"
+                  "验收请导出 PDF 看图，不要只看回执。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("weld_symbol_failed", str(exc))
+
+
 def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True):
     """Draw a line in TRUE sheet space.
 

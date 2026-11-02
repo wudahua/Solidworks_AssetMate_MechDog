@@ -2401,6 +2401,41 @@ def assert_datum_symbol_is_gb_circle():
         "the entry does not say that the circle is the GB shape")
     return "datum symbol is GB-correct (circle), and the ruled-out paths are on record"
 
+def assert_weld_symbol_is_declared_as_sketch():
+    """0.8.67 — a weld symbol drawn from lines must never claim to be a native annotation.
+
+    `IWeldSymbol` stores the symbol name as text and never instantiates the geometry on this
+    build: SetText returns True, GetText(2) reads back "FILL", the sheet shows a leader and
+    a number only. So `add_weld_symbol` draws the GB fillet symbol from sheet lines instead.
+
+    Two things must stay true, both of which this guards:
+      * the receipt says representation="sketch_block" / is_native_weld_symbol=False
+      * coordinates are divided by the SHEET SCALE — `SketchManager.CreateLine` scales by it,
+        which put a symbol requested at (0.05, 0.12) at (0.11, 0.25) on a 2:1 sheet
+
+    Also: unsupported weld types are refused, not approximated as a triangle.
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_weld_symbol")) or ""
+    assert 'representation="sketch_block"' in body, (
+        "the receipt no longer declares that this is sketch geometry")
+    assert "is_native_weld_symbol" in body, (
+        "the receipt does not deny being a native weld symbol")
+    assert "sheet_scale" in body and "/ sheet_scale" in body, (
+        "coordinates are not divided by the sheet scale — the symbol will land elsewhere")
+    assert "weld_type_unsupported" in body, (
+        "unsupported weld types are silently approximated")
+    assert "GetTriangleCount" in body, (
+        "the docstring lost the note that GetTriangleCount was never valid evidence")
+    caps = _read("tools/capabilities.py")
+    index = caps.index('"weld_symbol"')
+    end = caps.find('"id":', index + 10)
+    segment = caps[index:end if end > 0 else index + 1500]
+    assert '"partial"' in segment, "weld_symbol should be partial (fillet only, sketch drawn)"
+    assert "sketch_block" in segment, "the capability does not name the representation"
+    return "weld symbol declared as sketch geometry, scaled correctly, types refused"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2505,6 +2540,7 @@ STATIC_REGRESSIONS = [
     ("0.8.57 cut line coords", assert_cut_line_uses_view_sketch),
     ("0.8.61 param descriptions", assert_every_param_is_documented),
     ("0.8.64 datum is GB circle", assert_datum_symbol_is_gb_circle),
+    ("0.8.67 weld is sketch", assert_weld_symbol_is_declared_as_sketch),
 ]
 
 

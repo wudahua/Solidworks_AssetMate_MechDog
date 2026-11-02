@@ -366,6 +366,33 @@ def delete_dimensions(
 
 
 @mcp.tool()
+def add_weld_symbol(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], weld_type: Annotated[str, Field(description="Weld symbol kind. Only 'fillet' is implemented; groove/plug/spot are refused rather than approximated.")] = "fillet", size_mm: Annotated[float, Field(description="Weld leg size in millimetres; the whole symbol scales with it.")] = 6.0,
+                    x_m: Annotated[float, Field(description="Sheet X in metres.")] = 0.0, y_m: Annotated[float, Field(description="Sheet Y in metres.")] = 0.0,
+                    target_x_m: Annotated[float | None, Field(description="Sheet X the leader points at, in metres; omit for no leader.")] = None, target_y_m: Annotated[float | None, Field(description="Sheet Y the leader points at, in metres.")] = None,
+                    save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True) -> str:
+    """Draw a fillet-weld symbol as native SKETCH LINES (reference line + triangle + size).
+
+    **Read `representation` in the receipt: it is `sketch_block`, not a native weld
+    annotation.** On this build `IWeldSymbol` stores the symbol name as text but never
+    instantiates the geometry — `SetText` returns True, `GetText(2)` reads back "FILL", and
+    the sheet shows only a leader and the number. So this tool draws the standard GB/ISO
+    fillet symbol from sheet lines instead: it looks right and prints right, but it does
+    not update with a weldment feature and is not queryable as an IWeldSymbol.
+
+    Only `weld_type="fillet"` is supported. A groove/plug/spot symbol is a different shape
+    and is refused with `weld_type_unsupported` rather than approximated — a wrong weld
+    callout is worse than a missing one.
+
+    Geometry scales with `size_mm` (the weld leg): reference line 3.3x, triangle legs 1x,
+    size text above-left. `target_x_m`/`target_y_m` add a leader to the joint. Verify by
+    exporting a PDF — do not trust the receipt alone.
+    """
+    return _json(layout.add_weld_symbol(
+        drawing_path, weld_type=weld_type, size_mm=size_mm, x_m=x_m, y_m=y_m,
+        target_x_m=target_x_m, target_y_m=target_y_m, save=save))
+
+
+@mcp.tool()
 def add_technical_requirements(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], lines: Annotated[list[str], Field(description="The requirement lines, one entry each. Lines already starting with '1.' or '1、' keep their number; the rest get ordinals.")],
                                x_m: Annotated[float | None, Field(description="Sheet X in metres.")] = None, y_m: Annotated[float | None, Field(description="Sheet Y in metres.")] = None,
                                height_mm: Annotated[float, Field(description="Note text height in millimetres (3.5 is the GB default).")] = 3.5, title: Annotated[str, Field(description="Heading placed above the list; empty string writes the lines without a heading.")] = "技术要求",
