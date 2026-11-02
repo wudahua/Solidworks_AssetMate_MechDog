@@ -1574,23 +1574,32 @@ def assert_section_line_limitation_declared():
 
 
 def assert_cut_line_placed_on_its_view():
-    """0.8.32 — the cut line was 1035 mm long on a 420 mm sheet and drawn at x = 0.
+    """0.8.32 -> 0.8.57: this assertion used to require the OPPOSITE and caused P0.
 
-    Two bugs in one expression: `width`/`height` come from GetOutline and are ALREADY sheet
-    metres, so dividing by scale again gave half = 0.1669 * 0.62 / 0.1 = 1.0347 (that is
-    exactly the ±1.0347 GetLineInfo reported); and CreateLine used absolute coordinates
-    without the view's position, so the line sat at the sheet edge instead of on the view.
+    The 0.8.32 version demanded `pos[0] + offset` in CreateLine and forbade `/ scale` on
+    `half`. Both were wrong: the sketch created after `ActivateView` has its origin at the
+    VIEW CENTRE and works in MODEL units, so adding `view.Position` (sheet metres) pushed
+    the cut line 76 mm across and 265 mm down, off the geometry entirely.
+
+    SolidWorks did not complain — it returned a Type=2 view whose cut never touched the
+    part, i.e. a projection. `GetFaceHatchCount() == 0`, edges 13 instead of 37. The whole
+    P0 ("剖视没有剖面线") was this line, and this assertion was actively keeping the bug in.
+
+    Now it guards the correct form: drawn around the sketch origin, `half` converted by
+    `/ scale`, and no `view.Position` anywhere near CreateLine.
     """
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                       "add_section_view")) or ""
-    assert "/ scale\n" not in body.split("half =")[1].split("\n")[0], (
-        "half is divided by scale again — width/height are already sheet metres")
+    assert "sm.CreateLine(offset, -half" in body, (
+        "CreateLine is not drawn around the view-sketch origin")
+    assert "pos[0] + offset" not in body and "pos[0] - half" not in body, (
+        "CreateLine still adds view.Position — sheet metres inside a model-space sketch")
+    assert "min(view_w, view_h) * 0.5) / scale" in body, (
+        "half is not converted from sheet metres to model space")
     assert "precise_outline(target)" in body, (
         "half does not use the deflated outline, so the 11.9 mm margin stretches the line")
-    assert "pos[0] + offset" in body or "pos[0] - half" in body, (
-        "CreateLine does not add the view position — the line lands at x = 0")
-    return "half in sheet metres from precise outline, line anchored to the view"
+    return "cut line drawn around the view-sketch origin in model units"
 
 
 def assert_tolerance_uses_metres():
@@ -2282,6 +2291,35 @@ def assert_section_hatch_is_checked():
     return "a blank cut face is an error, not an ok"
 
 
+def assert_cut_line_uses_view_sketch():
+    """0.8.57 / P0 ROOT CAUSE — the cut line was drawn in SHEET coords inside a VIEW sketch.
+
+    `SketchManager.InsertSketch` after `ActivateView` creates a sketch whose origin is the
+    VIEW CENTRE and whose units are MODEL space. Offsetting the line by `view.Position`
+    (sheet metres) pushed it 76 mm across and 265 mm down from the geometry. SolidWorks
+    accepted it and returned a Type=2 view — but nothing had been cut, so the view was
+    really a projection: `GetFaceHatchCount() == 0`, edges 13 instead of 37.
+
+    `add_detail_view` in the same module always did this conversion correctly
+    (sketch = (sheet - view.Position) / parent_scale). This was the only function that
+    skipped it — so the guard checks both the missing division and the bogus offset.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_section_view")) or ""
+    assert "sm.CreateLine(offset, -half" in body, (
+        "the cut line is still shifted by view.Position (sheet coordinates)")
+    assert "min(view_w, view_h) * 0.5) / scale" in body, (
+        "half is not converted from sheet metres to model space")
+    assert "view's own position added" not in body, (
+        "the wrong-coordinate comment that caused this is still there")
+    detail = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                        "add_detail_view")) or ""
+    assert "/ parent_scale" in detail, (
+        "add_detail_view lost the conversion it was the correct reference for")
+    return "cut line drawn around the view-sketch origin, like the detail view"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2383,6 +2421,7 @@ STATIC_REGRESSIONS = [
     ("0.8.54 cut line clamped", assert_cut_line_is_clamped),
     ("0.8.55 all_views=False loud", assert_all_views_false_is_not_silent),
     ("0.8.56 section hatch checked", assert_section_hatch_is_checked),
+    ("0.8.57 cut line coords", assert_cut_line_uses_view_sketch),
 ]
 
 

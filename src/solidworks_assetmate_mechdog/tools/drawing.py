@@ -3590,11 +3590,22 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             }
         doc.ActivateView(target.Name)
 
-        # `width`/`height` come from GetOutline and are ALREADY sheet metres — dividing by
-        # scale again produced a 1035 mm line on a 420 mm sheet (measured 2026-11-01:
-        # 0.1669 * 0.62 / 0.1 = 1.0347, which is exactly the ±1.0347 that GetLineInfo
-        # reported). Use the deflated outline so the 11.9 mm phantom margin does not
-        # stretch the line either.
+        # GetOutline is in SHEET metres, but the line is drawn in the VIEW SKETCH, whose
+        # origin is the view centre and whose units are MODEL space. Both length and offset
+        # therefore have to go through /scale.
+        #
+        # The old comment here said the opposite ("dividing by scale produced a 1035 mm line
+        # on a 420 mm sheet") — that measurement was taken while the line was still being
+        # offset by `view.Position` into sheet coordinates, i.e. in a different coordinate
+        # system. Once the line is drawn around the sketch origin, /scale is required;
+        # without it the line lands far outside the geometry and SolidWorks silently returns
+        # a section view that is really just a projection: `GetFaceHatchCount() == 0`,
+        # a "cut" that never touched the part. Measured 2026-11-02 on 飞达动力轴:
+        # FaceHatchCount 0 -> 2 and edges 13 -> 37 after this fix.
+        #
+        # `add_detail_view` in this same module already did this conversion correctly
+        # (sketch = (sheet - view.Position) / parent_scale) — this function was the only
+        # one that skipped it.
         precise_box = precise_outline(target) or outline
         view_w = precise_box[2] - precise_box[0]
         view_h = precise_box[3] - precise_box[1]
@@ -3602,7 +3613,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         # out ~15 mm and landed on the technical-requirements block. Clamp to half the SHORT
         # edge as well, and let the caller shrink it further.
         half = min(max(view_w, view_h) * float(cut_line_ratio),
-                   min(view_w, view_h) * 0.5)
+                   min(view_w, view_h) * 0.5) / scale
         offset = float(offset_m) / scale
         # A top view's sketch y axis runs at -Z, so a model-space offset applied to the
         # horizontal cut line lands mirrored. Measured on 灌装阀阀体: offset -0.012 produced
@@ -3614,16 +3625,16 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         sm = doc.SketchManager
         sm.InsertSketch(True)
         try:
-            # The sketch lives on the SHEET, so the line needs the view's own position added.
-            # Without `pos` it was drawn at x = 0 (the sheet edge) and only its middle
-            # happened to cross the view — that is the "cut line is nowhere near the view"
-            # the report saw.
+            # Around the SKETCH ORIGIN — which is the view centre, not the sheet origin.
+            # Adding `view.Position` here shifted the whole line off the geometry (measured
+            # 76 mm across, 265 mm down on 飞达动力轴); SolidWorks accepted it and produced
+            # a Type=2 view that had never cut anything.
             if str(orientation).lower() == "vertical":
-                sm.CreateLine(pos[0] + offset, pos[1] - half, 0.0,
-                              pos[0] + offset, pos[1] + half, 0.0)
+                sm.CreateLine(offset, -half, 0.0,
+                              offset, half, 0.0)
             else:
-                sm.CreateLine(pos[0] - half, pos[1] + offset, 0.0,
-                              pos[0] + half, pos[1] + offset, 0.0)
+                sm.CreateLine(-half, offset, 0.0,
+                              half, offset, 0.0)
         except Exception as exc:
             try:
                 sm.InsertSketch(True)
