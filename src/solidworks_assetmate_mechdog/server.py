@@ -554,6 +554,32 @@ def add_geometric_tolerance(
 
 
 @mcp.tool()
+def add_datum_feature(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
+                      edge_index: Annotated[int | None, Field(description="Index into list_drawing_edges for this view; lets you attach to an edge without sheet coordinates.")] = None, label: Annotated[str, Field(description="Letter identifying this item: the view letter for a section/detail (e.g. 'A' in A-A) or the datum letter for a datum feature symbol.")] = "A",
+                      x_m: Annotated[float | None, Field(description="Sheet X in metres.")] = None, y_m: Annotated[float | None, Field(description="Sheet Y in metres.")] = None,
+                      filled_triangle: Annotated[bool | None, Field(description="True draws a filled datum triangle, False hollow, null keeps the document default.")] = None, save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True) -> str:
+    """Add a DATUM FEATURE SYMBOL (基准要素符号) — the triangle plus letter that a
+    geometric tolerance's datum actually points at.
+
+    Why it matters: `add_geometric_tolerance(datum="A")` only writes the letter inside the
+    frame. Without this tool that letter refers to nothing on the drawing, which under
+    ISO/GD&T is an incomplete callout — a CMM operator has no datum to build a coordinate
+    system from.
+
+    It attaches to an EDGE, not to a free sheet point: `IModelDoc2.InsertDatumTag2` inserts
+    at the current selection. Pass `view_name` + `edge_index` (indices come from
+    `list_drawing_edges`); with `edge_index` omitted the first visible edge is used.
+
+    Verified on SW 32.4.0: the tag reads back label 'B' by default and `SetLabel` takes
+    effect. Errors: `view_not_found` / `datum_needs_edge` / `bad_edge_index` /
+    `datum_attach_failed` / `datum_label_failed` / `datum_label_not_applied`.
+    """
+    return _json(drawing.add_datum_feature(
+        drawing_path, view_name=view_name, edge_index=edge_index, label=label,
+        x_m=x_m, y_m=y_m, filled_triangle=filled_triangle, save=save))
+
+
+@mcp.tool()
 def add_surface_finish(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     x: Annotated[float, Field(description="Sheet X in metres.")],

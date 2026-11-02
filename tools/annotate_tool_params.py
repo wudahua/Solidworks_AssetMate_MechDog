@@ -102,7 +102,8 @@ DESCRIPTIONS = {
     # ---- annotations -------------------------------------------------------
     "text": "Note body. Ø ± ° are rewritten to SolidWorks format codes so DWG/DXF keeps them legible.",
     "name": "Annotation name exactly as reported by list_drawing_annotations.",
-    "label": "View letter, e.g. 'A' for A-A.",
+    "label": "Letter identifying this item: the view letter for a section/detail (e.g. 'A' in A-A) or the datum letter for a datum feature symbol.",
+    "filled_triangle": "True draws a filled datum triangle, False hollow, null keeps the document default.",
     "symbol": "Geometric characteristic name, e.g. 'position', 'cylindricity'. Requires the 2022+ frame path.",
     "datum": "Primary datum letter referenced by the frame.",
     "second_datum": "Secondary datum letter, or '' for none.",

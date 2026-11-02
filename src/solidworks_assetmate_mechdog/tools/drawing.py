@@ -5956,6 +5956,134 @@ def _gtol_frame_xml(symbol_name, tolerance, datum, second_datum, third_datum):
     return "".join(parts)
 
 
+def add_datum_feature(drawing_path, view_name=None, edge_index=None, label="A",
+                      x_m=None, y_m=None, filled_triangle=None, save=True):
+    """Add a DATUM FEATURE SYMBOL (基准要素符号) to a drawing edge.
+
+    This is the triangle-plus-letter that a geometric tolerance's datum actually refers
+    to. Without it a frame like `⌖ 0.05 A` names a datum that appears nowhere on the
+    drawing — under ISO/GD&T that is an incomplete callout, and a CMM operator has no
+    coordinate system to measure against.
+
+    `IModelDoc2.InsertDatumTag2` is the live entry point (`IDrawingDoc.InsertDatumTag` is
+    marked Obsolete and superseded by it). It inserts at the current SELECTION, so an edge
+    must be picked first — that is why this takes `view_name` + `edge_index` rather than a
+    bare sheet point: a datum must attach to real geometry.
+
+    Verified 2026-11-02 on SW 32.4.0: after selecting an edge, `InsertDatumTag2` returns an
+    `IDatumTag` whose `GetLabel` reads 'B' by default and `SetLabel("A")` takes effect on
+    read-back.
+
+    label: the datum letter. x_m / y_m move the tag afterwards (sheet metres) when the
+    default placement collides with something. filled_triangle: True for a filled triangle,
+    False for hollow, None leaves the document default.
+    """
+    import win32com.client as win
+
+    try:
+        doc = _open_drawing(drawing_path)
+        target = None
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name is None or view.Name == view_name:
+                target = view
+                break
+        if target is None:
+            return error("view_not_found", "no model view named %r" % view_name)
+        doc.ActivateView(target.Name)
+        doc.ClearSelection2(True)
+
+        edge_count = _view_edge_count(target)
+        if edge_index is None:
+            if edge_count == 0:
+                return error("datum_needs_edge",
+                             "%r has no visible edges to attach a datum to" % target.Name,
+                             "A datum feature symbol must sit on real geometry; pick a view "
+                             "that shows the surface.")
+            edge_index = 0
+        edges = []
+        for component in (list(target.GetVisibleComponents or ())):
+            try:
+                edges.extend(list(target.GetVisibleEntities2(component, 1) or ()))
+            except Exception:
+                continue
+        if edge_index < 0 or edge_index >= len(edges):
+            return error("bad_edge_index", "edge_index %s out of range (%d edges)"
+                         % (edge_index, len(edges)))
+
+        entity = win.Dispatch(edges[edge_index])
+        if not entity.Select2(False, 0):
+            return error("datum_attach_failed",
+                         "could not select edge %d of %r" % (edge_index, target.Name),
+                         "The edge may be hidden behind another component; try another index.")
+
+        raw = _invoke_as_method(doc, "InsertDatumTag2")
+        if raw is None:
+            return error("datum_failed", "InsertDatumTag2 returned null",
+                         "It needs a selection; without one nothing is inserted.")
+        datum_tag = win.Dispatch(raw)
+        try:
+            call_method(datum_tag, "SetLabel", str(label))
+        except Exception as exc:
+            return error("datum_label_failed", str(exc)[:120],
+                         "The tag was inserted but the label could not be set.")
+        if filled_triangle is not None:
+            try:
+                datum_tag.FilledTriangle = bool(filled_triangle)
+            except Exception:
+                pass
+
+        annotation = None
+        if x_m is not None and y_m is not None:
+            try:
+                annotation = win.Dispatch(call_method(datum_tag, "GetAnnotation"))
+                call_method(annotation, "SetPosition", float(x_m), float(y_m), 0.0)
+            except Exception:
+                annotation = None
+        try:
+            call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        if save:
+            _save_drawing(doc)
+
+        readback = {"label_requested": str(label)}
+        try:
+            readback["label"] = str(call_method(datum_tag, "GetLabel"))
+        except Exception:
+            pass
+        if annotation is None:
+            try:
+                annotation = win.Dispatch(call_method(datum_tag, "GetAnnotation"))
+            except Exception:
+                annotation = None
+        if annotation is not None:
+            try:
+                readback["name"] = str(annotation.GetName)
+            except Exception:
+                pass
+            try:
+                readback["position_m"] = [round(float(v), 4) for v in annotation.GetPosition]
+            except Exception:
+                pass
+        if readback.get("label") and readback["label"] != str(label):
+            return error("datum_label_not_applied",
+                         "requested label %r but the tag reads %r"
+                         % (label, readback.get("label")),
+                         "Read-back is the only proof on this build.", **readback)
+        return drawing_ok(drawing=doc.GetTitle, attached_to="%s[%d]" % (target.Name, edge_index),
+                          readback=readback)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("datum_failed", str(exc))
+
+
 def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                             symbol="none", view_name=None, edge_index=None,
                             second_datum="", third_datum="", save=True):

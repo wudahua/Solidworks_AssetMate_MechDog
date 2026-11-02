@@ -710,6 +710,16 @@ def main():
         edges = drawing.list_circular_edges(drw)
         assert edges.get("ok") is not None, "list_circular_edges returned no verdict"
 
+        # datum feature symbol (0.8.63): attaches to an edge, and the label must read
+        # back — InsertDatumTag2 defaults to 'B', so a silent failure would be easy.
+        datum = drawing.add_datum_feature(drw, edge_index=0, label="A")
+        assert datum.get("ok") is not None, "add_datum_feature returned no verdict"
+        if datum.get("ok"):
+            rb_d = datum.get("readback") or {}
+            assert rb_d.get("label") == "A", (
+                "datum label did not read back as requested: %r" % rb_d)
+            assert datum.get("attached_to"), "datum receipt does not name the edge used"
+
         # GT frame: symbol may fail, but the call must be structured, not raise
         gt = drawing.add_geometric_tolerance(drw, 0.10, 0.10, "0.05", "A", symbol="position")
         assert gt.get("ok") is not None, "add_geometric_tolerance returned no verdict"
