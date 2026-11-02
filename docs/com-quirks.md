@@ -2150,3 +2150,59 @@ GetArcCount      = 1      ← 一条线 + 一段弧 = 圆圈
 那是模板改动，影响所有用该模板新建的图纸，不是代码能做的。
 
 **这一条容易反复被当成 bug 报**——"基准符号没有三角形"。**每次的回答都一样：GB 就是圆形。**
+
+## 五十三、焊接符号：能插、能写文字，但焊缝图形符号画不出来（0.8.66 探测）
+
+`InsertWeldSymbol3` 在 **late binding 下必须无参调用**：
+
+```python
+ws = Win.Dispatch(call_method2(doc, "InsertWeldSymbol3"))   # 无参 → 成功返回 IWeldSymbol
+```
+
+带任何参数都报 `DISP_E_MEMBERNOTFOUND`（"找不到成员"）——试过 1~6 个空串，
+全部失败。**不是 arity 猜错，是这个接口只接受无参。**
+
+### SetText 的签名（官方）
+
+```
+IWeldSymbol.SetText(Top, Left, Symbol, Right, Stagger, Contour)
+```
+
+官方支持的 ISO 焊缝符号名（`gtol.sym`）：
+
+```
+BUTT BUSQ BUSV BUSB BUSVBR BUSBR BUSU BUSJ BACK FILL PLUG SPOT SEAM SEAMC JSPT JSM
+```
+
+**注意：表里没有 `FILLET`**。角焊大概由"符号格留空 + 默认样式"表示。
+
+### 卡点：符号格只存文本，不画
+
+```
+SetText(True, "", "FILL", "6", "", 0)   → True
+GetText(2)                              → 'FILL'        （存进去了）
+GetText(3)                              → '6'           （尺寸也进去了）
+GetTriangleCount                        → 0             （恒 0）
+GetLineCount                            → 3             （引线 + 水平线 + 一小段）
+```
+
+渲染出来是：**引线 + 水平参考线 + 数字 6，没有角焊三角形**。
+
+试过 `FILL` / `FILLET` / 空串 / `<WELD-FILLET>`，`GetTriangleCount` **全是 0**。
+
+**这和第四十八节的 GTol 符号格是同一个病**：SW 接受字符串、原样读回，但不渲染成图形。
+
+区别在于 GTol 后来找到了 `IGtolFrame` XML 这条 2022+ 新路（第五十节）；
+**焊接符号还没有找到等价的接口**——`IWeldSymbol` 的方法表里只有
+`SetText / SetFieldWeld / SetProcess / SetPeripheral / SetStagger / SetSymmetric / SetContour(只读)`，
+**没有任何一个能指定焊缝图形**。
+
+### 下一步值得试的
+
+1. `InsertWeldSymbol2` / `InsertWeldSymbol`（旧版接口，参数表可能不同）
+2. `SetProcess(True, ...)` 会不会顺带把符号带出来
+3. 文档属性 → 注解 → 焊接符号（是否存在"默认样式"影响图形）
+4. 换 SW 版本对照（本机 32.4.0）
+
+**在找到把图形画出来的方法之前，不要发布 `add_weld_symbol`** ——
+一个只有引线和数字、没有焊缝类型的符号，在车间比没有更危险。
