@@ -1254,6 +1254,10 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
 
     buckets = {}
     failures = []
+    # Intermediate counts. The receipt only shows the final `placed`, so when a change here
+    # silently stops the pass there is nothing to look at (0.8.48 happened exactly that way).
+    debug = {"views": len(boxes), "annotations": 0, "skip_before": 0,
+             "skip_no_position": 0, "skip_no_owner": 0, "buckets": 0, "per_side": {}}
     for view, box in boxes:
         try:
             raws = list(view.GetAnnotations or ())
@@ -1267,11 +1271,14 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
                 name = str(annotation.GetName)
             except Exception:
                 continue
+            debug["annotations"] += 1
             if name in before_names:
+                debug["skip_before"] += 1
                 continue                     # placed by the user, not by this call
             try:
                 position = [float(v) for v in annotation.GetPosition]
             except Exception:
+                debug["skip_no_position"] += 1
                 continue
 
             # Owning view: the box that contains it, else the one with the nearest centre.
@@ -1301,8 +1308,16 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             }
             side = min(edges, key=edges.get)
             order = position[1] if side in ("left", "right") else position[0]
+            # Read the value so the stack can be ordered by SIZE. Three Ø42 dimensions can
+            # sit 0.4 mm apart; position ordering can never separate those.
+            try:
+                _dim = win.Dispatch(
+                    win.Dispatch(annotation.GetSpecificAnnotation).GetDimension2(0))
+                dim_value = float(_dim.SystemValue) * 1000.0
+            except Exception:
+                dim_value = 0.0
             buckets.setdefault((str(view.Name), side), []).append(
-                (order, annotation, position, owner_box))
+                (order, annotation, position, owner_box, dim_value))
 
     # ---- capacity per side, measured against the sheet frame ---------------------
     # The stack was unbounded: 16 dimensions on one side gave offset 0.012 + 15*0.008 =
@@ -1360,12 +1375,17 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
                               % (view_name, side, len(keep), len(spill),
                                  opposite[side]))
 
+    debug["buckets"] = sum(len(v) for v in buckets.values())
+    debug["per_side"] = {"%s:%s" % k: len(v) for k, v in buckets.items()}
     placed = 0
     sides_used = {}
     for (view_name, side), items in buckets.items():
         # Sort so the stacking follows the view's own reading order; the slot decides the
         # distance from the outline, so equal-order items still separate.
-        items.sort(key=lambda entry: entry[0], reverse=(side in ("right", "top")))
+        # Largest value outermost: slot 0 sits at `gap` from the outline, so ascending
+        # order pushes the big ones to the far slots. (Descending put the Ø215 nearest the
+        # view and the Ø10 out at the frame — backwards from the drafting convention.)
+        items.sort(key=lambda entry: (entry[4], entry[0]))
         sides_used["%s:%s" % (view_name, side)] = len(items)
         # If the side is still over capacity after the spill, compress the step rather
         # than push past the frame — a shorter leader is readable, an off-sheet one is not.
@@ -1374,7 +1394,7 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
         if len(items) > 1 and room > gap_m:
             fit_step = (room - gap_m) / float(len(items) - 1)
             eff_step = min(step_m, max(fit_step, step_m * 0.35))
-        for slot, (_order, annotation, position, box) in enumerate(items):
+        for slot, (_order, annotation, position, box, _value) in enumerate(items):
             # Hard cap at the room actually available: `max(room, gap_m)` still pushed a
             # view that already touched the frame 12 mm past it (y reached 0.305 on a
             # 0.297 sheet). A dimension hugging the outline is readable; an off-sheet one
@@ -1394,7 +1414,7 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             except Exception as exc:
                 failures.append({"view": view_name, "side": side,
                                  "reason": str(exc)[:70]})
-    return placed, failures, sides_used, overflow_notes
+    return placed, failures, sides_used, overflow_notes, debug
 
 
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
@@ -1532,9 +1552,16 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         outside_placed = 0
         outside_failed = []
         outside_sides = {}
+        outside_spills = []
+        # MUST be initialised here, not only inside the branch below: the receipt references
+        # it unconditionally, so `place_outside=False` (the default) raised
+        # "cannot access local variable 'outside_debug'" and took four smoke items down.
+        # Neither static_check nor the bare-call regression looks at function-local
+        # assignments — smoke was the only net.
+        outside_debug = {}
         if place_outside:
             (outside_placed, outside_failed, outside_sides,
-             outside_spills) = _push_dimensions_outside(
+             outside_spills, outside_debug) = _push_dimensions_outside(
                 doc, _win_auto, before_names,
                 gap_m=float(outside_gap_m), step_m=float(outside_step_m))
             try:
@@ -1582,6 +1609,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             # that removed 0 and failed 23 used to be indistinguishable from a clean no-op.
             dedupe_failed_count=len(dedupe_failed),
             place_outside_applied=bool(place_outside),
+            outside_debug=outside_debug,
             placed_outside=outside_placed,
             outside_sides=outside_sides,
             outside_failed=outside_failed[:10],

@@ -2054,6 +2054,38 @@ def assert_views_inside_printable_area():
     return "views pack inside the stricter inset"
 
 
+def assert_stack_ordered_by_value():
+    """0.8.48 — the outside stack was ordered by position, not by size.
+
+    Three Ø42 dimensions can sit 0.4 mm apart; position ordering can never separate those.
+    Slot 0 sits closest to the outline, so ASCENDING order puts the big ones outermost —
+    measured on door.SLDPRT left side: Ø4 at x=0.0468 (inner) ... Ø215 at x=0.0148 (outer).
+    Also requires the intermediate counters: an earlier attempt changed the tuple shape and
+    silently stopped the whole pass, with `placed_outside: None` as the only evidence.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_push_dimensions_outside")) or ""
+    assert "dim_value" in body, "the dimension value is never read"
+    assert "items.sort(key=lambda entry: (entry[4], entry[0]))" in body, (
+        "the stack is not ordered by value (ascending = largest outermost)")
+    for key in ("skip_before", "skip_no_position", "per_side"):
+        assert key in body, "no %s counter — a stopped pass would be invisible" % key
+    # The receipt references `outside_debug` unconditionally, so it must be initialised
+    # OUTSIDE the place_outside branch. A version that only set it inside took four smoke
+    # items down with "cannot access local variable 'outside_debug'" — neither static_check
+    # nor the bare-call regression inspects function-local assignments.
+    auto_body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                          "auto_dimension")) or ""
+    init_at = auto_body.find("outside_debug = {}")
+    branch_at = auto_body.find("if place_outside:")
+    assert init_at >= 0, "outside_debug is never initialised"
+    assert branch_at > init_at, (
+        "outside_debug is first assigned inside the branch — the default "
+        "place_outside=False path crashes on the receipt")
+    return "largest value outermost, with counters to prove the pass ran"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2144,6 +2176,7 @@ STATIC_REGRESSIONS = [
     ("0.8.44 outside stack bounded", assert_outside_stack_respects_sheet),
     ("0.8.45 layout prediction", assert_layout_prediction_matches_reality),
     ("0.8.47 views inside area", assert_views_inside_printable_area),
+    ("0.8.48 stack by value", assert_stack_ordered_by_value),
 ]
 
 
