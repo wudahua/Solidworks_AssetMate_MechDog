@@ -2740,6 +2740,21 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
         if target is None:
             return error("view_not_found", "No model view found (view_name=%r)" % view_name)
 
+        # Snapshot what the payload needs: `_view_axis_map` below opens the MODEL document
+        # to read its bounding box, which switches the active document and invalidates both
+        # `doc` and `target`.
+        doc_title = None
+        target_name = None
+        view_pos = None
+        view_scale = None
+        try:
+            doc_title = str(doc.GetTitle)
+            target_name = str(target.Name)
+            view_pos = [float(v) for v in target.Position]
+            view_scale = float(target.ScaleDecimal)
+        except Exception:
+            pass
+
         rows = []
         raw_edges = []
         for component in (target.GetVisibleComponents or ()):
@@ -2769,8 +2784,32 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
                     pass
             rows.append(item)
 
-        payload = {"drawing": doc.GetTitle, "view": target.Name,
-                   "edge_count": len(rows), "edges": rows}
+        # Project to sheet coordinates. `add_drawing_dimension` already does this for error
+        # messages, so the transform exists — `model_*` alone cannot be used to aim at the
+        # sheet, which is what a report hit ("用 index 定位这条路实际走不通").
+        axis_map, projection_reason = _view_axis_map(target)
+        projected = False
+        if axis_map and view_pos is not None and view_scale:
+            axes = axis_map["axes"]
+            centre = axis_map["centre_m"]
+            for item in rows:
+                start = item.get("model_start")
+                end = item.get("model_end")
+                if not start or not end:
+                    continue
+                item["sheet_start"] = [
+                    round(view_pos[0] + (start[axes[0]] - centre[axes[0]]) * view_scale, 5),
+                    round(view_pos[1] + (start[axes[1]] - centre[axes[1]]) * view_scale, 5)]
+                item["sheet_end"] = [
+                    round(view_pos[0] + (end[axes[0]] - centre[axes[0]]) * view_scale, 5),
+                    round(view_pos[1] + (end[axes[1]] - centre[axes[1]]) * view_scale, 5)]
+                projected = True
+
+        payload = {"drawing": doc_title, "view": target_name,
+                   "edge_count": len(rows), "edges": rows,
+                   "sheet_projected": projected}
+        if not projected:
+            payload["sheet_projection_reason"] = projection_reason or "no projection inputs"
         if stamp is not None:
             if len(_EDGE_CACHE) >= EDGE_CACHE_LIMIT:
                 _EDGE_CACHE.clear()

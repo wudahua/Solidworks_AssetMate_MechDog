@@ -2166,6 +2166,26 @@ def assert_view_edit_tools_exist():
     return "views can be rescaled and moved in place"
 
 
+def assert_edges_carry_sheet_coordinates():
+    """0.8.52 / P8 — `list_drawing_edges` gave model coordinates only.
+
+    A report could not use `edge_index` at all: the points were model-space with a constant
+    Z, so there was no way to aim at the sheet. `add_drawing_dimension` already had the
+    transform for its error hints; the edge list now carries it too.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "list_drawing_edges")) or ""
+    assert "sheet_start" in body and "sheet_end" in body, (
+        "edges still carry model coordinates only")
+    assert "_view_axis_map" in body, "no projection is computed"
+    assert "view_pos = [float(v) for v in target.Position]" in body, (
+        "the view position is read after _view_axis_map — that document is already gone")
+    assert "sheet_projected" in body, (
+        "the receipt cannot say whether projection happened")
+    return "edges carry sheet coordinates, with an explicit projected flag"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2261,6 +2281,7 @@ STATIC_REGRESSIONS = [
     ("0.8.49 gtol symbol render", assert_gtol_symbol_render_flagged),
     ("0.8.50 close document", assert_close_document_exists),
     ("0.8.51 view edit tools", assert_view_edit_tools_exist),
+    ("0.8.52 edges sheet coords", assert_edges_carry_sheet_coordinates),
 ]
 
 
