@@ -1006,6 +1006,20 @@ def add_drawing_dimension(
 
 
 @mcp.tool()
+def set_view_scale(drawing_path: str, view_name: str, scale: float,
+                   save: bool = True) -> str:
+    """Change one view's scale on an existing drawing (no need to rebuild the sheet)."""
+    return _json(drawing.set_view_scale(drawing_path, view_name, scale, save=save))
+
+
+@mcp.tool()
+def move_view(drawing_path: str, view_name: str, x_m: float, y_m: float,
+              save: bool = True) -> str:
+    """Move one existing view to a sheet point (metres)."""
+    return _json(drawing.move_view(drawing_path, view_name, x_m, y_m, save=save))
+
+
+@mcp.tool()
 def close_document(drawing_path: str) -> str:
     """Close a document SolidWorks still holds open (frees the file for delete/replace).
 

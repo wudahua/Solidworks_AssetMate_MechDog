@@ -1935,3 +1935,39 @@ for document in (software.GetDocuments or ()):
 
 `add_model_view` / `move_view` / `set_view_scale` 仍在账上。它们比 `close_document` 重，
 而且 `move_view` 会撞上 0.8.46 记录的那个「新建视图写 Position 变成 (0, x)」的坑。
+
+## 四十五、视图能改比例、能挪位了（0.8.51）
+
+反馈为改一个视图比例**重建整张图三次**：`create_drawing` 定下比例后就再没有入口。
+
+### `set_view_scale`：直接赋值就行
+
+```python
+target.ScaleDecimal = value      # 可以
+```
+
+与 `Position` **不同**——后者必须 `DISPATCH_PROPERTYPUT` + VARIANT 数组，
+普通赋值会变成 `(0, x)`。同一个 `IView` 上两种属性、两种写法，别混。
+
+回执给 `scale_before` / `scale_after` / `applied`：**写完要回读**，
+否则被锁定的图纸会以"成功"的样子返回。
+
+### `move_view`：复用已验证的写入器
+
+```python
+from . import layout as _layout
+return _layout.set_view(drawing_path, view_name, x_m=..., y_m=...)
+```
+
+`layout.set_view` 内部会**重开文档**再写 `Position`，这是唯一能落地的路径
+（0.8.46 实测：新建视图上普通赋值 / 刚建出时 PROPERTYPUT 都落在 `(0, x)`）。
+这里不做第二套实现——**已验证的写入器只该有一份**。
+
+### 工具数 57 → 59，`static_check` 三道都要过
+
+1. `README section headers`：`### 二、工程图（30 → 32）`
+2. `README never mentions`：工具表加两行
+3. `smoke covers every tool`：每个新工具都要被 smoke 调用
+
+smoke 里的图纸要**自己建**（顶层的 `drw` 是各函数内的局部变量，跨函数看不到）——
+用 `part_copy` + `create_drawing` 造一张临时图，两个工具各测一次。

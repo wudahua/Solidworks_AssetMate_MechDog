@@ -1623,6 +1623,81 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         return error("auto_dimension_failed", str(exc))
 
 
+def set_view_scale(drawing_path, view_name, scale, save=True):
+    """Change ONE view's scale on an existing drawing.
+
+    `create_drawing` sets the scale once and there was no way back: a report rebuilt the
+    whole sheet three times because a view needed 1:2 instead of 1:5. `ScaleDecimal` takes
+    a plain assignment (unlike `Position`, which needs a VARIANT PROPERTYPUT).
+    """
+    try:
+        try:
+            value = float(scale)
+        except Exception:
+            return error("bad_scale", "scale must be a number, got %r" % (scale,))
+        if value <= 0:
+            return error("bad_scale", "scale must be positive, got %r" % (scale,))
+        doc = _open_drawing(drawing_path)
+        target = None
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if str(view.Name) == str(view_name):
+                target = view
+                break
+        if target is None:
+            return error("view_not_found", "no model view named %r" % (view_name,),
+                         "Use drawing_audit to list the view names on this sheet.")
+        before = None
+        try:
+            before = round(float(target.ScaleDecimal), 6)
+        except Exception:
+            pass
+        try:
+            target.ScaleDecimal = value
+        except Exception as exc:
+            return error("scale_set_failed", str(exc)[:120],
+                         "A locked/sheet scale blocks per-view scale changes.")
+        after = None
+        try:
+            after = round(float(target.ScaleDecimal), 6)
+        except Exception:
+            pass
+        try:
+            _call_method(doc, "EditRebuild3")
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        if save:
+            _save_drawing(doc)
+        return drawing_ok(view=str(target.Name), scale_before=before, scale_after=after,
+                          applied=bool(after is not None and abs(after - value) < 1e-9),
+                          saved=bool(save))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("set_view_scale_failed", str(exc)[:120])
+
+
+def move_view(drawing_path, view_name, x_m, y_m, save=True):
+    """Move ONE existing view to a sheet point (metres).
+
+    `tools/layout.py::set_view` already does this correctly — it reopens the drawing and
+    writes `Position` through DISPATCH_PROPERTYPUT (a plain assignment lands at (0, x), the
+    v0.8.9 trap). This exposes the same operation under the drawing-tool naming so a view
+    can be nudged without rebuilding the whole sheet.
+    """
+    try:
+        from . import layout as _layout
+
+        return _layout.set_view(drawing_path, view_name,
+                                x_m=float(x_m), y_m=float(y_m), save=bool(save))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("move_view_failed", str(exc)[:120])
+
+
 def close_document(drawing_path):
     """Close a document SolidWorks still holds open.
 

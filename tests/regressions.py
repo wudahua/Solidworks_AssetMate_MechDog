@@ -2142,6 +2142,30 @@ def assert_close_document_exists():
     return "documents can be closed and the file freed"
 
 
+def assert_view_edit_tools_exist():
+    """0.8.51 — a view could not be moved or rescaled without rebuilding the sheet.
+
+    A report rebuilt the whole drawing three times because a view needed 1:2 instead of 1:5.
+    `set_view_scale` takes a plain `ScaleDecimal` assignment and reads it back; `move_view`
+    reuses layout.set_view, whose PROPERTYPUT write is the only one that sticks (a plain
+    assignment lands at (0, x)).
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    scale_body = ast.get_source_segment(src, _function_node(tree, "set_view_scale")) or ""
+    assert "ScaleDecimal" in scale_body, "set_view_scale does not set the scale"
+    assert '"applied"' in scale_body or "applied=" in scale_body, (
+        "no readback — a rejected scale would be reported as success")
+    assert "save" in scale_body, "the save parameter is missing (NameError at runtime)"
+    move_body = ast.get_source_segment(src, _function_node(tree, "move_view")) or ""
+    assert "set_view" in move_body, (
+        "move_view does not reuse the verified PROPERTYPUT writer")
+    server = _read("server.py")
+    for name in ("set_view_scale", "move_view"):
+        assert ("def %s(" % name) in server, "%s has no MCP wrapper" % name
+    return "views can be rescaled and moved in place"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2236,6 +2260,7 @@ STATIC_REGRESSIONS = [
     ("0.8.49 center marks view", assert_center_marks_take_a_view),
     ("0.8.49 gtol symbol render", assert_gtol_symbol_render_flagged),
     ("0.8.50 close document", assert_close_document_exists),
+    ("0.8.51 view edit tools", assert_view_edit_tools_exist),
 ]
 
 

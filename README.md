@@ -68,7 +68,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（30）
+### 二、工程图（32）
 
 | 工具 | 作用 |
 |---|---|
@@ -81,6 +81,8 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `add_flat_pattern_view` | 钣金展开（下料尺寸 + 折弯线） |
 | `auto_dimension` | 导入模型驱动尺寸，超 30 个会提示冗余；**按模型 full name 自动删除重复副本** |
 | `delete_dimensions` | **按值保留/删除尺寸**，消费 `plan_drawing` 的短名单（实测 14 条一次调用 < 5 s） |
+| `set_view_scale` | 改单个视图的比例（不必重建整张图） |
+| `move_view` | 把单个视图移到图纸指定点（米） |
 | `close_document` | 关闭 SolidWorks 仍占用的文档（释放文件，可删除/替换） |
 | `add_center_marks` | 孔/槽中心标记与中心线（`view_name` 可限定视图） |
 | `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径），孔标注的前置工具 |
@@ -234,7 +236,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 93 条历史回归
+python tests/check_all.py     # 秒级：语法 + 结构 + 94 条历史回归
 python tests/smoke.py         # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
 
@@ -372,7 +374,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 57 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 59 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash

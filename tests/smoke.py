@@ -1111,6 +1111,33 @@ def main():
         assert res.get("closed_count") == 0, res
         return "clean no-op on an unknown path"
 
+    def _view_edit_fixture():
+        local = os.path.join(workdir, "smoke_view_edit.SLDDRW")
+        drawing.create_drawing(part_copy, output_path=local, views=["front"], paper="A3")
+        doc = drawing._open_drawing(local)
+        target = next((v for v in drawing._iter_views(doc)
+                       if getattr(v, "Type", None) != 1), None)
+        if target is None:
+            raise AssertionError("no model view on the fixture")
+        return local, str(target.Name)
+
+    def _set_view_scale():
+        local, name = _view_edit_fixture()
+        res = drawing.set_view_scale(local, name, 0.05)
+        assert res.get("ok"), res
+        assert res.get("applied"), "scale_after did not match: %s" % res
+        return "scale %s -> %s" % (res.get("scale_before"), res.get("scale_after"))
+
+    def _move_view():
+        local, name = _view_edit_fixture()
+        res = drawing.move_view(local, name, 0.15, 0.15)
+        assert res.get("ok"), res
+        after = res.get("position_after_m") or []
+        assert after and abs(after[0] - 0.15) < 1e-3 and abs(after[1] - 0.15) < 1e-3, res
+        return "moved to %s" % (after,)
+
+    r.check("set view scale", _set_view_scale)
+    r.check("move view", _move_view)
     r.check("close document", _close_document)
     r.check("server wrapper contract", _server_wrapper_contract)
     # Last on purpose — see the docstring: this one deliberately poisons the COM cache.
