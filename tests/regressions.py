@@ -1541,30 +1541,41 @@ def assert_duplicate_dimension_declared_unsupported():
 
 
 def assert_section_line_limitation_declared():
-    """0.8.31 / P0-3 — the cut line cannot be moved from the API, so say so.
+    """0.8.31 -> 0.8.62: the cut line DOES follow the parent view now.
 
-    Measured 2026-11-01: GetLineInfo is model-space and unchanged after moving the view;
-    SetLineInfo writes the section PLANE not the drawn line; the view's sketch is unreachable
-    (GetSketches does not exist under late binding).
+    0.8.31 measured the cut line as un-moveable and marked the capability `unsupported`:
+    GetLineInfo returns model space and never changes, SetLineInfo writes the section
+    PLANE (and re-orders the polyline into a back-and-forth), the view's sketch is
+    unreachable through GetSketches.
+
+    All of that is still true — but it stopped mattering in 0.8.57. The line is now drawn
+    inside the VIEW SKETCH (origin = view centre, model units) instead of at absolute sheet
+    coordinates, so it belongs to the view and rides along when the view moves.
+
+    Measured 2026-11-02 (飞达动力轴, A3 1:1): parent moved from (0.07629, 0.26551) to
+    (0.05, 0.05), delta (-0.02629, -0.21551); the section view moved by exactly the same
+    delta and their relative offset stayed (0, -0.08344).
+
+    This assertion now guards the CORRECTED claim: verified status, the measurement, and
+    the coordinate reason — never let it drift back to `unsupported` without re-measuring.
     """
     caps = _read("tools/capabilities.py")
-    assert '"section_line_follows_view"' in caps, (
-        "the limitation is undeclared — callers keep trying to move the line")
     index = caps.index('"section_line_follows_view"')
-    segment = caps[index:index + 1800]
-    assert '"unsupported"' in segment, "it is not marked unsupported"
-    assert "GetLineInfo" in segment and "SetLineInfo" in segment, (
-        "the entry does not name the interfaces that were tried")
-    assert "GetSketches" in segment, (
-        "it does not record that the view sketch is unreachable")
-    assert "先" in segment and "重建" in segment, (
-        "no actionable workaround (place views first, then rebuild the section)")
-    src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                      "add_section_view")) or ""
-    assert "do not follow a moved parent view" in body, (
-        "add_section_view does not warn about the cut line")
-    return "unsupported, four interfaces named, actionable workaround"
+    # Stop at the next entry: a fixed window bleeds into duplicate_dimension_to_view,
+    # which is still legitimately unsupported.
+    end = caps.find('"id":', index + 10)
+    segment = caps[index:end if end > 0 else index + 2000]
+    assert '"verified"' in segment, (
+        "the capability is not marked verified although 0.8.57 made the line follow")
+    assert "unsupported" not in segment, (
+        "the entry still says unsupported — that was measured before the coordinate fix")
+    assert "视图草图" in segment, (
+        "the entry does not explain WHY it follows (the line lives in the view sketch)")
+    assert "-0.02629" in segment or "0.07629" in segment, (
+        "no measured evidence — this claim was once wrong for a whole release")
+    assert "GetLineInfo" in segment, (
+        "the entry no longer records that GetLineInfo is model-space (still true)")
+    return "cut line follows the view; capability verified with measured evidence"
 
 
 def assert_cut_line_placed_on_its_view():
