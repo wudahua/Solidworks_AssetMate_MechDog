@@ -1470,6 +1470,25 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                     before_names.add(str(_win_auto.Dispatch(_raw).GetName))
                 except Exception:
                     continue
+        if not all_views:
+            # `all_views=False` inserts into the ACTIVE view. With none activated it inserts
+            # into nothing and STILL returns success — a report saw inserted: 0 / ok: true on
+            # a sheet that had 18 insertable dimensions. Activate one, or say so.
+            _activated = None
+            for _v in _iter_views(doc):
+                if getattr(_v, "Type", None) == 1:
+                    continue
+                try:
+                    doc.ActivateView(_v.Name)
+                    _activated = str(_v.Name)
+                    break
+                except Exception:
+                    continue
+            if _activated is None:
+                return error(
+                    "active_view_not_set",
+                    "all_views=False needs an activated view and none could be activated",
+                    "Pass all_views=True, or activate a model view first.")
         inserted = doc.InsertModelAnnotations3(
             0, types, bool(all_views), not bool(eliminate_duplicates), False, True
         )
@@ -1486,6 +1505,13 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         except Exception:
             pass
         count = len(inserted) if isinstance(inserted, (tuple, list)) else (1 if inserted else 0)
+        if count == 0 and not all_views:
+            return error(
+                "no_dimensions_inserted",
+                "InsertModelAnnotations3 reported nothing inserted into the active view",
+                "Two very different causes looked identical before: the view has no model "
+                "dimensions, or the activation did not take. Pass all_views=True to insert "
+                "everywhere, or check the view really owns this geometry.")
         # No repack: a section view is x-aligned with its parent and cannot be moved
         # sideways, so repacking would stack it on top of a neighbour.
         layout = None
@@ -3653,6 +3679,15 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             section.ScaleDecimal = scale
         except Exception:
             pass
+        # Hatching only renders when hidden lines are displayed. The view inherits the
+        # template default (wireframe), and a report shipped a section view whose cut face
+        # was completely blank — outline only, no hatching at all, `sanity.verdict: ok`.
+        # Measured 2026-11-02: neither `IView.DisplayMode` nor `IView.ViewDisplayMode` is
+        # writable through this binding ("<unknown>.DisplayMode"), and `GetDisplayMode2()`
+        # already returns 2 (hidden lines) on a freshly created section. So the missing
+        # hatching reported by 飞达动力轴 is NOT a display-mode problem — reverting the
+        # attempt rather than shipping a no-op that looks like a fix.
+        display_mode_set = None
         try:
             doc.GraphicsRedraw2()
         except Exception:

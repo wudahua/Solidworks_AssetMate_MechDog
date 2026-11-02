@@ -2242,6 +2242,24 @@ def assert_cut_line_is_clamped():
     return "cut line clamped to the short edge and configurable"
 
 
+def assert_all_views_false_is_not_silent():
+    """0.8.55 / P1 — `auto_dimension(all_views=False)` returned 0 with ok:true.
+
+    Same sheet, same model: `all_views=False` gave inserted 0 / ok true while `all_views=True`
+    gave 18. `InsertModelAnnotations3(..., all_views=False)` inserts into the ACTIVE view, and
+    nothing was activated. It now activates one, or returns `active_view_not_set`; a zero
+    result on the single-view path returns `no_dimensions_inserted` instead of success.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "auto_dimension")) or ""
+    assert "ActivateView" in body, "no view is activated for the single-view path"
+    assert "active_view_not_set" in body, "no structured error when activation fails"
+    assert "no_dimensions_inserted" in body, (
+        "a zero insert still reports success")
+    return "single-view path activates a view or says why it could not"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2341,6 +2359,7 @@ STATIC_REGRESSIONS = [
     ("0.8.53 plan driving/derived", assert_plan_separates_driving_from_derived),
     ("0.8.53 empty views", assert_empty_views_are_reported),
     ("0.8.54 cut line clamped", assert_cut_line_is_clamped),
+    ("0.8.55 all_views=False loud", assert_all_views_false_is_not_silent),
 ]
 
 
