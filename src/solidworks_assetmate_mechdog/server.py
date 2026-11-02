@@ -876,9 +876,17 @@ def add_section_view(
     orientation + offset_m with an explicit axis-aligned plane; unmappable or oblique
     planes are refused with a structured error instead of cutting the wrong plane.
 
-    verify_cut (default True) checks the result: `edge_count == 0` -> `section_empty`,
-    and a section that does not keep the source view's width (or height, for vertical
-    cuts) within 10% -> `section_suspicious`. Both keep the view on the sheet.
+    cut_line_ratio (default 0.55) sizes the cut line: it is clamped to half the view's
+    SHORT edge as well, so the arrows stay inside the view instead of spilling onto the
+    technical-requirements block. Shrink it further for very flat views.
+
+    verify_cut (default True) checks the result. Structured errors, all of which leave the
+    view on the sheet for inspection:
+      `section_empty`       - the cut produced 0 visible edges (line missed the geometry)
+      `section_suspicious`  - kept <10% of the source view's width/height
+      `hatch_missing`       - the cut face has NO hatching (GetFaceHatchCount == 0); a
+                              section without hatching is unusable on a shop floor, so
+                              0.8.56 turned this from ok:true into an error.
     """
     return _json(drawing.add_section_view(
         drawing_path, view_name=view_name, orientation=orientation,
@@ -972,13 +980,22 @@ def auto_dimension(
 
 
 @mcp.tool()
-def list_drawing_edges(drawing_path: str, view_name: str | None = None) -> str:
-    """List a view's visible edges with stable indices and model coordinates.
+def list_drawing_edges(drawing_path: str, view_name: str | None = None,
+                       include_points: bool = True) -> str:
+    """List a view's visible edges with stable indices, model coordinates AND sheet coordinates.
 
-    Use the index with add_drawing_dimension(edge_index=...) when sheet coordinates
-    are inconvenient (drawing edges report MODEL coordinates under this binding).
+    Since 0.8.52 each edge carries `sheet_start` / `sheet_end` in SHEET METRES, projected
+    through the view, so they can be fed straight to add_drawing_dimension(x=, y=) — the
+    old model-only output could not be aimed at the sheet. The top-level `sheet_projected`
+    says whether that projection happened; when it is false, `sheet_projection_reason`
+    names the cause (typically `axes_ambiguous` on a part whose two projected axes are
+    equal length, e.g. a turned shaft).
+
+    `include_points=False` returns indices only (much faster); coordinates are what makes
+    a large view slow.
     """
-    return _json(drawing.list_drawing_edges(drawing_path, view_name=view_name))
+    return _json(drawing.list_drawing_edges(drawing_path, view_name=view_name,
+                                        include_points=include_points))
 
 
 @mcp.tool()

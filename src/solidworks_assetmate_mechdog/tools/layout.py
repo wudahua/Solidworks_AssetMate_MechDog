@@ -434,6 +434,44 @@ def _boxes_overlap(a, b, pad=0.0):
             and a[1] - pad < b[3] and b[1] - pad < a[3])
 
 
+# Raw Unicode symbols that SolidWorks stores verbatim but exports to DWG/DXF as
+# `\U+XXXX` escapes. AutoCAD decodes those; several Chinese CAD viewers do not, and fall
+# back to a font without the glyph — the character becomes a box. A shipped drawing lost
+# "自 Ø30 外圆面计" exactly this way, which matters because that clause defines the depth
+# datum: read as a box, the shop either guesses or ignores it.
+#
+# Writing the format code instead makes SolidWorks export the CAD control code
+# (`%%c` / `%%p` / `%%d`), which every viewer understands. Verified by a report:
+# DXF `\U+00D8` count 1 -> 0, `%%c` count 4 -> 10.
+_NOTE_SYMBOL_CODES = {
+    "\u00d8": "<MOD-DIAM>",   # Ø
+    "\u2300": "<MOD-DIAM>",   # ⌀ (diameter sign)
+    "\u00b1": "<MOD-PM>",     # ±
+    "\u00b0": "<MOD-DEG>",    # °
+}
+
+
+def _encode_note_symbols(text):
+    """Replace raw Unicode technical symbols with SolidWorks format codes.
+
+    Returns (encoded_text, warnings). A warning names the character and the code used, so
+    the caller can see what changed instead of discovering it in the DXF.
+    """
+    warnings = []
+    encoded = str(text)
+    for char, code in _NOTE_SYMBOL_CODES.items():
+        if char not in encoded:
+            continue
+        warnings.append({
+            "char": char,
+            "codepoint": "U+%04X" % ord(char),
+            "replace_with": code,
+            "reason": "raw char becomes a \\U+ escape in DWG/DXF; some CAD viewers draw a box",
+        })
+        encoded = encoded.replace(char, code)
+    return encoded, warnings
+
+
 def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True,
              avoid_collisions=False):
     """Add a drawing note (技术要求 lines). x/y are sheet metres.
@@ -475,7 +513,11 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
                 y_m = float(y_m) - step
                 collisions_avoided += 1
 
-        created = doc.InsertNote(str(text))
+        # Technical symbols go in as SolidWorks format codes, not raw Unicode: a raw "Ø"
+        # is exported to DWG/DXF as "\U+00D8", which several Chinese CAD viewers render as
+        # a box. The format code exports as "%%c" instead.
+        encoded_text, text_warnings = _encode_note_symbols(text)
+        created = doc.InsertNote(str(encoded_text))
         if created is None:
             return error("note_failed", "InsertNote returned null",
                          "Some templates refuse notes while a view is active; activate the sheet first.")
@@ -520,9 +562,10 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
         # 49 mm looked identical to one shifted by 4 mm in the old receipt — only
         # `adjusted: true` — so the caller could not tell whether it now sat on a view or
         # the title block.
-        final_bbox = _note_bbox(str(text), float(x_m), float(y_m),
+        final_bbox = _note_bbox(str(encoded_text), float(x_m), float(y_m),
                                 (float(height_mm) / 1000.0) if height_mm else 0.0035)
-        return drawing_ok(drawing=doc.GetTitle, note=name, text=str(text),
+        return drawing_ok(drawing=doc.GetTitle, note=name, text=str(encoded_text),
+                          text_requested=str(text), text_warnings=text_warnings,
                           position_m=[round(float(x_m), 4), round(float(y_m), 4)],
                           position_requested_m=position_requested,
                           adjusted=bool(collisions_avoided),

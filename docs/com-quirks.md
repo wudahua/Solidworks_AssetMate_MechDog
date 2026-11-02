@@ -2005,3 +2005,107 @@ half = min(max(view_w, view_h) * cut_line_ratio,   # 0.55
 
 `static_check` 没拦（它做 AST 解析，语法错就直接抛），是 import 时炸的。
 **改多行签名别用正则**，直接锚定最后一行替换。
+
+## 四十七、`all_views=False` 要激活视图，否则 0 条也报成功（0.8.55）
+
+`InsertModelAnnotations3(..., all_views=False)` 插到**当前激活视图**。没有激活视图时，
+它插到空处——**仍然返回成功**。
+
+反馈同图同模型：`all_views=False` → 0 条 / `ok: true`，`all_views=True` → 18 条。
+
+修：单视图路径先 `ActivateView`；激不活返回 `active_view_not_set`；
+插了 0 条返回 `no_dimensions_inserted`。
+
+**这就是 0.8.44 那条「失败与空操作必须可区分」的又一次翻版。**
+
+## 四十八、剖面线：`GetFaceHatchCount` 是唯一可靠判据（0.8.56）
+
+剖视图建出来、`edge_count` 正常、`sanity: ok`，**剖切面却一条剖面线都没有**。
+
+试过并全部无效：
+
+| 尝试 | 结果 |
+|---|---|
+| `GetDisplayMode2()` | 本来就返回 2（隐藏线） |
+| `SetAutoHatch(True)` | 官方 Remarks：**只对装配体有效，零件无效** |
+| `ScaleHatchPattern = True` | 只缩放**已有**图案 |
+| `SectionDepth` 0.00635 → 0.107 → 0.2 | 无变化 |
+| `SetDisplayOnlySurfaceCut(True)` | 无变化 |
+| `GetHatchStyle` / `SetMaterialCrosshatch` | 方法**不存在** |
+| 材质缺失说 | 有材质「普通碳钢」也一样 |
+
+**唯一可靠的信号**：
+
+```python
+section.GetFaceHatchCount   # 0 == 剖切面是空白
+```
+
+不需要渲染、不需要导 PDF，直接读。0.8.56 起 `== 0` 返回 `hatch_missing`。
+
+**注意**：`DrSection.GetAutoHatch` **不能**当判据——连剖面线完全正常的剖视它也是 `False`。
+
+## 四十九、剖切线画在图纸坐标 → 剖视静默退化成投影（0.8.57）
+
+`ActivateView()` 之后 `SketchManager.InsertSketch()` 创建的草图，**原点在视图中心、单位是模型空间**。
+
+旧代码却按图纸坐标画线（`pos[0] ± half`），整条线被 `view.Position` 平移出去
+（实测偏 **76 mm 横向、265 mm 纵向**）。
+
+SolidWorks **不报错**：照样返回 `Type=2` 的剖面视图，`_section_sanity` 也过（它只比宽度），
+但**一刀没切**——视图内容是"轮廓 + 隐藏线"，不是剖切。
+
+```python
+# 错
+sm.CreateLine(pos[0] - half, pos[1] + offset, ...)
+# 对：围绕草图原点，长度和偏移都 / scale
+half = min(max(view_w, view_h) * ratio, min(view_w, view_h) * 0.5) / scale
+sm.CreateLine(-half, offset, ...)
+```
+
+修复实测：`GetFaceHatchCount` 0 → 2，边数 **13 → 37**。
+
+`add_detail_view` 一直是写对的（`sketch = (sheet - pos) / parent_scale`）——
+**同一个模块里两个函数，一个对了一个错了整整一轮**，而 v0.8.32 的断言还在要求错的那种写法。
+
+## 五十、GTol：符号/数值/基准的渲染顺序（0.8.58 / 0.8.59）
+
+**符号格填不进去**（`SetFrameSymbols2` 官方只对 2022 前的 GTol 有效），2022+ 要走 `IGtolFrame` XML。
+但 `GetFrame(1)` 直接调用返回 `None`——**必须先转换格式、再补帧**：
+
+```python
+call_method(gtol, "ConvertFormat")          # GetFormat 1 -> 2，但帧被清空
+call_method(gtol, "AddFrame")               # GetFrameCount 0 -> 2
+frame = win.Dispatch(call_method(gtol, "GetFrame", 1))
+```
+
+**数值不渲染的根因是顺序**，不是字段名。`ConvertFormat` 才是把旧格式转成**文本项**的那一步：
+
+```python
+# 对：旧格式先写符号和值 → 转换 → 补帧 → 最终 XML
+call_method(gtol, "SetFrameSymbols2", 1, "<IGTOL-POSI>", ...)   # 带尖括号
+call_method(gtol, "SetFrameValues2", 1, "0.05", "", "A", ...)
+call_method(gtol, "ConvertFormat")
+
+# 错：转换后再写值，值只存在于 XML，图面永远不显示
+```
+
+实测：只转换后写值 → `GetTextCount 0`，图面只有 `⌖ A`；旧格式先写 → `GetTextCount 5`，
+图面 **`⌖ 0.05 A`** 完整。
+
+**同一个符号名两处写法不同**：旧 API `"<IGTOL-POSI>"` 带尖括号，XML `"IGTOL-POSI"` 不带。
+
+## 五十一、注记里的 Ø 导出 DWG 变方框（0.8.60）
+
+`add_note` 直接写 `Ø`（U+00D8）时，SolidWorks 存的是**普通字符**。
+导出 DWG/DXF 时按规范转义成 `\U+00D8`——AutoCAD 会解码，**部分国产 CAD 不解码或字体缺字形，画成方框**。
+
+而**尺寸**里的 Ø 走的是格式代码 `<MOD-DIAM>`，导出成 `%%c`，所有 CAD 都认。
+
+所以同一张图上**同一个 Ø 有两种编码**：尺寸 `%%c`（正常），注记 `\U+00D8`（方框）。
+
+修：`add_note` 自动把 `Ø ⌀ ± °` 换成 `<MOD-DIAM>` / `<MOD-PM>` / `<MOD-DEG>`，
+并在回执的 `text_warnings` 里说明替换了什么。
+
+反馈实测：DXF 里 `\U+00D8` 出现次数 **1 → 0**，`%%c` **4 → 10**。
+
+**这类"PDF 正常、DWG 不正常"的分裂最危险**——出图的人看 PDF 说没问题，干活的拿 DWG。
