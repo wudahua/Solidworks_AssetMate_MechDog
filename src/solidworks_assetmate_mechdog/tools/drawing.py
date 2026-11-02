@@ -3704,6 +3704,19 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             box = None
         precise = precise_outline(section)
         edge_count = _view_edge_count(section)
+        # How many hatch faces the cut actually produced. This is the only reliable
+        # "is there hatching?" signal found: `GetFaceHatchCount == 0` means the cut face is
+        # blank, which is what 飞达动力轴 reported while `sanity.verdict` still said ok.
+        # Verified 2026-11-02 that none of these change it: `SetAutoHatch(True)` (parts are
+        # explicitly out of scope per the API docs), `ScaleHatchPattern = True` (it only
+        # scales an EXISTING pattern), `SectionDepth` (0.00635 -> 0.107 -> 0.2, still 0),
+        # `SetDisplayOnlySurfaceCut(True)`. So the count is reported, not repaired.
+        hatch_count = None
+        try:
+            hatch_count = int(section.GetFaceHatchCount)
+        except Exception:
+            hatch_count = None
+
         sanity = (_section_sanity(target, section, orientation, depth)
                   if verify_cut else
                   {"checked": False, "reason": "verify_cut=False"})
@@ -3713,7 +3726,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             "offset_m": round(float(offset_m), 6), "outline": box,
             "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),
             "edge_count": edge_count, "sanity": sanity, "cut_plane": cut_plane,
-            "layout": layout,
+            "layout": layout, "hatch_count": hatch_count,
         }
         if edge_count == 0:
             return error(
@@ -3721,6 +3734,19 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 "The section view has 0 visible edges — the cut line missed the geometry.",
                 "Move `offset_m` inside the view's outline, or pass cut_plane_origin at "
                 "real geometry. The empty view is left on the sheet for inspection.",
+                **diag)
+        if hatch_count == 0:
+            # The cut face exists but carries no hatching: the drawing is wrong even though
+            # every other check passes. 飞达动力轴 reported exactly this while `verdict: ok`.
+            # Root cause not found — `SetAutoHatch` (parts out of scope), `ScaleHatchPattern`
+            # (scales an existing pattern), `SectionDepth`, `SetDisplayOnlySurfaceCut` all
+            # leave the count at 0. Reported as an error so it cannot slip into a delivery.
+            return error(
+                "hatch_missing",
+                "剖面视图已创建，但剖切面没有任何剖面线（GetFaceHatchCount = 0）。",
+                "GB 要求剖切面必须画剖面线；这种视图在生产上不能用。"
+                "请在 SolidWorks 界面手工检查该视图的区域剖面线属性（是否选了 Hatch / "
+                "Material crosshatch），或换一个能正常显示剖面线的模板/零件做对照。",
                 **diag)
         if sanity.get("checked") and sanity.get("verdict") == "suspicious":
             return error(

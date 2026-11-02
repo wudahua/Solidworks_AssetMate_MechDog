@@ -2260,6 +2260,28 @@ def assert_all_views_false_is_not_silent():
     return "single-view path activates a view or says why it could not"
 
 
+def assert_section_hatch_is_checked():
+    """0.8.56 / P0 — a section view with no hatching reported `ok: true`.
+
+    飞达动力轴 shipped a section whose cut face was completely blank while
+    `sanity.verdict` said ok. `IView.GetFaceHatchCount` is the only reliable signal found
+    (0 = blank). None of these change it, all verified 2026-11-02: `SetAutoHatch(True)`
+    (parts are explicitly out of scope), `ScaleHatchPattern = True` (scales an existing
+    pattern), `SectionDepth` 0.00635 -> 0.107 -> 0.2, `SetDisplayOnlySurfaceCut(True)`.
+    So the count is reported and a blank cut face becomes `hatch_missing`.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_section_view")) or ""
+    assert "GetFaceHatchCount" in body, "the hatch count is never read"
+    assert "hatch_count" in body, "the count is not surfaced in the receipt"
+    assert "hatch_missing" in body, (
+        "a blank cut face still reports success")
+    assert "SetAutoHatch" in body, (
+        "the ruled-out repairs are not documented — the next reader will retry them")
+    return "a blank cut face is an error, not an ok"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2360,6 +2382,7 @@ STATIC_REGRESSIONS = [
     ("0.8.53 empty views", assert_empty_views_are_reported),
     ("0.8.54 cut line clamped", assert_cut_line_is_clamped),
     ("0.8.55 all_views=False loud", assert_all_views_false_is_not_silent),
+    ("0.8.56 section hatch checked", assert_section_hatch_is_checked),
 ]
 
 

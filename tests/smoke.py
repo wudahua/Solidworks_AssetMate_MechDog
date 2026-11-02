@@ -825,6 +825,9 @@ def main():
         # P1-4: verify_cut defaults to True, so every call reports a sanity block and an
         # edge count. A cut that keeps the wrong dimension must be a structured error
         # (section_suspicious), never ok:true.
+        if section.get("error") == "hatch_missing":
+            assert section.get("hatch_count") == 0, (
+                "hatch_missing must carry hatch_count == 0")
         assert "sanity" in section, "add_section_view omitted sanity (P1-4 verify_cut)"
         assert "edge_count" in section, "add_section_view omitted edge_count (P1-4)"
         if section.get("ok"):
@@ -851,7 +854,11 @@ def main():
             allowed = ("cut_plane_unmapped", "cut_plane_not_in_view_plane",
                        "cut_plane_oblique", "cut_plane_incomplete", "section_empty",
                        "section_suspicious", "section_failed", "no_views",
-                       "view_not_found")
+                       "view_not_found",
+                       # 0.8.56: a cut that produced no hatch is now an error. The
+                       # fixture's geometry can legitimately produce one; what matters is
+                       # that the failure is named, not that the section succeeded.
+                       "hatch_missing")
             assert plane.get("error") in allowed, (
                 "unexpected cut_plane failure: %r" % plane.get("error"))
             if plane.get("error") == "cut_plane_unmapped":
