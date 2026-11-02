@@ -2033,6 +2033,24 @@ def assert_layout_prediction_matches_reality():
     return "prediction accounts for the outline margin and the view count"
 
 
+def assert_placement_gap_is_reported():
+    """0.8.46 — the view never lands where the layout says, and nothing said so.
+
+    Root cause found by experiment: `CreateDrawViewFromModelView3` IGNORES its x/y, and
+    writing `Position` on the freshly created view reproduces the v0.8.9 marshalling trap —
+    requested (0.2374, 0.179), actual (0.0, 0.2374). `set_view` works but reopens the
+    drawing, invalidating the view handles the creation loop is still filling. Until that
+    pass is restructured, the receipt must say the placement did not happen.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "create_drawing")) or ""
+    assert "placement_deltas" in body, "the receipt does not mention placement at all"
+    assert "pending_post_create_placement" in body, (
+        "an unplaced view is still reported as placed")
+    return "unplaced views are reported, not silently accepted"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2122,6 +2140,7 @@ STATIC_REGRESSIONS = [
     ("0.8.43 scale explained", assert_scale_choice_is_explained),
     ("0.8.44 outside stack bounded", assert_outside_stack_respects_sheet),
     ("0.8.45 layout prediction", assert_layout_prediction_matches_reality),
+    ("0.8.46 placement gap reported", assert_placement_gap_is_reported),
 ]
 
 

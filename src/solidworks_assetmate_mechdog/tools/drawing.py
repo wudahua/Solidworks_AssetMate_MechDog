@@ -559,6 +559,10 @@ def create_drawing(
             explicit_positions = True
 
         created, skipped, view_objects = [], [], []
+        # Requested vs actual position for every view. Two rounds of predictor fixes did
+        # nothing measurable because nothing reported the difference; without this the next
+        # round would guess again.
+        placement_deltas = []
         for key in [str(v).strip().lower() for v in views]:
             if key not in VIEW_ALIASES:
                 skipped.append({"view": key, "reason": "unsupported_view"})
@@ -577,6 +581,23 @@ def create_drawing(
                 view.ScaleDecimal = per_view_scale
             except Exception:
                 per_view_scale = float(chosen_scale)
+            # `CreateDrawViewFromModelView3` IGNORES the x/y arguments on SW2024: asked for
+            # (0.0995, 0.1486) and got (0.0995, 0.2393) — the view landed in the top row of
+            # the template and its top edge sat on the frame (0.293 vs a 0.287 safe edge).
+            # `set_view` moves it correctly (same call put the outline at 0.096..0.204), so
+            # place it again after creation. This is why two rounds of predictor fixes
+            # changed nothing measurable.
+            # ROOT CAUSE (0.8.46): `CreateDrawViewFromModelView3` IGNORES x/y, and
+            # writing `Position` on the freshly created view reproduces the v0.8.9
+            # marshalling trap — requested (0.2374, 0.179) came back as (0.0, 0.2374).
+            # `set_view` DOES work (verified: same call moved the outline to 0.096..0.204),
+            # but it reopens the drawing, which invalidates the `view_objects` this loop is
+            # still filling. Fixing it needs the placement pass to run after the loop and
+            # re-acquire every view — a structural change, not a one-liner. Recorded so the
+            # next round starts from the fact instead of another guess.
+            placement_deltas.append({"view": key, "placed": False,
+                                     "requested": [round(float(x), 4), round(float(y), 4)],
+                                     "reason": "pending_post_create_placement"})
             try:
                 o = list(view.GetOutline or [])
                 box_m = {"width_m": round(o[2] - o[0], 4), "height_m": round(o[3] - o[1], 4)}
@@ -755,6 +776,7 @@ def create_drawing(
             },
             box_used_m=[round(v, 4) for v in box] if box else None,
             auto_scale_adjustments=auto_scale_adjustments,
+            placement_deltas=placement_deltas,
             # Record the FINAL scale too: the pre-layout step above can still step down
             # (a 0.2 that overflowed became 0.1 on the 履带轮 test while scale_reason kept
             # saying "1:5"), and a receipt that contradicts itself is worse than none.

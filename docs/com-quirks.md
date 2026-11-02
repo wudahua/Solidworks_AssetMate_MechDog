@@ -1749,3 +1749,46 @@ CreateDrawViewFromModelView3(model, view_name, x, y, 0)
 
 **这条教训**：改完预测要**回读实际值**再收工。`fits: false` 和实际 outline 摆在一起时，
 我第一版还以为改对了。
+
+## 四十、视图为什么从不落在预测位置（0.8.46）
+
+两轮"修预测"没有带来任何可测变化，因为**视图根本没被移动过**。
+
+### 三个实验，三个事实
+
+| 实验 | 结果 |
+|---|---|
+| `set_view(0.20, 0.15)` 移动一个**已存在**的视图 | ✅ 成功，outline `0.1855..0.2930 → 0.0963..0.2037` |
+| `CreateDrawViewFromModelView3(model, name, x, y, 0)` 传 `x/y` | ❌ **被忽略**，视图落在模板给的位置 |
+| 在**刚建出**的视图上写 `Position` | ❌ 请求 `(0.2374, 0.179)`，实际 `(0.0, 0.2374)` |
+
+第三条正是 v0.8.9 记录过的 marshalling 陷阱——**新建视图上它又回来了一次**，
+和"已存在视图"上的行为不同。
+
+### 所以"预测"和"落地"之间有一条断链
+
+`_layout` 算出 `c1/fy` → `positions["front"]` → `CreateDrawViewFromModelView3` **不理**。
+链路前面再准，末端没接上。
+
+### 为什么本轮不修
+
+`set_view` 会 `_open_drawing`（重开文档），使建图循环里正在填的 `view_objects` 全部失效。
+正确的做法是**把定位搬到循环之后**，重新枚举视图、按名字对应位置再移一遍——
+结构改动，不是一行。
+
+回执已如实写明：
+
+```json
+"placement_deltas": [{"view": "front", "placed": false,
+                      "requested": [0.2374, 0.179],
+                      "reason": "pending_post_create_placement"}]
+```
+
+### 顺带：裸名字防线第一次实战
+
+我在这段里误用了 `layout._prop_put`（`drawing.py` 没有这个名字），
+`static_check` 的 `check_bare_names`（0.8.38 加的）当场拦下：
+`undefined bare calls: tools\drawing.py: ['_prop_put']`。
+
+**如果不拦，它会变成 no-op**——`except` 一包，位置照旧不动，
+和这两轮的"修了但没变化"一模一样。
