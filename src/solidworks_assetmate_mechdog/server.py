@@ -1010,15 +1010,14 @@ def add_center_marks(
     drawing_path: str,
     include_slots: bool = True,
     extended_lines: bool = True,
+    view_name: str | None = None,
 ) -> str:
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 
     Returns views_marked (reliable) rather than a mark count, which under-reports
     on this binding.
     """
-    return _json(drawing.add_center_marks(
-        drawing_path, include_slots=include_slots, extended_lines=extended_lines,
-    ))
+    return _json(drawing.add_center_marks(drawing_path, include_slots=include_slots, extended_lines=extended_lines, view_name=view_name))
 
 
 @mcp.tool()

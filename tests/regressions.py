@@ -2086,6 +2086,41 @@ def assert_stack_ordered_by_value():
     return "largest value outermost, with counters to prove the pass ran"
 
 
+def assert_center_marks_take_a_view():
+    """0.8.49 — `add_center_marks` marked the isometric view too.
+
+    A report saw 15 cross marks scattered across a 3D pictorial. Center marks belong on
+    orthographic views; the tool had no way to say which.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_center_marks")) or ""
+    assert "view_name" in body, "no view filter — the pictorial gets marks as well"
+    assert 'str(view.Name) != str(view_name)' in body, (
+        "the filter is declared but not applied in the loop")
+    server = _read("server.py")
+    index = server.index("def add_center_marks(")
+    assert "view_name=view_name" in server[index:index + 1200], (
+        "the wrapper does not forward view_name")
+    return "center marks can be limited to one view"
+
+
+def assert_gtol_symbol_render_flagged():
+    """0.8.49 — a readback-verified GT symbol can still render blank.
+
+    `GetFrameSymbols2` returns "圆柱度" while the exported PDF shows an empty symbol cell.
+    The readback only proves the string landed in the cell. The success path must say so.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_geometric_tolerance")) or ""
+    assert "symbol_render_unverified" in body, (
+        "a successful symbol write claims more than the readback proves")
+    assert "symbol='none'" in body or 'symbol=\'none\'' in body or "symbol='none'" in body, (
+        "no workaround mentioned for builds where the cell renders blank")
+    return "readback success no longer implies a visible symbol"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2177,6 +2212,8 @@ STATIC_REGRESSIONS = [
     ("0.8.45 layout prediction", assert_layout_prediction_matches_reality),
     ("0.8.47 views inside area", assert_views_inside_printable_area),
     ("0.8.48 stack by value", assert_stack_ordered_by_value),
+    ("0.8.49 center marks view", assert_center_marks_take_a_view),
+    ("0.8.49 gtol symbol render", assert_gtol_symbol_render_flagged),
 ]
 
 

@@ -1623,12 +1623,16 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         return error("auto_dimension_failed", str(exc))
 
 
-def add_center_marks(drawing_path, include_slots=True, extended_lines=True):
+def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view_name=None):
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 
     Requires activating each view first — drawing annotation ops act on the active
     view. GetCenterMarkCount under-reports on this binding, so `views_marked` (the
     API's own success count) is the reliable signal, not the count.
+
+    `view_name` restricts it to one view. Without it the isometric view got marks too —
+    a report saw 15 cross marks scattered across a 3D pictorial, which is simply wrong
+    drafting.
     """
     try:
         doc = _open_drawing(drawing_path)
@@ -1638,6 +1642,8 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True):
         results = []
         for view in _iter_views(doc):
             if getattr(view, "Type", None) == 1:
+                continue
+            if view_name and str(view.Name) != str(view_name):
                 continue
             processed += 1
             try:
@@ -5783,7 +5789,16 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
             tolerance=str(tolerance), datum=str(datum), symbol=str(symbol),
             values_written=wrote, position_set=position_ok, readback=readback,
             symbol_written=symbol_written, symbol_is_text=bool(code),
-            note=("形位公差是原生对象，可用 list_drawing_annotations 读出（kind="
+            # The readback proves the STRING landed in the cell, not that it renders. A
+            # report exported the PDF and found the symbol cell blank on this build while
+            # GetFrameSymbols2 cheerfully returned "圆柱度" — a readback-verified write that
+            # the sheet never shows.
+            symbol_render_unverified=bool(code),
+            note=("symbol_render_unverified=true 表示：符号格写入了中文名且回读一致，"
+                  "但**未验证渲染**——实测有环境回读为「圆柱度」而 PDF 上是空格。"
+                  "需要图面必须出现符号时，改 symbol='none' 并把符号名并入 tolerance"
+                  "（如 tolerance='圆柱度 0.02'），或界面手工补符号。"
+                  "形位公差是原生对象，可用 list_drawing_annotations 读出（kind="
                   "geometric_tolerance）。0.8.20：符号格以可读文字写入第一格并回读校验"
                   "（<MOD-*> 格式码在本环境只会被当字面文本，不解析成几何符号）；"
                   "写入不生效会删除框格并返回 gtol_symbol_not_applied。"
