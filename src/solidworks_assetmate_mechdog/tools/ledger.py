@@ -251,7 +251,13 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
         raise FileNotFoundError("file not found: %s" % path)
 
     cache_key = None
+    # A/B switch: ASSETMATE_LEDGER_CACHE=0 disables the cache so a measurement can compare
+    # "with" against "without" on the same build. Without this, an A/B needs two branches and
+    # the comparison is confounded by whatever else differs between them.
+    _cache_enabled = os.environ.get("ASSETMATE_LEDGER_CACHE", "1") not in ("0", "false", "off")
     try:
+        if not _cache_enabled:
+            raise RuntimeError("cache disabled by ASSETMATE_LEDGER_CACHE")
         cache_key = (
             os.path.normcase(path),
             os.stat(path).st_mtime_ns,
@@ -406,7 +412,7 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
         )
         # Store a private copy so later mutation of `payload` by this caller cannot reach
         # the cache, and the caller cannot see `cached: true` for its own first call.
-        if cache_key is not None:
+        if cache_key is not None and _cache_enabled:
             try:
                 _LEDGER_CACHE[cache_key] = copy.deepcopy(payload)
                 _LEDGER_CACHE.move_to_end(cache_key)
