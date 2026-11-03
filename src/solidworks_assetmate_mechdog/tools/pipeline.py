@@ -189,21 +189,22 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     if prune_to_plan and keep_list:
         dims = record("dimensions",
                       drawing_tools.auto_dimension(target, all_views=True,
-                                                   dimension_filter=keep_list),
+                                                   dimension_filter=keep_list,
+                                                   save=False, audit=False),
                       "")
     else:
-        dims = record("dimensions", drawing_tools.auto_dimension(target, all_views=True), "")
+        dims = record("dimensions", drawing_tools.auto_dimension(target, all_views=True, save=False, audit=False), "")
 
     # 5) center marks
     if defaults["center_marks"]:
-        record("center_marks", drawing_tools.add_center_marks(target), "")
+        record("center_marks", drawing_tools.add_center_marks(target, save=False), "")
 
     # 6) surface finish — one symbol is what real drawings do ("其余 Ra3.2")
     roughness = defaults["roughness"]
     if (do_surface_finish if do_surface_finish is not None else bool(roughness)) and roughness:
         record("surface_finish",
                drawing_tools.add_surface_finish(target, 0.36, 0.06, roughness=roughness,
-                                                leader_type="none"),
+                                                leader_type="none", save=False),
                "Ra%s（类别默认）" % roughness)
 
     # 7) hole callouts — only where the ledger sees cylindrical faces
@@ -213,8 +214,21 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     callouts = {}
     if want_callouts:
         callouts = record("hole_callouts",
-                          drawing_tools.add_hole_callouts(target, budget_s=hole_budget_s),
+                          drawing_tools.add_hole_callouts(target, budget_s=hole_budget_s, save=False),
                           "")
+
+    # PR1: the sub-tools no longer save. Pipeline saves ONCE here, after every writer has
+    # run and before anything reads the sheet back. Previously auto_dimension alone saved
+    # twice (mid-function and in the place_outside branch) and audited once, then the
+    # pipeline audited again — four saves and three audits per run.
+    # Other sub-tools (center marks, surface finish, hole callouts, notes) still save on
+    # their own; converting them is the rest of PR1 and has NOT been done.
+    try:
+        _doc = drawing_tools._open_drawing(target)
+        drawing_tools._save_drawing(_doc)
+        record("save", {"ok": True}, "one save for the whole run")
+    except Exception as exc:
+        record("save", {"ok": False, "error": "save_failed", "message": str(exc)}, "")
 
     # The sheet is final from here on: nothing below writes to it. Serve the pipeline
     # summary and delivery_check's own annotation read from ONE pass instead of two.

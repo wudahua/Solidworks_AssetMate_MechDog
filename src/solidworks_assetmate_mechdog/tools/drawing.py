@@ -1621,6 +1621,7 @@ def survey_dimensions_by_view(drawing_path):
 @perf_hooks.timed("dimension_total")
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
                    dimension_filter=None, place_outside=True, detect_same_value=False,
+                   save=True, audit=True,
                    outside_gap_m=0.012, outside_step_m=0.008):
     """Insert the model's driving dimensions into the drawing views.
 
@@ -1746,8 +1747,21 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                     _filter_inserted_dimensions(doc, before_names, _win_auto, dimension_filter)
             except Exception as exc:
                 filter_aborted = "filter pass failed: %s" % str(exc)[:120]
-        _save_drawing(doc)
-        audit = drawing_audit(drawing_path)
+        # PR1 of the 2026-11-03 performance spec: a pipeline run saved four times and
+        # audited three times, because each sub-tool did its own. Both flags stay True by
+        # default so a direct caller sees no change; the pipeline passes False and does ONE
+        # save plus ONE audit at the end.
+        #
+        # Skipping the audit here is safe for the pipeline but NOT free of consequence: the
+        # receipt fields views / warnings / dimension_gap are filled from it. When audit is
+        # off they are empty and audit_skipped says so, rather than looking like "no views".
+        if save:
+            _save_drawing(doc)
+        if audit:
+            audit_data = drawing_audit(drawing_path)
+        else:
+            audit_data = {}
+        audit = audit_data
         total = audit.get("total_dimensions") or 0
 
         # P1-6: report the model full names that HAD duplicates and what the automatic
@@ -1864,11 +1878,13 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             except Exception:
                 pass
             # Explicit save: this is the only branch that edits geometry the caller asked
-            # to be laid out, and the rest of the function never saves.
-            try:
-                _save_drawing(doc)
-            except Exception:
-                pass
+            # to be laid out. Honours the PR1 save flag so a pipeline run does not save
+            # twice here as well.
+            if save:
+                try:
+                    _save_drawing(doc)
+                except Exception:
+                    pass
             notes.append(
                 "place_outside：%d 条尺寸已推到视图外按侧分层（外扩 %.0f mm + n×%.0f mm），"
                 "失败 %d 条。" % (outside_placed, float(outside_gap_m) * 1000,
@@ -1915,6 +1931,9 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 1 for e in (dimension_filter or []) if isinstance(e, dict)
                 and e.get("kind") == "driving"),
             place_outside_applied=bool(place_outside),
+            # An empty views/warnings list must not read as "the sheet has none" when the
+            # audit simply was not run.
+            audit_skipped=not bool(audit),
             outside_debug=outside_debug,
             # P2-5 of a 2026-11-03 report: a second call with place_outside=true returned
             # {"inserted": 1, "placed_outside": 0, "outside_debug": {"skip_before": 12,
@@ -2055,7 +2074,8 @@ def close_document(drawing_path):
 
 
 @perf_hooks.timed("center_marks")
-def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view_name=None):
+def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view_name=None,
+                     save=True):
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 
     Requires activating each view first — drawing annotation ops act on the active
@@ -2102,7 +2122,10 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
         except Exception:
             pass
         layout = None
-        _save_drawing(doc)
+        # PR1: honour save=False so a pipeline run saves once at the end. This was the last
+        # of the five sub-tools still saving unconditionally.
+        if save:
+            _save_drawing(doc)
         return ok(
             drawing=doc.GetTitle,
             layout=layout,

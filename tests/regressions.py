@@ -3329,6 +3329,40 @@ def assert_package_version_matches_pyproject():
     assert py.group(1) == ini.group(1), (
         "pyproject says %s but __init__ says %s" % (py.group(1), ini.group(1)))
     return "package version is consistent: %s" % py.group(1)
+def assert_pipeline_saves_once():
+    """0.8.111 / PR1 — a pipeline run saved FIVE times and audited three.
+
+    Counted 2026-11-03, one produce_drawing:
+      add_center_marks, add_surface_finish, add_hole_callouts, add_note  — one each
+      auto_dimension                                                     — two (mid + place_outside branch)
+    and nothing in pipeline.py saved at all, so the file's final state depended entirely on
+    whichever sub-tool happened to run last.
+
+    Now every sub-tool honours save=False, pipeline saves ONCE after all writers, and the
+    audit count dropped 3 -> 2 (auto_dimension no longer audits on the pipeline path).
+
+    Measured after the change: save calls 5 -> 1, save ms 1697 -> 665, file 101751 bytes
+    with 10 dimensions, every step ok.
+
+    The risk this guards: if someone adds a new sub-tool that saves unconditionally, the
+    count grows again silently — the receipt has no field for it.
+    """
+    src = _read("tools/pipeline.py")
+    body = ast.get_source_segment(src, ast.parse(src).body[
+        next(i for i, n in enumerate(ast.parse(src).body)
+             if isinstance(n, ast.FunctionDef) and n.name == "produce_drawing")]) or ""
+    for call in ("auto_dimension(", "add_center_marks(", "add_surface_finish(",
+                 "add_hole_callouts("):
+        idx = body.find(call)
+        assert idx > 0, "%s is no longer called" % call
+        tail = body[idx:idx + 260]
+        assert "save=False" in tail, (
+            "%s does not pass save=False - the run will save more than once" % call)
+    assert "one save for the whole run" in body, (
+        "the single explicit save is gone; the file's final state is back to luck")
+    drawing = _read("tools/drawing.py")
+    assert "if save:" in drawing, "add_center_marks stopped honouring the flag"
+    return "pipeline saves once; every writer is asked not to"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3452,6 +3486,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.111 pipeline saves once", assert_pipeline_saves_once),
     ("0.8.110 version consistent", assert_package_version_matches_pyproject),
     ("0.8.100 smoke reads fields", assert_smoke_reads_fields_not_human_text),
     ("0.8.99 place_outside default", assert_auto_dimension_places_outside_by_default),
