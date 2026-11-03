@@ -5790,6 +5790,19 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
                 })
 
         matched, unmatched, skipped_zero = [], [], []
+        # ONE-TO-ONE consumption. The old code did
+        #     next((v for v in sheet_values if abs(v - value) <= tol), None)
+        # against the SAME full list for every ledger row, so a single drawing dimension
+        # could "cover" any number of ledger rows that happened to share its value. With
+        # 18 ledger rows against 11 drawing dimensions — and values repeating (10 three
+        # times, 8 twice, 3 twice) — every row found a partner and coverage was pinned at
+        # 1.0 no matter what was actually missing. A report put it plainly: with R1.5 and
+        # Ø14 absent from the sheet, the check still returned coverage 1.0.
+        #
+        # A drawing dimension can only evidence ONE ledger dimension, so each match
+        # consumes its value. That alone caps coverage at drawing/ledger and makes a
+        # missing item visible again.
+        available = list(sheet_values)
         for row in ledger_rows:
             value = row.get("value_mm")
             if value is None:
@@ -5800,17 +5813,24 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
             if abs(float(value)) < 1e-9:
                 skipped_zero.append(row)
                 continue
-            hit = next((v for v in sheet_values if abs(v - value) <= tol), None)
+            hit = None
+            for candidate in available:
+                if abs(candidate - value) <= tol:
+                    hit = candidate
+                    break
             if hit is None:
                 unmatched.append(row)
             else:
+                available.remove(hit)
                 matched.append(dict(row, drawing_value_mm=hit))
 
         ledger_values = {round(r["value_mm"], 2) for r in ledger_rows
                          if r.get("value_mm") is not None
                          and abs(float(r["value_mm"])) > 1e-9}
-        sheet_only = [v for v in sheet_values
-                      if not any(abs(v - lv) <= tol for lv in ledger_values)]
+        # Dimensions left over after the pairing: the sheet has them, the ledger has no
+        # matching value. Computed from what SURVIVED, not from the original list — with
+        # one-to-one pairing an unconsumed value is the only honest "drawing only" signal.
+        sheet_only = list(available)
 
         by_feature = {}
         for row in unmatched:
@@ -5840,7 +5860,10 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
             skipped_examples=skipped_non_length[:8],
             unmatched_ledger=unmatched[:60],
             drawing_only_values=sheet_only[:40],
-            note="unmatched_ledger 是「台账有、图纸没有对应值」的候选缺项；"
+            note="匹配是一对一消耗：一条图纸尺寸只能证明一条台账尺寸，"
+                 "所以 coverage 的上限是 drawing_dimensions/ledger_dimensions，"
+                 "不会因为值重复而虚高。"
+                 "unmatched_ledger 是「台账有、图纸没有对应值」的候选缺项；"
                  "drawing_only_values 是图上有但台账没有的（多为投影尺寸或参考尺寸）。"
                  "投影关系会让同一尺寸在不同视图取值不同，因此按值匹配只能作为待确认清单。"
                  "skipped_zero_value 是 0.0 的草图约束值，不是长度，已从覆盖率分母剔除。",

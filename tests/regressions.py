@@ -2609,6 +2609,33 @@ def assert_cosmetic_threads_are_not_silent():
         "the receipt claims to know the thread spec, which this binding cannot read")
     return "cosmetic threads block delivery when unannotated, and the spec is not invented"
 
+def assert_reconcile_uses_one_to_one_matching():
+    """0.8.73 / P1-7 — coverage was pinned at 1.0 because one drawing dimension covered many.
+
+    The old match was `next((v for v in sheet_values if abs(v - value) <= tol), None)` run
+    against the SAME list for every ledger row. With 18 ledger rows against 8-11 drawing
+    dimensions and values repeating (10 three times, 8 twice, 3 twice), every row found a
+    partner, so a report saw `coverage: 1.0` while R1.5 and Ø14 were absent from the sheet.
+
+    A drawing dimension can evidence exactly ONE ledger dimension. Each match now consumes
+    its value, which caps coverage at drawing/ledger and makes a missing item visible.
+
+    Verified 2026-11-03 on the reporter's 旋转轴: coverage 1.0 -> 0.444, and the previously
+    invisible gaps list themselves (`圆角1: [1.5]`, `切除-拉伸1: [1.8, 3.0]`).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "reconcile_ledger")) or ""
+    assert "available.remove(hit)" in body, (
+        "the match no longer consumes its value — one dimension can cover many again")
+    assert "available = list(sheet_values)" in body, (
+        "there is no working copy to consume from")
+    assert "coverage" in body and "drawing_dimensions" in body, (
+        "the receipt does not expose the numbers behind the ratio")
+    assert "一对一" in body or "one-to-one" in body.lower(), (
+        "the docstring does not explain why coverage cannot exceed drawing/ledger")
+    return "reconcile pairs dimensions one-to-one, so coverage can no longer be pinned at 1.0"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2719,6 +2746,7 @@ STATIC_REGRESSIONS = [
     ("0.8.70 turned parts map", assert_turned_parts_map_to_sheet_coordinates),
     ("0.8.71 delete_view warns", assert_delete_view_warns_about_leftover_geometry),
     ("0.8.72 threads not silent", assert_cosmetic_threads_are_not_silent),
+    ("0.8.73 reconcile one-to-one", assert_reconcile_uses_one_to_one_matching),
 ]
 
 
