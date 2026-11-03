@@ -1326,10 +1326,19 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
 
     Returns (placed_count, failures, sides_used).
     """
+    # Split the cost of the read pass: position vs value vs outline. 4.0 s for 11
+    # dimensions is ~90 ms per COM round trip, so knowing WHICH call is expensive decides
+    # whether this can be optimised at all. Declared FIRST: the outline loop below uses
+    # _t_outline, and putting these after the boxes list raised NameError on every call.
+    _t_read_pos = 0.0
+    _t_read_val = 0.0
+    _t_outline = 0.0
     views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
     boxes = []
     for view in views:
+        _t0 = time.perf_counter()
         box = precise_outline(view)
+        _t_outline += time.perf_counter() - _t0
         if box and len(box) >= 4:
             boxes.append((view, box))
     if not boxes:
@@ -1359,7 +1368,9 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
                 debug["skip_before"] += 1
                 continue                     # placed by the user, not by this call
             try:
+                _t0 = time.perf_counter()
                 position = [float(v) for v in annotation.GetPosition]
+                _t_read_pos += time.perf_counter() - _t0
             except Exception:
                 debug["skip_no_position"] += 1
                 continue
@@ -1394,9 +1405,11 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             # Read the value so the stack can be ordered by SIZE. Three Ø42 dimensions can
             # sit 0.4 mm apart; position ordering can never separate those.
             try:
+                _t0 = time.perf_counter()
                 _dim = win.Dispatch(
                     win.Dispatch(annotation.GetSpecificAnnotation).GetDimension2(0))
                 dim_value = float(_dim.SystemValue) * 1000.0
+                _t_read_val += time.perf_counter() - _t0
             except Exception:
                 dim_value = 0.0
             buckets.setdefault((str(view.Name), side), []).append(
@@ -1497,6 +1510,11 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             except Exception as exc:
                 failures.append({"view": view_name, "side": side,
                                  "reason": str(exc)[:70]})
+    # Report the split so the next optimisation is chosen from data, not from a guess.
+    debug["ms_read_position"] = round(_t_read_pos * 1000.0, 1)
+    debug["ms_read_value"] = round(_t_read_val * 1000.0, 1)
+    debug["ms_outline"] = round(_t_outline * 1000.0, 1)
+    perf_hooks.mark("dim_outside_read", time.perf_counter() - (_t_read_pos + _t_read_val + _t_outline))
     return placed, failures, sides_used, overflow_notes, debug
 
 
@@ -1886,6 +1904,8 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 if (place_outside and count and not outside_placed) else None),
             outside_effective=bool(place_outside and outside_placed),
             placed_outside=outside_placed,
+            # The split matters: 4.0 s for 11 dimensions means one of these three calls is
+            # ~90 ms. Reported so the next change is chosen from numbers.
             outside_sides=outside_sides,
             outside_failed=outside_failed[:10],
             advisory=notes,
