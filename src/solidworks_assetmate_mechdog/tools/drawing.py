@@ -7034,24 +7034,45 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
         except Exception:
             leader_made = False
         floating = (attached is None) and not leader_made
+        # `leader_endpoint_m` used to be a field that was always null (P1, 2026-11-03).
+        # Chasing it: `IGtol.GetLeaderAtIndex2` does NOT exist on this binding (checked on
+        # both the annotation and GetSpecificAnnotation — MISSING). What does work is
+        # `GetLeaderCount`, which is how `frame_has_leader` is decided.
+        #
+        # The endpoint has to come from somewhere else. The leader points AT the attached
+        # edge, and `list_drawing_edges` already cached that edge's sheet coordinates, so
+        # that is the honest answer: the target, not a re-reading of the leader geometry.
+        # `leader_endpoint_source` says which it is, because "the arrow ends here" and
+        # "the arrow should end here" are different claims.
         leader_endpoint = None
+        leader_endpoint_source = None
         if edge_index is not None:
-            # Best effort: contour edges report no vertices on this binding, so this is
-            # often null even when a leader exists. Reported rather than guessed.
-            try:
-                picked = win.Dispatch(call_method(gtol, "GetAnnotation"))
-                leader_endpoint = None
+            for _stamp, _cached in list(_EDGE_CACHE.items()):
                 try:
-                    leader_endpoint = [round(float(v), 4)
-                                       for v in picked.GetLeaderPoints]
+                    if _stamp[0] != os.path.abspath(drawing_path):
+                        continue
+                    if view_name is not None and _stamp[2] not in (None, view_name):
+                        continue
+                    _rows = _cached.get("edges") or []
+                    if 0 <= int(edge_index) < len(_rows):
+                        _row = _rows[int(edge_index)]
+                        _pt = (_row.get("sheet_center") or _row.get("sheet_start"))
+                        if _pt:
+                            leader_endpoint = [round(float(_pt[0]), 4),
+                                               round(float(_pt[1]), 4)]
+                            leader_endpoint_source = "attached_edge_sheet_coords"
+                            break
                 except Exception:
-                    leader_endpoint = None
-            except Exception:
-                leader_endpoint = None
+                    continue
+            if leader_endpoint is None:
+                leader_endpoint_source = ("unavailable: IGtol.GetLeaderAtIndex2 does not "
+                                          "exist on this binding and the edge was not in "
+                                          "list_drawing_edges' cache")
 
         return drawing_ok(
             created=True, saved=bool(save), attached_to=attached,
             leader_endpoint_m=leader_endpoint,
+            leader_endpoint_source=leader_endpoint_source,
             leader_style_requested=str(leader_style),
             leader_status=leader_status,
             leader_count=(int(annotation.GetLeaderCount)

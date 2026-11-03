@@ -3148,6 +3148,37 @@ def assert_produce_drawing_refuses_to_double_a_sheet():
         "overwrite does not delete the old file, so create_drawing opens it and appends")
     assert "CloseDoc" in body, "an open copy would block the delete"
     return "produce_drawing refuses a second run unless overwrite=True, and overwrite is clean"
+def assert_leader_endpoint_comes_from_the_attached_edge():
+    """0.8.95 / P1 — `leader_endpoint_m` existed but was always null.
+
+    Chased it properly this time. `IGtol.GetLeaderAtIndex2` (the method the report
+    suggested) does NOT exist on this binding — checked on both the annotation and
+    GetSpecificAnnotation, both MISSING. `GetLeaderCount` works, which is why
+    `frame_has_leader` was never the problem.
+
+    Two things I had wrong before:
+      * the GTol annotation reports `GetType == 5` on this part, not 7 (that number came
+        from a different drawing in an earlier report)
+      * `IAnnotation.GetLeaderPoints` does not exist either
+
+    So the endpoint is taken from what the leader points AT: `list_drawing_edges` has
+    already cached the attached edge's sheet coordinates. `leader_endpoint_source` says
+    so explicitly, because "the arrow ends here" and "the arrow should end here" are
+    different claims and the caller must be able to tell them apart.
+
+    Verified on 旋转轴: edge0 at [0.10879, 0.27601], receipt [0.1088, 0.276],
+    source attached_edge_sheet_coords.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_geometric_tolerance")) or ""
+    assert "leader_endpoint_source" in body, (
+        "the receipt does not say where the endpoint came from — a null field is back")
+    assert "attached_edge_sheet_coords" in body, (
+        "the endpoint is no longer sourced from the attached edge")
+    assert "GetLeaderAtIndex2 does not" in body, (
+        "the note that GetLeaderAtIndex2 is unavailable was lost")
+    return "leader endpoint reports the attached edge's coords, with provenance"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3271,6 +3302,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.95 leader endpoint sourced", assert_leader_endpoint_comes_from_the_attached_edge),
     ("0.8.94 produce_drawing idempotent", assert_produce_drawing_refuses_to_double_a_sheet),
     ("0.8.93 flip_x + cache key", assert_sheet_x_can_be_flipped_and_the_cache_knows),
     ("0.8.92 filter takes plan dicts", assert_dimension_filter_accepts_plan_dicts_and_strings),
