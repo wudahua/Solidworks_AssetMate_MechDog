@@ -2503,6 +2503,46 @@ def assert_dimension_spread_is_diagnosed_not_faked():
     assert "20 / 10 / 9" in segment, "the capability lost the measurement that disproves the claim"
     return "dimension spread is measured and documented, not silently 'fixed'"
 
+def assert_turned_parts_map_to_sheet_coordinates():
+    """0.8.70 / P0-1 — `axes_ambiguous` locked every turned part out of coordinate annotation.
+
+    A report hit it on four tools in a row on a shaft (Ø14xØ10xØ8, 60 long): edges without
+    sheet coords, circle centres null, cut planes unmapped, dimensions by blind edge_index.
+
+    Two independent causes, both fixed here:
+
+    1. The tie test refused whenever two axis pairs scored equally. For 飞达动力轴
+       (extent [35, 35, 107], front view a 35x35 circle) the tied pairs were (0,1) and
+       (1,0) — the two RADIAL extents, which are equal, so the orders are interchangeable
+       and there was nothing to be ambiguous about. Equal-extent ties now resolve.
+       Genuinely stretched parts additionally break the tie by view aspect: the model's
+       long axis is drawn across the wider sheet direction.
+
+    2. Even with the axes known, nothing projected: contour edges carry no vertices on
+       this binding, so `model_start` was always absent and `sheet_projected` stayed false
+       with reason "no projection inputs". `ICurve.CircleParams` still answers with
+       centre + radius, which is all a turned part's view needs.
+
+    Verified 2026-11-03: the same shaft now reports sheet_projected true, four circles
+    sharing one centre and radii 8.5/10/13.5/15 mm.
+    """
+    src = _read("tools/drawing.py")
+    fn = _function_node(ast.parse(src), "_view_axis_map")
+    body = ast.get_source_segment(src, fn) or ""
+    assert "axes_equal_interchangeable" in body, (
+        "equal-extent ties are refused again — every round part with matching radii breaks")
+    assert "inferred_from_aspect" in body, (
+        "the aspect-ratio tie-break for stretched parts is gone")
+    assert "axes_ambiguous" in body, (
+        "genuine ambiguity must still be refused (a cube has no long axis)")
+    listing = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                        "list_drawing_edges")) or ""
+    assert "CircleParams" in listing, (
+        "circle edges have no fallback — turned parts project nothing")
+    assert "sheet_radius_m" in listing, (
+        "the projected radius is not reported, so a circle cannot be aimed at")
+    return "turned parts resolve axes and project circle centres to the sheet"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2610,6 +2650,7 @@ STATIC_REGRESSIONS = [
     ("0.8.67 weld is sketch", assert_weld_symbol_is_declared_as_sketch),
     ("0.8.68 layout iterates", assert_layout_iterates_and_uses_both_axes),
     ("0.8.69 dim spread diagnosed", assert_dimension_spread_is_diagnosed_not_faked),
+    ("0.8.70 turned parts map", assert_turned_parts_map_to_sheet_coordinates),
 ]
 
 

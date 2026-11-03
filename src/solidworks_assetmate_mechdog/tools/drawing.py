@@ -2901,6 +2901,26 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
                     item["model_end"] = [round(v, 4) for v in p2]
                 except Exception:
                     pass
+                # Contour edges carry NO vertices on this binding (GetStartVertex returns
+                # None), so a turned part — whose views are rings of circles — had nothing
+                # to project and reported sheet_projected:false even once the axes were
+                # known. `ICurve.CircleParams` still answers with centre + axis + radius,
+                # which is everything needed: project the centre, scale the radius.
+                if "model_start" not in item:
+                    try:
+                        edge = win.Dispatch(raw)
+                        curve = win.Dispatch(call_method(edge, "GetCurve"))
+                        params = list(curve.CircleParams or ())
+                        if len(params) >= 7:
+                            centre_pt = [float(params[0]), float(params[1]), float(params[2])]
+                            radius = float(params[6])
+                            item["model_center"] = [round(v, 4) for v in centre_pt]
+                            item["radius_m"] = round(radius, 6)
+                            item["is_circle"] = True
+                            item["model_start"] = [round(v, 4) for v in centre_pt]
+                            item["model_end"] = [round(v, 4) for v in centre_pt]
+                    except Exception:
+                        pass
             rows.append(item)
 
         # Project to sheet coordinates. `add_drawing_dimension` already does this for error
@@ -2922,6 +2942,9 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
                 item["sheet_end"] = [
                     round(view_pos[0] + (end[axes[0]] - centre[axes[0]]) * view_scale, 5),
                     round(view_pos[1] + (end[axes[1]] - centre[axes[1]]) * view_scale, 5)]
+                if item.get("radius_m"):
+                    item["sheet_radius_m"] = round(item["radius_m"] * view_scale, 6)
+                    item["sheet_center"] = list(item["sheet_start"])
                 projected = True
 
         payload = {"drawing": doc_title, "view": target_name,
@@ -3455,6 +3478,66 @@ def _view_axis_map(view):
     if best_err > max(width, height) * 0.05:
         return None, "axes_mismatch"
     if len(scored) > 1 and abs(scored[1][0] - best_err) < 1e-6:
+        # Two candidates tie. On this binding that is almost always the SAME pair in
+        # reversed order — (0,2) vs (2,0), i.e. "is the model's Z across or up?" — which
+        # is exactly what a turned part produces: extent [14,14,60] against a wide, flat
+        # front view. Refusing outright excluded every shaft/sleeve/pin/flange from
+        # coordinate-level annotation, and a report hit this on four tools in a row.
+        #
+        # Break the tie the way a draughtsman does: the view is drawn wide, so the model's
+        # long axis lies ACROSS the sheet. Only fall back to "ambiguous" when the view is
+        # itself nearly square (a cube), where no such habit applies.
+        candidates = [pair for err, pair in scored if abs(err - best_err) < 1e-6]
+
+        # Some ties are not ambiguous at all: when the two extents involved are EQUAL, the
+        # reversed pair is the same mapping. 飞达动力轴 measures [35, 35, 107] and its front
+        # view is a 35x35 circle, so (0,1) and (1,0) both fit perfectly and neither is
+        # wrong — swapping two equal axes changes no coordinate. Refusing here excluded
+        # every round part whose two radial extents happen to match, which is most of them.
+        distinct = {tuple(sorted(pair)) for pair in candidates}
+        if len(distinct) == 1:
+            pair = candidates[0]
+            if abs(extent[pair[0]] - extent[pair[1]]) < max(1e-9, extent[pair[0]] * 0.01):
+                return {
+                    "axes": [int(pair[0]), int(pair[1])],
+                    "centre_m": centre,
+                    "extent_m": extent,
+                    "model_path": model_path,
+                    "outline_m": [width, height],
+                    "mapping_confidence": "axes_equal_interchangeable",
+                    "note": ("The two projected extents are equal (%.1f mm), so the two "
+                             "axis orders map identically — no ambiguity to resolve."
+                             % (extent[pair[0]] * 1000)),
+                }, None
+
+        widened = width / height if height > 1e-9 else 1.0
+        dominant = max(range(3), key=lambda i: extent[i])
+        runner_up = sorted(extent, reverse=True)[1]
+        stretched = runner_up > 1e-9 and extent[dominant] / runner_up >= 1.3
+        picked = None
+        if stretched and len(candidates) > 1:
+            for pair in candidates:
+                horizontal, vertical = pair
+                if abs(widened - 1.0) < 0.2:
+                    continue          # square view: the tie is genuine
+                if widened > 1.2 and horizontal == dominant:
+                    picked = pair
+                    break
+                if widened < 0.833 and vertical == dominant:
+                    picked = pair
+                    break
+        if picked is not None:
+            return {
+                "axes": [int(picked[0]), int(picked[1])],
+                "centre_m": centre,
+                "extent_m": extent,
+                "model_path": model_path,
+                "outline_m": [width, height],
+                "mapping_confidence": "inferred_from_aspect",
+                "note": ("axes_ambiguous resolved by view aspect ratio: the model's long "
+                         "axis (%d, %.1f mm) is drawn across the wider sheet direction. "
+                         "Pass view_axis_hint if this is wrong." % (dominant, extent[dominant] * 1000)),
+            }, None
         return None, "axes_ambiguous"
     return {
         "axes": [int(best[0]), int(best[1])],
