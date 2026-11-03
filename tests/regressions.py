@@ -3303,6 +3303,32 @@ def assert_smoke_reads_fields_not_human_text():
     assert 'hole.get("diameter_dimensions")' in smoke, (
         "the structured read is gone — smoke is parsing prose again")
     return "smoke reads diameter_dimensions, not the Chinese detail line"
+def assert_package_version_matches_pyproject():
+    """0.8.110 — 19 releases shipped with pyproject and __init__ stuck at 0.8.90.
+
+    Every `sed -i 's/old/NEW/'` under this session matched the PREVIOUS version string. One
+    silent mismatch early on (0.8.90 -> 0.8.91 never applied) made all 19 later edits no-ops,
+    because each one looked for a string that was never there. The tags advanced to
+    v0.8.109 while `pip show` would still have said 0.8.90.
+
+    The tell was in plain sight: smoke printed "AssetMate smoke test  v0.8.90" in every run
+    I did today, including the ones I read through.
+
+    A tag cannot be checked from a unit test, but the two files must at least agree.
+    """
+    root = os.path.dirname(os.path.dirname(SRC))
+    with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as fh:
+        pyproject = fh.read()
+    with open(os.path.join(SRC, "__init__.py"), encoding="utf-8") as fh:
+        init = fh.read()
+
+    import re as _re
+    py = _re.search(r'^version\s*=\s*"([^"]+)"', pyproject, _re.M)
+    ini = _re.search(r'__version__\s*=\s*"([^"]+)"', init)
+    assert py and ini, "version strings not found"
+    assert py.group(1) == ini.group(1), (
+        "pyproject says %s but __init__ says %s" % (py.group(1), ini.group(1)))
+    return "package version is consistent: %s" % py.group(1)
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3426,6 +3452,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.110 version consistent", assert_package_version_matches_pyproject),
     ("0.8.100 smoke reads fields", assert_smoke_reads_fields_not_human_text),
     ("0.8.99 place_outside default", assert_auto_dimension_places_outside_by_default),
     ("0.8.98 circle point on circumference", assert_circle_edges_carry_a_point_on_the_circumference),
