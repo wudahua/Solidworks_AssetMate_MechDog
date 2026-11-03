@@ -1992,6 +1992,7 @@ def close_document(drawing_path):
                      "Check that SolidWorks is reachable; a busy dialog blocks CloseDoc.")
 
 
+@perf_hooks.timed("center_marks")
 def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view_name=None):
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 
@@ -6270,6 +6271,7 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         return error("hole_callouts_failed", str(exc))
 
 
+@perf_hooks.timed("reconcile")
 def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
     """Match the model's driving dimensions against the drawing's dimensions.
 
@@ -6511,6 +6513,7 @@ def _sf_visibility_check(doc, x, y, before_img, after_img):
     }
 
 
+@perf_hooks.timed("surface_finish")
 def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining",
                        leader_type="none", lay_symbol=0, arrow_type=0,
                        prod_method="", sample_len="", min_roughness="",

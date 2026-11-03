@@ -53,6 +53,11 @@ def main():
     ap.add_argument("--variant", default="baseline")
     ap.add_argument("--paper", default="A3")
     ap.add_argument("--keep", action="store_true", help="keep the temp drawings")
+    ap.add_argument("--interleave", action="store_true",
+                    help="alternate cache ON/OFF every run (A,B,A,B,...) instead of one "
+                         "variant per invocation. Required for a defensible A/B: within-"
+                         "session drift then hits both arms equally. With this flag "
+                         "--runs N means N pairs.")
     args = ap.parse_args()
 
     model = os.path.abspath(args.model)
@@ -68,14 +73,24 @@ def main():
     print("log     : %s" % log_path)
     print("-" * 78)
 
+    # A/B plan. Without --interleave, every run uses the same variant (whatever the caller
+    # exported) — that is what produced the "B leaked 23 s into the un-instrumented
+    # remainder" reading, which may just have been drift between blocks.
+    if args.interleave:
+        plan = [("A_no_cache", "0"), ("B_cache", "1")] * args.runs
+    else:
+        plan = [(args.variant, None)] * args.runs
+
     try:
-        for index in range(args.runs):
+        for index, (variant, cache_env) in enumerate(plan):
+            if cache_env is not None:
+                os.environ["ASSETMATE_LEDGER_CACHE"] = cache_env
             tag = uuid.uuid4().hex[:6]
             part = os.path.join(work, "p_%s_%d.SLDPRT" % (tag, index))
             out = os.path.join(work, "d_%s_%d.SLDDRW" % (tag, index))
             shutil.copy2(model, part)
 
-            perf_hooks.start(args.variant, {
+            perf_hooks.start(variant, {
                 "model_path": os.path.basename(model),
                 "model_class": "part" if model.lower().endswith(".sldprt") else "assembly",
                 "paper": args.paper,
@@ -115,8 +130,8 @@ def main():
             perf_hooks.append(log_path, result)
             rows.append(result)
 
-            print("run %-2d %7.1f ms  ok=%-5s dims=%-4s docs_after=%s"
-                  % (index + 1, wall_ms, ok,
+            print("run %-2d %-12s %7.1f ms  ok=%-5s dims=%-4s docs_after=%s"
+                  % (index + 1, variant, wall_ms, ok,
                      result.get("dimension_count"), result.get("docs_after")))
     finally:
         if not args.keep:
@@ -129,21 +144,43 @@ def main():
         print("no correct sample — refusing to report timings")
         return 1
 
-    phases = sorted({k for r in good for k in (r.get("timings_ms") or {})})
-    print("%-22s %10s %10s %10s" % ("phase", "median", "p95", "calls"))
-    for phase in phases:
-        values = [(r["timings_ms"] or {}).get(phase) for r in good]
-        values = [v for v in values if isinstance(v, (int, float))]
-        if not values:
-            continue
-        calls = [((r.get("counts") or {}).get(phase)) for r in good]
-        calls = [c for c in calls if isinstance(c, int)]
-        print("%-22s %10.1f %10.1f %10s"
-              % (phase, statistics.median(values), p95(values),
-                 statistics.median(calls) if calls else "-"))
+    groups = []
+    for r in good:
+        if r.get("variant") not in [g for g, _ in groups]:
+            groups.append((r.get("variant"), []))
+    for name, _ in groups:
+        pass
+    buckets = {name: [] for name, _ in groups}
+    for r in good:
+        buckets[r.get("variant")].append(r)
 
-    walls = [r["wall_ms"] for r in good]
-    print("%-22s %10.1f %10.1f" % ("WALL", statistics.median(walls), p95(walls)))
+    for name, sample in buckets.items():
+        print("\n== %s   n=%d" % (name, len(sample)))
+        walls = [r["wall_ms"] for r in sample]
+        print("%-22s %10s %10s %10s" % ("phase", "median", "p95", "calls"))
+        phases = sorted({k for r in sample for k in (r.get("timings_ms") or {})})
+        for phase in phases:
+            values = [(r["timings_ms"] or {}).get(phase) for r in sample]
+            values = [v for v in values if isinstance(v, (int, float))]
+            if not values:
+                continue
+            calls = [((r.get("counts") or {}).get(phase)) for r in sample]
+            calls = [c for c in calls if isinstance(c, int)]
+            print("%-22s %10.1f %10.1f %10s"
+                  % (phase, statistics.median(values), p95(values),
+                     statistics.median(calls) if calls else "-"))
+        measured = [((r.get("timings_ms") or {}).get(p) or 0) for r in sample
+                    for p in (r.get("timings_ms") or {})]
+        # The un-instrumented remainder is the number that matters more than any phase:
+        # if it moves between arms, the comparison is confounded.
+        remainders = []
+        for r in sample:
+            spent = sum((r.get("timings_ms") or {}).values())
+            remainders.append(max(0.0, r["wall_ms"] - spent))
+        print("%-22s %10.1f %10.1f" % ("WALL", statistics.median(walls), p95(walls)))
+        print("%-22s %10.1f %10.1f" % ("UNINSTRUMENTED", statistics.median(remainders),
+                                       p95(remainders)))
+
     print("\nrecords appended to %s" % log_path)
     return 0
 
