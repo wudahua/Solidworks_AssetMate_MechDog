@@ -6325,6 +6325,37 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
                 available.remove(hit)
                 matched.append(dict(row, drawing_value_mm=hit))
 
+        # P1 of a 2026-11-03 report: one-to-one pairing (0.8.73) fixed coverage being pinned
+        # at 1.0, but it swung the other way. A Ø14 that IS on the sheet got reported as
+        # missing because an earlier ledger row consumed the only matching drawing dimension.
+        # The report's table: `D1@Sketch2 = 14.0` appeared as missing while θ14 was plainly
+        # drawn, and `D1@草图1 = 8.0` likewise.
+        #
+        # The two cases need different answers, so they are separated here:
+        #   matched               — pairing succeeded, the sheet evidences this dimension
+        #   present_but_unmatched — the VALUE is on the sheet, but this row lost the pairing
+        #                           (usually a same-value projection or a duplicate); the
+        #                           dimension is drawn, the attribution is what is uncertain
+        #   missing_truly         — no drawing dimension carries that value at all
+        #
+        # `present_but_unmatched` must not be counted as covered (that was the 1.0 lie) but
+        # it must not be called missing either (that was the 0.444 lie).
+        original_sheet_values = list(sheet_values)
+        present_but_unmatched = []
+        missing_truly = []
+        for row in unmatched:
+            value = row.get("value_mm")
+            try:
+                has_value = any(abs(float(v) - float(value)) <= tol
+                                for v in original_sheet_values)
+            except Exception:
+                has_value = False
+            if has_value:
+                present_but_unmatched.append(dict(
+                    row, reason="图上有同值尺寸，但已被其他台账行配对，归属待确认"))
+            else:
+                missing_truly.append(row)
+
         ledger_values = {round(r["value_mm"], 2) for r in ledger_rows
                          if r.get("value_mm") is not None
                          and abs(float(r["value_mm"])) > 1e-9}
@@ -6346,6 +6377,13 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
             unmatched_count=len(unmatched),
             coverage=(round(len(matched) / (len(ledger_rows) - len(skipped_zero)), 3)
                       if (len(ledger_rows) - len(skipped_zero)) else None),
+            # Three-way split (see the comment above): `unmatched_count` keeps its old
+            # meaning (pairing failed) so existing callers do not silently change behaviour,
+            # and the two refined lists say WHY each one failed.
+            missing_truly_count=len(missing_truly),
+            present_but_unmatched_count=len(present_but_unmatched),
+            missing_truly=missing_truly[:60],
+            present_but_unmatched=present_but_unmatched[:60],
             unmatched_by_feature={
                 k: sorted({round(v, 2) for v in vals if v is not None})
                 for k, vals in sorted(by_feature.items())
@@ -6367,7 +6405,11 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
                  "unmatched_ledger 是「台账有、图纸没有对应值」的候选缺项；"
                  "drawing_only_values 是图上有但台账没有的（多为投影尺寸或参考尺寸）。"
                  "投影关系会让同一尺寸在不同视图取值不同，因此按值匹配只能作为待确认清单。"
-                 "skipped_zero_value 是 0.0 的草图约束值，不是长度，已从覆盖率分母剔除。",
+                 "skipped_zero_value 是 0.0 的草图约束值，不是长度，已从覆盖率分母剔除。"
+                 "**缺项分两类**：missing_truly 是图上完全没有该值（真缺）；"
+                 "present_but_unmatched 是图上有同值尺寸但已被别的台账行配对（图上画了，"
+                 "归属待确认）。只有前一类才算真缺——上一版把两类混在一起报，"
+                 "把已经画出来的 Ø14 也说成缺。",
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

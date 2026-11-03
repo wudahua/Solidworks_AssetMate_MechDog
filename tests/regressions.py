@@ -3179,6 +3179,38 @@ def assert_leader_endpoint_comes_from_the_attached_edge():
     assert "GetLeaderAtIndex2 does not" in body, (
         "the note that GetLeaderAtIndex2 is unavailable was lost")
     return "leader endpoint reports the attached edge's coords, with provenance"
+def assert_reconcile_splits_missing_from_present_but_unmatched():
+    """0.8.96 / P1 — coverage swung from a lie of 1.0 to a lie of "Ø14 is missing".
+
+    0.8.73 made the pairing one-to-one, which stopped coverage being pinned at 1.0 but
+    overcorrected: a Ø14 that IS drawn got reported as missing because an earlier ledger row
+    had consumed the only drawing dimension with that value. The report listed
+    `D1@Sketch2 = 14.0` and `D1@草图1 = 8.0` as missing while both were plainly on the sheet.
+
+    Now the failures are separated:
+      missing_truly         — no drawing dimension carries that value at all
+      present_but_unmatched — the value IS on the sheet, this row just lost the pairing
+
+    Coverage is unchanged (it still counts only successful pairings — that is the honest
+    number), but a caller can now tell "not drawn" from "drawn, attribution unclear".
+
+    Verified on 旋转轴: missing_truly 0, present_but_unmatched 10
+    (values 1.5 / 1.8 / 3.0 / 8.0 / 10.0 / 14.0). The 1.5 is the chamfer, not the R1.5
+    fillet — same value, different feature, which is exactly why this class must not be
+    called "missing" OR "matched".
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "reconcile_ledger")) or ""
+    assert "missing_truly" in body, "the split is gone — everything is called missing again"
+    assert "present_but_unmatched" in body, (
+        "a value that IS on the sheet is reported as missing again")
+    assert "original_sheet_values" in body, (
+        "the check runs against the leftover list instead of the whole sheet, so nothing "
+        "would ever be classified as present")
+    assert "unmatched_count" in body, (
+        "the old count disappeared, silently changing what existing callers see")
+    return "reconcile separates truly-missing from present-but-unmatched"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3302,6 +3334,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.96 reconcile three-way", assert_reconcile_splits_missing_from_present_but_unmatched),
     ("0.8.95 leader endpoint sourced", assert_leader_endpoint_comes_from_the_attached_edge),
     ("0.8.94 produce_drawing idempotent", assert_produce_drawing_refuses_to_double_a_sheet),
     ("0.8.93 flip_x + cache key", assert_sheet_x_can_be_flipped_and_the_cache_knows),
