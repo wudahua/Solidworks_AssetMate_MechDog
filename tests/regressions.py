@@ -2771,6 +2771,40 @@ def assert_set_view_verifies_the_outline_not_the_property():
         "the receipt does not show both numbers, so a reader cannot see the disagreement")
     return "set_view verifies the outline centre against the request and errors on mismatch"
 
+def assert_cross_sections_are_not_judged_by_parent_extent():
+    """0.8.80 / P1-4 — the kept-dimension test compared a cross-section to the whole part.
+
+    A 2026-11-03 report: cutting a shaft across the axis at the keyway gave a correct
+    15.98x15.40 section, judged `section_suspicious` because it "kept 15.4 of 27.98 mm
+    (ratio 0.550)". The parent's 27.98 is the WHOLE shaft height — a cross-section is a
+    disc the size of the LOCAL diameter, so the ratio was never meaningful.
+
+    It also failed the other way, which is worse: cutting at the Ø14 collar produces a
+    section height of exactly the parent's height, so ratio 1.0 and the check PASSED even
+    with the cut in the wrong place. "该拦的不拦、不该拦的拦".
+
+    The discriminator is geometry, not a heuristic: a cross-section is smaller than the
+    parent in BOTH axes; a proper longitudinal section keeps one axis at full size.
+
+    Verified on 旋转轴 (source 59.98x13.98, right view):
+        off 0.01 -> 9.98x9.98   cross_section, accepted  (ratio would have been 0.714)
+        off 0.02 -> 7.98x7.69   cross_section, accepted
+        off 0.03 -> 23.8x13.34  not a cross-section, still rejected as section_empty
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_section_sanity")) or ""
+    assert "cross_section" in body, (
+        "cross-sections are judged by the parent's overall extent again")
+    assert "sec_w < src_w * 0.85" in body and "sec_h < src_h * 0.85" in body, (
+        "the discriminator must require BOTH axes smaller — one axis at full size means a "
+        "longitudinal section, which the ratio test does apply to")
+    assert "section_kind" in body, (
+        "the receipt does not say which kind of section it decided this was")
+    assert "hatch_count" in body or "edge_count" in body, (
+        "the acceptance fallback for cross-sections is no longer stated")
+    return "cross-sections skip the parent-extent ratio; longitudinal sections still use it"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2886,6 +2920,7 @@ STATIC_REGRESSIONS = [
     ("0.8.77 gtol leader signature", assert_gtol_leader_uses_the_real_signature),
     ("0.8.78 distance dimension", assert_distance_dimension_reports_its_value),
     ("0.8.79 set_view outline check", assert_set_view_verifies_the_outline_not_the_property),
+    ("0.8.80 cross-section exemption", assert_cross_sections_are_not_judged_by_parent_extent),
 ]
 
 

@@ -3683,6 +3683,33 @@ def _section_sanity(source_view, section, orientation, depth):
         info["reason"] = ("partial section (depth>0) shrinks the view by design, so the "
                           "kept dimension is not comparable")
         return info
+
+    # A CROSS-section is not comparable to the parent's overall extent, in either axis.
+    # Cutting a shaft across its axis gives a disc the size of the LOCAL diameter: at Ø8
+    # that is 8 mm against a 28 mm parent height, so the "kept height" ratio reads 0.55 and
+    # the check called it suspicious — while the section was perfectly correct.
+    #
+    # It fails the other way too, which is worse: cutting at the Ø14 collar gives a section
+    # height of exactly 14 = the parent's 14, so ratio 1.0 and the check PASSES even if the
+    # cut is in the wrong place. Reported 2026-11-03 as "该拦的不拦、不该拦的拦".
+    #
+    # The discriminator is straight geometry: a cross-section is smaller than the parent in
+    # BOTH axes; a proper longitudinal section keeps one axis at full size.
+    # 0.85, not 0.7: a Ø10 disc against a 14 mm parent is 0.714 — measurably a cross-section
+    # but just above the tighter threshold, and it was still being rejected. A genuine
+    # longitudinal section keeps one axis at ~1.0, so 0.85 on BOTH axes still separates the
+    # cases (measured: longitudinal 1.000, wrong-cut 0.244, cross-sections 0.55-0.71).
+    cross_section = (sec_w < src_w * 0.85 and sec_h < src_h * 0.85)
+    if cross_section:
+        info["checked"] = False
+        info["section_kind"] = "cross_section"
+        info["reason"] = (
+            "the section is smaller than the source in BOTH axes (%.1f x %.1f vs %.1f x "
+            "%.1f mm), which is what a cut ACROSS the axis looks like — the parent's overall "
+            "extent is not a valid reference for it, so the kept-dimension test does not "
+            "apply. Acceptance relies on edge_count > 0 and hatch_count > 0 instead."
+            % (sec_w * 1000, sec_h * 1000, src_w * 1000, src_h * 1000))
+        return info
     if str(orientation) == "vertical":
         keep_src, keep_sec, which = src_h, sec_h, "height"
     else:
