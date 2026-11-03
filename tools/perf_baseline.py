@@ -99,21 +99,25 @@ def main():
             result["wall_ms"] = wall_ms
             result["view_count"] = len(payload.get("views") or [])
             result["dimension_count"] = (payload.get("dimension_gap") or {}).get("inserted")
-            result["docs_after"] = doc_count()
             if error:
                 result["error"] = error
-            perf_hooks.append(log_path, result)
-            rows.append(result)
 
-            print("run %-2d %7.1f ms  ok=%-5s dims=%-4s docs=%s"
-                  % (index + 1, wall_ms, ok,
-                     result.get("dimension_count"), result.get("docs_after")))
-
+            # Close BEFORE sampling the document count. Reading it first reported the
+            # in-flight state (part + drawing + the previous run's leftovers) and made a
+            # clean run look like it leaked — the acceptance matrix cares about the count
+            # after the run, not during it.
             try:
                 drawing.close_document(out)
                 drawing.close_document(part)
             except Exception:
                 pass
+            result["docs_after"] = doc_count()
+            perf_hooks.append(log_path, result)
+            rows.append(result)
+
+            print("run %-2d %7.1f ms  ok=%-5s dims=%-4s docs_after=%s"
+                  % (index + 1, wall_ms, ok,
+                     result.get("dimension_count"), result.get("docs_after")))
     finally:
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)

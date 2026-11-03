@@ -5,6 +5,8 @@ dimension, where to call out holes, and what to verify afterwards. Read-only ana
 the model is never modified.
 """
 
+import collections
+import copy
 import os
 
 from .. import perf_hooks
@@ -206,6 +208,16 @@ def _classify(bbox_mm, has_flat_pattern, types):
     return "一般零件", "包围盒 %s" % (bbox_mm,)
 
 
+#: Ledger cache for one pipeline run (PR3). Bounded; see build_feature_ledger.
+_LEDGER_CACHE = collections.OrderedDict()
+LEDGER_CACHE_LIMIT = 16
+
+
+def invalidate_ledger_cache():
+    """Drop every cached ledger. Call after an in-memory model edit or a rebuild."""
+    _LEDGER_CACHE.clear()
+
+
 @perf_hooks.timed("ledger")
 def build_feature_ledger(model_path, include_faces=True, config=None):
     """Build a structured ledger of features, dimensions, holes and model doubts.
@@ -215,10 +227,45 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
     back to geometry instead of being guessed.
 
     include_faces=False skips cylindrical-face scanning (much faster on large models).
+
+    Results are CACHED per (path, mtime, include_faces, config) — PR3 of the 2026-11-03
+    performance spec. Measured baseline: one `produce_drawing` called this FIVE times on
+    the same model (pipeline, planner, hole callouts, delivery check, one more), taking
+    22.6 s of an 82.1 s run. Two of those five used include_faces=True, which walks every
+    face in the model.
+
+    Cache keys follow spec §5.1: the model is the only input, so path + mtime + the two
+    flags identify it completely. Notes and limits:
+
+    * The return value is a deep copy. Callers mutate the dict (adding `kind`, sorting
+      lists); handing out the cached object would let one caller corrupt the next.
+    * **mtime only moves on save.** An in-memory edit followed by another call would be
+      served stale — that is why `invalidate_ledger_cache()` exists, and why the pipeline
+      (which copies the model to a fresh temp path per run) is the intended beneficiary
+      rather than an interactive editing session.
+    * Two variants are cached separately: include_faces=True is expensive and answers a
+      superset question, so it must never be served from the cheap entry.
     """
     path = os.path.abspath(model_path)
     if not os.path.exists(path):
         raise FileNotFoundError("file not found: %s" % path)
+
+    cache_key = None
+    try:
+        cache_key = (
+            os.path.normcase(path),
+            os.stat(path).st_mtime_ns,
+            bool(include_faces),
+            str(config) if config is not None else None,
+        )
+        hit = _LEDGER_CACHE.get(cache_key)
+        if hit is not None:
+            _LEDGER_CACHE.move_to_end(cache_key)
+            shallow = dict(hit)
+            shallow["cached"] = True
+            return shallow
+    except Exception:
+        cache_key = None
     if not path.lower().endswith((".sldprt", ".sldasm")):
         return error("bad_input", "Expected a .SLDPRT/.SLDASM, got %s" % os.path.basename(path))
 
@@ -330,7 +377,7 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
         category, reason = _classify(bbox_mm or [0, 0, 0], has_flat_pattern, types)
 
         driving = sum(len(f["dimensions"]) for f in features)
-        return ok(
+        payload = ok(
             part=os.path.basename(path),
             path=path,
             config=config_name,
@@ -357,6 +404,18 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
                 "驱动尺寸来自特征，草图内部尺寸与基准面偏移未计入。",
             ],
         )
+        # Store a private copy so later mutation of `payload` by this caller cannot reach
+        # the cache, and the caller cannot see `cached: true` for its own first call.
+        if cache_key is not None:
+            try:
+                _LEDGER_CACHE[cache_key] = copy.deepcopy(payload)
+                _LEDGER_CACHE.move_to_end(cache_key)
+                while len(_LEDGER_CACHE) > LEDGER_CACHE_LIMIT:
+                    _LEDGER_CACHE.popitem(last=False)
+            except Exception:
+                pass
+        payload.setdefault("cached", False)
+        return payload
     except Exception as exc:
         return error("ledger_failed", str(exc))
 
