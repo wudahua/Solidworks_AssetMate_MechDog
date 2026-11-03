@@ -3363,6 +3363,37 @@ def assert_pipeline_saves_once():
     drawing = _read("tools/drawing.py")
     assert "if save:" in drawing, "add_center_marks stopped honouring the flag"
     return "pipeline saves once; every writer is asked not to"
+def assert_drawing_batch_defaults_off_and_restores():
+    """0.8.112 / PR2 — DrawingBatch exists, but its switches are OFF because they were measured.
+
+    The spec's reference skeleton enabled `suppress_dimension_input` and
+    `disable_automatic_view_update` by default. On this machine neither earns that:
+
+    * `swInputDimValOnCreate` (10): interleaved A/B, 旋转轴, auto_dimension —
+      True 7542 / 8253 ms, False 7812 / 7428 ms. Ranges overlap; delta on medians -441 ms.
+      A FIRST single pair suggested -1417 ms and that was drift. So: default False.
+    * `swDrawingAutomaticViewUpdate` (90): already False on the drawings we tested, which
+      the spec itself warns about — "if already off, do not attribute gains to it".
+      Default None = do not touch it.
+
+    What the class DOES guarantee, and what this assertion is really about:
+    preferences come back even when the body raises, and the receipt says when a switch was
+    already in the desired state so nobody can claim an intervention that never happened.
+    """
+    src = _read("drawing_batch.py")
+    assert "suppress_dimension_input: bool = False" in src, (
+        "suppress_dimension_input is on by default again without a measurement")
+    assert "automatic_view_update: Optional[bool] = None" in src, (
+        "automatic_view_update is forced by default - it must be opt-in")
+    assert "already_off" in src, (
+        "the receipt no longer says when a switch was already in the desired state")
+    assert "restore_errors" in src and "Failed to restore" in src, (
+        "a failed restore is silent again")
+
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "__exit__")) or ""
+    # Restore must happen in __exit__, not in a happy-path-only place.
+    assert "SetUserPreferenceToggle" in body, "preferences are not restored on exit"
+    return "DrawingBatch is opt-in, restores on exception, and reports already-off switches"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3486,6 +3517,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.112 drawing batch opt-in", assert_drawing_batch_defaults_off_and_restores),
     ("0.8.111 pipeline saves once", assert_pipeline_saves_once),
     ("0.8.110 version consistent", assert_package_version_matches_pyproject),
     ("0.8.100 smoke reads fields", assert_smoke_reads_fields_not_human_text),
