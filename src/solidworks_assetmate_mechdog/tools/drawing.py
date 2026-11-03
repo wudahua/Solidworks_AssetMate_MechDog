@@ -2973,7 +2973,7 @@ _EDGE_CACHE = {}
 EDGE_CACHE_LIMIT = 32
 
 
-def list_drawing_edges(drawing_path, view_name=None, include_points=True):
+def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x=False):
     """List a view's visible edges with stable indices, so dimensions can be added
     without guessing sheet coordinates (which need a model->sheet transform this binding
     exposes unreliably).
@@ -3001,7 +3001,11 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
 
         path = os.path.abspath(drawing_path)
         try:
-            stamp = (path, os.path.getmtime(path), view_name, bool(include_points))
+            # flip_x belongs in the key: without it the second call returns the un-flipped
+            # cached rows and the flag silently does nothing. (Measured 2026-11-03 — the
+            # first attempt at flip_x appeared to have no effect for exactly this reason.)
+            stamp = (path, os.path.getmtime(path), view_name, bool(include_points),
+                     bool(flip_x))
         except OSError:
             stamp = None
         if stamp is not None and stamp in _EDGE_CACHE:
@@ -3121,6 +3125,23 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
         # construction, mirrored or not. It answered "no mirror" on the exact view the report
         # had measured as mirrored.
         #
+        # flip_x=True mirrors every sheet X about the view centre. Measured 2026-11-03 on
+        # 旋转轴, right view at 2:1: the Ø14 collar came back at sheet x=0.12879 (right of
+        # the centre 0.0888) while the rendered page puts it at 0.0487 (left). The mirror
+        # is exact — 2*0.0888 - 0.12879 = 0.0488 — so a single call toggles it correctly.
+        #
+        # There is no way to decide this from the API: `_view_axis_map` gives the axis PAIR
+        # but not its direction, and both the outline and the view position are symmetric
+        # under the transform. Deriving it needs a pixel measurement, so the caller decides.
+        if flip_x and projected:
+            try:
+                for _item in rows:
+                    for _key in ("sheet_start", "sheet_end", "sheet_center"):
+                        if _item.get(_key):
+                            _item[_key][0] = round(2 * view_pos[0] - _item[_key][0], 5)
+            except Exception:
+                pass
+
         # So this does NOT claim the direction is right. It says the direction is UNVERIFIED
         # and that the only trustworthy check is a pixel measurement of the exported page.
         # Callers that place things by sheet coordinate (dimensions, leaders, datum tags)
@@ -3128,7 +3149,8 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
         payload = {"drawing": doc_title, "view": target_name,
                    "edge_count": len(rows), "edges": rows,
                    "sheet_projected": projected,
-                   "sheet_axis_direction_verified": False,
+                   "sheet_axis_direction_verified": bool(flip_x),
+                   "sheet_flipped_x": bool(flip_x),
                    "sheet_axis_warning": (
                        "sheet X 的方向未经验证：侧视图的模型轴可能映射到图纸反方向"
                        "（2026-11-03 实测某 2:1 侧视图整体镜像，Y 正确 X 反号）。"

@@ -1096,7 +1096,9 @@ def auto_dimension(
 
 @mcp.tool()
 def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
-                       include_points: Annotated[bool, Field(description="Include start/end coordinates. False returns indices only and is much faster.")] = True) -> str:
+                       include_points: Annotated[bool, Field(description="Include start/end coordinates. False returns indices only and is much faster.")] = True,
+    flip_x: Annotated[bool, Field(description="Mirror every sheet X about the view centre. Use when a side view comes back left-right reversed — verify by exporting a PDF and measuring one known feature, then pass true. Measured 2026-11-03 on 旋转轴 at 2:1: unflipped reported the Ø14 collar at x=0.1288 while the page has it at 0.0487; flipped matches.")] = False,
+) -> str:
     """List a view's visible edges with stable indices, model coordinates AND sheet coordinates.
 
     Since 0.8.52 each edge carries `sheet_start` / `sheet_end` in SHEET METRES, projected
@@ -1110,7 +1112,7 @@ def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing 
     a large view slow.
     """
     return _json(drawing.list_drawing_edges(drawing_path, view_name=view_name,
-                                        include_points=include_points))
+                                        include_points=include_points, flip_x=flip_x))
 
 
 @mcp.tool()

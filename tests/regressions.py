@@ -3099,6 +3099,33 @@ def assert_dimension_filter_accepts_plan_dicts_and_strings():
     assert "loose_keys" in body, (
         "the model/sheet renumbering key is gone")
     return "dimension_filter accepts plan dicts and raw strings, and recommends the dicts"
+def assert_sheet_x_can_be_flipped_and_the_cache_knows():
+    """0.8.93 / P0 — the mirrored sheet X is now correctable, and the cache must honour it.
+
+    Measured 2026-11-03 on 旋转轴, right view at 2:1:
+        view centre           0.0888
+        Ø14 collar reported   0.12879  (right of centre)
+        collar on the PDF     0.0487   (left of centre)
+        2*0.0888 - 0.12879 = 0.0488    — the mirror is exact
+
+    Nothing in the API decides the direction: `_view_axis_map` gives the axis PAIR, and both
+    the outline and the view position are symmetric under the transform. So the caller
+    measures once and passes `flip_x=True`; the projection then mirrors about the centre.
+
+    My first attempt at this appeared to do nothing, because `_EDGE_CACHE` keyed on
+    (path, mtime, view, include_points) — the second call with flip_x=True returned the
+    cached UNFLIPPED rows. The flag belongs in the key.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "list_drawing_edges")) or ""
+    assert "flip_x" in body, "the correction switch is gone"
+    assert "bool(flip_x)" in body, "flip_x is not part of the cache stamp — it will be ignored"
+    assert "2 * view_pos[0] -" in body, (
+        "the mirror is not computed about the view centre")
+    assert "sheet_axis_direction_verified" in body and "sheet_flipped_x" in body, (
+        "the receipt does not say whether the caller corrected the axis")
+    return "sheet X can be mirrored by the caller, the cache keys on it, and the receipt says so"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3222,6 +3249,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.93 flip_x + cache key", assert_sheet_x_can_be_flipped_and_the_cache_knows),
     ("0.8.92 filter takes plan dicts", assert_dimension_filter_accepts_plan_dicts_and_strings),
     ("0.8.90 no blank sheet leak", assert_create_drawing_does_not_leak_a_blank_sheet),
 ]
