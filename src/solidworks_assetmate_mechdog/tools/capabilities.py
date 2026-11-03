@@ -245,24 +245,18 @@ CAPABILITIES = [
     },
     {
         "id": "weld_symbol",
-        "status": "partial",
-        "summary": "焊接符号：原生 IWeldSymbol 画不出图形；角焊改用草图线绘制（representation=sketch_block）",
-        "rendered_as": "sketch_block",
-        "why": ("`InsertWeldSymbol3` 必须**无参**调用（带任何参数报 DISP_E_MEMBERNOTFOUND，"
-                "试过 1~6 个空串）。`SetText(Top, Left, Symbol, Right, Stagger, Contour)` "
-                "返回 True、`GetText(2)` 能读回符号名、`GetText(3)` 能读回尺寸，"
-                "但 `GetTriangleCount` **恒为 0**，渲染出来只有引线 + 水平线 + 数字。"
-                "试过 FILL / FILLET / 空串 / `<WELD-FILLET>`，全都不出三角。"
-                "**这与 GTol 符号格同源**（接受字符串、读回一致、但不渲染），"
-                "区别是 GTol 后来有 `IGtolFrame` XML 这条 2022+ 新路，"
-                "`IWeldSymbol` 还没有等价接口。"),
-        "workaround": ("**不要用半成品**：一个只有引线和数字、没有焊缝类型的符号，"
-                       "在车间比没有更危险。需要焊接标注时请在界面手工插入。"
-                       "待试方向：`InsertWeldSymbol2`/`InsertWeldSymbol` 旧接口、"
-                       "`SetProcess` 是否顺带带出图形、文档属性的焊接默认样式、换 SW 版本对照。"),
+        "status": "unsupported",
+        "summary": "焊接符号（`sketch_block` 实现）：文字能写、三角画不出来（与 `add_sheet_line` 同源）",
+        "why": ("`IWeldSymbol` 只存符号名不实例化几何（SW32.4.0，两个零件实测：`SetText` 返回 True、"
+                "`GetText(2)` 读回 \"FILL\"、图上只有引线和尺寸数字）。改用图纸草图线画三角形"
+                "（`InsertSketch` + `CreateLine` + `AddToDB=True`）之后，2026-11-03 用 PDF 像素复测："
+                "**仍然 0 像素**。`AddToDB=True` 不是让草图渲染的关键。"
+                "所以三角形从来没出现过，`segments: 5` 只统计了 CreateLine 没抛异常的调用次数。"),
+        "workaround": ("调用会返回 `weld_not_rendered`（带 `visibility.changed_pixels`）。"
+                       "只有注记（`add_note`）是真能显示的，三角形请在界面手工添加。"
+                       "`weld_type=\"butt\"` 仍是明确拒绝，不做近似。"),
     },
-    {
-        "id": "datum_feature_symbol",
+    {"id": "datum_feature_symbol",
         "status": "verified",
         "summary": "基准要素符号：能插入、能指定字母、能挂在指定边上；形状是圆形，这是 GB 的正确样式",
         "why": ("`add_datum_feature` 走 `IModelDoc2.InsertDatumTag2`（`IDrawingDoc.InsertDatumTag` "

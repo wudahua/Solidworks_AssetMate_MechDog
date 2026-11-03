@@ -886,6 +886,25 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
             segments.append((x + ref_len, y, float(target_x_m), float(target_y_m)))
 
         doc = _open_drawing(drawing_path)
+        # A 2026-11-03 report caught the contradiction: this docstring says "the only valid
+        # check is the rendered sheet", and then nothing checked it. `add_sheet_line` was
+        # proven the same day to render 0 pixels, and this function uses the same primitive
+        # (InsertSketch + CreateLine) — the only differences being `AddToDB = True` and a
+        # `sheet_scale` division.
+        #
+        # Measured now: with AddToDB = True the diff is STILL 0. So the weld triangle has
+        # never appeared, `segments: 5` only counted CreateLine calls that did not raise, and
+        # the "looks right and prints right" claim was wrong.
+        _weld_before = None
+        _weld_dir = None
+        try:
+            import tempfile as _tempfile
+            from .drawing import _sf_render_page
+            _weld_dir = _tempfile.mkdtemp(prefix="weld_")
+            _weld_before = _sf_render_page(
+                doc, os.path.join(_weld_dir, "before.pdf"), _weld_dir)
+        except Exception:
+            _weld_before = None
         sheet_obj = doc.GetCurrentSheet
         try:
             doc.ActivateSheet(sheet_obj.GetName)
@@ -949,6 +968,30 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
                                x + gap * 0.2, y + s * 1.15,
                                height_mm=max(2.5, min(5.0, s * 1000 * 0.6)),
                                save=save)
+        _weld_visibility = {"checked": False, "reason": "render helper unavailable"}
+        if _weld_before is not None:
+            try:
+                from .drawing import _sf_render_page
+                from PIL import Image, ImageChops
+                _after = _sf_render_page(doc, os.path.join(_weld_dir, "after.pdf"), _weld_dir)
+                _d = ImageChops.difference(_weld_before.convert("RGB"), _after.convert("RGB"))
+                _changed = sum(1 for _p in _d.get_flattened_data() if _p != (0, 0, 0))
+                _weld_visibility = {"checked": True, "changed_pixels": _changed,
+                                    "visible": _changed > 0}
+            except Exception as _exc:
+                _weld_visibility = {"checked": False, "reason": str(_exc)[:120]}
+
+        # 602 changed pixels were measured here on 2026-11-03 — but the same sheet drawn
+        # WITHOUT this function changes 0, and a bare CreateLine changes 0 too, in all three
+        # line styles (default / 6 centre / 0 solid). So those 602 pixels are the NOTE, not
+        # the triangle: `add_weld_symbol` writes a note alongside the sketch, and notes render
+        # natively.
+        #
+        # The pixel diff therefore proves "something was added to the sheet", never "the
+        # triangle is there". Isolating it would need a lines-only variant that this function
+        # does not have, so the receipt says exactly that instead of claiming either way.
+        _triangle_isolated = False
+
         return drawing_ok(
             drawing=doc.GetTitle,
             weld_type="fillet",
@@ -956,6 +999,14 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
             representation="sketch_block",
             is_native_weld_symbol=False,
             segments=len(segments),
+            visibility=_weld_visibility,
+            # The triangle cannot be separated from the note in a whole-page diff.
+            triangle_verified=False,
+            triangle_note=(
+                "changed_pixels 证明「这一页多了东西」，但那 602 像素来自本函数同时写的 note"
+                "（note 是原生注解，能渲染）。三角形本身无法从整页差分里分离——"
+                "同一张图上单独 CreateLine（三种线型）都是 0 像素变化，"
+                "所以三角形大概率仍然没画出来。请在界面核对。"),
             size_text=str(size_mm),
             text_written=bool((text_result or {}).get("ok")),
             position_m=[round(x, 4), round(y, 4)],

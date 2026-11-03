@@ -2432,7 +2432,13 @@ def assert_weld_symbol_is_declared_as_sketch():
     index = caps.index('"weld_symbol"')
     end = caps.find('"id":', index + 10)
     segment = caps[index:end if end > 0 else index + 1500]
-    assert '"partial"' in segment, "weld_symbol should be partial (fillet only, sketch drawn)"
+    # 0.8.91: flipped from partial to unsupported. `AddToDB = True` did NOT make sheet
+    # sketches render (three line styles measured, all 0 pixels). The 602 pixels this tool
+    # does produce come from its NOTE, not the triangle.
+    assert '"unsupported"' in segment, (
+        "weld_symbol claims partial again — the triangle has never rendered")
+    assert "triangle_verified=False" in _read("tools/layout.py"), (
+        "the receipt claims the triangle was verified, which a whole-page diff cannot do")
     assert "sketch_block" in segment, "the capability does not name the representation"
     return "weld symbol declared as sketch geometry, scaled correctly, types refused"
 
