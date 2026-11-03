@@ -2341,3 +2341,50 @@ swLeaderSide_e : swLS_SMART=0   swLS_LEFT=1    swLS_RIGHT=2
 还写进了交接文档——**规划者得先纠正我的签名，才能纠正我的结论**。
 
 **下次遇到接口返回非零，先查文档的签名与返回码表，别猜。**
+
+## 五十五、图纸草图：`CreateLine` 确实返回对象，但图上和 PDF 里都没有（0.8.86 探测）
+
+P2-2 要画轴线中心线。反馈试了五条路，都失败，建议「退回 `CreateLine` 并设 `SketchSegment.Style` 为中心线线型」。
+
+### 线型这一环是通的
+
+```python
+sk = doc.SketchManager
+seg = win.Dispatch(sk.CreateLine(0.04, 0.25, 0, 0.12, 0.25, 0))
+seg.Style   # -> 0   （可读）
+seg.Style = 6        （可写，不报错）
+```
+
+`Style` / `Layer`（`'10'`）/ `Color` 都能读到，`Style` 也能写。
+
+### 但线不出现——而且**连 `add_sheet_line` 也一样**
+
+用项目里已验证过的 `add_sheet_line`（smoke 断言它 `ok: true`）画同一条线，
+**导出 PDF 与不画时像素级相同**：
+
+```
+add_sheet_line(drw, 0.04, 0.25, 0.12, 0.25) -> ok: true
+导出 PDF -> 和没有这条线时完全一致
+```
+
+**特征树里也找不到这个 Sketch**（遍历 `GetTypeName2` 只有 BlockFolder / DocsFolder /
+DetailCabinet / InkMarkupFolder / MarkupCommentFolder / CommentsFolder 这些文件夹）。
+
+### 所以卡点不在线型
+
+`add_sheet_line` 的 smoke 只断言 `ok`，**从来没有断言线可见**。
+这次探测第一次去看了 PDF，发现它在图纸上根本不出现。
+
+**在解决「图纸草图为什么不可见」之前，设 `Style` 没有意义**——
+画不出线，就没有线型可言。
+
+### 下一步该查的
+
+1. **图纸草图是否需要「显示草图」开关**（`GetUserPreferenceToggle` 存在，没试）
+2. **PDF 导出是否包含草图**（导出设置里可能有「包含草图」选项）
+3. **图纸草图到底建在哪**——`InsertSketch()` 在图纸上是否真的开了草图
+4. 反馈说「`CreateLine` 能渲染（BOM 线框验证）」——**但 BOM 是 `ITable` 对象，不是草图线**，
+   那次验证可能不适用于图纸草图
+
+**注意**：`add_sheet_line` 是 60+ 个工具里少数几个「只报 ok 不验证结果」的，
+它的 bug 会静默传播。**建议先给它加一个 PDF 像素验证**，再谈中心线。
