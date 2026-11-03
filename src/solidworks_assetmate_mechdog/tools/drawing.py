@@ -1101,6 +1101,7 @@ def _annotation_dimension_full_name(annotation, win):
     return None
 
 
+@perf_hooks.timed("dim_dedupe")
 def _dedupe_inserted_dimensions(doc, before_names, win):
     """Delete duplicate driving dimensions among the annotations JUST inserted (P1-6).
 
@@ -1154,6 +1155,7 @@ def _dedupe_inserted_dimensions(doc, before_names, win):
     return duplicates, removed, failed
 
 
+@perf_hooks.timed("dim_filter")
 def _filter_inserted_dimensions(doc, before_names, win, keep):
     """Delete inserted dimensions the plan did not keep (N3: plan ↔ auto_dimension).
 
@@ -1306,6 +1308,7 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
     return len(kept), removed, failed, None
 
 
+@perf_hooks.timed("dim_outside")
 def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
     """Move the dimensions this call inserted to just OUTSIDE their view (P0-1).
 
@@ -1573,7 +1576,7 @@ def survey_dimensions_by_view(drawing_path):
 
 @perf_hooks.timed("dimension_total")
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
-                   dimension_filter=None, place_outside=True,
+                   dimension_filter=None, place_outside=True, detect_same_value=False,
                    outside_gap_m=0.012, outside_step_m=0.008):
     """Insert the model's driving dimensions into the drawing views.
 
@@ -1652,6 +1655,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                     "active_view_not_set",
                     "all_views=False needs an activated view and none could be activated",
                     "Pass all_views=True, or activate a model view first.")
+        _t_insert = time.perf_counter()
         inserted = doc.InsertModelAnnotations3(
             0, types, bool(all_views), not bool(eliminate_duplicates), False, True
         )
@@ -1667,6 +1671,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             doc.GraphicsRedraw2()
         except Exception:
             pass
+        perf_hooks.mark("dim_insert", _t_insert)
         count = len(inserted) if isinstance(inserted, (tuple, list)) else (1 if inserted else 0)
         if count == 0 and not all_views:
             return error(
@@ -1719,9 +1724,16 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         # Value alone is not enough to delete on either: Ø10 and a 10 mm length are both
         # "10" and both legitimate. So this REPORTS candidates grouped by (value, type, view)
         # and lets the caller decide — deleting on value would take out real dimensions.
+        # MEASURED 2026-11-03: this diagnostic was 18.4 s of auto_dimension's 27.0 s (68%).
+        # It reads every annotation on every view to group them by (value, type), and it only
+        # REPORTS - it never deletes anything. Paying two thirds of the main path for a hint
+        # is the wrong default, so it is off unless asked for. The receipt says it was
+        # skipped, because a silently missing list looks like "no duplicates found".
         same_value_candidates = []
         try:
-            _anns = list_drawing_annotations(drawing_path)
+            # Skipping the read IS the optimisation: on 旋转轴 it was 18.4 s of 27.0 s.
+            # An empty annotation set makes the grouping below produce no candidates.
+            _anns = (list_drawing_annotations(drawing_path) if detect_same_value else {})
             _groups = {}
             for _row in (_anns.get("annotations") or []):
                 if _row.get("kind") != "dimension":
@@ -1843,6 +1855,8 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             # deleted automatically: Ø10 and a 10 mm length are both "10" and both correct.
             # Listed so a caller can spot the stray one the report described.
             same_value_candidates=same_value_candidates,
+            # An empty list must not read as "checked, none found". State which it is.
+            same_value_checked=bool(detect_same_value),
             same_value_candidate_count=len(same_value_candidates),
             dedupe_failed=dedupe_failed[:10],
             # 0.8.25: an explicit count — `dedupe_failed` is truncated to 10, so a run

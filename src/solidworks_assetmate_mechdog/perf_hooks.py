@@ -83,6 +83,19 @@ def timed(name):
     return _decorator
 
 
+def mark(name, started_at):
+    """Record the elapsed time since the given perf_counter() value.
+
+    For blocks that cannot be wrapped in a decorator because they are inline in a long
+    function - InsertModelAnnotations3 + its required rebuild/redraw, for example.
+    """
+    if _REC is None:
+        return
+    elapsed = (time.perf_counter() - started_at) * 1000.0
+    _REC.timings_ms[name] = round(_REC.timings_ms.get(name, 0.0) + elapsed, 3)
+    _REC.count(name)
+
+
 def bump(name, amount=1):
     """Increment a counter. No-op when not recording."""
     if _REC is not None:

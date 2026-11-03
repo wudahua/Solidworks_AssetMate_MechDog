@@ -1072,7 +1072,7 @@ def auto_dimension(
     dimension_filter: Annotated[list | None, Field(description="Keep only these dimensions. Pass plan_drawing()['keep_dimensions'] AS-IS (a list of dicts with feature/value_mm) — mapping it to bare full-name strings loses the value, and model vs sheet feature names differ (Sketch1 vs 草图2).")] = None,
     place_outside: Annotated[bool, Field(description="Push every inserted dimension just outside its view. Defaults to TRUE — leaving them inside covers the part with dimension lines (measured 2026-11-03: 18 dimensions all landed inside the outline, sheet unusable). Pass False for the old behaviour.")] = True,
     outside_gap_m: Annotated[float, Field(description="Distance from the view outline to the first dimension, in metres.")] = 0.012,
-    outside_step_m: Annotated[float, Field(description="Spacing between stacked dimensions, in metres.")] = 0.008,
+    outside_step_m: Annotated[float, Field(description="Spacing between stacked dimensions, in metres.")] = 0.008,    detect_same_value: Annotated[bool, Field(description="Group dimensions by (value, type) to flag same-value duplicates. OFF by default: it reads every annotation on every view and measured 18.4 s of auto_dimension's 27.0 s (68%) on 旋转轴. It only reports — it never deletes. Turn on when a sheet shows two identical values and you need the candidates.")] = False,
 ) -> str:
     """Insert the model's driving dimensions into the drawing (Insert Model Items).
 
@@ -1092,7 +1092,7 @@ def auto_dimension(
         eliminate_duplicates=eliminate_duplicates, dimension_filter=dimension_filter,
         place_outside=place_outside, outside_gap_m=outside_gap_m,
         outside_step_m=outside_step_m,
-    ))
+        detect_same_value=detect_same_value))
 
 
 @mcp.tool()
