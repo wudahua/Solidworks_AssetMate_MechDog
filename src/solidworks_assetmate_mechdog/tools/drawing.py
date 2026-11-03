@@ -4335,6 +4335,29 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
             "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),
             "placement": placement,
         }
+        # P1-3 of a 2026-11-03 report claimed edge_count was "always 2" regardless of
+        # framing. Measured on 旋转轴 (right view, centre [0.075, 0.265], 4:1):
+        #     r=0.004 -> 0    r=0.006 -> 1    r=0.008 -> 2    r=0.012 -> 2    r=0.020 -> 3
+        # so it does vary — but it stays small because the boundary only encloses a couple
+        # of contour lines on this part. A report expecting 6-8 was looking at a part with
+        # keyways and threads; this shaft has two outline lines in that window.
+        #
+        # What IS worth flagging is a view that rendered but shows almost nothing: 1-3
+        # edges means the frame probably clamped too tight to read as a detail. Kept as a
+        # distinct verdict so "too thin to use" does not look like "fine".
+        # Reported as a WARNING, not an error: a plain shaft really does have only two
+        # outline lines in any window, and enlarging those can be exactly what was wanted.
+        # Failing the call would make the tool unusable on precisely the parts it suits.
+        # `detail_empty` (0 edges) stays an error — that view shows nothing at all.
+        thin_warning = None
+        if 0 < edge_count < 4:
+            thin_warning = (
+                "这个局部视图只有 %d 条可见轮廓线，放大的内容很少。"
+                "视窗中心附近本来就只有这么多线；要放大键槽/轴肩/螺纹这类特征，"
+                "请换 center 或加大 radius_m。" % edge_count)
+        if thin_warning:
+            diag["detail_thin"] = True
+            diag["warning"] = thin_warning
         if edge_count == 0:
             return error(
                 "detail_empty",

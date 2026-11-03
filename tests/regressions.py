@@ -2870,6 +2870,40 @@ def assert_tolerance_checks_units_and_degenerate_limits():
         "an unreadable tolerance is reported as fact instead of uncertainty")
     return "tolerances flag unit mistakes and refuse degenerate limits, without crying wolf"
 
+def assert_detail_thin_is_a_warning_not_a_failure():
+    """0.8.83 / P1-3 — a thin detail view is worth flagging, not worth refusing.
+
+    A 2026-11-03 report claimed `edge_count` was "always 2 regardless of framing, so it
+    cannot tell you whether the framing worked". Measured on 旋转轴 (right view, centre
+    [0.075, 0.265], 4:1):
+
+        r=0.004 -> 0    r=0.006 -> 1    r=0.008 -> 2    r=0.012 -> 2    r=0.020 -> 3
+
+    It does vary. It stays small because that window genuinely holds only a couple of
+    contour lines on a plain shaft — the report expected 6-8 from a part with keyways.
+
+    So the verdict is a WARNING: a plain shaft really does have two outline lines, and
+    enlarging those may be exactly what was asked. `detail_empty` (0 edges) stays an
+    ERROR because that view shows nothing at all.
+
+    Also recorded, because it was misfiled as a bug: the arc across the detail view is
+    SolidWorks' own boundary circle scaled up, NOT a sketch this tool draws —
+    `circle_segments=0` produces an identical sheet.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_detail_view")) or ""
+    assert "detail_thin" in body, "a nearly-empty detail view passes silently again"
+    assert "thin_warning" in body, (
+        "the thin verdict is no longer a warning — plain shafts would be refused")
+    assert '"detail_empty"' in body, (
+        "a truly empty detail view must still fail, distinct from a thin one")
+    # the claim that produced the report
+    assert "r=0.020 -> 3" in body, (
+        "the measurement showing edge_count DOES vary is gone; the next reader will "
+        "re-run the same five framings")
+    return "thin detail views warn, empty ones still fail, and the numbers are on record"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2988,6 +3022,7 @@ STATIC_REGRESSIONS = [
     ("0.8.80 cross-section exemption", assert_cross_sections_are_not_judged_by_parent_extent),
     ("0.8.81 section position report", assert_section_reports_a_dropped_position_axis),
     ("0.8.82 tolerance units/limits", assert_tolerance_checks_units_and_degenerate_limits),
+    ("0.8.83 detail_thin warns", assert_detail_thin_is_a_warning_not_a_failure),
 ]
 
 
