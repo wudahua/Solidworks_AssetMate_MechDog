@@ -1402,18 +1402,13 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             }
             side = min(edges, key=edges.get)
             order = position[1] if side in ("left", "right") else position[0]
-            # Read the value so the stack can be ordered by SIZE. Three Ø42 dimensions can
-            # sit 0.4 mm apart; position ordering can never separate those.
-            try:
-                _t0 = time.perf_counter()
-                _dim = win.Dispatch(
-                    win.Dispatch(annotation.GetSpecificAnnotation).GetDimension2(0))
-                dim_value = float(_dim.SystemValue) * 1000.0
-                _t_read_val += time.perf_counter() - _t0
-            except Exception:
-                dim_value = 0.0
+            # The value is needed ONLY to order dimensions inside one side, and only when
+            # that side holds more than one. Reading it costs 143 ms per dimension
+            # (GetDimension2 -> IDimension -> SystemValue; measured 2026-11-03), and it is
+            # the single most expensive call in this function. So it is deferred: bucket
+            # first, then fill in values for the buckets that actually need sorting.
             buckets.setdefault((str(view.Name), side), []).append(
-                (order, annotation, position, owner_box, dim_value))
+                (order, annotation, position, owner_box, None))
 
     # ---- capacity per side, measured against the sheet frame ---------------------
     # The stack was unbounded: 16 dimensions on one side gave offset 0.012 + 15*0.008 =
@@ -1470,6 +1465,21 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
         overflow_notes.append("%s:%s 只放得下 %d 条，%d 条改去 %s"
                               % (view_name, side, len(keep), len(spill),
                                  opposite[side]))
+
+    # Fill in values only where ordering needs them.
+    for _key, _items in buckets.items():
+        if len(_items) < 2:
+            continue
+        for _i, (_o, _ann, _pos, _box, _val) in enumerate(_items):
+            try:
+                _t0 = time.perf_counter()
+                _dim = win.Dispatch(
+                    win.Dispatch(_ann.GetSpecificAnnotation).GetDimension2(0))
+                _v = float(_dim.SystemValue) * 1000.0
+                _t_read_val += time.perf_counter() - _t0
+            except Exception:
+                _v = 0.0
+            _items[_i] = (_o, _ann, _pos, _box, _v)
 
     debug["buckets"] = sum(len(v) for v in buckets.values())
     debug["per_side"] = {"%s:%s" % k: len(v) for k, v in buckets.items()}

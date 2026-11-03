@@ -2090,7 +2090,12 @@ def assert_stack_ordered_by_value():
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                       "_push_dimensions_outside")) or ""
-    assert "dim_value" in body, "the dimension value is never read"
+    # 0.8.108 defers the read (only buckets with >= 2 need ordering), so the local is now
+    # . What must hold is that the value is still READ and still used for ordering.
+    assert "SystemValue" in body, "the dimension value is never read"
+    assert "GetDimension2" in body, "the value is no longer obtained from the dimension"
+    assert "len(_items) < 2" in body, (
+        "the deferred read is gone - every dimension pays 143 ms again")
     assert "items.sort(key=lambda entry: (entry[4], entry[0]))" in body, (
         "the stack is not ordered by value (ascending = largest outermost)")
     for key in ("skip_before", "skip_no_position", "per_side"):
