@@ -3235,6 +3235,28 @@ def assert_notes_decode_and_arc_lengths_are_dropped():
     assert "arc_lengths_skipped" in plan, (
         "arc lengths are dropped silently, with no count in the receipt")
     return "notes decode for the reader; arc lengths stay out of the plan but are counted"
+def assert_circle_edges_carry_a_point_on_the_circumference():
+    """0.8.98 / P3 — `sheet_start` for a circle is the CENTRE, and the docstring said to use it.
+
+    A closed curve has no endpoints, so `sheet_start == sheet_end == centre` for every circular
+    edge. The tool description told callers to feed `sheet_start` to
+    `add_drawing_dimension(x=, y=)` — which for a circle means clicking the centre and
+    selecting nothing.
+
+    `sheet_point_on_circle` (centre + radius on +X) and `sheet_start_is_center: true` now say
+    what is actually true.
+
+    Verified on 飞达动力轴: centre [0.07229, 0.26551], r 0.0175,
+    point [0.08979, 0.26551] — exactly centre + r.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "list_drawing_edges")) or ""
+    assert "sheet_point_on_circle" in body, (
+        "circles are back to having no usable point")
+    assert "sheet_start_is_center" in body, (
+        "the receipt does not warn that sheet_start is the centre for a circle")
+    return "circular edges expose a real point on the circumference, and flag the centre case"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3358,6 +3380,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.98 circle point on circumference", assert_circle_edges_carry_a_point_on_the_circumference),
     ("0.8.97 note decode + arc drop", assert_notes_decode_and_arc_lengths_are_dropped),
     ("0.8.96 reconcile three-way", assert_reconcile_splits_missing_from_present_but_unmatched),
     ("0.8.95 leader endpoint sourced", assert_leader_endpoint_comes_from_the_attached_edge),

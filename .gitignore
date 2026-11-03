@@ -47,3 +47,10 @@ recolor-GitHub-交接/
 # Runtime failure logs (sw_session.log_dir writes here from the current directory).
 # They are diagnostics for the machine that ran the tool, never part of the package.
 logs/
+
+# Handoff bundles live under 项目规划/handoff/ — never at the repo root
+*.zip
+
+# Local working material (planning docs, handoff packs, probe scripts)
+项目规划 - AssetMate_MechDog/
+_probe_*.py

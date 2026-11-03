@@ -3110,6 +3110,17 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
                 if item.get("radius_m"):
                     item["sheet_radius_m"] = round(item["radius_m"] * view_scale, 6)
                     item["sheet_center"] = list(item["sheet_start"])
+                    # P3, 2026-11-03: for a circle, `sheet_start` and `sheet_end` are both
+                    # the CENTRE — a closed curve has no endpoints. The docstring told
+                    # callers to feed `sheet_start` to `add_drawing_dimension`, which for a
+                    # circle means clicking the centre and selecting nothing.
+                    #
+                    # A real point on the circumference costs nothing to provide:
+                    item["sheet_point_on_circle"] = [
+                        round(item["sheet_center"][0] + item["sheet_radius_m"], 5),
+                        round(item["sheet_center"][1], 5),
+                    ]
+                    item["sheet_start_is_center"] = True
                 projected = True
 
         # P0 of a 2026-11-03 report: the sheet X coordinates came back MIRRORED about the
