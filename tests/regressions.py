@@ -3277,6 +3277,27 @@ def assert_auto_dimension_places_outside_by_default():
     tool = _read("tools/drawing.py")
     assert "place_outside=True," in tool, "the tool default went back to False"
     return "auto_dimension pushes dimensions outside by default, and says so"
+def assert_smoke_reads_fields_not_human_text():
+    """0.8.100 — an assertion that parsed a human-readable line broke when the wording changed.
+
+    smoke asserted the Ø count by doing `detail.split("+")[1]` on the delivery_check detail
+    string. 0.8.89 rephrased that line to "仅靠 5 处 Ø 尺寸覆盖（没有孔标注对象）" — no "+" —
+    so the split raised, the except set `counted = -1`, and smoke reported
+    "delivery_check reports 0 Ø dimensions" on a payload that plainly said 5.
+
+    The structured field `diameter_dimensions` has existed since 0.8.89. Tests must read it.
+
+    Guarded here so the parse cannot come back as the primary source.
+    """
+    _root = os.path.dirname(os.path.dirname(SRC))
+    with open(os.path.join(_root, "tests", "smoke.py"),
+              encoding="utf-8") as _fh:
+        smoke = _fh.read()
+    assert "diameter_dimensions" in smoke, (
+        "smoke parses the detail string again instead of reading the field")
+    assert 'hole.get("diameter_dimensions")' in smoke, (
+        "the structured read is gone — smoke is parsing prose again")
+    return "smoke reads diameter_dimensions, not the Chinese detail line"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3400,6 +3421,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.100 smoke reads fields", assert_smoke_reads_fields_not_human_text),
     ("0.8.99 place_outside default", assert_auto_dimension_places_outside_by_default),
     ("0.8.98 circle point on circumference", assert_circle_edges_carry_a_point_on_the_circumference),
     ("0.8.97 note decode + arc drop", assert_notes_decode_and_arc_lengths_are_dropped),

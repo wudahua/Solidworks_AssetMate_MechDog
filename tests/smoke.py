@@ -1122,14 +1122,24 @@ def main():
                     if r.get("kind") == "dimension"]
             diameters = [r for r in dims if int(r.get("dimension_type") or -1) == 5]
             if diameters:
-                try:
-                    counted = int("".join(
-                        ch for ch in detail.split("+")[1] if ch.isdigit()) or 0)
-                except Exception:
-                    counted = -1
-                assert counted > 0, (
-                    "delivery_check reports 0 Ø dimensions while %d rows have "
-                    "dimension_type==5: %r" % (len(diameters), detail))
+                # 0.8.100: read the STRUCTURED field, not the human-readable detail line.
+                # The old version parsed `detail.split("+")[1]`, which silently broke the
+                # moment the wording changed (0.8.89 rephrased it to
+                # "仅靠 5 处 Ø 尺寸覆盖（没有孔标注对象）" — no "+", so the split raised,
+                # `counted` became -1, and smoke reported a regression that was really a
+                # brittle assertion). The field has existed since 0.8.89.
+                counted = hole.get("diameter_dimensions")
+                if counted is None:
+                    # Older payload: fall back to parsing, but never let the parse decide
+                    # "0" when a number is visibly present.
+                    try:
+                        counted = int("".join(
+                            ch for ch in str(detail).split("+")[-1] if ch.isdigit()) or 0)
+                    except Exception:
+                        counted = -1
+                assert int(counted) > 0, (
+                    "delivery_check reports %r Ø dimensions while %d rows have "
+                    "dimension_type==5: %r" % (counted, len(diameters), detail))
         return "reconcile ok=%r, delivery ok=%r, verdict=%r" % (
             rec.get("ok"), verdict.get("ok"), verdict.get("verdict"))
 
