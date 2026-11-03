@@ -5094,7 +5094,17 @@ def list_drawing_annotations(drawing_path, view_name=None):
                     try:
                         text = ann.GetSpecificAnnotation.GetText
                         if isinstance(text, str):
-                            row["text"] = text
+                            # P2, 2026-11-03: the WRITE side replaces Ø with <MOD-DIAM> (and
+                            # explains why), but the READ side returned the raw code, so a
+                            # caller could not tell whether the sheet shows "Ø8" or the
+                            # literal text. Dimensions already had `display_text`; notes now
+                            # get the same treatment, plus the raw string kept aside.
+                            row["text_raw"] = text
+                            resolved_note = _resolve_display_text(text)
+                            row["text"] = resolved_note or text
+                            if resolved_note and resolved_note != text:
+                                row["display_text"] = resolved_note
+                                row["text_is_format_code"] = True
                     except Exception:
                         pass
                     # Title-block and frame text is template furniture, not annotation the

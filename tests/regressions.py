@@ -3211,6 +3211,30 @@ def assert_reconcile_splits_missing_from_present_but_unmatched():
     assert "unmatched_count" in body, (
         "the old count disappeared, silently changing what existing callers see")
     return "reconcile separates truly-missing from present-but-unmatched"
+def assert_notes_decode_and_arc_lengths_are_dropped():
+    """0.8.97 / two P2-P3 items from a 2026-11-03 report.
+
+    ① NOTE READBACK was still raw format codes. The WRITE side deliberately replaces Ø with
+       `<MOD-DIAM>` (and explains why), so a reader got `技术要求：未注孔径 <MOD-DIAM>8` and
+       could not tell whether the sheet prints "Ø8" or the literal text. Dimensions had
+       `display_text` since 0.8.89; notes did not.
+       -> notes now carry `text` (decoded), `text_raw` (original) and `display_text`.
+          Verified: text/display "Ø8", raw "<MOD-DIAM>8".
+
+    ② ARC-LENGTH dimensions entered the shortlist: 785.398 mm and 771.436 mm — the
+       CIRCUMFERENCES of the chamfer circles. No shop inspects a chamfer by its perimeter,
+       and they inflated the ledger coverage. Dropped from the plan, with a count so the
+       omission is visible (`arc_lengths_skipped`).
+    """
+    src = _read("tools/drawing.py")
+    assert "text_raw" in src, "notes are raw format codes again"
+    assert "_resolve_display_text(text)" in src, (
+        "the note branch no longer decodes")
+    plan = _read("tools/planner.py")
+    assert "arc_skipped" in plan, "arc lengths are back in the shortlist"
+    assert "arc_lengths_skipped" in plan, (
+        "arc lengths are dropped silently, with no count in the receipt")
+    return "notes decode for the reader; arc lengths stay out of the plan but are counted"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3334,6 +3358,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.97 note decode + arc drop", assert_notes_decode_and_arc_lengths_are_dropped),
     ("0.8.96 reconcile three-way", assert_reconcile_splits_missing_from_present_but_unmatched),
     ("0.8.95 leader endpoint sourced", assert_leader_endpoint_comes_from_the_attached_edge),
     ("0.8.94 produce_drawing idempotent", assert_produce_drawing_refuses_to_double_a_sheet),

@@ -108,11 +108,23 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
     box = led.get("bbox_mm") or []
     stats = led.get("stats") or {}
     ledger_rows = []
+    arc_skipped = []
     for feature in led.get("features") or []:
         for dim in feature.get("dimensions") or []:
             kind = dim.get("dimension_type")
             if kind is not None and kind not in (0, 2, 3):
                 continue  # angles and ordinates are not lengths
+            # P3, 2026-11-03: arc-length dimensions showed up in the shortlist — 785.398 mm
+            # and 771.436 mm, which are the CIRCUMFERENCES of the chamfer circles. No shop
+            # inspects a chamfer by its perimeter, and they inflated the ledger coverage.
+            # Kept out of the plan by default; `arc_lengths` still reports how many were
+            # skipped so this is not a silent drop.
+            if kind == 3:
+                arc_skipped.append({
+                    "feature": feature.get("name"), "dimension": dim.get("name"),
+                    "value_mm": dim.get("value_mm"),
+                })
+                continue
             ledger_rows.append({
                 "feature": feature.get("name"), "type": feature.get("type"),
                 "dimension": dim.get("name"), "value_mm": dim.get("value_mm"),
@@ -150,6 +162,8 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
         suggested_views=list(views),
         driving_dimensions=total_driving,
         keep_count=len(keep),
+        arc_lengths_skipped=len(arc_skipped),
+        arc_lengths=arc_skipped[:10],
         keep_ratio=ratio,
         keep_dimensions=keep,
         keep_driving_count=sum(1 for e in keep if e.get("kind") == "driving"),
