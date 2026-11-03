@@ -212,6 +212,38 @@ CAPABILITIES = [
                        "需要特定分配时，只能在界面手工移动（同视图内改位置）或补建视图。"),
     },
     {
+        "id": "cosmetic_thread",
+        "status": "partial",
+        "summary": "装饰螺纹线：图纸层能检出并拦截漏标，但**模型侧读不到规格**",
+        "why": ("模型侧四条路全失败（2026-11-03，旋转轴 Ø10 段带 10 mm 装饰螺纹线）："
+                "① 特征树 9 个特征里没有 Thread/Cosmetic；② `GetCosmeticThreads` / "
+                "`GetCosmeticThreadCount` **方法不存在**；③ `GetFirstAnnotation2` 报 "
+                "`DISP_E_UNKNOWNNAME`；④ SLDPRT 二进制扫描 0 命中。"
+                "**但图纸上有**：`IAnnotation.GetType == 1`、名字「装饰螺纹线N」，"
+                "`list_drawing_annotations` 早就报成 `kind: other_1`，只是没人去看。"),
+        "workaround": ("`delivery_check` 的 `cosmetic_threads` 检查：图纸有螺纹注解但全图"
+                       "没有任何螺纹文字（「螺纹」/M10/M8/M12）→ **blocker**，verdict 降级。"
+                       "**规格（M10×1）不编**——反馈靠像素反推得出，工具不把它当事实输出，"
+                       "只要求「设计确认后手写」。"),
+    },
+    {
+        "id": "centerline",
+        "status": "unsupported",
+        "summary": "轴线中心线：做不出来——图纸草图本身不渲染",
+        "why": ("反馈试了五条路全失败。本轮追到根因，比中心线本身更底层："
+                "`InsertSketch` + `CreateLine` **能把线建出来**"
+                "（`GetSketchSegments` 数到 1 段），`SketchSegment.Style` 也能写，"
+                "**但图纸上不显示、导出 PDF 也不含它**（前后像素差分 **0 / 16,041,784**）。"
+                "线默认落在 `Layer = '10'`，而文档 12 个图层**一个都读不到**："
+                "`GetLayerManager`/`GetCount` 是属性（加括号报错），"
+                "`GetLayerAtIndex` 不存在。`PrintSetup` 是方法且要参数，猜不出形态。"),
+        "workaround": ("**不要用 `add_sheet_line` 画图框或中心线**——它已改为像素验证，"
+                       "线画不上会返回 `line_not_rendered`。"
+                       "需要中心线时请在界面手工添加。"
+                       "继续查的方向：宏录制（界面画一条草图线并导出 PDF，看它调了什么）、"
+                       "`PrintSetup` 的正确参数形态、换无图层模板对照。"),
+    },
+    {
         "id": "weld_symbol",
         "status": "partial",
         "summary": "焊接符号：原生 IWeldSymbol 画不出图形；角焊改用草图线绘制（representation=sketch_block）",

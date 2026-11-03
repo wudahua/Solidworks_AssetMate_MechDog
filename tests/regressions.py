@@ -2994,6 +2994,45 @@ def assert_sheet_lines_prove_they_rendered():
         "the receipt does not carry the number that settles it")
     return "add_sheet_line proves the line rendered or reports line_not_rendered"
 
+def assert_p3_receipts_say_what_they_mean():
+    """0.8.89 / P3 (6 items) — five receipt defects and one non-bug.
+
+    P3-1  list_drawing_annotations gave {"raw_text": "<MOD-DIAM>", "text": "Ø", "value_mm":
+          10.0} — the symbol resolved, the number did not, because the format string has no
+          <DIM> placeholder. Callers spliced value_mm by hand.
+          -> `display_text` ("Ø10") added; text/raw_text stay so the mismatch stays visible.
+
+    P3-2  delivery_check reported `hole_callouts ok: true` beside `hole_callouts: 0`,
+          reading as "hole callouts are fine" when there were none and coverage came purely
+          from Ø dimensions. -> detail now says «仅靠 N 处 Ø 尺寸覆盖（没有孔标注对象）»
+          and the two counts are separate fields.
+
+    P3-3  check_capabilities lacked cosmetic threads and centre lines (and the report's
+          "no datum symbol" was already answered in 0.8.63).
+          -> `cosmetic_thread` (partial) and `centerline` (unsupported) added; 27 -> 29.
+
+    P3-4  set_title_block returned `cell_position_m: []` on every run while claiming
+          `via: "position"`. `ann_position` only tried the property form of GetAnnotation
+          and returned [] on failure — indistinguishable from a real (0,0).
+          -> both forms tried via call_method, unusable result is None.
+
+    P3-6  Not a bug: the "8.00 / 8.00" Ø8 carries `tolerance_type: 3` (LIMIT) IN THE MODEL,
+          brought along by InsertModelItems. display_text now annotates that a tolerance
+          exists rather than pretending none does — and says the values were not read back.
+
+    P3-5 is covered by 0.8.82 (the unit_suspect guard).
+    """
+    src = _read("tools/drawing.py")
+    assert "display_text" in src, "P3-1 regressed: the value is unreadable again"
+    assert "公差类型" in src, "P3-6 regressed: a tolerance-bearing dimension looks plain"
+    assert "仅靠" in src, "P3-2 regressed: zero hole callouts reads as a pass again"
+    assert "call_method(note, \"GetAnnotation\")" in src, (
+        "P3-4 regressed: ann_position only tries the property form and returns [] on failure")
+    caps = _read("tools/capabilities.py")
+    assert '"cosmetic_thread"' in caps and '"centerline"' in caps, (
+        "P3-3 regressed: two capabilities the report asked for are missing")
+    return "P3 receipts say what they mean; P3-6 confirmed as model-side tolerance"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3116,6 +3155,7 @@ STATIC_REGRESSIONS = [
     ("0.8.84 axis classify + 总长", assert_turned_parts_classify_and_report_real_length),
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
+    ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
 ]
 
 

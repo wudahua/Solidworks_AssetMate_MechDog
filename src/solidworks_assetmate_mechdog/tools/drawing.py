@@ -2299,11 +2299,43 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
 
 
 def ann_position(note):
-    """Position of a note's annotation, best effort (None when unavailable)."""
+    """Position of a note's annotation, best effort (None when unavailable).
+
+    P3-4 of a 2026-11-03 report: `set_title_block` returned `cell_position_m: []` on three
+    runs while claiming `via: "position"`, so there was no way to check WHICH cell it
+    wrote. Two problems compounded:
+
+      * only the property form was tried. `IAnnotation` members are split between
+        properties and methods on this binding — `GetAnnotation` answers as a property on
+        some objects and needs a call on others, and the old code only handled the first.
+      * failures returned `[]`, which reads like "the position is the origin" rather than
+        "unknown". An empty list and a genuine (0, 0) are indistinguishable downstream.
+
+    Now both forms are tried and an unusable result is `None`.
+    """
+    # call_method, not `note.GetAnnotation()`: win32com dispatches that name as a
+    # PROPERTYGET and the call form raises MEMBERNOTFOUND — the guard in static_check
+    # enforces this, and it is why `ann_position` silently returned [] for so long.
+    annotation = None
     try:
-        return list(note.GetAnnotation.GetPosition)
+        annotation = call_method(note, "GetAnnotation")
     except Exception:
-        return []
+        annotation = None
+    if annotation is None:
+        try:
+            annotation = note.GetAnnotation
+        except Exception:
+            annotation = None
+    if annotation is None:
+        return None
+    for getter in (lambda: annotation.GetPosition, lambda: annotation.GetPosition()):
+        try:
+            values = list(getter() or ())
+            if len(values) >= 2:
+                return values
+        except Exception:
+            continue
+    return None
 
 
 def _sheet_notes(sheet):
@@ -4906,6 +4938,39 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                     row["text"] = resolved
                                 if "<MOD-" in raw_value_text.upper():
                                     row["text_is_format_code"] = True
+                            # P3-1 of a 2026-11-03 report: a Ø10 came back as
+                            # {"raw_text": "<MOD-DIAM>", "text": "Ø", "value_mm": 10.0} — the
+                            # symbol resolved but the NUMBER did not, because the format
+                            # string has no <DIM> placeholder. Anyone checking the sheet had
+                            # to splice value_mm in by hand.
+                            #
+                            # display_text is that splice, done once: the symbol(s) followed
+                            # by the value. `text` and `raw_text` are untouched so the
+                            # code-vs-rendering mismatch stays visible.
+                            try:
+                                _value = row.get("value_mm")
+                                _symbols = str(row.get("text") or "")
+                                if _value is not None and not any(
+                                        c.isdigit() for c in _symbols):
+                                    _number = ("%.2f" % float(_value)).rstrip("0").rstrip(".")
+                                    row["display_text"] = (_symbols + _number).strip()
+                                elif _value is not None:
+                                    row["display_text"] = _symbols
+                                # P3-6 of a 2026-11-03 report asked whether the "8.00 /
+                                # 8.00" two-line Ø8 came from this tool. It does not: that
+                                # dimension carries `tolerance_type: 3` (LIMIT) in the MODEL,
+                                # and InsertModelItems brings it along. Confirmed on 旋转轴 —
+                                # one Ø8 has tol 3, the other has tol 0.
+                                #
+                                # The values themselves are not read back here (GetTolerance
+                                # Values was not available), so the text only ANNOTATES that a
+                                # tolerance exists. Claiming the numbers would be invention.
+                                _tol = row.get("tolerance_type")
+                                if _tol and int(_tol) != 0 and row.get("display_text"):
+                                    row["display_text"] = "%s (公差类型 %d，值未读回)" % (
+                                        row["display_text"], int(_tol))
+                            except Exception:
+                                pass
                 if kind == "note":
                     try:
                         text = ann.GetSpecificAnnotation.GetText
@@ -5088,10 +5153,17 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                 if "Ø" in marker or "MOD-DIAM" in marker:
                     diameter_dims += 1
             covered = holes_in_drawing + diameter_dims
+            # P3-2 of a 2026-11-03 report: `ok: true` next to `facts.hole_callouts: 0` read
+            # like "hole callouts are fine", when in fact there were NONE and the coverage
+            # came entirely from plain Ø dimensions. Say which it is, in the detail line.
+            _how = ("仅靠 %d 处 Ø 尺寸覆盖（**没有孔标注对象**）" % diameter_dims
+                    if holes_in_drawing == 0 and diameter_dims else
+                    "%d 处孔标注 + %d 处 Ø 尺寸" % (holes_in_drawing, diameter_dims))
             record("hole_callouts", covered > 0,
-                   "图纸 %d 处孔标注 + %d 处 Ø 尺寸 / 模型 %d 个圆柱面候选"
-                   % (holes_in_drawing, diameter_dims, hole_candidates),
-                   "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图")
+                   "%s / 模型 %d 个圆柱面候选" % (_how, hole_candidates),
+                   "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图",
+                   hole_callout_objects=holes_in_drawing,
+                   diameter_dimensions=diameter_dims)
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
 
