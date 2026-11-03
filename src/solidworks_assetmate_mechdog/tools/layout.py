@@ -330,9 +330,34 @@ def place_views(drawing_path, placements, save=True):
     tool's vocabulary to the other used to drop every field and report "no view named
     None" (N5). An entry with neither key is reported as `missing_view_key` instead of
     being forwarded as None.
+
+    A bare `[x, y]` pair is ALSO accepted (P1, 2026-11-03). The MCP schema advertises
+    `[x, y] positions, one per view`, and a report followed it exactly — only to get
+    `placed: 0, results[].error: "placement_not_object", ok: true`. The schema promised a
+    shape the implementation rejected, and the top-level `ok` hid it. Pairs are matched to
+    the views in sheet order; the view name is filled in from `_iter_views`.
     """
+    view_names = None
     results = []
     for index, item in enumerate(placements or []):
+        if isinstance(item, (list, tuple)):
+            if view_names is None:
+                try:
+                    view_names = [str(v.Name) for v in _iter_views(_open_drawing(drawing_path))
+                                  if getattr(v, "Type", None) != 1]
+                except Exception:
+                    view_names = []
+            if index < len(view_names) and len(item) >= 2:
+                # Positional pair — turn it into the dict form the rest of the loop expects.
+                item = {"view": view_names[index], "x": item[0], "y": item[1]}
+            else:
+                results.append({
+                    "ok": False, "index": index, "error": "no_view_for_position",
+                    "message": "第 %d 条 [x, y] 没有对应的视图（本图 %d 个视图）"
+                               % (index, len(view_names or [])),
+                    "hint": "改用 [{\"view\": \"工程图视图1\", \"x\": 0.1, \"y\": 0.2}] 指定名字",
+                })
+                continue
         if not isinstance(item, dict):
             results.append({"ok": False, "index": index, "error": "placement_not_object"})
             continue
@@ -356,6 +381,18 @@ def place_views(drawing_path, placements, save=True):
         except Exception:
             pass
     ok_count = sum(1 for r in results if r.get("ok"))
+    # P1: `ok: true` unconditionally was hiding total failure — a report got
+    # `placed: 0, total: 2` and every entry `ok: false`, yet the top level said success and
+    # only a per-entry read revealed nothing had moved. Same shape as the
+    # `readback_verified` and `saved`-vs-`ok` bugs: a nested flag contradicting the verdict.
+    failed = [r for r in results if not r.get("ok")]
+    if failed:
+        return error(
+            "place_views_incomplete",
+            "%d of %d placements failed" % (len(failed), len(results)),
+            "Read `results[]` — each entry carries its own error. Nothing is assumed to have "
+            "moved.",
+            placed=ok_count, total=len(results), results=results)
     return drawing_ok(placed=ok_count, total=len(results), results=results)
 
 

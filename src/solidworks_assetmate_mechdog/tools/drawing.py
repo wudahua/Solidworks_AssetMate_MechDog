@@ -1167,8 +1167,23 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
     """
     features = set()
     full_prefixes = set()
+    # P1 of a 2026-11-03 report: `plan_drawing` emits model feature full names like
+    # `D1@草图1@飞达动力轴.Part`, while the same dimension on the SHEET is
+    # `D1@草图2@飞达动力轴.Part` — the sketch NUMBER differs because the drawing side
+    # numbers its own. Exact-prefix matching therefore hit 0 of 18, the safety valve
+    # aborted, and the documented "plan → auto_dimension" path did nothing.
+    #
+    # A loose key (D-number + feature name with its trailing digits stripped) crosses that
+    # gap: `D1@草图1` and `D1@草图2` both become ("D1", "草图").
+    loose_keys = set()
     values = []
     for entry in keep or []:
+        # P1, 2026-11-03: a report fed `[d["dimension"] for d in plan["keep_dimensions"]]` —
+        # a list of STRINGS — and every one was skipped by the old `isinstance(entry, dict)`
+        # guard, so the filter aborted with "0 features / 0 values". A string entry is a
+        # legitimate name form; accept it as one.
+        if isinstance(entry, str):
+            entry = {"dimension": entry}
         if not isinstance(entry, dict):
             continue
         feature = str(entry.get("feature") or "").strip()
@@ -1179,6 +1194,13 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
                 # through to value matching and kept every Ø42 — three copies of it.
                 full_prefixes.add(feature)
             features.add(feature.split("@")[-1] if "@" in feature else feature)
+            # ("D1", "草图") from "D1@草图1" — see the loose_keys note above.
+            _parts = feature.split("@")
+            _dnum = _parts[0].strip()
+            _feat = _parts[1] if len(_parts) > 1 else ""
+            _stripped = "".join(ch for ch in _feat if not ch.isdigit())
+            if _dnum and _stripped:
+                loose_keys.add((_dnum, _stripped))
         try:
             values.append(float(entry.get("value_mm")))
         except Exception:
@@ -1219,8 +1241,23 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
         # An exact identity wins outright: when the caller named specific dimensions
         # ("D1@草图19"), do NOT fall back to value matching — that is exactly how a plan
         # that kept one Ø42 ended up keeping all three.
-        if full_prefixes:
-            return any(full.startswith(prefix) for prefix in full_prefixes)
+        # Name-based matching stays EXCLUSIVE: when the caller named dimensions, a miss must
+        # mean False, never "fall through to value matching". That fallback is what once kept
+        # three copies of Ø42 when the plan asked for one.
+        #
+        # The loose key is part of the same exclusive family — it is just a name form that
+        # survives the model/sheet sketch-renumbering gap (`D1@草图1` vs `D1@草图2`).
+        if full_prefixes or loose_keys:
+            if full_prefixes and any(full.startswith(prefix) for prefix in full_prefixes):
+                return True
+            if loose_keys:
+                _cparts = (full or "").split("@")
+                _cdnum = _cparts[0].strip() if _cparts else ""
+                _cfeat = _cparts[1] if len(_cparts) > 1 else ""
+                _cstripped = "".join(ch for ch in _cfeat if not ch.isdigit())
+                if _cdnum and _cstripped and (_cdnum, _cstripped) in loose_keys:
+                    return True
+            return False
         if feature and feature in features:
             return True
         if value is None:
@@ -1234,8 +1271,8 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
     kept = [c for c in candidates if _keep(c)]
     if not kept:
         return 0, [], [], ("none of the %d inserted dimensions matched the plan "
-                           "(%d features / %d values) — deleted nothing"
-                           % (len(candidates), len(features), len(values)))
+                           "(%d features / %d loose / %d values) — deleted nothing"
+                           % (len(candidates), len(features), len(loose_keys), len(values)))
 
     removed, failed = [], []
     for sheet_name, full, _, _, annotation in candidates:

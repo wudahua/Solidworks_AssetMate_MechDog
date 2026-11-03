@@ -1977,8 +1977,15 @@ def assert_filter_prefers_full_names():
                                                       "_filter_inserted_dimensions")) or ""
     assert "full_prefixes" in body, (
         "full names are not treated as identities")
-    assert "if full_prefixes:" in body and "return any(full.startswith" in body, (
-        "the filter still falls back to value matching when exact names were given")
+    # 0.8.92 added a LOOSE key for the model/sheet sketch-renumbering gap, so the literal
+    # `if full_prefixes:` became `if full_prefixes or loose_keys:`. The property that must
+    # hold is exclusivity: once any name form is given, a miss returns False rather than
+    # falling through to value matching.
+    assert "full_prefixes or loose_keys" in body, (
+        "the name-based branch is gone")
+    assert "full.startswith" in body, "exact full-name matching is gone"
+    assert "return False" in body, (
+        "the filter falls back to value matching when name forms were given")
     return "exact names win, values only when no names were given"
 
 
@@ -3067,6 +3074,31 @@ def assert_create_drawing_does_not_leak_a_blank_sheet():
     assert "sw.CloseDoc(drw.GetTitle)" in body, (
         "an early exit leaves the freshly created drawing open")
     return "path guard runs before NewDocument, so a refused save leaks nothing"
+def assert_dimension_filter_accepts_plan_dicts_and_strings():
+    """0.8.92 / P1 — the documented "plan -> auto_dimension" path matched 0 of 18.
+
+    A 2026-11-03 report fed `[d["dimension"] for d in plan["keep_dimensions"]]` and got
+    `filter_kept: 0, filter_aborted: "none of the 18 inserted dimensions matched the plan
+    (0 features / 0 values)"`. Two causes:
+
+      * a string entry fell through `isinstance(entry, dict)` and was skipped entirely, so
+        neither `features` nor `values` was ever populated
+      * even as a name, the plan says `D1@Sketch1` while the sheet says `D1@草图2` — the
+        feature is renamed AND translated, so no name form can bridge it
+
+    Passing the dicts (which carry `value_mm`) is what works: measured 旋转轴 kept 11 and
+    removed 1, where the string form kept 0.
+
+    Both are supported now, but the value-bearing dict form is the one to recommend.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_filter_inserted_dimensions")) or ""
+    assert 'isinstance(entry, str)' in body, (
+        "string entries are skipped again — plan->auto_dimension silently does nothing")
+    assert "loose_keys" in body, (
+        "the model/sheet renumbering key is gone")
+    return "dimension_filter accepts plan dicts and raw strings, and recommends the dicts"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3190,6 +3222,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.92 filter takes plan dicts", assert_dimension_filter_accepts_plan_dicts_and_strings),
     ("0.8.90 no blank sheet leak", assert_create_drawing_does_not_leak_a_blank_sheet),
 ]
 

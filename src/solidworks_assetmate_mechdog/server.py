@@ -1068,7 +1068,7 @@ def auto_dimension(
     all_views: Annotated[bool, Field(description="Insert into every model view. False inserts into the ACTIVE view only and activates one for you.")] = True,
     include_unmarked: Annotated[bool, Field(description="Also bring in dimensions not marked for drawing (more complete, noisier).")] = False,
     eliminate_duplicates: Annotated[bool, Field(description="Drop duplicate dimensions by full name after insertion.")] = True,
-    dimension_filter: Annotated[list | None, Field(description="Only insert dimensions whose full name appears here; typically plan_drawing's keep_dimensions.")] = None,
+    dimension_filter: Annotated[list | None, Field(description="Keep only these dimensions. Pass plan_drawing()['keep_dimensions'] AS-IS (a list of dicts with feature/value_mm) — mapping it to bare full-name strings loses the value, and model vs sheet feature names differ (Sketch1 vs 草图2).")] = None,
     place_outside: Annotated[bool, Field(description="After inserting, push every dimension just outside its view instead of leaving them inside the geometry.")] = False,
     outside_gap_m: Annotated[float, Field(description="Distance from the view outline to the first dimension, in metres.")] = 0.012,
     outside_step_m: Annotated[float, Field(description="Spacing between stacked dimensions, in metres.")] = 0.008,
