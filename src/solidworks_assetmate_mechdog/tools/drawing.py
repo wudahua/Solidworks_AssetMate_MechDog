@@ -1566,7 +1566,7 @@ def survey_dimensions_by_view(drawing_path):
 
 
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
-                   dimension_filter=None, place_outside=False,
+                   dimension_filter=None, place_outside=True,
                    outside_gap_m=0.012, outside_step_m=0.008):
     """Insert the model's driving dimensions into the drawing views.
 
@@ -1590,6 +1590,14 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
     view with the same geometry, build a NEW dimension there instead — `list_drawing_edges`
     + `add_drawing_dimension(view_name=...)`. See check_capabilities
     `duplicate_dimension_to_view`.
+
+    `place_outside` defaults to TRUE (changed 2026-11-03): a report measured all 18 inserted
+    dimensions landing INSIDE the shaft outline, with dimension lines and the part overlapping
+    each other to the point where the sheet could not be used. "Inside by default" is not a
+    neutral choice — it is a default that cannot be delivered. Pass False to get the old
+    behaviour. Known trade-off on crowded sheets: a side that has no room collapses into a
+    vertical stack, and imported angle dimensions can arc across the page; `outside_debug`
+    reports the bucketing so that is visible rather than silent.
 
     `place_outside=True` (P0-1) then moves everything this call inserted to just outside its
     view, stacked by side: `outside_gap_m` + slot * `outside_step_m`. SolidWorks' own offset

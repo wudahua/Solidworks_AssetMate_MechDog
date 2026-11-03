@@ -1070,7 +1070,7 @@ def auto_dimension(
     include_unmarked: Annotated[bool, Field(description="Also bring in dimensions not marked for drawing (more complete, noisier).")] = False,
     eliminate_duplicates: Annotated[bool, Field(description="Drop duplicate dimensions by full name after insertion.")] = True,
     dimension_filter: Annotated[list | None, Field(description="Keep only these dimensions. Pass plan_drawing()['keep_dimensions'] AS-IS (a list of dicts with feature/value_mm) — mapping it to bare full-name strings loses the value, and model vs sheet feature names differ (Sketch1 vs 草图2).")] = None,
-    place_outside: Annotated[bool, Field(description="After inserting, push every dimension just outside its view instead of leaving them inside the geometry.")] = False,
+    place_outside: Annotated[bool, Field(description="Push every inserted dimension just outside its view. Defaults to TRUE — leaving them inside covers the part with dimension lines (measured 2026-11-03: 18 dimensions all landed inside the outline, sheet unusable). Pass False for the old behaviour.")] = True,
     outside_gap_m: Annotated[float, Field(description="Distance from the view outline to the first dimension, in metres.")] = 0.012,
     outside_step_m: Annotated[float, Field(description="Spacing between stacked dimensions, in metres.")] = 0.008,
 ) -> str:

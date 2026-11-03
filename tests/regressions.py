@@ -3257,6 +3257,26 @@ def assert_circle_edges_carry_a_point_on_the_circumference():
     assert "sheet_start_is_center" in body, (
         "the receipt does not warn that sheet_start is the centre for a circle")
     return "circular edges expose a real point on the circumference, and flag the centre case"
+def assert_auto_dimension_places_outside_by_default():
+    """0.8.99 / P3 — "inside by default" is a default that cannot be delivered.
+
+    A 2026-11-03 report: with `place_outside` unset, all 18 inserted dimensions landed inside
+    the shaft outline, dimension lines crossing the part and each other — the sheet was
+    unusable, not merely untidy.
+
+    The default is now True. Verified on 旋转轴: 11 inserted, `place_outside_applied: true`,
+    `placed_outside: 11`.
+
+    This is a deliberate behaviour change for existing callers. It is called out in the tool
+    description rather than slipped in, and `place_outside=False` restores the old behaviour.
+
+    Known trade-offs (from the report, not hidden): a side with no room collapses into a
+    vertical stack, and imported angle dimensions can arc across the page. `outside_debug`
+    still reports the bucketing.
+    """
+    tool = _read("tools/drawing.py")
+    assert "place_outside=True," in tool, "the tool default went back to False"
+    return "auto_dimension pushes dimensions outside by default, and says so"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3380,6 +3400,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.99 place_outside default", assert_auto_dimension_places_outside_by_default),
     ("0.8.98 circle point on circumference", assert_circle_edges_carry_a_point_on_the_circumference),
     ("0.8.97 note decode + arc drop", assert_notes_decode_and_arc_lengths_are_dropped),
     ("0.8.96 reconcile three-way", assert_reconcile_splits_missing_from_present_but_unmatched),
