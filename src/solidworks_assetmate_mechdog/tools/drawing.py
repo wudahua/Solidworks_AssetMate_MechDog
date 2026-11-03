@@ -443,6 +443,37 @@ def create_drawing(
                 if lightweight_unresolved == 0:
                     break
 
+        # P1 of a 2026-11-03 report: this guard used to run AFTER `_new_document`, so every
+        # time it fired it left a brand-new, never-saved drawing behind (GetPathName == '').
+        # Nothing ever closed it: both cleanup paths in smoke.py match on GetPathName, and
+        # `dirname('') == ''` matches nothing. The blank drawing also holds a reference to the
+        # source part, so ONE leak pinned TWO documents, and it accumulated on every run.
+        #
+        # Checking before the document exists is the only way to not create it at all.
+        if save and output_path:
+            _early_out = os.path.abspath(output_path)
+            if os.path.splitext(_early_out)[1].lower() != ".slddrw":
+                _early_out += ".SLDDRW"
+            try:
+                from ..sw_session import get_sw as _get_sw
+                _open_holders = []
+                for _doc in (_get_sw().GetDocuments or ()):
+                    try:
+                        if os.path.normcase(str(_doc.GetPathName)) == os.path.normcase(_early_out):
+                            _open_holders.append(str(_doc.GetTitle))
+                    except Exception:
+                        continue
+                if _open_holders:
+                    return error(
+                        "path_locked_by_open_doc",
+                        "target path is already open as %s" % ", ".join(_open_holders),
+                        "Close that document first (close_document), or pass a different "
+                        "output_path. Nothing was created — this check now runs BEFORE the "
+                        "drawing exists, so no blank document is left behind.",
+                        path=_early_out, open_documents=_open_holders, saved=False)
+            except Exception:
+                pass
+
         drw = _new_document(sw, template)
         if drw is None:
             return error("drawing_create_failed",
@@ -725,6 +756,12 @@ def create_drawing(
             "saved": False,
         }
         if not created:
+            # Same leak, different exit: the blank document is already open at this point, so
+            # it must be closed before answering.
+            try:
+                sw.CloseDoc(drw.GetTitle)
+            except Exception:
+                pass
             return error("no_views_created", "No drawing view could be created",
                          "Check the model is saved, not read-only, and has valid named views.",
                          skipped_views=skipped)
@@ -3034,9 +3071,32 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
                     item["sheet_center"] = list(item["sheet_start"])
                 projected = True
 
+        # P0 of a 2026-11-03 report: the sheet X coordinates came back MIRRORED about the
+        # view centre — five edges on one shaft all satisfied `true = 2*centre - reported`,
+        # with Y correct. The numbers looked plausible (inside the sheet, correct spacings),
+        # so the only way to notice was to measure pixels in the exported PDF.
+        #
+        # Cause: `_view_axis_map` answers WHICH model axis a sheet axis shows, never which
+        # DIRECTION. A right-side view runs +Z to the left, so a `+` projection mirrors it.
+        #
+        # I first tried to self-check by correlating model deltas against sheet deltas — that
+        # is worthless, because both come from the same projection: they agree by
+        # construction, mirrored or not. It answered "no mirror" on the exact view the report
+        # had measured as mirrored.
+        #
+        # So this does NOT claim the direction is right. It says the direction is UNVERIFIED
+        # and that the only trustworthy check is a pixel measurement of the exported page.
+        # Callers that place things by sheet coordinate (dimensions, leaders, datum tags)
+        # should confirm one known feature against the PDF first.
         payload = {"drawing": doc_title, "view": target_name,
                    "edge_count": len(rows), "edges": rows,
-                   "sheet_projected": projected}
+                   "sheet_projected": projected,
+                   "sheet_axis_direction_verified": False,
+                   "sheet_axis_warning": (
+                       "sheet X 的方向未经验证：侧视图的模型轴可能映射到图纸反方向"
+                       "（2026-11-03 实测某 2:1 侧视图整体镜像，Y 正确 X 反号）。"
+                       "本函数无法自证——自检只会验证自己的投影公式。"
+                       "按坐标落标注前，请先导出 PDF 量一条已知要素核对。" if projected else None)}
         if not projected:
             payload["sheet_projection_reason"] = projection_reason or "no projection inputs"
         if stamp is not None:

@@ -126,7 +126,7 @@ CAPABILITIES = [
         "id": "annotation_write",
         "status": "partial",
         "summary": "注记 / 图纸直线（件号见 balloon 条目）",
-        "why": ("`add_note` / `add_sheet_line` 可用；图纸草图单位是**米**不是毫米。"
+        "why": ("`add_note` 可用；`add_sheet_line` **不可用**（图纸草图不渲染，返回 `line_not_rendered`）；图纸草图单位是**米**不是毫米。"
                 "件号请单独看 `balloon` 条目——它是 unsupported，不要在这里当成可用"),
         "workaround": "传毫米会得到满屏放射斜线（坐标被当模型空间并乘视图比例）",
         "evidence": "2026-10-28 实测 add_note / add_sheet_line 均 ok；add_balloon 见 balloon 条目",
@@ -154,7 +154,7 @@ CAPABILITIES = [
         "id": "sheet_sketch_space",
         "status": "partial",
         "summary": "图纸草图坐标系",
-        "why": "`add_sheet_line` 按米定位可用；细表格布线仍需多次调用",
+        "why": "`add_sheet_line` 的单位换算正确，但**图纸草图不渲染**，调用返回 `line_not_rendered`；表格布线请用原生 Table 对象，不要用草图线",
         "workaround": "先算好每段线的米坐标，批量调用",
         "evidence": "2026-10-28 实测 ok（未做整表验证）",
     },

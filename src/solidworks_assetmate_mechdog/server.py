@@ -537,7 +537,18 @@ def add_bom_table(
 def add_sheet_line(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], x1_m: Annotated[float, Field(description="Sheet X of the line start, in metres.")], y1_m: Annotated[float, Field(description="Sheet Y of the line start, in metres.")], x2_m: Annotated[float, Field(description="Sheet X of the line end, in metres.")], y2_m: Annotated[float, Field(description="Sheet Y of the line end, in metres.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,
 ) -> str:
-    """Draw a line in true sheet space (metres) — for BOM tables and frames.
+    """Draw a line in true sheet space (metres).
+
+    WARNING — this does NOT work on SW2024/2026: drawing-sheet sketches do not render.
+    `CreateLine` returns an object and `SketchSegment.Style` is writable, but the line
+    never appears on the sheet or in the exported PDF (measured 2026-11-03: before/after
+    pixel diff **0 / 16,041,784**). `verify_render=True` (default) proves it and returns
+    `line_not_rendered`; every call costs two PDF exports.
+
+    **Do not use it for BOM frames or centre lines.** See `check_capabilities.centerline`
+    and docs/com-quirks.md §55.
+
+    Historical note (the unit trap that is still true):
 
     Drawing sketches take sheet metres, not millimetres: passing 236/62 produced a scaled
     fan of diagonals instead of a horizontal line.

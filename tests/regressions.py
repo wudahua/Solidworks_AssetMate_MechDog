@@ -3033,6 +3033,34 @@ def assert_p3_receipts_say_what_they_mean():
         "P3-3 regressed: two capabilities the report asked for are missing")
     return "P3 receipts say what they mean; P3-6 confirmed as model-side tolerance"
 
+def assert_create_drawing_does_not_leak_a_blank_sheet():
+    """0.8.90 — the path guard ran AFTER NewDocument, so firing it leaked a blank drawing.
+
+    A 2026-11-03 report measured it precisely: smoke run 8 documents -> 10 afterwards, the
+    extra being `工程图12 - 图纸1` with `GetPathName == ''`. Nothing ever closed it — both
+    cleanup paths in smoke.py match on GetPathName, and `dirname('') == ''` matches nothing.
+    Because the blank drawing also referenced the source part, ONE leak pinned TWO documents,
+    and it grew on every run.
+
+    The guard itself was honest (`saved: false`, `save_error: path_locked_by_open_doc`); only
+    its position was wrong. Moving it before `_new_document` means the document is never
+    created, and `no_views_created` now closes what it opened.
+
+    Verified 2026-11-03: two calls to the same path leave `blanks 0 -> 0`, and the second
+    returns ok:false with `path_locked_by_open_doc`.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "create_drawing")) or ""
+    guard = body.find("path_locked_by_open_doc")
+    newdoc = body.find("_new_document(sw, template)")
+    assert guard > 0 and newdoc > 0, "the guard or the document creation moved"
+    assert guard < newdoc, (
+        "the path guard runs AFTER the document is created again — every trigger leaks a "
+        "blank sheet that no cleanup path can find")
+    assert "sw.CloseDoc(drw.GetTitle)" in body, (
+        "an early exit leaves the freshly created drawing open")
+    return "path guard runs before NewDocument, so a refused save leaks nothing"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3156,6 +3184,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.90 no blank sheet leak", assert_create_drawing_does_not_leak_a_blank_sheet),
 ]
 
 
