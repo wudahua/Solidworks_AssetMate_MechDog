@@ -2388,3 +2388,56 @@ DetailCabinet / InkMarkupFolder / MarkupCommentFolder / CommentsFolder 这些文
 
 **注意**：`add_sheet_line` 是 60+ 个工具里少数几个「只报 ok 不验证结果」的，
 它的 bug 会静默传播。**建议先给它加一个 PDF 像素验证**，再谈中心线。
+
+### 五十五补充：草图建出来了，但渲染不出来（同日追查）
+
+**第 3 条已确认：草图是真的建了。**
+
+```python
+sm = doc.SketchManager
+doc.InsertSketch()
+sm.CreateLine(0.04, 0.25, 0, 0.12, 0.25, 0)
+win.Dispatch(sm.ActiveSketch).GetSketchSegments  ->  1 段  ✅
+```
+
+**所以问题不在「有没有画」，在「画了为什么看不见」。**
+
+### 已排除的
+
+| 猜测 | 结果 |
+|---|---|
+| 草图没建 | ❌ 有 1 段 |
+| Style 设错 | ❌ 设 0（实线）也不显示 |
+| 线被画到模型空间 | ❌ 坐标是图纸米，且在图纸草图里 |
+
+### 卡住的：图层读不到
+
+线默认落在 **Layer = '10'**。文档里有 **12 个图层**，但：
+
+```python
+doc.GetLayerManager       # 属性，不是方法（加括号报 DISP_E_MEMBERNOTFOUND）
+lm.GetCount               # 属性，不是方法（加括号报 int object is not callable）
+lm.GetLayerAtIndex(i)     # 不存在（<unknown>.GetLayerAtIndex）
+```
+
+**12 个图层一个都读不到，Visible 也就无从判断、无从修改。**
+
+### 其他撞墙的
+
+- doc.PrintSetup 是方法且要参数（直接调报「非选择性的参数」），猜不出参数形态，读不到「打印是否含草图」
+- GetUserPreferenceToggle 存在，但 0~260 全扫一遍没有明确的「显示图纸草图」项
+
+### 当前可下的结论
+
+**图纸草图（InsertSketch + CreateLine）在图纸上不渲染，导出 PDF 也不含它。**
+草图画得出来（GetSketchSegments 能数到），但没有找到让它显示/打印的入口。
+
+**这一层是「图纸草图」这个能力的基础**——它不通，add_sheet_line、轴线中心线、
+任何手画的图框都出不来。add_sheet_line 已改为像素验证并如实返回 line_not_rendered。
+
+### 若要继续，该试的
+
+1. doc.PrintSetup(...) 的正确参数形态（查 IModelDoc2.PrintSetup 文档）
+2. 宏录制：界面手动画一条草图线并导出 PDF，看它调了什么
+3. 换一个「没有图层」的新模板建图纸再试（排除模板自带图层 10 被隐藏）
+4. 在界面里看图层 10 的可见性，确认是不是它
