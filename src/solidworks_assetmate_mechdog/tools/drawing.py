@@ -4479,9 +4479,81 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
                     break
         except Exception:
             pass
+        # P2-9 of a 2026-11-03 report: h7's -0.015 came out as "8.00 / 8.00" — both limits
+        # identical — while the call reported applied:true. Two separate causes:
+        #
+        # 1. UNIT AMBIGUITY. `SetToleranceValues` takes metres, so this function divides by
+        #    1000; but the report passed lower=-1.5e-05 believing the parameter was already
+        #    in metres. Treated as mm that is -0.000015 mm, which rounds to zero on the
+        #    sheet. A manufacturable tolerance below 0.001 mm does not exist, so a non-zero
+        #    magnitude that small is almost certainly a metre value passed to a mm slot.
+        # 2. NO READBACK CHECK. `rendered_text` was returned but never judged, so a
+        #    tolerance that produced nothing still said applied:true.
+        unit_suspect = None
+        for label, raw_value in (("upper", upper), ("lower", lower)):
+            try:
+                magnitude = abs(float(raw_value))
+            except Exception:
+                continue
+            if 0 < magnitude < 1e-3:
+                unit_suspect = {
+                    "parameter": label,
+                    "value": float(raw_value),
+                    "as_mm": float(raw_value),
+                    "if_it_was_metres": round(float(raw_value) * 1000, 6),
+                }
+                break
+
+        # A limit tolerance whose two limits print the same is not a tolerance: the sheet
+        # reads "8.00 / 8.00" and the shop loses the entire fitting allowance.
+        # Compare the ARGUMENTS, not the rendered text: on this build GetText returns
+        # nothing even for a correct tolerance, so gating this on rendered_text meant the
+        # degenerate 0/0 case sailed through unimpeded.
+        limits_identical = None
+        if str(tolerance_type).lower() == "limit":
+            try:
+                limits_identical = abs(float(upper) - float(lower)) < 1e-9
+            except Exception:
+                limits_identical = None
+
+        # Two severities, because the two cases are not equally certain:
+        #
+        #   identical limits -> ERROR. A limit tolerance whose halves print the same has
+        #   definitely lost the allowance; that is arithmetic, not a readback quirk.
+        #
+        #   no readable text -> WARNING only. `GetText(slot)` returned nothing on this build
+        #   even for a correctly applied -0.015 tolerance, so "I could not read it" is NOT
+        #   evidence that nothing was written. Reporting it as an error would cry wolf on
+        #   every tolerance on this part.
+        if limits_identical:
+            return error(
+                "tolerance_not_rendered",
+                "both limits print identically (%r) — the allowance is lost" % rendered_text,
+                ("upper/lower are MILLIMETRES. If you were passing metres, multiply by "
+                 "1000 (h7 lower is -0.015 mm, not -0.015 m)."
+                 if unit_suspect else
+                 "A limit tolerance needs upper != lower; check the values you passed."),
+                planned=planned, tolerance_type_readback=applied,
+                rendered_text=rendered_text,
+                tolerance_not_rendered=True,
+                unit_suspect=unit_suspect)
+
+        warnings = []
+        if rendered_text is None:
+            warnings.append(
+                "读不到这个尺寸的公差文本（GetText 各槽均为空），"
+                "所以**无法确认公差是否已显示**。请导出 PDF 目视核对，不要只看 applied:true。")
+        if unit_suspect:
+            warnings.append(
+                "参数 %s=%r 看起来是「米」当成了「毫米」：按毫米算等于 %.6g mm，图面上会消失。"
+                "upper/lower 的单位是毫米。"
+                % (unit_suspect["parameter"], unit_suspect["value"], unit_suspect["as_mm"]))
         return drawing_ok(applied=True, saved=True, planned=planned,
                           tolerance_type_readback=applied,
-                          rendered_text=rendered_text)
+                          rendered_text=rendered_text,
+                          rendered_verified=bool(rendered_text),
+                          unit_suspect=unit_suspect,
+                          warning=(" ".join(warnings) if warnings else None))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

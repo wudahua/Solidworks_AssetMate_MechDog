@@ -2833,6 +2833,43 @@ def assert_section_reports_a_dropped_position_axis():
         "the warning does not tell the caller how to opt out of the alignment")
     return "sections report the requested position, the actual one, and the dropped axis"
 
+def assert_tolerance_checks_units_and_degenerate_limits():
+    """0.8.82 / P2-9 — an h7 tolerance printed "8.00 / 8.00" and still said applied:true.
+
+    A 2026-11-03 report: add_dimension_tolerance(value_mm=8, tolerance_type="limit",
+    upper=0, lower=-1.5e-05). The function divides by 1000 to reach metres, which is
+    correct — but -1.5e-05 had been intended as METRES and was read as MILLIMETRES, i.e.
+    -0.000015 mm, which rounds to zero on the sheet. The allowance vanished while the
+    receipt read `{"applied": true, "rendered_text": null}`.
+
+    Two guards, deliberately with different severities:
+
+      * a non-zero magnitude below 0.001 mm is not a manufacturable tolerance — almost
+        certainly metres passed to a mm slot -> `unit_suspect` + warning (the call still
+        succeeds; the value may be legitimate in some other unit convention)
+      * upper == lower on a LIMIT tolerance is arithmetic, not a readback quirk -> ERROR
+        `tolerance_not_rendered`
+
+    `rendered_text` being null is only a WARNING: GetText returns nothing on this build
+    even for a correctly applied -0.015, so treating that as failure would cry wolf.
+    Verified 2026-11-03 on 旋转轴: correct h7 passes, -1.5e-05 is flagged, 0/0 errors.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_dimension_tolerance")) or ""
+    assert "unit_suspect" in body, (
+        "a metre value in a millimetre slot is no longer detected")
+    assert "tolerance_not_rendered" in body, (
+        "degenerate limits pass again")
+    # the 0/0 test must NOT depend on rendered_text — it was null even when correct
+    assert 'if str(tolerance_type).lower() == "limit":' in body, (
+        "the degenerate-limit check is gated on rendered_text again, which is usually null")
+    assert "rendered_verified" in body, (
+        "the receipt does not distinguish 'verified' from 'could not read'")
+    assert "无法确认" in body or "could not read" in body.lower() or "cannot" in body.lower(), (
+        "an unreadable tolerance is reported as fact instead of uncertainty")
+    return "tolerances flag unit mistakes and refuse degenerate limits, without crying wolf"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2950,6 +2987,7 @@ STATIC_REGRESSIONS = [
     ("0.8.79 set_view outline check", assert_set_view_verifies_the_outline_not_the_property),
     ("0.8.80 cross-section exemption", assert_cross_sections_are_not_judged_by_parent_extent),
     ("0.8.81 section position report", assert_section_reports_a_dropped_position_axis),
+    ("0.8.82 tolerance units/limits", assert_tolerance_checks_units_and_degenerate_limits),
 ]
 
 
