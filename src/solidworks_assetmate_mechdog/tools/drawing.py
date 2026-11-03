@@ -1333,7 +1333,12 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
     _t_read_pos = 0.0
     _t_read_val = 0.0
     _t_outline = 0.0
+    _t_write = 0.0
+    _t_iter = 0.0
+    _t_frame = 0.0
+    _t0 = time.perf_counter()
     views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
+    _t_iter += time.perf_counter() - _t0
     boxes = []
     for view in views:
         _t0 = time.perf_counter()
@@ -1350,9 +1355,12 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
     # silently stops the pass there is nothing to look at (0.8.48 happened exactly that way).
     debug = {"views": len(boxes), "annotations": 0, "skip_before": 0,
              "skip_no_position": 0, "skip_no_owner": 0, "buckets": 0, "per_side": {}}
+    _t_enum = 0.0
     for view, box in boxes:
         try:
+            _t0 = time.perf_counter()
             raws = list(view.GetAnnotations or ())
+            _t_enum += time.perf_counter() - _t0
         except Exception:
             continue
         for raw in raws:
@@ -1419,6 +1427,7 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
     # `doc.GetSheets` returned nothing usable on SW2024 (the cap never engaged and a stack
     # of 10 still printed past the frame). The sheet itself is the Type 1 view — its outline
     # is the frame, verified against a rendered 420x297 mm A3 elsewhere in this file.
+    _t0 = time.perf_counter()
     for source in ("GetFirstView", "GetSheets"):
         if safe is not None:
             break
@@ -1437,6 +1446,7 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
         except Exception:
             continue
 
+    _t_frame += time.perf_counter() - _t0
     opposite = {"bottom": "top", "top": "bottom", "left": "right", "right": "left"}
 
     def _room(owner_box, side):
@@ -1515,7 +1525,9 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             else:
                 target = (position[0], box[3] + offset)
             try:
+                _t0 = time.perf_counter()
                 annotation.SetPosition(float(target[0]), float(target[1]), 0)
+                _t_write += time.perf_counter() - _t0
                 placed += 1
             except Exception as exc:
                 failures.append({"view": view_name, "side": side,
@@ -1524,6 +1536,10 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
     debug["ms_read_position"] = round(_t_read_pos * 1000.0, 1)
     debug["ms_read_value"] = round(_t_read_val * 1000.0, 1)
     debug["ms_outline"] = round(_t_outline * 1000.0, 1)
+    debug["ms_write"] = round(_t_write * 1000.0, 1)
+    debug["ms_iter_views"] = round(_t_iter * 1000.0, 1)
+    debug["ms_enum_annotations"] = round(_t_enum * 1000.0, 1)
+    debug["ms_sheet_frame"] = round(_t_frame * 1000.0, 1)
     perf_hooks.mark("dim_outside_read", time.perf_counter() - (_t_read_pos + _t_read_val + _t_outline))
     return placed, failures, sides_used, overflow_notes, debug
 
