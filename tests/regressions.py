@@ -2636,6 +2636,43 @@ def assert_reconcile_uses_one_to_one_matching():
         "the docstring does not explain why coverage cannot exceed drawing/ledger")
     return "reconcile pairs dimensions one-to-one, so coverage can no longer be pinned at 1.0"
 
+def assert_leader_state_and_apex_are_reported():
+    """0.8.74 / P1-1 + P1-2 — "annotation exists" is not "annotation is readable".
+
+    Two failures from a 2026-11-03 report, both about the receipt hiding where a symbol
+    actually points:
+
+    P1-1 `add_geometric_tolerance` with only x/y: the frame lands where asked, `attached_to`
+    is null, no leader, no arrow. GB/T 1182 requires the frame to point at the controlled
+    feature, so a reader could not tell whether 0.02 governed the Ø10, the collar or the
+    shaft. Reproduced on 旋转轴: BOTH the x/y path and the edge_index path fail to attach
+    (AttachTo returns null on contour edges), so the two cases must say different things.
+
+    P1-2 `add_surface_finish` x/y is the TRIANGLE APEX, not the symbol centre. A report
+    asked for (0.208, 0.2185) as a centre and the apex ended up 3.41 mm in the air, on a
+    thread root instead of the mating face. The docstring never said which it was.
+    """
+    src = _read("tools/drawing.py")
+
+    gtol = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_geometric_tolerance")) or ""
+    assert "frame_has_leader" in gtol, (
+        "the GT receipt does not say whether a leader exists")
+    assert "leader_endpoint_m" in gtol, (
+        "the GT receipt does not report where the leader landed")
+    assert "edge_index is not None else" in gtol or "传了 edge_index" in gtol, (
+        "the two no-leader cases (not asked / asked but failed) collapsed into one message")
+
+    finish = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "add_surface_finish")) or ""
+    assert "TRIANGLE APEX" in finish, (
+        "the docstring no longer says x/y is the apex — the 3.4 mm mistake returns")
+    assert "apex_m" in finish, (
+        "the receipt does not echo the apex under a name that cannot be mistaken")
+    assert "GB/T 131" in finish, (
+        "the docstring lost the standard that makes the apex the contract")
+    return "leader state and apex semantics are both reported, not left to guesswork"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2747,6 +2784,7 @@ STATIC_REGRESSIONS = [
     ("0.8.71 delete_view warns", assert_delete_view_warns_about_leftover_geometry),
     ("0.8.72 threads not silent", assert_cosmetic_threads_are_not_silent),
     ("0.8.73 reconcile one-to-one", assert_reconcile_uses_one_to_one_matching),
+    ("0.8.74 leader + apex", assert_leader_state_and_apex_are_reported),
 ]
 
 

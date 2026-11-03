@@ -5944,7 +5944,17 @@ def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining"
       (SymType, LeaderType, X, Y, Z, LaySymbol, ArrowType, MachAllowance, OtherVals,
        ProdMethod, SampleLen, MaxRoughness, MinRoughness, RoughnessSpacing)
 
-    x/y are sheet metres. roughness is the Ra value as text (e.g. "3.2").
+    x/y are sheet metres of the TRIANGLE APEX — not the symbol centre, not its bounding
+    box. This is the single most common misuse of the tool: a report asked for (0.208,
+    0.2185) expecting the symbol's centre and the apex landed 3.41 mm above the surface it
+    meant to mark, floating in mid-air and sitting on a thread root instead of the mating
+    face. The same coordinates asked as the apex put it exactly on the line.
+
+    GB/T 131 requires the apex to touch the surface or its extension line, so the calling
+    contract is: pass `y` = the surface's y. The receipt echoes it as `apex_m` so the
+    caller can compare against the outline it aimed at.
+
+    roughness is the Ra value as text (e.g. "3.2").
 
     P2-11 (0.8.20): InsertSurfaceFinishSymbol3 IGNORES the x/y arguments — the symbol
     actually lands at the sheet origin (0,0), so echoing position_m=[x,y] was a lie. The
@@ -6045,12 +6055,20 @@ def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining"
                 created=True, saved=bool(save), roughness=str(roughness),
                 sym_type=str(sym_type), leader_type=str(leader_type),
                 position_m=[round(float(x), 4), round(float(y), 4)],
+                # P1-2: echo the requested point under the name that says what it IS.
+                # Callers repeatedly read `position_m` as the symbol's centre and placed it
+                # 3+ mm above the surface; the apex is the only point GB/T 131 constrains.
+                apex_m=[round(float(x), 4), round(float(y), 4)],
+                apex_is_requested_point=True,
                 position_actual_m=position_actual_m,
                 position_applied=position_applied,
                 visibility=visibility,
                 dwg_check=dwg_check,
                 readback=readback,
-                note=("0.8.20：InsertSurfaceFinishSymbol3 会忽略传入的 x/y，符号实际落在图纸原点；"
+                note=("x/y（回执里同时叫 apex_m）是三角形的**顶点**，不是符号中心。"
+                      "GB/T 131 要求顶点接触表面或其延长线，所以 y 应当传表面的 y；"
+                      "把顶点当中心会让符号悬空 3 mm 以上。"
+                      "0.8.20：InsertSurfaceFinishSymbol3 会忽略传入的 x/y，符号实际落在图纸原点；"
                       "创建后用 IAnnotation.SetPosition 移到请求点并回读 position_actual_m。"
                       "verify_render=True 时前后各导出 PDF 渲染 PNG 做像素差分，证明符号确实"
                       "出现在请求位置（visible=true）；verify_dwg=True 只检查 DWG 文件非空"
@@ -6470,8 +6488,43 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
 
         if save:
             _save_drawing(doc)
+
+        # P1-1 of a 2026-11-03 report: with only x/y given, the frame lands where asked but
+        # `attached_to` is null — no leader, no arrow. GB/T 1182 requires the frame to point
+        # at the controlled feature, so a floating frame cannot be read: a reviewer could not
+        # tell whether 0.02 controlled the Ø10, the collar or the whole shaft.
+        #
+        # The tool cannot invent an attachment, so it must say the frame is floating.
+        floating = attached is None
+        leader_endpoint = None
+        if edge_index is not None:
+            # Best effort: contour edges report no vertices on this binding, so this is
+            # often null even when a leader exists. Reported rather than guessed.
+            try:
+                picked = win.Dispatch(call_method(gtol, "GetAnnotation"))
+                leader_endpoint = None
+                try:
+                    leader_endpoint = [round(float(v), 4)
+                                       for v in picked.GetLeaderPoints]
+                except Exception:
+                    leader_endpoint = None
+            except Exception:
+                leader_endpoint = None
+
         return drawing_ok(
             created=True, saved=bool(save), attached_to=attached,
+            leader_endpoint_m=leader_endpoint,
+            frame_has_leader=not floating,
+            warning=(("框格没有引线：传了 edge_index=%s，但 SolidWorks 没建立引线"
+                      "（AttachTo 返回 null）。这类零件的轮廓边没有可用的顶点，"
+                      "选不中就没有引线。只能把框格底边贴在轮廓线上，"
+                      "并在技术要求里说明它控制哪个面。" % edge_index)
+                     if floating and edge_index is not None else
+                     ("框格没有引线：只给了 x/y，没有指向任何被测要素。"
+                      "GB/T 1182 要求框格由引线箭头指向被测要素或标注在尺寸线上，"
+                      "悬空框格无法判定管哪个面。传 edge_index 让 SW 尝试建立引线，"
+                      "或把框格底边贴在轮廓线上并在技术要求里说明。")
+                     if floating else None),
             tolerance=str(tolerance), datum=str(datum), symbol=str(symbol),
             values_written=wrote, position_set=position_ok, readback=readback,
             symbol_written=symbol_written, symbol_is_text=False,
