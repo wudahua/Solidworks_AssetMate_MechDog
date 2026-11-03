@@ -2206,3 +2206,48 @@ GetLineCount                            → 3             （引线 + 水平线 
 
 **在找到把图形画出来的方法之前，不要发布 `add_weld_symbol`** ——
 一个只有引线和数字、没有焊缝类型的符号，在车间比没有更危险。
+
+## 五十四、形位公差引线：`SetLeader3` 有入口但被拒（0.8.75）
+
+反馈里"框格没有引线"这条，我一开始判断"做不了"——**没试就下结论，是错的**。实测后发现入口是有的。
+
+### 入口确实存在
+
+```python
+annotation = win.Dispatch(call_method(gtol, "GetAnnotation"))
+annotation.SetLeader2   # ✅ 存在
+annotation.SetLeader3   # ✅ 存在
+annotation.GetLeaderCount  # ✅ 存在，初始为 0
+```
+
+注意：这些在 **`IAnnotation`** 上，不在 `GetSpecificAnnotation` 返回的对象上——
+后者只有 `GetLeaderCount` / `GetLeaderAtIndex`，没有 `SetLeader*`。
+
+### 签名（实测 arity）
+
+`SetLeader3` 与 `SetLeader2` **都接受 6 个参数**：
+
+```
+SetLeader3(LeaderType, UseDocLeaderStyle, LeaderStyle, ArrowSize, UseDocArrowSize, LeaderBent)
+```
+
+### 但调用被拒
+
+```
+SetLeader3(1, True, 1, 0, True, True)  -> -2 | leaders=0
+SetLeader3(1, True, 2, 0, True, True)  -> -2 | leaders=0
+SetLeader3(1, True, 2, 0, True, False) -> -2 | leaders=0
+```
+
+**全部返回 `-2`，`GetLeaderCount` 仍是 0。** 参数形态试了 `LeaderStyle` 1/2、
+`LeaderBent` True/False，都不行。
+
+### 结论
+
+**`-2` 的含义没查到，但现象明确：接口接受调用、拒绝生效。**
+
+真要做引线转折（国标"先出一小段水平线再折下打箭头"），得先搞清楚这个 `-2`：
+可能是要求先有可附着的几何（轮廓边没有顶点，`AttachTo` 也是 null），
+可能是 `LeaderType` 的枚举值不对（1 未必是"直线"）。
+
+**这一条留作未解，不宣布"做不到"，只记录"当前参数形态下被拒"。**
