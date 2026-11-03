@@ -1103,6 +1103,29 @@ def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing 
 
 
 @mcp.tool()
+def add_distance_dimension(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], edge_a: Annotated[int, Field(description="Index of the FIRST edge (from list_drawing_edges) used to measure the gap.")], edge_b: Annotated[int, Field(description="Index of the SECOND edge; the dimension measures the distance between the two.")],
+                           x_m: Annotated[float, Field(description="Sheet X in metres.")], y_m: Annotated[float, Field(description="Sheet Y in metres.")],
+                           view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
+                           save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = False) -> str:
+    """Dimension the distance BETWEEN two edges — how you get an overall length.
+
+    `add_drawing_dimension` hits ONE edge and reports that edge's own length, so a shaft
+    made of 18+29+3+10 mm segments could never be given its 60 mm total: no single edge in
+    the view is 60 mm long. This picks two edges and dimensions the gap between them.
+
+    Verified 2026-11-03 on 旋转轴 (right view, 7 edges): edge 3 with edge 6 yields exactly
+    **60.0 mm**; other pairs give 18/42/47/8 as expected.
+
+    `edge_a` / `edge_b` are indices from `list_drawing_edges`. **Which pair spans the
+    overall length depends on the view** — there is no way to guess it, so read the edge
+    list, pick the two outermost parallel ones, and check `value_mm` against what you
+    expect. The receipt returns the value it actually created rather than assuming.
+    """
+    return _json(drawing.add_distance_dimension(
+        drawing_path, edge_a, edge_b, x_m, y_m, view_name=view_name, save=save))
+
+
+@mcp.tool()
 def add_drawing_dimension(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     x: Annotated[float, Field(description="Sheet X in metres.")],

@@ -80,6 +80,8 @@ DESCRIPTIONS = {
     "leader_x_m": "Sheet X of the leader tip, in metres.",
     "leader_y_m": "Sheet Y of the leader tip, in metres.",
     "edge_index": "Index into list_drawing_edges for this view; lets you attach to an edge without sheet coordinates.",
+    "edge_a": "Index of the FIRST edge (from list_drawing_edges) used to measure the gap.",
+    "edge_b": "Index of the SECOND edge; the dimension measures the distance between the two.",
     "center": "Sheet centre [x, y] of the detail boundary, in metres.",
     "radius_m": "Radius of the detail boundary, in metres.",
     "height_mm": "Note text height in millimetres (3.5 is the GB default).",

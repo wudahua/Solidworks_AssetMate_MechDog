@@ -68,7 +68,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（36）
+### 二、工程图（37）
 
 | 工具 | 作用 |
 |---|---|
@@ -89,6 +89,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `list_circular_edges` | 列视图内圆边（图纸坐标 + 直径），孔标注的前置工具 |
 | `add_hole_callout` | 原生孔标注（带回读 + 模型孔径比对） |
 | `add_hole_callouts` | **批量孔标注**：单视图可见边 → `AddHoleCallout2`，`IsHoleCallout` 判定（pilot），可指定引线落点 |
+| `add_distance_dimension` | **两条边之间的距离**——总长这类「多段相加」的尺寸只能这样标；实测旋转轴 edge3–edge6 = 60.0 mm |
 | `add_drawing_dimension` | 按边索引/坐标补标单个尺寸（失败返回最近边模型/图纸坐标 + 距离） |
 | `add_dimension_tolerance` | 原生尺寸公差（双边/对称/极限/配合） |
 | `add_datum_feature` | **基准要素符号**（三角形+字母），形位公差的基准真正指向它；`InsertDatumTag2` 挂在选中边上，用 `view_name`+`edge_index` 定位 |
@@ -240,7 +241,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 112 条历史回归
+python tests/check_all.py     # 秒级：语法 + 结构 + 113 条历史回归
 python tests/smoke.py         # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
 

@@ -2965,6 +2965,104 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True):
         return error("list_edges_failed", str(exc))
 
 
+def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=None,
+                          save=False):
+    """Dimension the distance BETWEEN two edges — the only way to get an overall length.
+
+    P2-7 of a 2026-11-03 report: a 60 mm shaft could not be given a `60` dimension at all.
+    `add_drawing_dimension` hits one edge and returns that edge's own length, so it can
+    only produce the four segment lengths (18/29/3/10). The shaft's total is a SUM of
+    segments — **no single edge in the view is 60 mm long** — so nothing could express it,
+    and the drawing shipped with the most important dimension missing.
+
+    `IModelDoc2.AddDimension2` creates a dimension from the current SELECTION, so picking
+    two edges and calling it dimensionsthe gap between them:
+
+        edge_a.Select2(False, 0)     # first
+        edge_b.Select2(True, 0)      # append
+        doc.AddDimension2(x, y, 0)   # x/y is where the text is placed
+
+    Verified 2026-11-03 on 旋转轴: two edges 3 mm apart produced a dimension reading 3.0.
+    Which pair gives the overall length depends on the view — use `list_drawing_edges` and
+    pick the two outermost parallel edges.
+
+    edge_a / edge_b are indices from `list_drawing_edges`. Returns the value it created so
+    the caller can check it against the expected overall length instead of trusting it.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        target = None
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name is None or str(view.Name) == view_name:
+                target = view
+                break
+        if target is None:
+            return error("view_not_found", "no model view named %r" % view_name)
+        doc.ActivateView(target.Name)
+        doc.ClearSelection2(True)
+
+        edges = []
+        for component in (list(target.GetVisibleComponents or ())):
+            try:
+                edges.extend(list(target.GetVisibleEntities2(component, 1) or ()))
+            except Exception:
+                continue
+        for label, index in (("edge_a", edge_a), ("edge_b", edge_b)):
+            if index is None or index < 0 or index >= len(edges):
+                return error("bad_edge_index",
+                             "%s=%s out of range (%d edges)" % (label, index, len(edges)))
+
+        first = win.Dispatch(edges[int(edge_a)])
+        second = win.Dispatch(edges[int(edge_b)])
+        if not first.Select2(False, 0):
+            return error("select_failed", "could not select edge_a=%s" % edge_a)
+        if not second.Select2(True, 0):
+            return error("select_failed", "could not append edge_b=%s" % edge_b)
+
+        raw = _invoke_as_method(doc, "AddDimension2", float(x_m), float(y_m), 0.0)
+        if raw is None:
+            return error(
+                "distance_dimension_failed",
+                "AddDimension2 returned null",
+                "It needs exactly two compatible entities selected; two parallel edges of "
+                "the same view normally qualify.")
+
+        display = win.Dispatch(raw)
+        value_mm = None
+        try:
+            dim2 = win.Dispatch(call_method(display, "GetDimension2", 0))
+            value_mm = round(float(dim2.SystemValue) * 1000.0, 3)
+        except Exception:
+            pass
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        try:
+            doc.GraphicsRedraw2()
+        except Exception:
+            pass
+        if save:
+            _save_drawing(doc)
+
+        return drawing_ok(
+            drawing=doc.GetTitle, view=str(target.Name),
+            edge_a=int(edge_a), edge_b=int(edge_b),
+            value_mm=value_mm,
+            position_m=[round(float(x_m), 4), round(float(y_m), 4)],
+            note=("这是两条边之间的距离，不是任何一条边的长度。"
+                  "总长这类「由多段相加得到」的尺寸只能这样标。"
+                  "value_mm 是实际生成的值——请与期望总长核对，不要假定选对了边。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("distance_dimension_failed", str(exc))
+
+
 def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0,
                           offset_y=-0.015, view_name=None, tolerance=0.01,
                           edge_index=None, skip_duplicates=False, known_values=None, save=True):

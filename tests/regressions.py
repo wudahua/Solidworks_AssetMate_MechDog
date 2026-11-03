@@ -2712,6 +2712,35 @@ def assert_gtol_leader_uses_the_real_signature():
         "the incorrect parameter reading is back in the docstring")
     return "gtol leaders use the documented SetLeader3 signature and report status + count"
 
+def assert_distance_dimension_reports_its_value():
+    """0.8.78 / P2-7 — an overall length cannot come from one edge, so build it from two.
+
+    A 2026-11-03 report: the 60 mm shaft shipped without a `60` dimension. `add_drawing_dimension`
+    hits ONE edge and returns that edge's own length, so it yields 18/29/3/10 — segments of
+    the total. The overall length is their SUM, and **no single edge in the view is 60 mm
+    long**, so nothing in the toolset could express it.
+
+    `IModelDoc2.AddDimension2` dimensions the current selection, so two selected edges give
+    the gap between them. Verified 2026-11-03 on 旋转轴 right view: edge 3 with edge 6 is
+    exactly 60.0 mm, while other pairs give 18/42/47/8.
+
+    The critical part is `value_mm`: which pair spans the overall length depends on the
+    view, so a wrong pair produces a perfectly valid dimension of the WRONG distance. The
+    receipt must return what it actually measured.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_distance_dimension")) or ""
+    assert "AddDimension2" in body, "the two-edge dimension call is gone"
+    assert "value_mm" in body, (
+        "the receipt does not return the measured value — a wrong edge pair would look fine")
+    assert "Select2(True" in body, (
+        "the second edge is not APPENDED to the selection; AddDimension2 needs both")
+    assert "bad_edge_index" in body, "no guard against an out-of-range edge index"
+    # must not silently assume success
+    assert "distance_dimension_failed" in body, "there is no failure verdict"
+    return "two-edge distance dimensions report the value actually created"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2825,6 +2854,7 @@ STATIC_REGRESSIONS = [
     ("0.8.73 reconcile one-to-one", assert_reconcile_uses_one_to_one_matching),
     ("0.8.74 leader + apex", assert_leader_state_and_apex_are_reported),
     ("0.8.77 gtol leader signature", assert_gtol_leader_uses_the_real_signature),
+    ("0.8.78 distance dimension", assert_distance_dimension_reports_its_value),
 ]
 
 

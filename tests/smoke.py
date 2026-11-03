@@ -710,6 +710,17 @@ def main():
         edges = drawing.list_circular_edges(drw)
         assert edges.get("ok") is not None, "list_circular_edges returned no verdict"
 
+        # two-edge distance (0.8.78): the only way to dimension an overall length.
+        # Must report the value it actually created — guessing the pair silently gives a
+        # perfectly valid dimension of the WRONG distance.
+        dist = drawing.add_distance_dimension(drw, 0, 1, 0.10, 0.14)
+        assert dist.get("ok") is not None, "add_distance_dimension returned no verdict"
+        if dist.get("ok"):
+            assert dist.get("value_mm") is not None, (
+                "distance dimension did not report its value: %r" % dist)
+            assert dist.get("edge_a") == 0 and dist.get("edge_b") == 1, (
+                "receipt does not echo which edges were used: %r" % dist)
+
         # dimension spread (0.8.69): read-only diagnostic, must not change the drawing
         spread = drawing.survey_dimensions_by_view(drw)
         assert spread.get("ok") is not None, "survey_dimensions_by_view returned no verdict"
