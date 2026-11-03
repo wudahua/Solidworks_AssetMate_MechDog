@@ -1174,8 +1174,40 @@ def delete_view(drawing_path, view_name, save=True):
                          before=before, after=after)
         if save:
             _save_drawing(doc)
-        return drawing_ok(deleted=view_name, views_before=before, views_after=after,
-                          saved=bool(save))
+        # Deleting a section or detail view leaves its cut line / boundary circle on the
+        # PARENT view as orphan geometry. Measured 2026-11-03 on 旋转轴 (the same part a
+        # report used): after `delete_view("剖面视图 A-A")` the parent still shows the
+        # vertical cut line with its arrows and "A", rendered in the PDF.
+        #
+        # It cannot be cleaned from the API here:
+        #   * `IView.GetSection()` returns None even BEFORE the delete, so the object is
+        #     never reachable
+        #   * `GetSectionLineInfo2` still answers with the geometry (4 segments) — the line
+        #     exists, it just has no object to select
+        #   * SelectByID2 with SKETCHSEGMENT / SKETCHPOINT / DRAWINGVIEW / SECTIONLINE never
+        #     selects anything, and the parent's annotation list holds only 装饰螺纹线
+        #
+        # So say it instead of pretending the sheet is clean. A leftover A-A next to a
+        # deleted section is a drawing error a shop will reject, and the caller needs to
+        # know it before sending the file.
+        leftover = None
+        lowered = str(view_name)
+        if ("剖面" in lowered or "section" in lowered.lower()
+                or "局部" in lowered or "detail" in lowered.lower()):
+            leftover = {
+                "kind": "section" if ("剖面" in lowered or "section" in lowered.lower())
+                        else "detail",
+                "parent_hint": "the view this one was cut/detailed from",
+                "cannot_be_cleaned_by_api": True,
+            }
+        return drawing_ok(
+            deleted=view_name, views_before=before, views_after=after,
+            saved=bool(save),
+            leftover_geometry=leftover,
+            warning=("删除剖面/局部视图后，父视图上会残留剖切线/边界圈，"
+                     "API 无法清除（IView.GetSection 恒 None，SelectByID2 选不中）。"
+                     "交付前请在界面手工删除，或重建父视图。"
+                     if leftover else None))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

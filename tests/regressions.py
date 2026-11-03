@@ -2543,6 +2543,37 @@ def assert_turned_parts_map_to_sheet_coordinates():
         "the projected radius is not reported, so a circle cannot be aimed at")
     return "turned parts resolve axes and project circle centres to the sheet"
 
+def assert_delete_view_warns_about_leftover_geometry():
+    """0.8.71 / P0-2 — deleting a section leaves its cut line on the parent, and no API removes it.
+
+    Reproduced 2026-11-03 with the reporter's own part (旋转轴, right view 60x14):
+    `add_section_view(vertical)` then `delete_view("剖面视图 A-A")` and the PDF still shows
+    the vertical cut line with arrows and "A" across the shaft.
+
+    The line is unreachable:
+      * `IView.GetSection()` returns None even BEFORE the delete
+      * `GetSectionLineInfo2` still returns the geometry (4 segments) — it exists, it has no
+        object to select
+      * SelectByID2 with SKETCHSEGMENT / SKETCHPOINT / DRAWINGVIEW / SECTIONLINE selects
+        nothing; the parent's annotation list holds only 装饰螺纹线
+
+    Since it cannot be cleaned, the receipt must SAY so. Silently returning ok:true leaves
+    the caller to ship a sheet with two contradictory A-A marks — the exact failure the
+    report called a "图纸硬错误".
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "delete_view")) or ""
+    assert "leftover_geometry" in body, (
+        "delete_view is silent again — callers will ship a sheet with a leftover cut line")
+    assert "cannot_be_cleaned_by_api" in body, (
+        "the receipt does not admit that the API cannot remove it")
+    assert "GetSection" in body, (
+        "the docstring lost the evidence that GetSection returns None")
+    # must only fire for section/detail, not for every view
+    assert '"剖面"' in body and '"局部"' in body, (
+        "the warning does not distinguish section/detail views from plain ones")
+    return "delete_view reports (and explains) the cut line it cannot remove"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2651,6 +2682,7 @@ STATIC_REGRESSIONS = [
     ("0.8.68 layout iterates", assert_layout_iterates_and_uses_both_axes),
     ("0.8.69 dim spread diagnosed", assert_dimension_spread_is_diagnosed_not_faked),
     ("0.8.70 turned parts map", assert_turned_parts_map_to_sheet_coordinates),
+    ("0.8.71 delete_view warns", assert_delete_view_warns_about_leftover_geometry),
 ]
 
 
