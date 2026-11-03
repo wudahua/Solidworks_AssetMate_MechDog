@@ -782,6 +782,11 @@ def plan_dimension_gaps(
     be paired with geometry before anything can be drawn. Each gap reports its matching edge
     pairs and a status: fillable (exactly one pair), ambiguous, or no_geometry (that value
     needs a section or detail view to be expressed).
+
+    NOT VERIFIED ON REAL HARDWARE: the apply_gaps=True branch has never run against a part
+    that actually has a fillable gap. Every part tested returned 0 gaps or only no_geometry
+    ones, so that branch is covered by code review and the offline assertions only. Treat a
+    first apply as a trial, and check the result with list_drawing_annotations.
     """
     return _json(drawing.plan_dimension_gaps(
         model_path, drawing_path, tolerance_mm=tolerance_mm,
