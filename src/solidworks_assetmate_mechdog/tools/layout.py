@@ -199,6 +199,36 @@ def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True,
             pass
         if x_m is not None and y_m is not None:
             applied["position_m"] = position_after
+
+        # P1-6: `IView.Position` is not proof the view moved. A report showed
+        # set_view(detail, x, y, break_alignment=True) returning
+        # {"position_after_m": [0.382, 0.132], "ok": true} while the rendered sheet still
+        # had the detail sitting on top of the section view — the readback was just echoing
+        # the value that had been written. The ink outline comes from the actual geometry,
+        # so its centre is the only trustworthy check.
+        outline_center = None
+        try:
+            box = [float(v) for v in target.GetOutline]
+            outline_center = [round((box[0] + box[2]) / 2, 4),
+                              round((box[1] + box[3]) / 2, 4)]
+        except Exception:
+            outline_center = None
+        # Compare against the REQUESTED point, not against `IView.Position`. On a detail
+        # view that refuses to move, Position came back as None entirely — comparing
+        # Position-to-outline would have found nothing to disagree with. The caller asked
+        # for a point; the outline says where the ink actually is.
+        mismatch = None
+        if (requested is not None and outline_center is not None
+                and (abs(outline_center[0] - requested[0]) > 0.001
+                     or abs(outline_center[1] - requested[1]) > 0.001)):
+            mismatch = {
+                "position_requested_m": [round(float(requested[0]), 4),
+                                         round(float(requested[1]), 4)],
+                "position_reported_m": position_after,
+                "outline_center_m": outline_center,
+                "delta_mm": [round((outline_center[0] - requested[0]) * 1000, 2),
+                             round((outline_center[1] - requested[1]) * 1000, 2)],
+            }
         if scale is not None:
             try:
                 applied["scale"] = float(target.ScaleDecimal)
@@ -223,6 +253,20 @@ def set_view(drawing_path, view_name, x_m=None, y_m=None, scale=None, save=True,
             and (abs(position_after[0] - requested[0]) > 1e-4
                  or abs(position_after[1] - requested[1]) > 1e-4)
         )
+        if mismatch is not None and x_m is not None and y_m is not None:
+            # Report the disagreement as an ERROR, not a warning: the caller asked for a
+            # position and did not get it. Silently returning ok:true is what cost the
+            # reporter a round.
+            if save:
+                _save_drawing(doc)
+            return error(
+                "moved_but_position_mismatch",
+                "IView.Position reports %r but the geometry sits at %r"
+                % (position_after, outline_center),
+                "Detail views are tied to the parent's detail circle and often refuse to "
+                "move; the printed sheet follows the OUTLINE, so the view is NOT where you "
+                "asked. Rebuild the detail view instead of moving it.",
+                **mismatch)
         if save:
             _save_drawing(doc)
         # P0-3: moving a PARENT view does not carry its section cut lines with it — the

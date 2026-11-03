@@ -2741,6 +2741,36 @@ def assert_distance_dimension_reports_its_value():
     assert "distance_dimension_failed" in body, "there is no failure verdict"
     return "two-edge distance dimensions report the value actually created"
 
+def assert_set_view_verifies_the_outline_not_the_property():
+    """0.8.79 / P1-6 — `IView.Position` echoed the request; the geometry never moved.
+
+    A 2026-11-03 report: set_view(detail, x=0.382, y=0.132, break_alignment=True) returned
+    {"position_after_m": [0.382, 0.132], "alignment_broken": true, "ok": true} while the
+    rendered sheet still had the detail sitting on top of the section view. `audit` flagged
+    views_overlap, which is how it was caught.
+
+    Reading the property back after writing it proves nothing. The ink outline comes from
+    the geometry, so its centre is the check. Two more details learned here:
+
+      * compare against the REQUESTED point, not against Position — on a detail view that
+        refuses to move, Position came back as None, leaving nothing to disagree with
+      * report it as an ERROR, not a warning: the caller asked for a position and did not
+        get it
+
+    Verified on 旋转轴: the detail reports delta [-72.3, -20.0] mm; a plain view reports ok.
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "set_view")) or ""
+    assert "outline_center" in body and "GetOutline" in body, (
+        "the position check no longer reads the geometry — Position alone can lie")
+    assert "moved_but_position_mismatch" in body, (
+        "silent ok:true is back for a view that did not move")
+    assert "outline_center[0] - requested[0]" in body, (
+        "the comparison is not against the request — Position can be None on detail views")
+    assert "position_reported_m" in body and "delta_mm" in body, (
+        "the receipt does not show both numbers, so a reader cannot see the disagreement")
+    return "set_view verifies the outline centre against the request and errors on mismatch"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2855,6 +2885,7 @@ STATIC_REGRESSIONS = [
     ("0.8.74 leader + apex", assert_leader_state_and_apex_are_reported),
     ("0.8.77 gtol leader signature", assert_gtol_leader_uses_the_real_signature),
     ("0.8.78 distance dimension", assert_distance_dimension_reports_its_value),
+    ("0.8.79 set_view outline check", assert_set_view_verifies_the_outline_not_the_property),
 ]
 
 
