@@ -2574,6 +2574,41 @@ def assert_delete_view_warns_about_leftover_geometry():
         "the warning does not distinguish section/detail views from plain ones")
     return "delete_view reports (and explains) the cut line it cannot remove"
 
+def assert_cosmetic_threads_are_not_silent():
+    """0.8.72 / P0-3 — a real cosmetic thread passed every check because nothing looked.
+
+    Reproduced 2026-11-03 on the reporter's 旋转轴: the Ø10 section carries a 10 mm cosmetic
+    thread, and the whole pipeline went green — `build_feature_ledger` listed 11 features
+    with `doubts: []`, `plan_drawing` had no thread item, `delivery_check` passed.
+
+    Where the thread actually is (and is not):
+      * feature tree: 9 features, none Thread/Cosmetic
+      * `GetCosmeticThreads` / `GetCosmeticThreadCount`: do not exist on this binding
+      * the DRAWING does hold it: an annotation with `GetType == 1` named "装饰螺纹线1"
+
+    So the check moved to the drawing level: thread annotation present but no note/thread
+    text anywhere => blocker `cosmetic_threads`, verdict drops to 仅供参考/未完成.
+
+    What this does NOT do: report the thread SPEC (M10x1). That is unreadable here — the
+    report reached M10x1 only by reverse-engineering pixel gaps, which is not something a
+    tool should present as fact.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "delivery_check")) or ""
+    assert 'record("cosmetic_threads"' in body, (
+        "the thread check is gone — a threaded part will pass silently again")
+    assert "other_1" in body or "螺纹" in body, (
+        "the check no longer looks at the drawing's thread annotation")
+    assert "thread_annotations" in body, (
+        "the receipt does not carry the evidence behind the verdict")
+    assert "GetCosmeticThreads" in body, (
+        "the docstring lost the note that the model-side API does not exist")
+    # the guidance must stay honest about not knowing the spec
+    assert "读不到" in body or "unreadable" in body.lower(), (
+        "the receipt claims to know the thread spec, which this binding cannot read")
+    return "cosmetic threads block delivery when unannotated, and the spec is not invented"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2683,6 +2718,7 @@ STATIC_REGRESSIONS = [
     ("0.8.69 dim spread diagnosed", assert_dimension_spread_is_diagnosed_not_faked),
     ("0.8.70 turned parts map", assert_turned_parts_map_to_sheet_coordinates),
     ("0.8.71 delete_view warns", assert_delete_view_warns_about_leftover_geometry),
+    ("0.8.72 threads not silent", assert_cosmetic_threads_are_not_silent),
 ]
 
 

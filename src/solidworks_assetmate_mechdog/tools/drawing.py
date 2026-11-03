@@ -4785,6 +4785,40 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
 
+        # Cosmetic threads (装饰螺纹线) — P0-3 of a 2026-11-03 report: a shaft with a real
+        # 10 mm cosmetic thread passed every check, because the thread lives nowhere the
+        # ledger looks. Verified on the reporter's own part:
+        #   * feature tree has 9 features, none of them Thread/Cosmetic
+        #   * `GetCosmeticThreads` / `GetCosmeticThreadCount` do not exist on this binding
+        #   * the SLDPRT binary scan finds nothing
+        # What DOES exist is an annotation on the drawing: `GetType == 1`, named
+        # "装饰螺纹线1". So the check runs at the drawing level — if such an annotation is
+        # present but no note mentions a thread callout, the drawing is incomplete.
+        thread_annotations = 0
+        thread_notes = 0
+        for row in (anns.get("annotations") or []):
+            name = str(row.get("name") or "")
+            kind = str(row.get("kind") or "")
+            text = (str(row.get("text") or "") + str(row.get("raw_text") or "")).upper()
+            if "螺纹" in name or kind == "other_1":
+                thread_annotations += 1
+            if "螺纹" in text or "M10" in text or "M8" in text or "M12" in text:
+                thread_notes += 1
+        if thread_annotations and not thread_notes:
+            # record(name, ok, detail, blocking) — `blocking` is positional, and the
+            # explanation goes into `detail` rather than a fifth argument.
+            record("cosmetic_threads", False,
+                   "图纸有 %d 处装饰螺纹线注解，但没有任何螺纹标注（M10×1 之类）。"
+                   "规格在模型侧读不到（特征树无 Thread 特征、GetCosmeticThreads 不存在），"
+                   "只能由设计确认后手写；交付前必须在技术要求或尺寸注记里写明螺纹规格。"
+                   % thread_annotations,
+                   thread_annotations=thread_annotations)
+        else:
+            record("cosmetic_threads", True,
+                   "%d 处螺纹注解 / %d 处螺纹文字"
+                   % (thread_annotations, thread_notes),
+                   blocking=False)
+
         # Attachment: GetAttachedEntities2 returns nothing for roughly half of the
         # dimensions that InsertModelAnnotations3 creates, and changing the import
         # parameters does not move that ratio. It is unclear whether those are really
