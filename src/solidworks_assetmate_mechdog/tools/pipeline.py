@@ -81,7 +81,8 @@ def _callout_warning(callouts):
 
 def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     category=None, do_hole_callouts=None, do_surface_finish=None,
-                    do_derived_check=True, hole_budget_s=45.0, prune_to_plan=True):
+                    do_derived_check=True, hole_budget_s=45.0, prune_to_plan=True,
+                    overwrite=False):
     """Run the whole chain and report each step plus the delivery verdict.
 
     Steps (each failure is recorded, not fatal — a partial drawing beats no drawing):
@@ -106,6 +107,45 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     path = os.path.abspath(model_path)
     if not os.path.exists(path):
         return error("bad_input", "model not found: %s" % path)
+
+    # P1, third report running (2026-11-03): this pipeline is NOT idempotent. Running it
+    # twice on the same output_path opens the existing drawing and inserts everything again:
+    # dimensions 8 -> 24, hole callouts 5 -> 10, centre marks 5 -> 8, surface finishes
+    # 1 -> 2, and both runs report ok:true with blockers: []. There was no
+    # output_exists / overwrite / preexisting handling of any kind.
+    #
+    # Overwriting is the sane default for a "produce this drawing" call, but silently
+    # DOUBLING an existing sheet is not — so an existing file is refused unless the caller
+    # says overwrite=True, and overwriting really does start from an empty drawing.
+    if output_path:
+        _exists_at = os.path.abspath(output_path)
+        if os.path.splitext(_exists_at)[1].lower() != ".slddrw":
+            _exists_at += ".SLDDRW"
+        if os.path.exists(_exists_at):
+            if not overwrite:
+                return error(
+                    "output_exists",
+                    "output already exists: %s" % _exists_at,
+                    "Pass overwrite=True to rebuild it from scratch, or choose another "
+                    "output_path. Running again without this used to APPEND a second full "
+                    "set of dimensions to the existing sheet (measured 8 -> 24 dimensions).",
+                    path=_exists_at, overwrite=False)
+            # Close any open copy first, then remove it so create_drawing starts clean.
+            try:
+                from ..sw_session import get_sw
+                for _doc in (get_sw().GetDocuments or ()):
+                    try:
+                        if os.path.normcase(str(_doc.GetPathName)) == os.path.normcase(_exists_at):
+                            get_sw().CloseDoc(str(_doc.GetTitle))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                os.remove(_exists_at)
+            except OSError as exc:
+                return error("output_locked", "cannot overwrite %s: %s" % (_exists_at, exc),
+                             "Close the drawing in SolidWorks and retry.")
 
     steps = []
 

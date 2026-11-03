@@ -3126,6 +3126,28 @@ def assert_sheet_x_can_be_flipped_and_the_cache_knows():
     assert "sheet_axis_direction_verified" in body and "sheet_flipped_x" in body, (
         "the receipt does not say whether the caller corrected the axis")
     return "sheet X can be mirrored by the caller, the cache keys on it, and the receipt says so"
+def assert_produce_drawing_refuses_to_double_a_sheet():
+    """0.8.94 / P1 (third report) — running the pipeline twice doubled everything.
+
+    Measured 2026-11-03: same model, same output_path, twice —
+    dimensions 8 -> 24, hole callouts 5 -> 10, centre marks 5 -> 8, surface finishes 1 -> 2,
+    and BOTH runs reported ok:true with blockers: []. There was no output_exists /
+    overwrite / preexisting handling at all.
+
+    Now an existing file is refused (`output_exists`) unless `overwrite=True`, and
+    overwriting closes the open copy and deletes the file first so create_drawing really
+    starts clean. Verified: #1 ok, #2 output_exists, #3 overwrite -> 10 dimensions (a
+    single fresh set, where the old behaviour produced 24).
+    """
+    src = _read("tools/pipeline.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "produce_drawing")) or ""
+    assert "output_exists" in body, "a second run appends to the existing sheet again"
+    assert "overwrite" in body, "there is no way to rebuild deliberately"
+    assert "os.remove" in body, (
+        "overwrite does not delete the old file, so create_drawing opens it and appends")
+    assert "CloseDoc" in body, "an open copy would block the delete"
+    return "produce_drawing refuses a second run unless overwrite=True, and overwrite is clean"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3249,6 +3271,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.94 produce_drawing idempotent", assert_produce_drawing_refuses_to_double_a_sheet),
     ("0.8.93 flip_x + cache key", assert_sheet_x_can_be_flipped_and_the_cache_knows),
     ("0.8.92 filter takes plan dicts", assert_dimension_filter_accepts_plan_dicts_and_strings),
     ("0.8.90 no blank sheet leak", assert_create_drawing_does_not_leak_a_blank_sheet),

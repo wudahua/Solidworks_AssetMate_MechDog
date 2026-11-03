@@ -160,7 +160,7 @@ def produce_drawing(
     category: Annotated[str | None, Field(description="Part category used to pick views and the dimension strategy, e.g. '轴类'.")] = None,
     do_hole_callouts: Annotated[bool | None, Field(description="Include hole callouts in the one-shot pipeline.")] = None,
     do_surface_finish: Annotated[bool | None, Field(description="Include surface-finish symbols in the one-shot pipeline.")] = None,
-    prune_to_plan: Annotated[bool, Field(description="Delete inserted dimensions that the plan did not ask for.")] = True,
+    prune_to_plan: Annotated[bool, Field(description="Delete inserted dimensions that the plan did not ask for.")] = True,    overwrite: Annotated[bool, Field(description="Rebuild even if output_path already exists. Without it an existing drawing is refused (output_exists) instead of having a second full set of dimensions appended to it.")] = False,
 ) -> str:
     """Model in, annotated and judged drawing out — the whole chain in one call.
 
@@ -177,7 +177,8 @@ def produce_drawing(
         model_path, output_path=output_path, paper=paper,
         views=tuple(views) if views else None, category=category,
         do_hole_callouts=do_hole_callouts, do_surface_finish=do_surface_finish,
-        prune_to_plan=prune_to_plan))
+        prune_to_plan=prune_to_plan,
+        overwrite=overwrite))
 
 
 @mcp.tool()
