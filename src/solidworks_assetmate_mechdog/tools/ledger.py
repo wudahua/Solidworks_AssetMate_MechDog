@@ -192,7 +192,11 @@ def _classify(bbox_mm, has_flat_pattern, types):
         return "其他", "包围盒退化"
     slender = longest / shortest
     width = middle / shortest
-    if slender >= 8 and width <= 3:
+    # Threshold lowered from 8 to 3 (P2-6, 2026-11-03): a Ø14x60 shaft is 4.3:1, which is
+    # unquestionably a turned part but fell well inside the old "一般零件" bin — and the
+    # report's plan then offered `总长: 14.0` (the X extent) with no Ø14 and no collar width.
+    # 3:1 still excludes plates and blocks: a 5x50x60 strip is 12:1 but width 10 > 2.5.
+    if slender >= 3 and width <= 2.5:
         return "轴类", "长径比 %.1f、中/短比 %.1f" % (slender, width)
     if shortest <= 6 and middle >= 20:
         return "板类", "最薄 %.1f mm、最宽 %.1f mm" % (shortest, middle)

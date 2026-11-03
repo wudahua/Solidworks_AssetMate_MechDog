@@ -1727,6 +1727,19 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 and e.get("kind") == "driving"),
             place_outside_applied=bool(place_outside),
             outside_debug=outside_debug,
+            # P2-5 of a 2026-11-03 report: a second call with place_outside=true returned
+            # {"inserted": 1, "placed_outside": 0, "outside_debug": {"skip_before": 12,
+            # "buckets": 0}} — the one new dimension stayed on the geometry AND duplicated
+            # an existing one. `skip_before` skips everything that was already there, so a
+            # re-run has nothing left to move. That is by design, but the receipt said
+            # nothing, so "0 placed" read like "everything was already outside".
+            outside_warning=(
+                "%d 条新插入的尺寸没有被推到视图外（placed_outside=0）。"
+                "place_outside 只处理「本次插入」的尺寸，`skip_before` 会跳过已存在的；"
+                "如果这是第二次调用，新尺寸很可能与旧尺寸重复——请先核对再保留。"
+                % count
+                if (place_outside and count and not outside_placed) else None),
+            outside_effective=bool(place_outside and outside_placed),
             placed_outside=outside_placed,
             outside_sides=outside_sides,
             outside_failed=outside_failed[:10],

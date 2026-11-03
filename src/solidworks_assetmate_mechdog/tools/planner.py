@@ -23,7 +23,7 @@ TARGET_DIMENSIONS = 18
 _ENVELOPE_TYPES = ("extrude", "revolve", "sweep", "loft", "thin", "boundary")
 
 
-def _rank_dimensions(ledger_rows, holes, box):
+def _rank_dimensions(ledger_rows, holes, box, category=None):
     """Pick a defensible subset: envelope, then holes, then per-feature representatives."""
     chosen, seen = [], set()
     # Array spacing and sketch parameters are driving dimensions too, but a value far
@@ -46,7 +46,16 @@ def _rank_dimensions(ledger_rows, holes, box):
         chosen.append(entry)
 
     # 1) Overall envelope: the three box measurements are what every drawing must state.
-    for axis, value in zip(("长", "宽", "高"), box or []):
+    #
+    # For a turned part the box order is arbitrary — a Ø14x60 shaft reports [14, 14, 60],
+    # so `总长` came out as 14.0 while the real length is 60, and a caller using this list
+    # as a dimension_filter lost the overall length of the part. P2-6, 2026-11-03.
+    # Sorting descending for 轴类 makes 总长 the LONGEST extent, which is what the word
+    # means to a draughtsman. Other categories keep X/Y/Z, where the axes are meaningful.
+    box_values = list(box or [])
+    if str(category) == "轴类":
+        box_values = sorted(box_values, reverse=True)
+    for axis, value in zip(("长", "宽", "高"), box_values):
         add({"feature": "外形", "dimension": "总%s" % axis, "value_mm": value,
              "reason": "外形尺寸，任何图纸都必须标注"})
 
@@ -110,7 +119,8 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
             })
 
     holes = led.get("holes") or []
-    keep = _rank_dimensions(ledger_rows, holes, box)[:TARGET_DIMENSIONS]
+    keep = _rank_dimensions(ledger_rows, holes, box,
+                            category=led.get("category"))[:TARGET_DIMENSIONS]
     # Tag every entry as driving / derived. The 外形 rows carry BOUNDING-BOX values
     # (210 / 204.85 / 98.31 in a report) — there is no such driving dimension in the model,
     # so auto_dimension can never insert them. Without this tag the caller watches
@@ -134,6 +144,7 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
     return ok(
         model=led.get("part"),
         category=led.get("category"),
+        category_reason=led.get("category_reason"),
         box_mm=box,
         paper=paper,
         suggested_views=list(views),

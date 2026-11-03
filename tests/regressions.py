@@ -2904,6 +2904,38 @@ def assert_detail_thin_is_a_warning_not_a_failure():
         "re-run the same five framings")
     return "thin detail views warn, empty ones still fail, and the numbers are on record"
 
+def assert_turned_parts_classify_and_report_real_length():
+    """0.8.84 / P2-6 — a Ø14x60 shaft was "一般零件" whose 总长 was 14.
+
+    A 2026-11-03 report: plan_drawing returned category "一般零件" with
+    `总长: 14.0` — the X extent, not the 60 mm length — and the shortlist omitted Ø14,
+    the collar width 3 and the keyway depth 1.8.
+
+    Two causes, both fixed here:
+
+      * `_classify` required slender >= 8 for 轴类. A 4.3:1 shaft is obviously turned; the
+        threshold is now 3 with width <= 2.5, which still rejects a 5x50x60 strip (12:1 but
+        width 10).
+      * `_rank_dimensions` zipped the box straight onto 长/宽/高. For a turned part the box
+        order is arbitrary, so descending sort makes 总长 mean the longest extent.
+
+    Verified on 旋转轴: category 轴类, `总长: 60.0` (was 14.0), `总宽: 14.0`.
+
+    The shortlist gap (missing Ø14 / collar / keyway) is NOT fixed — that is `_rank_dimensions`
+    ranking, a different problem.
+    """
+    led = _read("tools/ledger.py")
+    assert "slender >= 3 and width <= 2.5" in led, (
+        "turned parts fall back into 一般零件 at 4:1 again")
+    plan = _read("tools/planner.py")
+    assert "sorted(box_values, reverse=True)" in plan, (
+        "总长 is the X extent again instead of the longest one")
+    assert "category_reason" in plan, (
+        "the receipt does not carry WHY it classified the part")
+    assert "outside_warning" in _read("tools/drawing.py"), (
+        "a second place_outside run reports placed_outside=0 without explanation again")
+    return "turned parts classify correctly and 总长 is the longest extent"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3023,6 +3055,7 @@ STATIC_REGRESSIONS = [
     ("0.8.81 section position report", assert_section_reports_a_dropped_position_axis),
     ("0.8.82 tolerance units/limits", assert_tolerance_checks_units_and_degenerate_limits),
     ("0.8.83 detail_thin warns", assert_detail_thin_is_a_warning_not_a_failure),
+    ("0.8.84 axis classify + 总长", assert_turned_parts_classify_and_report_real_length),
 ]
 
 
