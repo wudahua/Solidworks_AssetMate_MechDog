@@ -2805,6 +2805,34 @@ def assert_cross_sections_are_not_judged_by_parent_extent():
         "the acceptance fallback for cross-sections is no longer stated")
     return "cross-sections skip the parent-extent ratio; longitudinal sections still use it"
 
+def assert_section_reports_a_dropped_position_axis():
+    """0.8.81 / P1-5 — a section silently discarded the y of the requested position.
+
+    A 2026-11-03 report: add_section_view(position=[0.300, 0.130]) produced an outline
+    centred at y=0.205, with `layout: null` and no flag saying the request had been
+    altered. The section landed on top of the end view and needed a second set_view.
+
+    Keeping horizontal projection alignment with the parent is CORRECT drawing practice —
+    the bug was saying nothing about it. Verified on 旋转轴: requested [0.3, 0.13],
+    actual [0.3, 0.2759], x preserved, y replaced.
+
+    So the receipt must carry request, result, whether alignment overrode it, and WHICH
+    axis was dropped.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_section_view")) or ""
+    assert "position_requested_m" in body, "the request is no longer echoed"
+    assert "position_actual_m" in body, (
+        "where the view actually landed is not reported — the reader cannot spot the change")
+    assert "alignment_kept" in body, (
+        "the receipt does not say whether projection alignment overrode the request")
+    assert "position_axis_ignored" in body, (
+        "the receipt does not name WHICH coordinate was dropped")
+    assert "break_alignment" in body, (
+        "the warning does not tell the caller how to opt out of the alignment")
+    return "sections report the requested position, the actual one, and the dropped axis"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2921,6 +2949,7 @@ STATIC_REGRESSIONS = [
     ("0.8.78 distance dimension", assert_distance_dimension_reports_its_value),
     ("0.8.79 set_view outline check", assert_set_view_verifies_the_outline_not_the_property),
     ("0.8.80 cross-section exemption", assert_cross_sections_are_not_judged_by_parent_extent),
+    ("0.8.81 section position report", assert_section_reports_a_dropped_position_axis),
 ]
 
 

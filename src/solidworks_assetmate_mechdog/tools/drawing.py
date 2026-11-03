@@ -4013,6 +4013,33 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         sanity = (_section_sanity(target, section, orientation, depth)
                   if verify_cut else
                   {"checked": False, "reason": "verify_cut=False"})
+        # P1-5 of a 2026-11-03 report: a section view is held in horizontal projection
+        # alignment with its parent, so the y of a requested `position` is DISCARDED — and
+        # nothing in the receipt said so. The report asked for [0.300, 0.130] and got an
+        # outline centred at y=0.205, with `layout: null` and no `aligned_to_parent` flag;
+        # the section landed on top of the end view and needed a second set_view to fix.
+        #
+        # The alignment is correct drawing practice, so it is kept — but the request and
+        # the result must both be visible, and a dropped coordinate must be called out.
+        position_requested = None
+        if position and len(position) >= 2:
+            position_requested = [round(float(position[0]), 4), round(float(position[1]), 4)]
+        position_actual = None
+        try:
+            position_actual = [round(float(v), 4) for v in section.Position]
+        except Exception:
+            position_actual = None
+        alignment_kept = None
+        dropped_axis = None
+        if position_requested is not None and position_actual is not None:
+            dx = abs(position_actual[0] - position_requested[0])
+            dy = abs(position_actual[1] - position_requested[1])
+            alignment_kept = bool(dx > 1e-3 or dy > 1e-3)
+            if dy > 1e-3:
+                dropped_axis = "y"
+            elif dx > 1e-3:
+                dropped_axis = "x"
+
         diag = {
             "drawing": doc.GetTitle, "section": section.Name, "source_view": target.Name,
             "label": str(label), "orientation": str(orientation), "flip": bool(flip),
@@ -4020,6 +4047,14 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),
             "edge_count": edge_count, "sanity": sanity, "cut_plane": cut_plane,
             "layout": layout, "hatch_count": hatch_count,
+            "position_requested_m": position_requested,
+            "position_actual_m": position_actual,
+            "alignment_kept": alignment_kept,
+            "position_axis_ignored": dropped_axis,
+            "warning": ("请求的位置 %r 的 %s 被丢弃：剖面视图与父视图 %r 保持投影对齐，"
+                        "实际落在 %r。要对齐就用这个位置；不要就再调 set_view(break_alignment=True)。"
+                        % (position_requested, dropped_axis, str(target.Name), position_actual)
+                        if dropped_axis else None),
         }
         if edge_count == 0:
             return error(
