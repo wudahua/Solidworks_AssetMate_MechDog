@@ -1620,6 +1620,43 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             for full, entries in duplicates.items()
         }
 
+        # P2-4 of a 2026-11-03 report: the sheet carried TWO `10` dimensions and
+        # `duplicates_removed: 4` still reported success. The dedupe key is the model's
+        # FullName, so a second dimension with the same VALUE but a different FullName — the
+        # same measurement projected into another view — survives. The report's phrasing was
+        # exact: "去重键是模型的 full name：只要第二条尺寸带另一个 full name（同值投影），
+        # 就漏网".
+        #
+        # Value alone is not enough to delete on either: Ø10 and a 10 mm length are both
+        # "10" and both legitimate. So this REPORTS candidates grouped by (value, type, view)
+        # and lets the caller decide — deleting on value would take out real dimensions.
+        same_value_candidates = []
+        try:
+            _anns = list_drawing_annotations(drawing_path)
+            _groups = {}
+            for _row in (_anns.get("annotations") or []):
+                if _row.get("kind") != "dimension":
+                    continue
+                _value = _row.get("value_mm")
+                if _value is None:
+                    continue
+                _key = (round(float(_value), 2), int(_row.get("dimension_type") or -1))
+                _groups.setdefault(_key, []).append({
+                    "name": _row.get("name"), "view": _row.get("scope"),
+                    "position_m": _row.get("position_m"),
+                })
+            for (_value, _type), _rows in sorted(_groups.items()):
+                if len(_rows) < 2:
+                    continue
+                same_value_candidates.append({
+                    "value_mm": _value,
+                    "dimension_type": _type,
+                    "count": len(_rows),
+                    "instances": _rows[:6],
+                })
+        except Exception as _exc:
+            same_value_candidates = [{"error": str(_exc)[:80]}]
+
         notes = []
         if duplicate_report:
             worst = max(duplicate_report.items(), key=lambda kv: len(kv[1]))
@@ -1713,6 +1750,11 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             dedupe_applied=bool(eliminate_duplicates),
             duplicates_removed=len(removed),
             duplicate_names_removed=removed[:20],
+            # Dimensions that share a VALUE and TYPE but survived the FullName dedupe. Not
+            # deleted automatically: Ø10 and a 10 mm length are both "10" and both correct.
+            # Listed so a caller can spot the stray one the report described.
+            same_value_candidates=same_value_candidates,
+            same_value_candidate_count=len(same_value_candidates),
             dedupe_failed=dedupe_failed[:10],
             # 0.8.25: an explicit count — `dedupe_failed` is truncated to 10, so a run
             # that removed 0 and failed 23 used to be indistinguishable from a clean no-op.

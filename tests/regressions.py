@@ -2936,6 +2936,37 @@ def assert_turned_parts_classify_and_report_real_length():
         "a second place_outside run reports placed_outside=0 without explanation again")
     return "turned parts classify correctly and 总长 is the longest extent"
 
+def assert_same_value_duplicates_are_listed_not_deleted():
+    """0.8.85 / P2-4 — the FullName dedupe key cannot see a same-value dimension from another view.
+
+    A 2026-11-03 report: the sheet carried TWO `10` dimensions and `duplicates_removed: 4`
+    still reported success. The key is the model's FullName, so a second dimension with the
+    same VALUE but a different FullName — the same measurement projected elsewhere — is not
+    considered a duplicate. The stray `10` sat alone on the second row with nothing aligned
+    to it, which is what made the sheet look untidy.
+
+    Value alone must NOT trigger deletion: Ø10 and a 10 mm length are both "10" and both
+    correct. So candidates are grouped by (value, dimension_type) and REPORTED, leaving the
+    decision to the caller.
+
+    Verified on 旋转轴: two groups surface — 8.0/type5 x2 (two Ø8) and 10.0/type2 x2 (the
+    pair the report described).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "auto_dimension")) or ""
+    assert "same_value_candidates" in body, (
+        "same-value dimensions are invisible again — the stray 10 stays on the sheet")
+    assert "dimension_type" in body and "value_mm" in body, (
+        "the grouping is not by (value, type), which would conflate Ø10 with a 10 mm length")
+    # must not auto-delete: this is a report, not an action
+    assert 'same_value_candidate_count' in body, (
+        "the receipt carries no count, so a caller cannot tell whether any exist")
+    # the dedupe key itself is still FullName; this is the second pass, not a replacement
+    assert "duplicate_report" in body, (
+        "the FullName pass was replaced instead of supplemented")
+    return "same-value duplicates are listed by (value, type) and never deleted on value alone"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3056,6 +3087,7 @@ STATIC_REGRESSIONS = [
     ("0.8.82 tolerance units/limits", assert_tolerance_checks_units_and_degenerate_limits),
     ("0.8.83 detail_thin warns", assert_detail_thin_is_a_warning_not_a_failure),
     ("0.8.84 axis classify + 总长", assert_turned_parts_classify_and_report_real_length),
+    ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
 ]
 
 
