@@ -970,7 +970,8 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
         return error("weld_symbol_failed", str(exc))
 
 
-def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True):
+def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
+                   verify_render=True):
     """Draw a line in TRUE sheet space.
 
     `SketchManager.CreateLine` on a drawing interprets coordinates as model space and
@@ -981,6 +982,24 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True):
     """
     try:
         doc = _open_drawing(drawing_path)
+        # verify_render: until 0.8.87 this function reported ok:true for a line that never
+        # appeared. Measured 2026-11-03 on 旋转轴: export the PDF, draw, export again, and
+        # the two rendered pages differ by **0 pixels out of 16,041,784**. Every caller that
+        # trusted the receipt — including the BOM frame use it was written for — got nothing.
+        #
+        # So the before/after pixel diff is now part of the contract, the same way
+        # `add_surface_finish` proves the symbol rendered. Cost: two PDF exports per call.
+        before_page = None
+        work_dir = None
+        if verify_render:
+            import tempfile as _tempfile
+            try:
+                from .drawing import _sf_render_page
+                work_dir = _tempfile.mkdtemp(prefix="sheetline_")
+                before_page = _sf_render_page(
+                    doc, os.path.join(work_dir, "before.pdf"), work_dir)
+            except Exception:
+                before_page = None
         sheet = doc.GetFirstView
         try:
             doc.ActivateSheet(doc.GetCurrentSheet().GetName)
@@ -1008,10 +1027,40 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True):
             pass
         if save:
             _save_drawing(doc)
+
+        visibility = {"checked": False, "reason": "verify_render=False"}
+        if before_page is not None:
+            try:
+                from .drawing import _sf_render_page
+                from PIL import Image, ImageChops
+                after = _sf_render_page(doc, os.path.join(work_dir, "after.pdf"), work_dir)
+                diff = ImageChops.difference(before_page.convert("RGB"),
+                                             after.convert("RGB"))
+                changed = sum(1 for p in diff.get_flattened_data() if p != (0, 0, 0))
+                visibility = {"checked": True, "changed_pixels": changed,
+                              "visible": changed > 0}
+            except Exception as exc:
+                visibility = {"checked": False, "reason": str(exc)[:120]}
+
+        if visibility.get("checked") and not visibility.get("visible"):
+            return error(
+                "line_not_rendered",
+                "the sheet line did not change a single pixel on the exported page",
+                "Drawing-sheet sketches are NOT rendering on this build — `CreateLine` "
+                "returns an object and `SketchSegment.Style` is writable, but nothing is "
+                "drawn. Do not rely on add_sheet_line for frames or centre lines until "
+                "this is solved; see docs/com-quirks.md section 55.",
+                line_m=[[round(float(x1_m), 4), round(float(y1_m), 4)],
+                        [round(float(x2_m), 4), round(float(y2_m), 4)]],
+                visibility=visibility)
+
         return drawing_ok(drawing=doc.GetTitle,
                           line_m=[[round(float(x1_m), 4), round(float(y1_m), 4)],
                                   [round(float(x2_m), 4), round(float(y2_m), 4)]],
-                          note="坐标为图纸空间米；图纸草图不接受毫米。")
+                          visibility=visibility,
+                          note=("坐标为图纸空间米；图纸草图不接受毫米。"
+                                "verify_render=True 时用前后 PDF 像素差分证明线真的出现了；"
+                                "0 像素=线没画上，返回 line_not_rendered。"))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

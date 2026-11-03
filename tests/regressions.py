@@ -2967,6 +2967,33 @@ def assert_same_value_duplicates_are_listed_not_deleted():
         "the FullName pass was replaced instead of supplemented")
     return "same-value duplicates are listed by (value, type) and never deleted on value alone"
 
+def assert_sheet_lines_prove_they_rendered():
+    """0.8.87 / P2-2 fallout — add_sheet_line returned ok:true for a line that never appeared.
+
+    Found while investigating the centre-line request. Measured 2026-11-03 on 旋转轴:
+    export the PDF, call add_sheet_line, export again, and the two rendered pages differ by
+    **0 pixels out of 16,041,784**. The function had been reporting success since it was
+    written, and the smoke test only ever asserted `ok`, so nothing caught it.
+
+    That matters beyond centre lines: add_sheet_line is the documented way to draw BOM
+    frames, so every frame anyone "drew" with it was blank.
+
+    The before/after pixel diff is now part of the contract (verify_render defaults True),
+    mirroring add_surface_finish's verify_render. A line that changes no pixels returns
+    `line_not_rendered`.
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_sheet_line")) or ""
+    assert "verify_render" in body, "the proof was removed — silent blanks are back"
+    assert "_sf_render_page" in body and "ImageChops" in body, (
+        "the pixel diff is gone")
+    assert "line_not_rendered" in body, (
+        "a zero-pixel line reports success again")
+    assert "changed_pixels" in body, (
+        "the receipt does not carry the number that settles it")
+    return "add_sheet_line proves the line rendered or reports line_not_rendered"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3088,6 +3115,7 @@ STATIC_REGRESSIONS = [
     ("0.8.83 detail_thin warns", assert_detail_thin_is_a_warning_not_a_failure),
     ("0.8.84 axis classify + 总长", assert_turned_parts_classify_and_report_real_length),
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
+    ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
 ]
 
 
