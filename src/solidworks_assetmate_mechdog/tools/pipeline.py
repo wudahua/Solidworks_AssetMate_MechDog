@@ -216,6 +216,13 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                           drawing_tools.add_hole_callouts(target, budget_s=hole_budget_s),
                           "")
 
+    # The sheet is final from here on: nothing below writes to it. Serve the pipeline
+    # summary and delivery_check's own annotation read from ONE pass instead of two.
+    # Measured 2026-11-03: that read is 13.4 s, and delivery_check spent 38% of its 34.9 s
+    # in it. Enabled/disabled rather than a context manager so the call sites do not need
+    # re-indenting; a stale cache is impossible because enable() resets it and the sheet
+    # cannot change in between.
+    drawing_tools.annotations_cache_enable()
     summary = {}
     try:
         ann = drawing_tools.list_drawing_annotations(target)
@@ -236,6 +243,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
 
     # 10) verdict
     verdict = record("delivery_check", drawing_tools.delivery_check(path, target), "")
+    drawing_tools.annotations_cache_disable()
 
     return ok(
         model=path,

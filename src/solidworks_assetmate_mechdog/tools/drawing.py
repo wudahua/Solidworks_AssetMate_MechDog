@@ -15,6 +15,8 @@ are deliberately separate so a failed annotation never blocks a usable drawing.
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import glob
 import os
 import time
@@ -4877,6 +4879,54 @@ def _resolve_display_text(raw_text, value_mm=None):
     return text or None
 
 
+#: Scoped cache for list_drawing_annotations. Measured 2026-11-03: one produce_drawing
+#: calls this THREE times (auto_dimension's same-value pass, the pipeline summary, and
+#: delivery_check), 13.4 s each - 38% of delivery_check's 34.9 s. The last two run after
+#: the sheet is final, so their answer cannot change between them.
+#:
+#: Opt-in and scoped rather than always-on: this is a QUERY tool, and a user asking "what
+#: is on the sheet" expects the current state, not a cached one. Only the pipeline, which
+#: knows when the sheet stops changing, opens the scope.
+_ANNOT_CACHE = None          # None = disabled; dict = {(path, mtime_ns): payload}
+_ANNOT_CACHE_HITS = 0
+
+
+def annotations_cache_enable():
+    """Turn the scoped cache on. Pair with annotations_cache_disable() in a finally.
+
+    ASSETMATE_ANNOT_CACHE=0 disables it, so an A/B can isolate its contribution the same
+    way ASSETMATE_LEDGER_CACHE does for the ledger.
+    """
+    global _ANNOT_CACHE, _ANNOT_CACHE_HITS
+    if os.environ.get("ASSETMATE_ANNOT_CACHE", "1") in ("0", "false", "off"):
+        _ANNOT_CACHE = None
+        return
+    _ANNOT_CACHE = {}
+    _ANNOT_CACHE_HITS = 0
+
+
+def annotations_cache_disable():
+    """Turn it off and drop what was cached."""
+    global _ANNOT_CACHE
+    _ANNOT_CACHE = None
+
+
+@contextlib.contextmanager
+def annotations_cache_scope():
+    """Serve repeated list_drawing_annotations calls from one read for the block."""
+    global _ANNOT_CACHE, _ANNOT_CACHE_HITS
+    if _ANNOT_CACHE is not None:      # already inside; do not nest or clear early
+        yield
+        return
+    _ANNOT_CACHE = {}
+    _ANNOT_CACHE_HITS = 0
+    try:
+        yield
+    finally:
+        _ANNOT_CACHE = None
+
+
+@perf_hooks.timed("annotations")
 def list_drawing_annotations(drawing_path, view_name=None):
     """Inventory every annotation on the sheet, classified by kind.
 
@@ -4893,6 +4943,20 @@ def list_drawing_annotations(drawing_path, view_name=None):
         doc = _open_drawing(drawing_path)
         rows, counts = [], {}
         seen = set()
+        _cache_key = None
+        if _ANNOT_CACHE is not None:
+            try:
+                _cache_key = (os.path.normcase(os.path.abspath(drawing_path)),
+                              os.stat(drawing_path).st_mtime_ns)
+                _hit = _ANNOT_CACHE.get(_cache_key)
+                if _hit is not None:
+                    global _ANNOT_CACHE_HITS
+                    _ANNOT_CACHE_HITS += 1
+                    _out = dict(_hit)
+                    _out["cached"] = True
+                    return _out
+            except Exception:
+                _cache_key = None
         try:
             outline = list(doc.GetFirstView.GetOutline or [])
             sheet_w = (outline[2] - outline[0]) if len(outline) >= 4 else 0.42
@@ -5172,7 +5236,7 @@ def list_drawing_annotations(drawing_path, view_name=None):
 
         counts = dict(Counter(row.get("kind") for row in rows))
 
-        return drawing_ok(
+        payload = drawing_ok(
             drawing=doc.GetTitle,
             totals=counts,
             # Count only annotation the drafter (or this toolkit) put there. Template
@@ -5190,6 +5254,13 @@ def list_drawing_annotations(drawing_path, view_name=None):
                 "surface_finish 只能报存在，内容读取需早绑定。",
             ],
         )
+        if _cache_key is not None and _ANNOT_CACHE is not None:
+            try:
+                _ANNOT_CACHE[_cache_key] = copy.deepcopy(payload)
+            except Exception:
+                pass
+        payload.setdefault("cached", False)
+        return payload
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:
@@ -5476,6 +5547,7 @@ SELECT_TYPE_NAMES = {
 }
 
 
+@perf_hooks.timed("dim_attachments")
 def verify_dimension_attachments(drawing_path, view_name=None):
     """Report what each dimension is actually attached to (process §6.1).
 

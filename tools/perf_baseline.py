@@ -85,6 +85,7 @@ def main():
         for index, (variant, cache_env) in enumerate(plan):
             if cache_env is not None:
                 os.environ["ASSETMATE_LEDGER_CACHE"] = cache_env
+                os.environ["ASSETMATE_ANNOT_CACHE"] = cache_env
             tag = uuid.uuid4().hex[:6]
             part = os.path.join(work, "p_%s_%d.SLDPRT" % (tag, index))
             out = os.path.join(work, "d_%s_%d.SLDDRW" % (tag, index))
