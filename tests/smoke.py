@@ -1093,6 +1093,19 @@ def main():
             raise FixtureMissing("drawing chain output smoke.SLDDRW (needs drawing chain)")
         rec = drawing.reconcile_ledger(part, drw)
         assert rec.get("ok") is not None, "reconcile_ledger returned no verdict"
+
+        # PR4: the gap planner must at least run and classify. On a part with no truly-missing
+        # dimension it reports gaps_found=0; on one with gaps it must classify every one of
+        # them (fillable / ambiguous / no_geometry) rather than emitting a bare list.
+        gaps = drawing.plan_dimension_gaps(part, drw)
+        assert gaps.get("ok") is not None, "plan_dimension_gaps returned no verdict"
+        if gaps.get("ok") and gaps.get("gaps_found"):
+            for item in (gaps.get("gaps") or []):
+                assert item.get("status") in ("fillable", "ambiguous", "no_geometry",
+                                               "no_value"), (
+                    "gap has no status: %r" % (item,))
+            assert gaps.get("applied_count", 0) == 0 or gaps.get("applied"), (
+                "apply without a record of what was applied")
         # 0.8.23 / P3-5: 0.0 entries are sketch constraints, not lengths — they must not sit
         # in unmatched_ledger nor inflate the coverage denominator.
         if rec.get("ok"):

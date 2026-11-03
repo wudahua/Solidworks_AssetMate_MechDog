@@ -767,6 +767,28 @@ def reconcile_ledger(
 
 
 @mcp.tool()
+def plan_dimension_gaps(
+    model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW to inspect and optionally modify. Absolute path; the file is opened and saved in place when apply_gaps=True.")],
+    tolerance_mm: Annotated[float, Field(description="How close an edge-pair distance must be to a missing value to count as a candidate (millimetres).")] = 0.05,
+    max_candidates_per_gap: Annotated[int, Field(description="How many matching edge pairs to report per gap (nearest first).")] = 3,
+    apply_gaps: Annotated[bool, Field(description="Actually add the dimensions. Default False returns a PLAN only. Even when True, only gaps with EXACTLY ONE matching edge pair are filled; ambiguous ones are left for a human.")] = False,
+) -> str:
+    """PR4: turn truly-missing dimensions into edge-pair candidates, optionally fill them.
+
+    Only 's  list is considered — values that are drawn but
+    unattributed () are NOT gaps and are not touched. AddDimension2
+    takes only (x, y, z) and measures from the CURRENT SELECTION, so a gap (a value) has to
+    be paired with geometry before anything can be drawn. Each gap reports its matching edge
+    pairs and a status: fillable (exactly one pair), ambiguous, or no_geometry (that value
+    needs a section or detail view to be expressed).
+    """
+    return _json(drawing.plan_dimension_gaps(
+        model_path, drawing_path, tolerance_mm=tolerance_mm,
+        max_candidates_per_gap=max_candidates_per_gap, apply_gaps=apply_gaps))
+
+
+@mcp.tool()
 def survey_drawings(
     folder: Annotated[str, Field(description="Directory of drawings to survey.")],
     sample_size: Annotated[int, Field(description="How many drawings to include in the survey sample.")] = 100,

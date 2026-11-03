@@ -3394,6 +3394,36 @@ def assert_drawing_batch_defaults_off_and_restores():
     # Restore must happen in __exit__, not in a happy-path-only place.
     assert "SetUserPreferenceToggle" in body, "preferences are not restored on exit"
     return "DrawingBatch is opt-in, restores on exception, and reports already-off switches"
+def assert_gap_planner_only_fills_unambiguous_gaps():
+    """0.8.113 / PR4 — compensation must not guess which two edges measure a missing value.
+
+    `AddDimension2` takes only (x, y, z); the measurement comes from the CURRENT SELECTION.
+    A gap from reconcile_ledger is a VALUE, so before anything can be drawn the geometry has
+    to be found. Two failure modes this guards:
+
+      * drawing on the first edge pair that happens to match — with `ambiguous` gaps that is
+        a coin flip presented as automation
+      * treating `present_but_unmatched` as a gap — those values ARE on the sheet, the
+        attribution is what is unclear. Filling them would double a dimension.
+
+    Measured 2026-11-03 on 飞达动力轴: reconcile reported missing_truly=2 (both 11.0 mm,
+    different features), present_but_unmatched=13, and the overlap between the two value
+    sets was EMPTY — the three-way split holds. Both gaps came back `no_geometry`, because
+    no edge pair in that view measures 11 mm: a depth value needs a section or side view.
+    That is the correct answer — refusing to draw beats drawing a plausible wrong dimension.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+    assert "missing_truly" in body, (
+        "the planner no longer reads the truly-missing list")
+    assert "present_but_unmatched" in body, (
+        "the planner stopped distinguishing unattributed values from real gaps")
+    assert "ambiguous" in body, "ambiguity is no longer reported"
+    assert "no_geometry" in body, "the no-geometry case is no longer reported"
+    assert "if len(matches) == 1" in body, (
+        "the single-match rule is gone - ambiguous gaps would be filled by guessing")
+    return "only single-match gaps are fillable; ambiguity and missing geometry are reported"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3517,6 +3547,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.113 gap planner no guessing", assert_gap_planner_only_fills_unambiguous_gaps),
     ("0.8.112 drawing batch opt-in", assert_drawing_batch_defaults_off_and_restores),
     ("0.8.111 pipeline saves once", assert_pipeline_saves_once),
     ("0.8.110 version consistent", assert_package_version_matches_pyproject),

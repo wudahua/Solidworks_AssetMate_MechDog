@@ -6669,6 +6669,142 @@ def _sf_visibility_check(doc, x, y, before_img, after_img):
 
 
 @perf_hooks.timed("surface_finish")
+@perf_hooks.timed("dimension_gaps")
+def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
+                        max_candidates_per_gap=3, apply_gaps=False):
+    """PR4: turn reconcile_ledger's `missing_truly` into actionable edge pairs.
+
+    The spec asks for the missing-coverage list FIRST and manual dimensions only for real
+    gaps. `reconcile_ledger` already separates `missing_truly` (no drawing dimension carries
+    that value at all) from `present_but_unmatched` (the value is drawn, attribution is
+    unclear). Only the first kind is a gap worth filling, so only that is considered here.
+
+    Why this does not just call AddDimension2 blindly:
+
+      * `AddDimension2` takes only (x, y, z) — the measurement comes from the CURRENT
+        SELECTION. A gap is a VALUE, not a piece of geometry, so the geometry has to be
+        found and selected first.
+      * Guessing which two edges measure 14 mm is exactly the kind of inference that
+        produces a plausible-looking wrong dimension. So a gap becomes a candidate list
+        (edge pairs whose sheet distance matches within `tolerance_mm`), and nothing is
+        drawn unless `apply_gaps=True`.
+      * Even then the pair must be UNIQUE. Two pairs matching the same value is an
+        ambiguity, and picking one would be a coin flip dressed as automation.
+
+    Returns per-gap `candidates` plus a `status`:
+      fillable          — exactly one matching edge pair, safe to apply
+      ambiguous         — more than one pair matches; caller must choose
+      no_geometry       — no edge pair measures that value (needs a section or detail view)
+      already_present   — a dimension with that value appeared since the reconcile ran
+    """
+    try:
+        rec = reconcile_ledger(model_path, drawing_path, tolerance_mm=tolerance_mm)
+        if not rec.get("ok"):
+            return error("reconcile_failed", rec.get("message") or "reconcile failed")
+
+        gaps = rec.get("missing_truly") or []
+        if not gaps:
+            return drawing_ok(
+                gaps_found=0, filled=0, results=[],
+                note=("reconcile_ledger reports no truly-missing dimensions — every planned "
+                      "value is drawn somewhere. Nothing to compensate."),
+                coverage=rec.get("coverage"),
+                present_but_unmatched=rec.get("present_but_unmatched_count"))
+
+        edges_payload = list_drawing_edges(drawing_path)
+        if not edges_payload.get("ok"):
+            return error("edges_failed",
+                         edges_payload.get("message") or "cannot enumerate drawing edges",
+                         "Compensation needs the sheet's edges to measure between.")
+        rows = edges_payload.get("edges") or []
+        points = []
+        for idx, row in enumerate(rows):
+            pt = row.get("sheet_center") or row.get("sheet_point_on_circle") or row.get("sheet_start")
+            if pt:
+                points.append((idx, float(pt[0]), float(pt[1])))
+        if len(points) < 2:
+            return error("not_enough_edges",
+                         "need at least two edges with sheet coordinates, found %d" % len(points),
+                         "Run list_drawing_edges(drawing_path, flip_x=...) first and check "
+                         "`sheet_axis_direction_verified`.")
+
+        results = []
+        for gap in gaps:
+            value = gap.get("value_mm")
+            entry = {
+                "feature": gap.get("feature"),
+                "full_name": gap.get("dimension_full_name") or gap.get("dimension"),
+                "value_mm": value,
+                "candidates": [],
+                "status": "no_geometry",
+            }
+            if value is None:
+                entry["status"] = "no_value"
+                results.append(entry)
+                continue
+            target = float(value)
+            matches = []
+            for i in range(len(points)):
+                for j in range(i + 1, len(points)):
+                    _, x1, y1 = points[i]
+                    _, x2, y2 = points[j]
+                    dx, dy = abs(x2 - x1), abs(y2 - y1)
+                    # A dimension measures along ONE axis for linear extents; accept a match
+                    # on either axis and record which, rather than a euclidean distance that
+                    # no linear dimension ever uses.
+                    for axis, span in (("x", dx), ("y", dy)):
+                        if abs(span - target) <= tolerance_mm:
+                            matches.append({
+                                "edge_a": points[i][0], "edge_b": points[j][0],
+                                "axis": axis, "measured_mm": round(span, 3),
+                                "delta_mm": round(span - target, 4),
+                                "centres": [[round(x1, 4), round(y1, 4)],
+                                            [round(x2, 4), round(y2, 4)]],
+                            })
+            matches.sort(key=lambda m: abs(m["delta_mm"]))
+            entry["candidates"] = matches[:max_candidates_per_gap]
+            if len(matches) == 1:
+                entry["status"] = "fillable"
+            elif len(matches) > 1:
+                entry["status"] = "ambiguous"
+            results.append(entry)
+
+        fillable = [r for r in results if r["status"] == "fillable"]
+        applied = []
+        if apply_gaps and fillable:
+            for item in fillable:
+                cand = item["candidates"][0]
+                pt = cand["centres"][0]
+                added = add_distance_dimension(
+                    drawing_path, cand["edge_a"], cand["edge_b"],
+                    x_m=pt[0], y_m=pt[1] - 0.015)
+                applied.append({"value_mm": item["value_mm"],
+                                "ok": bool(added.get("ok")),
+                                "error": added.get("error"),
+                                "message": (added.get("message") or "")[:160]})
+            try:
+                _save_drawing(_open_drawing(drawing_path))
+            except Exception:
+                pass
+
+        return drawing_ok(
+            gaps_found=len(results),
+            fillable=len(fillable),
+            ambiguous=sum(1 for r in results if r["status"] == "ambiguous"),
+            no_geometry=sum(1 for r in results if r["status"] == "no_geometry"),
+            applied=applied if apply_gaps else [],
+            applied_count=len([a for a in applied if a["ok"]]) if apply_gaps else 0,
+            gaps=results,
+            coverage=rec.get("coverage"),
+            note=("apply_gaps=False (default): this is a PLAN. Each gap lists the edge pairs "
+                  "that measure its value. Only `fillable` gaps — exactly one matching pair — "
+                  "are applied when apply_gaps=True; `ambiguous` ones are left for a human "
+                  "because picking one would be a guess."),
+        )
+    except Exception as exc:
+        return error("dimension_gaps_failed", str(exc))
+
+
 def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining",
                        leader_type="none", lay_symbol=0, arrow_type=0,
                        prod_method="", sample_len="", min_roughness="",
