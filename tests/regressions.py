@@ -2673,6 +2673,45 @@ def assert_leader_state_and_apex_are_reported():
         "the docstring lost the standard that makes the apex the contract")
     return "leader state and apex semantics are both reported, not left to guesswork"
 
+def assert_gtol_leader_uses_the_real_signature():
+    """0.8.77 / P2-1 — the leader was never broken; the ARGUMENTS were misread.
+
+    I read SetLeader3 as (LeaderType, UseDocStyle, LeaderStyle, ArrowSize, UseDocArrowSize,
+    LeaderBent) and called SetLeader3(1, True, 2, 0, True, True). The real signature is
+
+        SetLeader3(LeaderStyle, LeaderSide, SmartArrowHeadStyle,
+                   Perpendicular, AllAround, Dashed)
+
+    so that call actually meant LeaderStyle=1 (STRAIGHT, not bent) and a boolean where
+    LeaderSide belongs. `-2` is documented as "Leader attachment side setting is invalid" —
+    it was reporting the mistake, and I recorded it as "renders nothing because there is no
+    attachable geometry". That explanation was wrong.
+
+    Correct call (verified 2026-11-03 on 旋转轴): SetLeader3(2, 2, True, True, False, False)
+    -> status 0, leader count 1, and the PDF shows a leader off the frame.
+
+    Guarded here: the mapping tables, the status field, and the fact that a frame WITH a
+    leader must not also carry the "no leader" warning.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_geometric_tolerance")) or ""
+    assert "style_map" in body and '"bent": 2' in body, (
+        "the swLeaderStyle_e mapping is gone — bent must be 2, not a made-up enum")
+    assert '"right": 2' in body, (
+        "the swLeaderSide_e mapping is gone — right must be 2")
+    assert "leader_status" in body, (
+        "the receipt no longer reports SetLeader3's status (0 = success)")
+    assert "leader_count" in body, (
+        "the receipt no longer reports the actual leader count")
+    # success and floating-ness must not be conflated
+    assert "leader_made" in body and "and not leader_made" in body, (
+        "a frame with a leader still gets the 'no leader' warning")
+    # the wrong reading must not come back
+    assert "LeaderType, UseDocLeaderStyle" not in body, (
+        "the incorrect parameter reading is back in the docstring")
+    return "gtol leaders use the documented SetLeader3 signature and report status + count"
+
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -2785,6 +2824,7 @@ STATIC_REGRESSIONS = [
     ("0.8.72 threads not silent", assert_cosmetic_threads_are_not_silent),
     ("0.8.73 reconcile one-to-one", assert_reconcile_uses_one_to_one_matching),
     ("0.8.74 leader + apex", assert_leader_state_and_apex_are_reported),
+    ("0.8.77 gtol leader signature", assert_gtol_leader_uses_the_real_signature),
 ]
 
 

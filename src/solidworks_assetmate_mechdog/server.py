@@ -582,6 +582,9 @@ def add_geometric_tolerance(
     edge_index: Annotated[int | None, Field(description="Index into list_drawing_edges for this view; lets you attach to an edge without sheet coordinates.")] = None,
     second_datum: Annotated[str, Field(description="Secondary datum letter, or '' for none.")] = "",
     third_datum: Annotated[str, Field(description="Tertiary datum letter, or '' for none.")] = "",
+    leader_style: Annotated[str, Field(description="Leader style: 'none' (default, frame floats), 'straight', or 'bent' (GB/T habit: a short horizontal run out of the frame, then down to the arrow).")] = "none",
+    leader_side: Annotated[str, Field(description="Which side the leader leaves the frame from: 'right' (default), 'left', or 'smart'.")] = "right",
+    perpendicular: Annotated[bool, Field(description="Turn the leader perpendicular to the frame — this is what makes the GB/T elbow.")] = True,
     save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,
 ) -> str:
     """Insert a NATIVE geometric tolerance frame (形位公差).
@@ -599,7 +602,8 @@ def add_geometric_tolerance(
     return _json(drawing.add_geometric_tolerance(
         drawing_path, x, y, tolerance=tolerance, datum=datum, symbol=symbol,
         view_name=view_name, edge_index=edge_index, second_datum=second_datum,
-        third_datum=third_datum, save=save))
+        third_datum=third_datum, leader_style=leader_style,
+        leader_side=leader_side, perpendicular=perpendicular, save=save))
 
 
 @mcp.tool()

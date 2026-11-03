@@ -6332,7 +6332,8 @@ def add_datum_feature(drawing_path, view_name=None, edge_index=None, label="A",
 
 def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                             symbol="none", view_name=None, edge_index=None,
-                            second_datum="", third_datum="", save=True):
+                            second_datum="", third_datum="", leader_style="none",
+                            leader_side="right", perpendicular=True, save=True):
     """Insert a NATIVE geometric tolerance frame (形位公差) into a drawing.
 
     Verified 2026-10-28 on SW2026: the API exists and works, but only when the call is
@@ -6453,6 +6454,34 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
         except Exception:
             annotation = None
 
+        # P2-1: attach a leader. The signature is
+        #     SetLeader3(LeaderStyle, LeaderSide, SmartArrowHeadStyle,
+        #                Perpendicular, AllAround, Dashed)
+        # NOT (LeaderType, UseDocStyle, LeaderStyle, ArrowSize, ...). Getting that wrong
+        # meant passing LeaderStyle=1 (straight) where 2 (bent) was wanted, and a boolean
+        # where LeaderSide belongs — which is exactly what `-2`
+        # ("Leader attachment side setting is invalid") reports. GB/T habit is a bent
+        # leader: a short horizontal run out of the frame, then down to the arrow.
+        #
+        # swLeaderStyle_e: 0 none, 1 straight, 2 bent, 3 underlined
+        # swLeaderSide_e : 0 smart, 1 left, 2 right
+        #
+        # The leader still needs something to attach TO: without a selected edge the frame
+        # floats even though the call succeeds, so the receipt reports both the status and
+        # the actual leader count.
+        leader_status = None
+        if str(leader_style).lower() != "none" and annotation is not None:
+            style_map = {"straight": 1, "bent": 2, "underlined": 3}
+            side_map = {"smart": 0, "left": 1, "right": 2}
+            try:
+                leader_status = _invoke_as_method(
+                    annotation, "SetLeader3",
+                    style_map.get(str(leader_style).lower(), 2),
+                    side_map.get(str(leader_side).lower(), 2),
+                    True, bool(perpendicular), False, False)
+            except Exception as exc:
+                leader_status = "exception: %s" % str(exc)[:80]
+
         try:
             doc.EditRebuild3()
         except Exception:
@@ -6495,7 +6524,15 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
         # tell whether 0.02 controlled the Ø10, the collar or the whole shaft.
         #
         # The tool cannot invent an attachment, so it must say the frame is floating.
-        floating = attached is None
+        # A leader can now be created independently of `attached` (P2-1, via SetLeader3),
+        # so "no attachment" and "no leader" are no longer the same condition. Only call the
+        # frame floating when there is neither.
+        leader_made = False
+        try:
+            leader_made = annotation is not None and int(annotation.GetLeaderCount) > 0
+        except Exception:
+            leader_made = False
+        floating = (attached is None) and not leader_made
         leader_endpoint = None
         if edge_index is not None:
             # Best effort: contour edges report no vertices on this binding, so this is
@@ -6514,7 +6551,12 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
         return drawing_ok(
             created=True, saved=bool(save), attached_to=attached,
             leader_endpoint_m=leader_endpoint,
-            frame_has_leader=not floating,
+            leader_style_requested=str(leader_style),
+            leader_status=leader_status,
+            leader_count=(int(annotation.GetLeaderCount)
+                          if annotation is not None else None),
+            frame_has_leader=(int(annotation.GetLeaderCount) > 0
+                              if annotation is not None else not floating),
             warning=(("框格没有引线：传了 edge_index=%s，但 SolidWorks 没建立引线"
                       "（AttachTo 返回 null）。这类零件的轮廓边没有可用的顶点，"
                       "选不中就没有引线。只能把框格底边贴在轮廓线上，"

@@ -2281,3 +2281,63 @@ SetLeader3 能改状态（leaders 0 -> 1）
 `AttachTo` 返回 null，`attached_to` 也是 null——没有附着点，引线退化成零长度。
 
 **这不是参数能解决的，是「先有边、才有引线」的顺序问题。**
+
+### 五十四更正：签名读错了，不是「没几何附着」（0.8.77）
+
+我上面那段「没有可附着的边，引线退化」的解释——**是错的**。
+
+规划者指出 `SetLeader3` 的真实签名是：
+
+```
+SetLeader3(LeaderStyle, LeaderSide, SmartArrowHeadStyle, Perpendicular, AllAround, Dashed)
+```
+
+不是我猜的 `(LeaderType, UseDocLeaderStyle, LeaderStyle, ArrowSize, ...)`。
+
+所以 `SetLeader3(1, True, 2, 0, True, True)` 的实际含义是：
+
+| 位置 | 我以为是 | 实际是 | 我传的 |
+|---|---|---|---|
+| 1 | LeaderType | **LeaderStyle** | `1` = swSTRAIGHT（**不是转折**）|
+| 2 | UseDocLeaderStyle | **LeaderSide** | `True`（**不是枚举**）|
+| 3 | LeaderStyle | SmartArrowHeadStyle | `2` |
+| 4 | ArrowSize | **Perpendicular** | `0` = **关闭垂直转折** |
+
+**`-2` 的官方含义是「Leader attachment side setting is invalid」**——
+它在说「LeaderSide 参数不对」，我却记成「渲染失败」。
+
+### 正确调用（实测通过）
+
+```python
+SetLeader3(2, 2, True, True, False, False)
+#          LeaderStyle=swBENT, LeaderSide=swLS_RIGHT,
+#          SmartArrowHeadStyle=True, Perpendicular=True,
+#          AllAround=False, Dashed=False
+-> 返回 0，GetLeaderCount=1，PDF 中显示引线
+```
+
+### 枚举（swconst.tlb 读取）
+
+```
+swLeaderStyle_e: swNO_LEADER=0  swSTRAIGHT=1  swBENT=2  swUNDERLINED=3
+swLeaderSide_e : swLS_SMART=0   swLS_LEFT=1    swLS_RIGHT=2
+```
+
+### 返回值对照
+
+| 值 | 含义 |
+|---:|---|
+| 0 | 成功 |
+| -2 | LeaderSide 无效 |
+| -3 | 注解不支持引线 |
+| -4 | 不能禁用引线 |
+| -5 | 不能禁用转折引线 |
+| -6 | 不允许下划线引线 |
+
+### 教训
+
+**我没查文档就自己解释了参数，再用那个错误解释去推根因。**
+`-2` 明明在说「LeaderSide 不对」，我却顺着「没有附着几何」的故事编下去，
+还写进了交接文档——**规划者得先纠正我的签名，才能纠正我的结论**。
+
+**下次遇到接口返回非零，先查文档的签名与返回码表，别猜。**
