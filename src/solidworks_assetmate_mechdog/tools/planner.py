@@ -14,6 +14,7 @@ not a substitute for a draughtsman deciding what the shop floor needs.
 
 import os
 
+from .. import perf_hooks
 from ..sw_session import error, ok
 
 # How many dimensions to aim for, from the 100-drawing baseline (mean 14.2, p75 17).
@@ -88,6 +89,7 @@ def _rank_dimensions(ledger_rows, holes, box, category=None):
     return chosen
 
 
+@perf_hooks.timed("plan")
 def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmarked=False):
     """Produce a drawing plan: scale, views, and a short list of dimensions worth keeping.
 

@@ -19,6 +19,7 @@ import glob
 import os
 import time
 
+from .. import perf_hooks
 from ..sw_session import (
     SW_DOC_DRAWING,
     SW_DOC_PART,
@@ -375,6 +376,7 @@ def _dispatch_specific(annotation):
         return None
 
 
+@perf_hooks.timed("drawing_create")
 def create_drawing(
     model_path,
     output_path=None,
@@ -848,6 +850,7 @@ def create_drawing(
         return error("create_drawing_failed", str(exc))
 
 
+@perf_hooks.timed("save")
 def _save_drawing(doc):
     """Persist the drawing. Annotation steps otherwise live only in memory and the
     .SLDDRW handed to the user has views but none of the dimensions."""
@@ -935,6 +938,7 @@ def render_drawing(pdf_path, output_dir=None, scale=2.0):
         return error("render_failed", str(exc))
 
 
+@perf_hooks.timed("audit")
 def drawing_audit(drawing_path):
     """Structural audit: views, scales, blank views, dimension and annotation counts.
 
@@ -1565,6 +1569,7 @@ def survey_dimensions_by_view(drawing_path):
         return error("survey_failed", str(exc))
 
 
+@perf_hooks.timed("dimension_total")
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
                    dimension_filter=None, place_outside=True,
                    outside_gap_m=0.012, outside_step_m=0.008):
@@ -5190,6 +5195,7 @@ def list_drawing_annotations(drawing_path, view_name=None):
         return error("annotations_failed", str(exc))
 
 
+@perf_hooks.timed("delivery_check")
 def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False,
                    strict_attachments=False):
     """Aggregate model ledger + drawing audit + annotation inventory into a verdict.
@@ -5870,6 +5876,7 @@ def _callout_diameter_matches(text, expected_mm, tol=0.08):
     return any(abs(v - expected) <= tol_abs for v in values)
 
 
+@perf_hooks.timed("hole_callouts")
 def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                       max_callouts=40, budget_s=25.0, leader_x_m=None,
                       leader_y_m=None, save=True):

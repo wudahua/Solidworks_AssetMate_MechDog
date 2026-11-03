@@ -7,6 +7,7 @@ the model is never modified.
 
 import os
 
+from .. import perf_hooks
 from ..sw_session import SW_DOC_PART, error, ok, open_document
 
 # Feature types that carry geometry worth cataloguing; folders and bookkeeping are skipped.
@@ -205,6 +206,7 @@ def _classify(bbox_mm, has_flat_pattern, types):
     return "一般零件", "包围盒 %s" % (bbox_mm,)
 
 
+@perf_hooks.timed("ledger")
 def build_feature_ledger(model_path, include_faces=True, config=None):
     """Build a structured ledger of features, dimensions, holes and model doubts.
 

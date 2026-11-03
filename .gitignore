@@ -54,3 +54,6 @@ logs/
 # Local working material (planning docs, handoff packs, probe scripts)
 项目规划 - AssetMate_MechDog/
 _probe_*.py
+
+# Performance baselines are local measurements, not source
+logs/perf*.jsonl
