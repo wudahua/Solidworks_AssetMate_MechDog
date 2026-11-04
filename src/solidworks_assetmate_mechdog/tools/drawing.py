@@ -4432,6 +4432,49 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         except Exception:
             hatch_count = None
 
+        # P0-2 of a 2026-11-04 report asked for enough context to tell THREE different
+        # causes apart, which the single count cannot:
+        #
+        #   a) the template has region hatching switched off globally
+        #   b) the cut face has no closed region (a grazing cut through a wall)
+        #   c) the view is displaying as a projection rather than a true section
+        #
+        # None of these is repairable through the API (see the note above about
+        # SetAutoHatch / ScaleHatchPattern / SectionDepth all leaving the count at 0), so
+        # the value here is diagnosis, not repair. Collected only when hatching is absent:
+        # these are extra COM reads and this function already runs on every section.
+        hatch_diag = None
+        if hatch_count == 0:
+            hatch_diag = {}
+            for label_key, getter in (
+                    ("template", lambda: str(doc.GetPathName)),
+                    ("display_mode", lambda: int(section.GetDisplayMode2)),
+                    ("style", lambda: int(section.GetDisplayMode)),
+                    ("use_section_hatch", lambda: bool(section.GetUseSectionHatch)),
+                    ("auto_hatch", lambda: bool(section.GetAutoHatch)),
+                    ("scale_hatch", lambda: bool(section.GetScaleHatchPattern)),
+                    ("section_depth_m", lambda: round(float(section.GetSectionDepth), 6)),
+            ):
+                try:
+                    hatch_diag[label_key] = getter()
+                except Exception as exc:
+                    hatch_diag[label_key] = "unavailable: %s" % str(exc)[:40]
+            # Per-face counts: a section through several bodies should hatch each cut face.
+            # All zero means the pattern is off; SOME zero and some not means geometry.
+            try:
+                faces = section.GetSectionedFaces
+                counts = []
+                if faces:
+                    for face in (faces if isinstance(faces, (tuple, list)) else [faces]):
+                        try:
+                            counts.append(int(face.GetFaceHatchCount))
+                        except Exception:
+                            counts.append(None)
+                hatch_diag["per_face_hatch"] = counts
+                hatch_diag["face_count"] = len(counts)
+            except Exception as exc:
+                hatch_diag["per_face_hatch"] = "unavailable: %s" % str(exc)[:40]
+
         sanity = (_section_sanity(target, section, orientation, depth)
                   if verify_cut else
                   {"checked": False, "reason": "verify_cut=False"})
@@ -4469,6 +4512,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),
             "edge_count": edge_count, "sanity": sanity, "cut_plane": cut_plane,
             "layout": layout, "hatch_count": hatch_count,
+            "hatch_diagnostics": hatch_diag,
             "position_requested_m": position_requested,
             "position_actual_m": position_actual,
             "alignment_kept": alignment_kept,
