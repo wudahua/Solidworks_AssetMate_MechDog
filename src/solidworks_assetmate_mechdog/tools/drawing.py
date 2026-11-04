@@ -2541,6 +2541,33 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
         return error("hole_callout_failed", str(exc))
 
 
+def _cell_position(note):
+    """Sheet position of a planned title-block cell, or None when it cannot be read.
+
+    `ann_position` documents "None when unavailable" — and returns None on this template for
+    some cells. The caller used to iterate the result directly:
+
+        [round(v, 4) for v in ann_position(p["note"])]
+
+    which is exactly the `'NoneType' object is not iterable` that made `set_title_block`
+    fail on every call (report 2026-11-04, P0-1). The tool was unusable, and the error
+    surfaced as a Python message rather than a structured one, so a caller had no way to
+    know which cell broke.
+
+    Returning None (not []) is deliberate: [] would read as "the position is the origin",
+    which is a different and wrong claim.
+    """
+    if note is None:
+        return None
+    position = ann_position(note)
+    if position is None:
+        return None
+    try:
+        return [round(v, 4) for v in position]
+    except TypeError:
+        return None
+
+
 def ann_position(note):
     """Position of a note's annotation, best effort (None when unavailable).
 
@@ -2840,8 +2867,9 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
             "drawing": doc.GetTitle,
             "planned": [dict({k: v for k, v in p.items() if k != "note"},
                              note_name=_note_name(p.get("note")),
-                             cell_position_m=([round(v, 4) for v in ann_position(p["note"])]
-                                              if p.get("note") is not None else None))
+                             # Never iterate ann_position() directly: it returns None when
+                             # the cell has no readable position (P0-1, 2026-11-04).
+                             cell_position_m=_cell_position(p.get("note")))
                         for p in planned],
             "unmatched": unmatched,
             "skipped_reversed": skipped_reversed,
@@ -2857,8 +2885,10 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         for item in planned:
             cell = {
                 "note_name": _note_name(item.get("note")),
-                "cell_position_m": ([round(v, 4) for v in ann_position(item["note"])]
-                                    if item.get("note") is not None else None),
+                # Same guard as the dry-run branch. Two call sites iterated
+                # ann_position() directly; P0-1 only surfaced the first one because
+                # dry_run returns before reaching this loop.
+                "cell_position_m": _cell_position(item.get("note")),
             }
             try:
                 item["note"].SetText(item["after"])
@@ -4864,8 +4894,19 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
             # `SetToleranceValues` takes METRES. Passing millimetres made 0.1 mm render as
             # "±100" — a 1000x error that still reported applied:true and read back a valid
             # tolerance type (measured 2026-11-01: 50 symmetric ±0.1 -> PDF shows "50 ±100").
+            # Bilateral means "+upper / -lower". Both arguments are written as magnitudes, so
+            # passing lower as a positive number produced "Ø14.20 +0.05 / +0.05" — a tolerance
+            # band of zero, which is worse than no tolerance at all because it looks
+            # authoritative (report 2026-11-04, P0-3). The negative is applied here rather
+            # than left to the API, which treats the second argument as a magnitude.
+            #
+            # Only bilateral gets the sign. `symmetric` writes ±value and `limit` writes two
+            # actual limits (e.g. 14.25 / 14.15), where a forced negative would be wrong.
+            _lower_arg = float(lower) / 1000.0
+            if str(tolerance_type).lower() == "bilateral":
+                _lower_arg = -abs(_lower_arg)
             try:
-                dim.SetToleranceValues(float(upper) / 1000.0, float(lower) / 1000.0)
+                dim.SetToleranceValues(float(upper) / 1000.0, _lower_arg)
             except Exception:
                 # Symmetric takes a single value on some builds.
                 try:
@@ -4897,6 +4938,37 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
                     break
         except Exception:
             pass
+        # Numeric readback of the limits themselves. `rendered_text` comes from GetText,
+        # which returns nothing on some builds even for a correct tolerance (noted in the
+        # P2-9 comment below), so it cannot be the only evidence. These two calls answer
+        # "what did SolidWorks actually store" in metres, independent of rendering.
+        #
+        # Report 2026-11-04 P0-3: bilateral printed "+0.05 / +0.05" and there was no way
+        # to see it without rendering a PDF. With these two fields the sign is checkable.
+        # `GetToleranceValues` is a PROPERTY on this build and returns (upper, lower) in
+        # metres — measured 2026-11-04: a bilateral 0.05/0.05 reads back (5e-05, -5e-05).
+        # `GetToleranceUpperLimit` / `ToleranceUpperLimit` do not exist here at all, which is
+        # why the first attempt at this readback silently reported None for both limits.
+        #
+        # The pair is the only way to check the SIGN without rendering a PDF, and the sign is
+        # what P0-3 got wrong: "+0.05 / +0.05" is a zero-width band that looks correct.
+        limits_stored_m = {"upper": None, "lower": None}
+        try:
+            _tv = dim.GetToleranceValues          # property, not a call
+            if isinstance(_tv, (tuple, list)) and len(_tv) >= 2:
+                limits_stored_m["upper"] = round(float(_tv[0]), 8)
+                limits_stored_m["lower"] = round(float(_tv[1]), 8)
+        except Exception:
+            pass
+        # A bilateral lower limit that is not negative means the band is one-sided; that is
+        # the P0-3 defect, and it must not report ok next time it happens.
+        lower_sign_wrong = None
+        if str(tolerance_type).lower() == "bilateral":
+            try:
+                lower_sign_wrong = (limits_stored_m.get("lower") is not None
+                                    and limits_stored_m["lower"] > 0)
+            except Exception:
+                lower_sign_wrong = None
         # P2-9 of a 2026-11-03 report: h7's -0.015 came out as "8.00 / 8.00" — both limits
         # identical — while the call reported applied:true. Two separate causes:
         #
@@ -4969,6 +5041,8 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
         return drawing_ok(applied=True, saved=True, planned=planned,
                           tolerance_type_readback=applied,
                           rendered_text=rendered_text,
+                 limits_stored_m=limits_stored_m,
+                 lower_sign_wrong=lower_sign_wrong,
                           rendered_verified=bool(rendered_text),
                           unit_suspect=unit_suspect,
                           warning=(" ".join(warnings) if warnings else None))

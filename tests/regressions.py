@@ -3536,6 +3536,74 @@ def assert_perf_receipt_matches_spec_schema():
     assert spec["timings_ms"]["bom"] is None, "bom is not measured; it must not be 0"
     assert "bom" in spec["unmeasured"], "an unmeasured field must be listed"
     return "spec block carries 9 top-level, 13 timing and 4 count fields"
+def assert_title_block_guards_none_position():
+    """0.8.126 — set_title_block iterated ann_position() without checking for None.
+
+    Report 2026-11-04 P0-1: every call failed with `'NoneType' object is not iterable`
+    wrapped as `title_block_failed`. The tool that fills 图样代号 — a field GB drawings
+    cannot ship without — was unusable, and the message named no cell, so a caller could not
+    even work around it.
+
+    `ann_position` documents "None when unavailable" and returns exactly that for some cells
+    on this template. TWO call sites iterated it directly; only the first was reachable from
+    dry-run, which is why one fix looked complete.
+
+    `_cell_position` must return None (not []) when the position is unreadable: [] reads as
+    "the position is the origin", a different and wrong claim.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+
+    helper = _function_node(tree, "_cell_position")
+    assert helper is not None, "the guard helper is gone; the None path is unguarded again"
+    body = ast.get_source_segment(src, helper) or ""
+    assert "ann_position" in body, "the helper no longer wraps ann_position"
+    assert "None" in body, "the helper lost its None handling"
+
+    # Both receipt branches must go through the guard. Counting is the right check here: the
+    # two remaining direct iterations (inside the marker loop) ARE wrapped in try/except, so
+    # "no iteration at all" would be a false requirement — it failed on the first run of this
+    # assertion for exactly that reason.
+    fn = _function_node(tree, "set_title_block")
+    fn_body = ast.get_source_segment(src, fn) or ""
+    guarded = fn_body.count("_cell_position(")
+    assert guarded >= 2, (
+        "only %d call sites use _cell_position — both receipt branches need it" % guarded)
+    return "_cell_position guards both receipt branches (%d sites)" % guarded
+
+
+def assert_bilateral_lower_is_negative():
+    """0.8.126 — bilateral tolerances must write a NEGATIVE lower deviation.
+
+    Report 2026-11-04 P0-3: `tolerance_type=bilateral, upper=0.05, lower=0.05` rendered as
+    "Ø14.20 +0.05 / +0.05". A zero-width band that looks like a real tolerance is worse than
+    no tolerance, because the shop believes it.
+
+    `SetToleranceValues` treats the second argument as a magnitude, so the sign has to be
+    applied before the call. Only bilateral gets it: symmetric writes ±value and limit writes
+    two actual limits (14.25 / 14.15), where a forced negative would be wrong.
+
+    Also pinned: the readback must use `GetToleranceValues` — a PROPERTY returning
+    (upper, lower) in metres. `GetToleranceUpperLimit` does not exist on this build, and the
+    first version of this readback reported None for both limits without saying so.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "add_dimension_tolerance")
+    body = ast.get_source_segment(src, fn) or ""
+
+    assert "_lower_arg" in body, "the sign adjustment is gone"
+    assert "-abs(_lower_arg)" in body, (
+        "the lower deviation is no longer forced negative for bilateral")
+    assert '"bilateral"' in body, "the bilateral-only condition is gone"
+    assert "GetToleranceValues" in body, (
+        "the numeric readback is gone — the sign cannot be checked without a PDF")
+    # Strip comments before this check: the explanation of WHY that API does not exist
+    # mentions it by name, and a naive substring test flagged its own documentation.
+    code_only = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
+    assert "GetToleranceUpperLimit" not in code_only, (
+        "GetToleranceUpperLimit does not exist on this build; calling it reports None silently")
+    return "bilateral writes -abs(lower); readback via GetToleranceValues property"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3659,6 +3727,8 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.126 title block guards None", assert_title_block_guards_none_position),
+    ("0.8.126 bilateral lower is negative", assert_bilateral_lower_is_negative),
     ("0.8.124 perf receipt matches spec 9.1", assert_perf_receipt_matches_spec_schema),
     ("0.8.120 outline counted not cached", assert_outline_wrapper_is_pass_through),
     ("0.8.118 ledger open is structured", assert_ledger_open_failure_is_structured),
