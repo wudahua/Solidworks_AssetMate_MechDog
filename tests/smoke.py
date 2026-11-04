@@ -1234,6 +1234,8 @@ def main():
         drawing.close_document(asm_out)
         return "%d views, %d dims, verdict=%s" % (
             len(views), audit.get("total_dimensions"), payload.get("verdict"))
+
+    r.check("assembly drawing not an empty shell", _assembly_drawing)
     r.check("part tools (material/flat pattern)", _part_tools)
     r.check("single hole callout", _hole_callout_single)
     r.check("rename components (dry-run)", _rename)
