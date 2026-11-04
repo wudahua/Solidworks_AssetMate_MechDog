@@ -437,6 +437,7 @@ def create_drawing(
     output_path=None,
     template=None,
     views=("front", "top", "isometric"),
+    projection="first",
     scale=None,
     auto_fit=True,
     save=True,
@@ -639,17 +640,69 @@ def create_drawing(
                 scale_reason.get("standard_scale")
                 and abs(chosen_scale - float(scale_reason["standard_scale"])) > 1e-9)
         col1, col2, front_y, top_y, w, h, d, _overflow = _layout(chosen_scale)
+        # Projection convention. Report 2026-11-04 P2-3 found the sheet was a MIXTURE:
+        # `top` sat below the front view (first angle) while `right` sat to the right of it
+        # (third angle). A reader cannot tell which convention a drawing follows, and
+        # GB/T 14692 requires first angle, so a mixed sheet is wrong for the shop.
+        #
+        #   first  (GB, default): the view is pushed AWAY from the observer —
+        #                         top view BELOW, left view to the RIGHT
+        #   third  (ISO/US):      the view stays where it was taken from —
+        #                         top view ABOVE, right view to the right
+        #
+        # The choice is reported as `projection` so a sheet can be checked without reading
+        # the picture. `isometric` keeps its corner: an axonometric view has no projection
+        # side to respect.
+        _proj = str(projection or "first").strip().lower()
+        if _proj not in ("first", "third"):
+            return error("bad_projection",
+                         "projection must be 'first' or 'third', got %r" % (projection,),
+                         "GB/T 14692 uses first angle; ISO/US drawings commonly use third.")
+        # VERTICAL: this is the part of the convention a reader actually checks, and the one
+        # that was mixed before.
+        # The grid has exactly two rows, so the two views must occupy different ones:
+        #   first  — front on top, top view BELOW it
+        #   third  — top view on top, front BELOW it
+        # The first attempt only swapped `top` and left `front` pinned to the upper row, which
+        # put both views at y=0.2319 under third angle (measured, they overlap).
+        if _proj == "first":
+            front_y_for_views = front_y
+            top_y_for_views, bottom_y_for_views = top_y, front_y
+        else:
+            front_y_for_views = top_y
+            top_y_for_views, bottom_y_for_views = front_y, top_y
+
+        # HORIZONTAL: a two-column grid only has ONE side-view slot, so the convention cannot
+        # be expressed by mirroring columns — putting `right` in column 1 collided with the
+        # front view (measured: both centred at x=0.1845). The side view therefore always
+        # takes column 2. In first angle that slot holds the LEFT view (GB: 左视图放在右边),
+        # so a caller who asks for `right` under `projection="first"` gets a placement the
+        # convention does not endorse — reported via `projection_notes` rather than silently
+        # accepted or silently moved.
+        projection_notes = []
+        if _proj == "first" and any(str(v).strip().lower() == "right" for v in views):
+            projection_notes.append(
+                "projection='first' 但请求了 right 视图：GB/T 14692 第一角里右侧位置应放"
+                "**左视图**。当前把 right 放在第二列（几何有效但不符合第一角惯例）。"
+                "需要严格合规就用 views=['front','top','left']。")
+
         positions = {
-            "front": (col1, front_y), "back": (col1, front_y),
-            "top": (col1, top_y), "bottom": (col1, top_y),
-            "right": (col2, front_y), "left": (col2, front_y),
+            "front": (col1, front_y_for_views), "back": (col1, front_y_for_views),
+            "top": (col1, top_y_for_views), "bottom": (col1, bottom_y_for_views),
+            "right": (col2, front_y_for_views), "left": (col2, front_y_for_views),
             "isometric": (col2, top_y),
         }
 
         # Explicit sheet centres win over the automatic packer. Callers were forced to
         # re-place views with raw COM (DISPATCH_PROPERTYPUT + VARIANT array) because a
         # 4-view sheet collapsed into one column; passing positions avoids that entirely.
-        explicit_positions = False
+        # `_place_views` packs by box height and has no notion of projection side, so it
+        # would overwrite the mapping above and silently restore the mixed behaviour. When a
+        # projection is stated, the mapping IS the layout: mark it explicit so the packer
+        # leaves it alone. Scale selection still ran before this point, so auto-fit and the
+        # step-down for oversized parts are unaffected.
+        explicit_positions = projection is not None
+
         if view_positions:
             keys = [str(v).strip().lower() for v in views]
             for index, pos in enumerate(view_positions):
@@ -817,6 +870,11 @@ def create_drawing(
             "skipped_views": skipped,
             "layout": layout,
             "safe_area": safety,
+            # Which convention this sheet follows. Reported so a drawing can be checked
+            # against GB/T 14692 without reading the picture, and so a caller can tell that
+            # the old mixed placement is gone rather than assume it.
+            "projection": _proj,
+            "projection_notes": projection_notes,
             "saved": False,
         }
         if not created:

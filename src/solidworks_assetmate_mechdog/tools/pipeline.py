@@ -82,7 +82,7 @@ def _callout_warning(callouts):
 def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     category=None, do_hole_callouts=None, do_surface_finish=None,
                     do_derived_check=True, hole_budget_s=45.0, prune_to_plan=True,
-                    overwrite=False):
+                    overwrite=False, projection="first"):
     """Run the whole chain and report each step plus the delivery verdict.
 
     Steps (each failure is recorded, not fatal — a partial drawing beats no drawing):
@@ -184,7 +184,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     target = output_path or os.path.splitext(path)[0] + ".SLDDRW"
     created = record("create_drawing",
                      drawing_tools.create_drawing(path, target, views=views or ["front", "right"],
-                                                  paper=paper),
+                                                  paper=paper, projection=projection),
                      "")
     if not created.get("ok"):
         return error("create_failed", created.get("message") or "view creation failed",

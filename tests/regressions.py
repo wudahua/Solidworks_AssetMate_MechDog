@@ -3676,6 +3676,51 @@ def assert_datum_and_move_report_placement():
     assert "IGTOL-PERP" in caps or "symbol_is_text: false" in caps, (
         "the capability entry does not cite the measured native-symbol evidence")
     return "datum + move report per-axis placement; GTOL capability text matches reality"
+def assert_projection_angle_is_selectable():
+    """0.8.130 — the sheet used to follow NEITHER convention cleanly.
+
+    Report 2026-11-04 P2-3: with the default settings the top view sat BELOW the front view
+    (first angle) while the right view sat to the RIGHT of it (third angle). A drawing that
+    mixes the two cannot be read correctly by either audience, and GB/T 14692 requires first
+    angle, which matters here because this is a Chinese-mechanical tool.
+
+    Root cause: `_place_views` packs by box height with no notion of projection side, so it
+    overwrote whatever the position map said. Measured after the fix on 旋转轴:
+
+        first   front y=0.2319   top y=0.1491   left x=0.2673   (top BELOW, left RIGHT)
+        third   front y=0.1491   top y=0.2319   left x=0.2673   (top ABOVE, front BELOW)
+
+    `first` is the default. The side view stays in column 2 under both, because a two-column
+    grid only has one side-view slot — mirroring it would collide with the front view
+    (measured: both at x=0.1845). That limitation is reported via `projection_notes` when a
+    caller asks for `right` under first angle, rather than being silently accepted.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+
+    create = _function_node(tree, "create_drawing")
+    assert create is not None, "create_drawing is gone"
+    args = [a.arg for a in create.args.args] + [a.arg for a in create.args.kwonlyargs]
+    assert "projection" in args, "create_drawing has no projection parameter"
+
+    body = ast.get_source_segment(src, create) or ""
+    assert 'projection="first"' in body or "'first'" in body, (
+        "first angle is not the default")
+    assert 'bad_projection' in body, (
+        "an unknown projection value is not rejected")
+
+    # front must move with the convention, not stay pinned to the upper row.
+    assert "front_y_for_views" in body, (
+        "the front view does not follow the projection — third angle will overlap")
+    assert "top_y_for_views" in body and "bottom_y_for_views" in body, (
+        "the top/bottom views do not follow the projection")
+
+    # and the packer must not override it
+    assert "explicit_positions = projection is not None" in body, (
+        "_place_views will overwrite the projection mapping again")
+    assert "projection_notes" in body, (
+        "the side-view limitation is not reported")
+    return "projection selectable (first default); front and top rows both follow it"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3799,6 +3844,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.130 projection selectable", assert_projection_angle_is_selectable),
     ("0.8.129 placement is reported", assert_datum_and_move_report_placement),
     ("0.8.128 gap matcher units", assert_gap_matcher_converts_units),
     ("0.8.126 title block guards None", assert_title_block_guards_none_position),
