@@ -281,6 +281,12 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         drawing=target,
         category=resolved_category,
         paper=paper,
+        # The audit is already run for its own step; its detail was previously thrown away, so
+        # a caller could not see which views exist or what the audit warned about without
+        # running drawing_audit again. None of that is free (2 view reads), so surface it.
+        views=audit.get("views"),
+        warnings=audit.get("warnings"),
+        view_count=audit.get("view_count"),
         steps=steps,
         defaults_applied={
             "general_tolerance": defaults["general_tolerance"],
