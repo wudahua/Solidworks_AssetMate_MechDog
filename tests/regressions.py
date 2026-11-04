@@ -3721,6 +3721,51 @@ def assert_projection_angle_is_selectable():
     assert "projection_notes" in body, (
         "the side-view limitation is not reported")
     return "projection selectable (first default); front and top rows both follow it"
+def assert_requirements_respect_safe_area():
+    """0.8.131 — a technical-requirements block could grow straight through the title block.
+
+    Report 2026-11-04 P2-7: requested at y=0.07, the block's bottom edge landed at 0.038 —
+    below the template's 0.065 safe edge — and the receipt said `adjusted: false,
+    collisions_avoided: 0`. Nothing was wrong with the request; y is the block's TOP edge and
+    the block grows DOWNWARDS, so a multi-line note can clear the frame entirely.
+
+    Two things are pinned here:
+      * an out-of-safe-area result is an ERROR (`block_out_of_safe_area`), not a silent
+        success, and it names `max_y_for_this_block_m` — "raise y" alone would not say by how
+        much.
+      * auto placement starts from the TEMPLATE's safe area, not a hardcoded 10 mm. It used
+        to place at x=0.010 on a template whose safe left is 0.020 (measured).
+
+    Measured after the fix: auto_place lands at x=0.0588 (exactly the safe left edge);
+    y=0.07 is rejected with max_y=0.0765.
+    """
+    src = _read("tools/layout.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "add_technical_requirements")
+    assert fn is not None, "add_technical_requirements is gone"
+    body = ast.get_source_segment(src, fn) or ""
+
+    # The bounds check lives in `add_note`, which every text block goes through, and
+    # `add_technical_requirements` propagates it via `if not result.get("ok"): return result`.
+    # That is the better place: 图样代号 fallbacks and any other note get the same guard.
+    note_fn = _function_node(tree, "add_note")
+    assert note_fn is not None, "add_note is gone"
+    note_body = ast.get_source_segment(src, note_fn) or ""
+    assert "block_out_of_safe_area" in note_body, (
+        "out-of-bounds placement is no longer an error in add_note")
+    assert "max_y_for_this_block_m" in note_body, (
+        "the error does not say how high the block may be placed")
+    assert "template_safe_area" in note_body, (
+        "add_note does not consult the safe area")
+
+    assert "template_safe_area" in body, (
+        "auto placement does not consult the safe area")
+    # auto placement must prefer the template margins over the bare 10 mm
+    assert "bottom_limit" in body, (
+        "the auto-placement floor is a bare margin again")
+    assert "max(margin, float((safe_area or {}).get(\"left\"" in body, (
+        "auto placement still starts from a hardcoded 10 mm margin")
+    return "requirements block is bounded by the template safe area, in both paths"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3844,6 +3889,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.131 requirements stay in frame", assert_requirements_respect_safe_area),
     ("0.8.130 projection selectable", assert_projection_angle_is_selectable),
     ("0.8.129 placement is reported", assert_datum_and_move_report_placement),
     ("0.8.128 gap matcher units", assert_gap_matcher_converts_units),

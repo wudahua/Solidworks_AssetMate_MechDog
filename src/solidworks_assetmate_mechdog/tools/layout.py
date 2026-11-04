@@ -622,6 +622,7 @@ def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_m
 
         sheet_w, sheet_h = 0.420, 0.297
         try:
+            sheet = doc.GetFirstView
             outline = list(sheet.GetOutline)
             sheet_w = float(outline[2] - outline[0])
             sheet_h = float(outline[3] - outline[1])
@@ -632,11 +633,23 @@ def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_m
         if x_m is not None and y_m is not None and not auto_place:
             chosen = (float(x_m), float(y_m))
         else:
+            # The 10 mm margin is measured from the SHEET edge, not from the template's safe
+            # area, so auto placement put the block at x=0.010 on a template whose safe left
+            # edge is 0.020 — outside the frame (measured 2026-11-04, P2-7). Prefer the
+            # template's own margins and fall back to 10 mm only when they cannot be read.
             margin = 0.010
-            left = margin
-            top = sheet_h - margin
+            safe_area = None
+            try:
+                from .drawing import template_safe_area as _safe_area
+                sheet_for_safe = doc.GetFirstView
+                safe_area = _safe_area(sheet_for_safe, sheet_w, sheet_h)
+            except Exception:
+                safe_area = None
+            left = max(margin, float((safe_area or {}).get("left", 0) or 0))
+            top = sheet_h - max(margin, float((safe_area or {}).get("top", 0) or 0))
+            bottom_limit = max(margin, float((safe_area or {}).get("bottom", 0) or 0))
             candidate = top
-            while candidate - block_h > margin:
+            while candidate - block_h > bottom_limit:
                 box = [left, candidate - block_h, left + block_w, candidate]
                 if not any(_boxes_overlap(box, ob, 0.004) for ob in obstacles):
                     chosen = (left, candidate)
@@ -758,6 +771,62 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
         # the title block.
         final_bbox = _note_bbox(str(encoded_text), float(x_m), float(y_m),
                                 (float(height_mm) / 1000.0) if height_mm else 0.0035)
+
+        # Report 2026-11-04 P2-7: a block requested at y=0.07 grew DOWNWARDS to a bottom edge
+        # of 0.038, which is below the template's 0.065 safe edge — it overlapped the title
+        # block and the receipt said nothing (`adjusted: false, collisions_avoided: 0`).
+        #
+        # y is the TOP edge of the block (the same convention as add_note), so a tall block
+        # silently grows into whatever is underneath. Checking the RESULT rather than the
+        # request is the only way to catch that: the request was fine, the box was not.
+        safe = None
+        out_of_safe_area = None
+        try:
+            from .drawing import template_safe_area as _safe_area
+            sheet = doc.GetFirstView
+            outline = list(sheet.GetOutline)
+            sheet_w = outline[2] - outline[0]
+            sheet_h = outline[3] - outline[1]
+            safe = _safe_area(sheet, sheet_w, sheet_h)
+            if safe and final_bbox:
+                violations = []
+                if final_bbox[0] < safe.get("left", 0) - 1e-9:
+                    violations.append("left")
+                if final_bbox[1] < safe.get("bottom", 0) - 1e-9:
+                    violations.append("bottom")
+                if final_bbox[2] > sheet_w - safe.get("right", 0) + 1e-9:
+                    violations.append("right")
+                if final_bbox[3] > sheet_h - safe.get("top", 0) + 1e-9:
+                    violations.append("top")
+                if violations:
+                    out_of_safe_area = {
+                        "axes": violations,
+                        "bbox_final": [round(v, 4) for v in final_bbox],
+                        "safe_area": {k: round(float(v), 4) for k, v in safe.items()
+                                      if isinstance(v, (int, float))},
+                        # y is the block's TOP edge, so the usable y is the safe bottom plus
+                        # the block height — saying "raise y" alone would not tell anyone by
+                        # how much.
+                        "max_y_for_this_block_m": round(
+                            safe.get("bottom", 0) + (final_bbox[3] - final_bbox[1]), 4),
+                    }
+        except Exception:
+            safe = None
+
+        if out_of_safe_area:
+            return error(
+                "block_out_of_safe_area",
+                "技术要求块落在安全区外（%s）。"
+                % "、".join(out_of_safe_area["axes"]),
+                "y 是文字块的**顶边**，块向下生长，所以字号越大越容易压到标题栏。"
+                "该块底边 %.4f，安全区底边 %.4f；这个高度的块最多可用 y=%.4f。"
+                % (final_bbox[1], safe.get("bottom", 0) if safe else 0,
+                   out_of_safe_area["max_y_for_this_block_m"]),
+                bbox_final=[round(v, 4) for v in final_bbox],
+                safe_area=out_of_safe_area["safe_area"],
+                max_y_for_this_block_m=out_of_safe_area["max_y_for_this_block_m"],
+                position_m=[round(float(x_m), 4), round(float(y_m), 4)])
+
         return drawing_ok(drawing=doc.GetTitle, note=name, text=str(encoded_text),
                           text_requested=str(text), text_warnings=text_warnings,
                           position_m=[round(float(x_m), 4), round(float(y_m), 4)],
