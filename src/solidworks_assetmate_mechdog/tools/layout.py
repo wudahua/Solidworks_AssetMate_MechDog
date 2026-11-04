@@ -1370,6 +1370,11 @@ def delete_view(drawing_path, view_name, save=True):
         #     exists, it just has no object to select
         #   * SelectByID2 with SKETCHSEGMENT / SKETCHPOINT / DRAWINGVIEW / SECTIONLINE never
         #     selects anything, and the parent's annotation list holds only 装饰螺纹线
+        #   * `IView.GetSectionLines` DOES return a tuple with one object (2026-11-04) — so
+        #     the line is reachable in principle — but that object is an untyped CDispatch:
+        #     every member answers `<unknown>.<name>` and `gencache.EnsureDispatch` refuses
+        #     with "This COM object can not automate the makepy process". Reachable is not
+        #     usable. This is the closest the API gets, and it is still not a delete path.
         #
         # So say it instead of pretending the sheet is clean. A leftover A-A next to a
         # deleted section is a drawing error a shop will reject, and the caller needs to
@@ -1389,7 +1394,8 @@ def delete_view(drawing_path, view_name, save=True):
             saved=bool(save),
             leftover_geometry=leftover,
             warning=("删除剖面/局部视图后，父视图上会残留剖切线/边界圈，"
-                     "API 无法清除（IView.GetSection 恒 None，SelectByID2 选不中）。"
+                     "API 无法清除（IView.GetSection 恒 None；GetSectionLines 虽返回对象，"
+                     "但该对象不可自动化；SelectByID2 选不中）。"
                      "交付前请在界面手工删除，或重建父视图。"
                      if leftover else None))
     except (FileNotFoundError, ValueError) as exc:
