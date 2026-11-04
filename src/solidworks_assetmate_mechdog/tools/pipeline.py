@@ -157,6 +157,11 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         })
         return payload if isinstance(payload, dict) else {}
 
+    # 0.8.120: outline reads are COUNTERS, not a cache. Reset per run so the number in the
+    # receipt describes this drawing, and report it so the "should we cache" question is
+    # answered from data (see docs/PR3-布局缓存-不建议实施说明.md).
+    drawing_tools.reset_outline_stats()
+
     # 1) ledger — also tells us the category when the caller did not
     led_raw = ledger_tools.build_feature_ledger(path, include_faces=False)
     led = record("ledger", led_raw,
@@ -284,6 +289,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         # The audit is already run for its own step; its detail was previously thrown away, so
         # a caller could not see which views exist or what the audit warned about without
         # running drawing_audit again. None of that is free (2 view reads), so surface it.
+        outline_reads=drawing_tools.outline_stats(),
         views=audit.get("views"),
         warnings=audit.get("warnings"),
         view_count=audit.get("view_count"),

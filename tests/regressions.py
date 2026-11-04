@@ -489,7 +489,10 @@ def assert_overlap_checks_use_precise_outline():
     """
     src = _read("tools/drawing.py")
     tree = ast.parse(src)
-    po = _function_node(tree, "precise_outline")
+    # 0.8.120 added a counting wrapper named precise_outline; the margin lives in the
+    # implementation it delegates to. Assert on the impl, then check the wrapper is a
+    # pass-through so the two cannot drift apart.
+    po = _function_node(tree, "_precise_outline_impl") or _function_node(tree, "precise_outline")
     assert po is not None, (
         "precise_outline missing — the constant GetOutline inflation is not corrected")
     pobody = ast.get_source_segment(src, po) or ""
@@ -896,7 +899,9 @@ def assert_outline_has_single_truth():
     tree = ast.parse(src)
     assert _function_node(tree, "ink_outline") is None, (
         "ink_outline is back — it cannot return a box on this build")
-    node = _function_node(tree, "precise_outline")
+    # 0.8.120: the margin lives in the implementation; precise_outline is a counting wrapper.
+    node = (_function_node(tree, "_precise_outline_impl")
+            or _function_node(tree, "precise_outline"))
     assert node is not None, "precise_outline is gone"
     assert "OUTLINE_MARGIN_M" in (ast.get_source_segment(src, node) or ""), (
         "the measured constant is not applied")
@@ -3452,6 +3457,35 @@ def assert_ledger_open_failure_is_structured():
     assert before.rstrip().endswith("try:"), (
         "open_document is outside its try block again - a failed open will raise")
     return "a failed open returns a structured error with the conflict reason"
+def assert_outline_wrapper_is_pass_through():
+    """0.8.120 — outline reads are COUNTED, never cached.
+
+    The planner accepted "do not cache by default" but asked to keep the call count and
+    elapsed time so the threshold can be judged from data. That instrumentation is a wrapper
+    around the real implementation; if it ever starts caching (or altering the box), the
+    numbers stop describing the work actually done and the threshold becomes meaningless.
+
+    Checked:
+      * the wrapper delegates to _precise_outline_impl
+      * it does not touch the returned box
+      * a cache dict is NOT introduced (the whole point of the decision)
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    wrapper = _function_node(tree, "precise_outline")
+    assert wrapper is not None, "the counting wrapper is gone"
+    body = ast.get_source_segment(src, wrapper) or ""
+    assert "_precise_outline_impl" in body, (
+        "the wrapper no longer delegates - is it duplicating the margin logic?")
+    assert "OUTLINE_MARGIN_M" not in body, (
+        "the margin moved into the wrapper; there is now one place too many")
+    for cache_word in ("_CACHE", "cache[", "lru_cache"):
+        assert cache_word not in body, (
+            "the outline wrapper now caches (%r) - that is exactly what was decided against"
+            % cache_word)
+    assert "OUTLINE_CALL_THRESHOLD" in src and "OUTLINE_MS_THRESHOLD" in src, (
+        "the thresholds are gone; nobody can tell when caching becomes worth it")
+    return "outline reads are counted (threshold 100 calls / 500 ms), not cached"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3575,6 +3609,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.120 outline counted not cached", assert_outline_wrapper_is_pass_through),
     ("0.8.118 ledger open is structured", assert_ledger_open_failure_is_structured),
     ("0.8.113 gap planner no guessing", assert_gap_planner_only_fills_unambiguous_gaps),
     ("0.8.112 drawing batch opt-in", assert_drawing_batch_defaults_off_and_restores),

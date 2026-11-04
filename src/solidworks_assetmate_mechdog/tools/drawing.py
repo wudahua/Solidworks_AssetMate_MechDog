@@ -329,7 +329,59 @@ def _standard_scale(fit, tolerance=0.05):
 OUTLINE_MARGIN_M = 0.0119  # measured constant: GetOutline is 11.9 mm larger per side
 
 
+#: Outline-read instrumentation (0.8.120). Deliberately NOT a cache.
+#:
+#: The planner's decision on PR3 was "do not cache by default, but keep the call count and
+#: elapsed time so the threshold can be evaluated from data". These counters are that. The
+#: thresholds below mark where caching stops being premature; crossing them is REPORTED,
+#: never acted on, because the decision needs a human who knows the drawing.
+OUTLINE_CALL_THRESHOLD = 100
+OUTLINE_MS_THRESHOLD = 500.0
+
+_OUTLINE_STATS = {"calls": 0, "ms": 0.0}
+
+
+def reset_outline_stats():
+    """The pipeline calls this before a run so the numbers describe THAT run only."""
+    _OUTLINE_STATS["calls"] = 0
+    _OUTLINE_STATS["ms"] = 0.0
+
+
+def outline_stats():
+    """Snapshot of outline reads: count, elapsed, and whether the cache threshold was crossed."""
+    calls = _OUTLINE_STATS["calls"]
+    ms = round(_OUTLINE_STATS["ms"], 1)
+    return {
+        "calls": calls,
+        "ms": ms,
+        "call_threshold": OUTLINE_CALL_THRESHOLD,
+        "ms_threshold": OUTLINE_MS_THRESHOLD,
+        "over_threshold": bool(calls > OUTLINE_CALL_THRESHOLD
+                               or ms > OUTLINE_MS_THRESHOLD),
+        "note": ("Outline reads are counted, not cached. Past %d calls or %.0f ms a per-run "
+                 "cache starts to be worth its invalidation risk - see "
+                 "docs/PR3-布局缓存-不建议实施说明.md, section 7."
+                 % (OUTLINE_CALL_THRESHOLD, OUTLINE_MS_THRESHOLD)),
+    }
+
+
 def precise_outline(view):
+    """Outline of a view inset by the constant 11.9 mm (see docs/com-quirks.md).
+
+    Counted, not cached. The numbers surface through outline_stats() and in the pipeline
+    receipt, so "should this be cached" is answered from the drawing in front of us rather
+    than from a general assumption about how expensive GetOutline is.
+    """
+    import time as _time
+    started = _time.perf_counter()
+    try:
+        return _precise_outline_impl(view)
+    finally:
+        _OUTLINE_STATS["calls"] += 1
+        _OUTLINE_STATS["ms"] += (_time.perf_counter() - started) * 1000.0
+
+
+def _precise_outline_impl(view):
     """Projected outline in SHEET metres with the fixed GetOutline inflation removed.
 
     P2-13: `IView.GetOutline` inflates width AND height by a constant 11.9 mm on every
