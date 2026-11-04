@@ -102,9 +102,118 @@ def bump(name, amount=1):
         _REC.count(name, amount)
 
 
+#: Metadata keys the spec wants on every record but that only the caller knows about
+#: (the pipeline does not measure its own output). Merged into the receipt verbatim.
+SPEC_META = ("sw_revision", "view_count", "dimension_count", "model_path", "model_class")
+
+
+def note_meta(**kw):
+    """Attach spec-required metadata discovered outside the timed region.
+
+    Called by the runner after the pipeline returns, because view_count and dimension_count
+    are OUTPUTS of the run, not inputs. No-op when not recording.
+    """
+    if _REC is None:
+        return
+    for key, value in kw.items():
+        if value is not None:
+            _REC.metadata[key] = value   # PerfRecorder calls it metadata, not meta
+
+
 def fail(code, detail=None):
     if _REC is not None:
         _REC.fail(code, detail)
+
+
+#: Field names the spec (section 9.1) requires in every JSONL record. Anything in here that
+#: the pipeline does not measure is emitted as None, NOT 0 - a zero would read as "this took
+#: no time", which is a claim we have not made.
+SPEC_TIMINGS = (
+    "model_open", "drawing_create", "view_create", "geometry_sync", "dimension_insert",
+    "dimension_dedupe", "dimension_layout", "annotations", "bom", "save", "audit",
+    "export", "total",
+)
+SPEC_COUNTS = ("force_rebuild", "graphics_redraw", "save", "layout_pass")
+
+#: Our internal name -> the spec's name. Kept as an explicit table so a future rename cannot
+#: silently drop a field.
+_TIMING_ALIASES = {
+    "drawing_create": "drawing_create",
+    "dimension_insert": "dim_insert",
+    "dimension_dedupe": "dim_dedupe",
+    "dimension_layout": "dim_outside",
+    "dimension_total": None,          # not a spec field; kept under its own name below
+    "annotations": "annotations",
+    "save": "save",
+    "audit": "audit",
+}
+_COUNT_ALIASES = {
+    "force_rebuild": "rebuild_calls",
+    "graphics_redraw": "redraw_calls",
+    "save": "save",
+}
+
+
+def conform_to_spec(result):
+    """Reshape a receipt so it carries the section 9.1 field names.
+
+    The original keys stay in place. That is deliberate: the JSONL files already on disk use
+    them, and rewriting history to fit a newer key table would make yesterday's numbers
+    unreadable. The spec fields are added alongside.
+
+    Unmeasured fields are None. `total` falls back to the summed timings when the caller has
+    not supplied a wall-clock figure, and says so via `total_source`.
+    """
+    if not result:
+        return result
+
+    timings = result.get("timings_ms") or {}
+    counts = result.get("counts") or {}
+
+    spec_t = {}
+    for spec_name in SPEC_TIMINGS:
+        internal = _TIMING_ALIASES.get(spec_name)
+        spec_t[spec_name] = timings.get(internal) if internal else timings.get(spec_name)
+    spec_t["dimension_total"] = timings.get("dimension_total")
+
+    if spec_t.get("total") is None:
+        wall = result.get("wall_ms")
+        if wall is not None:
+            spec_t["total"] = round(float(wall), 3)
+            result["total_source"] = "wall_ms"
+        else:
+            spec_t["total"] = round(sum(v for k, v in timings.items()
+                                        if isinstance(v, (int, float))), 3)
+            result["total_source"] = "sum_of_stages (no wall clock supplied)"
+
+    spec_c = {}
+    for spec_name in SPEC_COUNTS:
+        internal = _COUNT_ALIASES.get(spec_name)
+        spec_c[spec_name] = counts.get(internal) if internal else counts.get(spec_name)
+    # `layout_pass` has no instrumented source yet. Counted from the layout stage only when
+    # auto_dimension reports place_outside; None otherwise rather than a made-up number.
+    if spec_c.get("layout_pass") is None and counts.get("dim_outside"):
+        spec_c["layout_pass"] = counts.get("dim_outside")
+
+    result["timings_ms"] = timings
+    result["counts"] = counts
+    result["spec"] = {
+        "run_id": result.get("run_id"),
+        "variant": result.get("variant"),
+        "sw_revision": result.get("sw_revision"),
+        "model_path": result.get("model_path"),
+        "model_class": result.get("model_class"),
+        "view_count": result.get("view_count"),
+        "dimension_count": result.get("dimension_count"),
+        "success": result.get("success"),
+        "correctness_pass": result.get("correctness_pass"),
+        "timings_ms": spec_t,
+        "counts": spec_c,
+    }
+    result["spec"]["unmeasured"] = sorted(
+        [k for k in SPEC_TIMINGS if spec_t.get(k) is None]
+        + ["counts." + k for k in SPEC_COUNTS if spec_c.get(k) is None])
+    return result
 
 
 def stop(success=True, correctness_pass=False):
@@ -114,6 +223,7 @@ def stop(success=True, correctness_pass=False):
         return None
     result = _REC.finish(success=success, correctness_pass=correctness_pass)
     result["counts_scope"] = COUNTS_SCOPE
+    result = conform_to_spec(result)
     _REC = None
     return result
 

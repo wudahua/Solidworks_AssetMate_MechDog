@@ -3486,6 +3486,56 @@ def assert_outline_wrapper_is_pass_through():
     assert "OUTLINE_CALL_THRESHOLD" in src and "OUTLINE_MS_THRESHOLD" in src, (
         "the thresholds are gone; nobody can tell when caching becomes worth it")
     return "outline reads are counted (threshold 100 calls / 500 ms), not cached"
+def assert_perf_receipt_matches_spec_schema():
+    """0.8.124 — the JSONL record must carry section 9.1's field names.
+
+    The spec lists an explicit key table. For three rounds of this work I emitted my own
+    equivalent names (`rebuild_calls`, `dim_insert`, `dim_outside`) and never went back to
+    compare. The data was there; a consumer written against the spec would have read nothing.
+
+    Two things this pins down:
+      * every spec key EXISTS in the receipt, under `spec`
+      * a key we cannot measure is None, never 0 — 0 reads as "took no time", which is a
+        claim the pipeline has not made
+
+    The old names stay in place beside the spec block: JSONL already on disk uses them, and
+    rewriting history to match a newer table would make older numbers unreadable.
+    """
+    import sys as _sys
+    if os.path.join(ROOT, "src") not in _sys.path:
+        _sys.path.insert(0, os.path.join(ROOT, "src"))
+    from solidworks_assetmate_mechdog import perf_hooks as _ph
+    _ph.start("schema", {"model_path": "x"})
+    _ph.bump("rebuild_calls", 2)
+    _ph.bump("redraw_calls", 6)
+    _ph.bump("save")
+    _ph.note_meta(sw_revision="32.4.0", view_count=2, dimension_count=10)
+    rec = _ph.stop(success=True, correctness_pass=True)
+
+    assert rec is not None, "stop() returned nothing"
+    spec = rec.get("spec") or {}
+    assert spec, "no spec block - the receipt cannot be read by a spec-conformant consumer"
+
+    for key in ("run_id", "variant", "sw_revision", "model_path", "model_class",
+                "view_count", "dimension_count", "success", "correctness_pass"):
+        assert key in spec, "spec.%s missing" % key
+
+    want_t = ("model_open", "drawing_create", "view_create", "geometry_sync",
+              "dimension_insert", "dimension_dedupe", "dimension_layout", "annotations",
+              "bom", "save", "audit", "export", "total")
+    for key in want_t:
+        assert key in spec["timings_ms"], "spec.timings_ms.%s missing" % key
+
+    for key in ("force_rebuild", "graphics_redraw", "save", "layout_pass"):
+        assert key in spec["counts"], "spec.counts.%s missing" % key
+
+    # Counters must be mapped, not left null, when the internal name has a value.
+    assert spec["counts"]["force_rebuild"] == 2, "rebuild_calls did not map to force_rebuild"
+    assert spec["counts"]["graphics_redraw"] == 6, "redraw_calls did not map to graphics_redraw"
+    # Unmeasured stays None: truthy-zero would be a false claim.
+    assert spec["timings_ms"]["bom"] is None, "bom is not measured; it must not be 0"
+    assert "bom" in spec["unmeasured"], "an unmeasured field must be listed"
+    return "spec block carries 9 top-level, 13 timing and 4 count fields"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3609,6 +3659,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.124 perf receipt matches spec 9.1", assert_perf_receipt_matches_spec_schema),
     ("0.8.120 outline counted not cached", assert_outline_wrapper_is_pass_through),
     ("0.8.118 ledger open is structured", assert_ledger_open_failure_is_structured),
     ("0.8.113 gap planner no guessing", assert_gap_planner_only_fills_unambiguous_gaps),

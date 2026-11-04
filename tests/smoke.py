@@ -237,6 +237,30 @@ def main():
 
     r.check("export_bom + csv", _bom)
 
+    def _bom_quantity():
+        """0.8.125 — section 13: a BOM with no quantity column or no data rows must fail.
+
+        Measured 2026-11-04 on 装配体_显示器固定支架: 19 items, qty column present,
+        values [1,2,5,1,2,2,1,1,1,1,2,6,2,1,1,1,1,4,11], no zeros, and the sum is 46 —
+        exactly the component count. That equality is the invariant worth pinning: a qty
+        column that exists but does not add up is worse than a missing one, because it looks
+        authoritative.
+        """
+        payload = require(bom.export_bom(asm_copy))
+        items = payload.get("items") or []
+        assert items, "BOM has no data rows"
+        assert "qty" in items[0], "BOM rows carry no quantity column: %r" % sorted(items[0])
+        qtys = [it.get("qty") for it in items]
+        assert all(q is not None and q > 0 for q in qtys), (
+            "a BOM row has a missing or zero quantity: %r" % qtys)
+        total = sum(qtys)
+        components = payload.get("components")
+        assert components is None or total == components, (
+            "quantities sum to %s but the assembly has %s components" % (total, components))
+        return "%d rows, qty sums to %s = components" % (len(items), total)
+
+    r.check("BOM quantity column adds up", _bom_quantity)
+
     def _mass():
         payload = require(assembly.mass_properties(asm_copy))
         assert payload["mass"] > 0 and payload["volume"] > 0

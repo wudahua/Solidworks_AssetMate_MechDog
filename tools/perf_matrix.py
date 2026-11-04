@@ -120,6 +120,14 @@ def main():
                     error = "%s: %s" % (type(exc).__name__, str(exc)[:120])
                 wall_ms = round((time.perf_counter() - wall) * 1000.0, 1)
                 ok = bool(payload.get("ok")) and error is None
+                # Spec-required metadata that only exists AFTER the run: view_count and
+                # dimension_count are outputs, not inputs.
+                perf_hooks.note_meta(
+                    sw_revision=str(sw.RevisionNumber),
+                    view_count=len(payload.get("views") or []),
+                    dimension_count=(payload.get("dimension_gap") or {}).get("inserted"),
+                    model_path=os.path.basename(rel),
+                    model_class="part")
                 rec = perf_hooks.stop(success=ok, correctness_pass=ok)
                 rec["wall_ms"] = wall_ms
                 rec["error"] = error

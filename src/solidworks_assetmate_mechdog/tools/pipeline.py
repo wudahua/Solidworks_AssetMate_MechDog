@@ -100,6 +100,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     every dimension the model marks for drawing. Set False to get the old insert-everything
     behaviour; `dimension_gap` still reports planned vs actual either way.
     """
+    from ..drawing_batch import BatchOptions, DrawingBatch
     from . import drawing as drawing_tools
     from . import ledger as ledger_tools
     from . import planner
@@ -189,6 +190,26 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         return error("create_failed", created.get("message") or "view creation failed",
                      "Drawing not produced; see create_drawing errors.")
 
+    # Section 3 of the spec puts every write inside a drawing_batch scope, so that preference
+    # changes are undone even when the body raises. Options are the defaults, which switch
+    # NOTHING: the A/B in v0.8.112 found no measurable gain from either switch, so enabling
+    # them here would buy nothing and cost a preference write. What we get is the scope.
+    #
+    # Entered by hand rather than `with` on purpose: the body is ~100 lines with a single
+    # exit point, and re-indenting it to gain `with` would be a large diff for a smaller
+    # guarantee (a stray early `return` would skip __exit__ anyway if I got the indent wrong).
+    _batch = None
+    try:
+        from ..sw_session import get_sw
+        _batch = DrawingBatch(drawing_tools._open_drawing(target), get_sw(),
+                              BatchOptions()).__enter__()
+    except Exception as _exc:                                   # noqa: BLE001
+        record("drawing_batch", {"ok": False, "error": str(_exc)[:120]}, "")
+    else:
+        record("drawing_batch", {"ok": True,
+                                 "switches": _batch.switch_report,
+                                 "options": "defaults: no switch is changed"}, "")
+
     # 4) dimensions — N3: feed the plan back in, so "keep N" is what lands on the sheet.
     keep_list = plan_raw.get("keep_dimensions") or []
     if prune_to_plan and keep_list:
@@ -272,6 +293,16 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # Not every step is critical: hole callouts legitimately report ok=False on geometry that
     # has no native callout, and a missing surface finish is a documentation choice, not a
     # failure. Only the steps that decide whether the file is a usable drawing are fatal.
+    if _batch is not None:
+        # Restore any preference the scope touched. Raised as a restore failure rather than
+        # swallowed: a failed restore leaves the user's SolidWorks in a state they did not
+        # choose, and section 13 lists that as a must-not-report-ok condition.
+        try:
+            _batch.__exit__(None, None, None)
+        except Exception as _exc:                               # noqa: BLE001
+            return error("restore_failed", str(_exc)[:160],
+                         "SolidWorks preferences may not have been restored.")
+
     _CRITICAL = ("create_drawing", "dimensions", "save")
     _failed_critical = [st["step"] for st in steps
                         if st["step"] in _CRITICAL and not st["ok"]]
