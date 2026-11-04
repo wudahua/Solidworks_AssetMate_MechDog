@@ -1206,6 +1206,7 @@ def _dedupe_inserted_dimensions(doc, before_names, win):
     if removed:
         try:
             _call_method(doc, "EditRebuild3")
+            perf_hooks.bump("rebuild_calls")
         except Exception:
             pass
         try:
@@ -1359,6 +1360,7 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
     if removed:
         try:
             _call_method(doc, "EditRebuild3")
+            perf_hooks.bump("rebuild_calls")
         except Exception:
             pass
         try:
@@ -1770,6 +1772,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             # A bare `doc.EditRebuild3` attribute access used to be a silent no-op here,
             # which made the dedupe pass below see an empty set of new dimensions.
             _call_method(doc, "EditRebuild3")
+            perf_hooks.bump("rebuild_calls")
         except Exception:
             pass
         try:
@@ -1932,6 +1935,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 gap_m=float(outside_gap_m), step_m=float(outside_step_m))
             try:
                 _call_method(doc, "EditRebuild3")
+                perf_hooks.bump("rebuild_calls")
             except Exception:
                 pass
             try:
@@ -2069,6 +2073,7 @@ def set_view_scale(drawing_path, view_name, scale, save=True):
             pass
         try:
             _call_method(doc, "EditRebuild3")
+            perf_hooks.bump("rebuild_calls")
             doc.GraphicsRedraw2()
             perf_hooks.bump("redraw_calls")
         except Exception:
@@ -3422,6 +3427,7 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
             pass
         try:
             _call_method(doc, "EditRebuild3")
+            perf_hooks.bump("rebuild_calls")
         except Exception:
             pass
         try:
@@ -7804,6 +7810,7 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
                     continue
             try:
                 _call_method(doc, "EditRebuild3")
+                perf_hooks.bump("rebuild_calls")
             except Exception:
                 pass
             if save:
