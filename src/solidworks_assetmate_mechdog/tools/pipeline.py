@@ -221,8 +221,8 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # run and before anything reads the sheet back. Previously auto_dimension alone saved
     # twice (mid-function and in the place_outside branch) and audited once, then the
     # pipeline audited again — four saves and three audits per run.
-    # Other sub-tools (center marks, surface finish, hole callouts, notes) still save on
-    # their own; converting them is the rest of PR1 and has NOT been done.
+    # Every sub-tool now honours save=False (center marks, surface finish, hole callouts,
+    # notes) — verified by the 0.8.111 assertion. This is the only save in a pipeline run.
     try:
         _doc = drawing_tools._open_drawing(target)
         drawing_tools._save_drawing(_doc)
@@ -258,6 +258,23 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # 10) verdict
     verdict = record("delivery_check", drawing_tools.delivery_check(path, target), "")
     drawing_tools.annotations_cache_disable()
+
+    # Spec section 13: do NOT return ok:true when the final file was not actually updated,
+    # or when the sheet never got its dimensions. Until 0.8.114 every step's ok was recorded
+    # in  and then ignored — a run whose save raised still reported success, and the
+    # only evidence was a nested field a caller had to know to read.
+    #
+    # Not every step is critical: hole callouts legitimately report ok=False on geometry that
+    # has no native callout, and a missing surface finish is a documentation choice, not a
+    # failure. Only the steps that decide whether the file is a usable drawing are fatal.
+    _CRITICAL = ("create_drawing", "dimensions", "save")
+    _failed_critical = [st["step"] for st in steps
+                        if st["step"] in _CRITICAL and not st["ok"]]
+    if _failed_critical:
+        return error(
+            "critical_step_failed",
+            "%s failed; the drawing is not usable" % ", ".join(_failed_critical),
+            "steps: %s" % "; ".join("%s=%s" % (st["step"], st["ok"]) for st in steps))
 
     return ok(
         model=path,
