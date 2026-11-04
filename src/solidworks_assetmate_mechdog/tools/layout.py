@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 
+from .. import perf_hooks
+
 from ..sw_session import byref_dispatch_null, error, get_sw
 from .bom_native import default_template, populate_top_level_bom
 from .drawing import _open_drawing, _iter_views, drawing_ok, _save_drawing, GTOL_SYMBOLS  # noqa: F401
@@ -988,6 +990,7 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
             pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         if drawn < len(segments):

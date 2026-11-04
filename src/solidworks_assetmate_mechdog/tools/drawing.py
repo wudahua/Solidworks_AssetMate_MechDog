@@ -238,6 +238,7 @@ def _relayout(doc):
         result = _place_views(views, w, h, safety=template_safe_area(sheets[0], w, h))
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         return result
@@ -494,6 +495,7 @@ def create_drawing(
                     break
                 try:
                     model.ForceRebuild3(False)
+                    perf_hooks.bump("rebuild_calls")
                 except Exception:
                     pass
                 if lightweight_unresolved == 0:
@@ -709,10 +711,12 @@ def create_drawing(
         if view_objects:
             try:
                 doc.ForceRebuild3(False)
+                perf_hooks.bump("rebuild_calls")
             except Exception:
                 pass
             try:
                 doc.GraphicsRedraw2()
+                perf_hooks.bump("redraw_calls")
             except Exception:
                 pass
 
@@ -723,6 +727,7 @@ def create_drawing(
             layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
 
@@ -740,6 +745,7 @@ def create_drawing(
             for _attempt in range(3):
                 try:
                     doc.GraphicsRedraw2()
+                    perf_hooks.bump("redraw_calls")
                 except Exception:
                     pass
                 outside = False
@@ -775,6 +781,7 @@ def create_drawing(
                 layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
         try:
             drw.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         for item, view in zip(created, view_objects):
@@ -793,6 +800,7 @@ def create_drawing(
 
         try:
             drw.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
 
@@ -1766,6 +1774,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         perf_hooks.mark("dim_insert", _t_insert)
@@ -1927,6 +1936,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 pass
             try:
                 doc.GraphicsRedraw2()
+                perf_hooks.bump("redraw_calls")
             except Exception:
                 pass
             # Explicit save: this is the only branch that edits geometry the caller asked
@@ -2060,6 +2070,7 @@ def set_view_scale(drawing_path, view_name, scale, save=True):
         try:
             _call_method(doc, "EditRebuild3")
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         if save:
@@ -2171,6 +2182,7 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         layout = None
@@ -2499,6 +2511,7 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
                 after = 0
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         if save:
@@ -2851,6 +2864,7 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                                      "error": str(exc)}, **cell))
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         doc.SaveSilent
@@ -3412,6 +3426,7 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
             pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         if save:
@@ -3657,6 +3672,7 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
         doc.ClearSelection2(True)
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         if save:
@@ -3848,6 +3864,7 @@ def add_flat_pattern_view(drawing_path, model_path, config_name=None, position=N
                 pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         layout = _relayout(doc)
@@ -4351,6 +4368,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         display_mode_set = None
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         # Deliberately no repack here: repacking moves the section back into the parts
@@ -4507,6 +4525,7 @@ def _apply_detail_scale(doc, detail, scale):
             return applied
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
     return applied
@@ -4656,6 +4675,7 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
                 pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         _save_drawing(doc)
@@ -4848,6 +4868,7 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
                     pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         try:
@@ -6941,6 +6962,7 @@ def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining"
                 pass
             try:
                 doc.GraphicsRedraw2()
+                perf_hooks.bump("redraw_calls")
             except Exception:
                 pass
             readback = {}
@@ -7218,6 +7240,7 @@ def add_datum_feature(drawing_path, view_name=None, edge_index=None, label="A",
             pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
         if save:
@@ -7413,6 +7436,7 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
             pass
         try:
             doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
         except Exception:
             pass
 

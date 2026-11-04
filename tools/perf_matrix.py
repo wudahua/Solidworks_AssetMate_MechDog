@@ -77,8 +77,15 @@ def main():
     ap.add_argument("--runs", type=int, default=1, help="runs per model")
     ap.add_argument("--paper", default="A3")
     ap.add_argument("--json", default="logs/perf_matrix.json", help="where to write the matrix")
+    ap.add_argument("--cold", action="store_true",
+                    help="disable the ledger and annotation caches. Both read their env "
+                         "var at call time, so setting it here is enough.")
     args = ap.parse_args()
 
+    if args.cold:
+        os.environ["ASSETMATE_LEDGER_CACHE"] = "0"
+        os.environ["ASSETMATE_ANNOT_CACHE"] = "0"
+        print("cold path: ledger + annotation caches disabled")
     sw = get_sw()
     print("SolidWorks %s | docs %d | models %d | runs/model %d"
           % (sw.RevisionNumber, doc_count(), len(MODELS), args.runs))
@@ -125,7 +132,9 @@ def main():
                 note = error or (payload.get("error") or "")
                 rows.append({"model": label, "ok": ok, "wall_ms": wall_ms, "why": why,
                              "dims": dims, "views": views, "error": note or None,
-                             "timings_ms": rec.get("timings_ms")})
+                             "cold": bool(args.cold),
+                             "timings_ms": rec.get("timings_ms"),
+                             "counts": rec.get("counts")})
                 print("%-18s %7.1f %6s %5s %6s %8s  %s" %
                       (label, wall_ms / 1000.0, dims, views,
                        "ok" if ok else "FAIL", doc_count(), note[:34]))
@@ -141,16 +150,57 @@ def main():
     good = [r for r in rows if r.get("ok")]
     print("-" * 96)
     print("ok %d / %d" % (len(good), len(rows)))
-    if good:
-        walls = sorted(r["wall_ms"] / 1000.0 for r in good)
-        print("wall: min %.1f s  median %.1f s  max %.1f s" %
-              (walls[0], statistics.median(walls), walls[-1]))
-        # Bucketed so a reader can see whether cost tracks construction type.
-        for bucket in ("sheetmetal", "track", "turned", "casting", "thin", "bracket"):
-            sub = [r["wall_ms"] / 1000.0 for r in good if bucket in r["model"]]
-            if sub:
-                print("  %-11s n=%d  median %.1f s  range %.1f-%.1f" %
-                      (bucket, len(sub), statistics.median(sub), min(sub), max(sub)))
+    # Per-model statistics, NOT pooled across models. The spec asks "每组记录至少 5 次",
+    # and a "group" is one model: pooling ten different parts into one P95 answers a question
+    # nobody asked, because the models differ by 12x in cost (52.9 s vs 661.5 s).
+    by_model = {}
+    for r in good:
+        by_model.setdefault(r["model"], []).append(r["wall_ms"] / 1000.0)
+
+    def p95(values):
+        """Nearest-rank P95. Below n=20 this is the slowest sample and is labelled as such."""
+        if not values:
+            return float("nan")
+        idx = max(0, min(len(values) - 1, int(round(0.95 * (len(values) - 1)))))
+        return values[idx]
+
+    print("per-model (spec: >=5 runs per group):")
+    print("  %-18s %4s %8s %8s %8s %8s  %s" %
+          ("model", "n", "median", "P95", "min", "max", "rebuilds/redraws"))
+    thin = []
+    for label in [m[0] for m in MODELS]:
+        vals = sorted(by_model.get(label) or [])
+        if not vals:
+            continue
+        first = next(r for r in good if r["model"] == label)
+        counts = first.get("counts") or {}
+        rc = counts.get("rebuild_calls")
+        dc = counts.get("redraw_calls")
+        print("  %-18s %4d %7.1fs %7.1fs %7.1fs %7.1fs  %s/%s" %
+              (label, len(vals), statistics.median(vals), p95(vals), vals[0], vals[-1],
+               rc, dc))
+        if len(vals) < 5:
+            thin.append("%s(n=%d)" % (label, len(vals)))
+    if thin:
+        print("  NOTE: below the spec's 5-run minimum: %s" % ", ".join(thin))
+        print("        A single sample per model supports 'here is the range', "
+              "not 'this model is faster'.")
+
+    # Pooled figures kept only as a headline, explicitly labelled as not a per-group stat.
+    all_walls = sorted(r["wall_ms"] / 1000.0 for r in good)
+    print("all samples pooled (headline only, not a per-model percentile): "
+          "n=%d median %.1fs min %.1fs max %.1fs"
+          % (len(all_walls), statistics.median(all_walls), all_walls[0], all_walls[-1]))
+
+    # Rebuild / redraw counts across all runs: the spec asks these be recorded, and they
+    # explain part of the spread - a run that rebuilds 6 times costs more than one doing 2.
+    ics = [r.get("counts") or {} for r in good]
+    for key in ("rebuild_calls", "redraw_calls", "save", "audit"):
+        vals = [c.get(key) for c in ics if c.get(key) is not None]
+        if vals:
+            print("  %-14s n=%d  median %s  range %s-%s"
+                  % (key, len(vals), statistics.median(vals), min(vals), max(vals)))
+
     failed = [r["model"] for r in rows if not r.get("ok")]
     if failed:
         print("FAILED: %s" % ", ".join(failed))
