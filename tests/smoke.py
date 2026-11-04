@@ -1236,6 +1236,64 @@ def main():
             len(views), audit.get("total_dimensions"), payload.get("verdict"))
 
     r.check("assembly drawing not an empty shell", _assembly_drawing)
+
+    def _section_and_detail():
+        """0.8.117: section and detail views had never run AFTER produce_drawing.
+
+        add_section_view / add_detail_view each have their own smoke item, but those call
+        them on a drawing that carries nothing else. The real order is
+        produce_drawing -> add section -> add detail, and that is where the previous two
+        attempts failed — with the tools reporting honestly rather than silently:
+
+            offset_m=0.0 on the NARROW view   -> hatch_missing (GetFaceHatchCount = 0)
+            center at a guessed coordinate    -> detail_empty (0 visible edges)
+
+        Both were MY parameters, not tool bugs. What works, measured 2026-11-04:
+          * section on the WIDEST model view, orientation='vertical' (cut along the axis)
+          * detail centred on that view's precise_outline centre
+        Result: 2 base views -> 4, dimensions unchanged at 10, file 128366 bytes.
+
+        The assertions below encode those two facts, because getting them wrong produces a
+        view that exists but draws nothing — which is exactly the failure mode reconcile and
+        the audit cannot see.
+        """
+        sec_out = os.path.join(workdir, "smoke_sec_drw.SLDDRW")
+        base = pipeline.produce_drawing(part_copy, output_path=sec_out)
+        assert base.get("ok"), base.get("message")
+        before = drawing.drawing_audit(sec_out)
+        n_before = int(before.get("view_count") or 0)
+        d_before = int(before.get("total_dimensions") or 0)
+
+        doc = drawing._open_drawing(sec_out)
+        views = [v for v in drawing._iter_views(doc) if getattr(v, "Type", None) != 1]
+        # The widest view is the side view; the narrow one is an end view that cannot be cut.
+        wide = max(views, key=lambda v: (drawing.precise_outline(v) or [0, 0, 0, 0])[2])
+        box = drawing.precise_outline(wide)
+        cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+
+        sec = drawing.add_section_view(sec_out, view_name=str(wide.Name),
+                                       orientation="vertical", offset_m=0.0,
+                                       position=(cx, box[1] - 0.06), label="A")
+        assert sec.get("ok"), (
+            "section failed: %s %s" % (sec.get("error"), (sec.get("message") or "")[:80]))
+
+        det = drawing.add_detail_view(sec_out, view_name=str(wide.Name), center=(cx, cy),
+                                      radius_m=0.015, position=(cx + 0.13, cy + 0.03),
+                                      scale=2.0, label="B")
+        assert det.get("ok"), (
+            "detail failed: %s %s" % (det.get("error"), (det.get("message") or "")[:80]))
+
+        after = drawing.drawing_audit(sec_out)
+        n_after = int(after.get("view_count") or 0)
+        assert n_after == n_before + 2, (
+            "expected two more views, %d -> %d" % (n_before, n_after))
+        assert int(after.get("total_dimensions") or 0) == d_before, (
+            "adding a section/detail changed the dimension count: %d -> %d"
+            % (d_before, after.get("total_dimensions")))
+        drawing.close_document(sec_out)
+        return "%d -> %d views, dims held at %d" % (n_before, n_after, d_before)
+
+    r.check("section + detail after produce_drawing", _section_and_detail)
     r.check("part tools (material/flat pattern)", _part_tools)
     r.check("single hole callout", _hole_callout_single)
     r.check("rename components (dry-run)", _rename)
