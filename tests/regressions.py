@@ -3604,6 +3604,42 @@ def assert_bilateral_lower_is_negative():
     assert "GetToleranceUpperLimit" not in code_only, (
         "GetToleranceUpperLimit does not exist on this build; calling it reports None silently")
     return "bilateral writes -abs(lower); readback via GetToleranceValues property"
+def assert_gap_matcher_converts_units():
+    """0.8.128 — plan_dimension_gaps compared metres against millimetres.
+
+    Sheet coordinates come back in METRES (`IView.Position`, `GetOutline`). `target` and
+    `tolerance_mm` are millimetres. The matcher did:
+
+        if abs(span - target) <= tolerance_mm:      # 0.031 vs 31, tol 0.05
+
+    so a 31 mm gap was off by 30.97 and nothing could ever match. Every part since PR4
+    reported `gaps_found: 13, fillable: 0, no_geometry: 13` — which reads like "the drawing
+    has no measurable geometry" and is why report 2026-11-04 P1-2 concluded the candidate
+    generation was broken. It was, but not where the report guessed (circle centres); the
+    comparison itself could never be true.
+
+    Measured after the fix on 接槽: ambiguous 0 -> 9, no_geometry 13 -> 4, with matched spans
+    of exactly 13.00 / 4.40 / 31.00 / 30.00 / 12.00 / 4.00 / 1.50 mm.
+
+    `fillable` is still 0 for that part and that is correct: four symmetric counterbores
+    produce several equally valid pairs, so the honest status is `ambiguous`, not a coin flip.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "plan_dimension_gaps")
+    body = ast.get_source_segment(src, fn) or ""
+
+    assert "span_mm = span_m * 1000.0" in body, (
+        "the sheet-metre to millimetre conversion is gone — the matcher will match nothing")
+    assert "abs(span_mm - target)" in body, (
+        "the comparison no longer uses the converted value")
+    assert "abs(span - target)" not in body.replace("abs(span_mm - target)", ""), (
+        "a raw metre value is still being compared against millimetres")
+
+    # Circle centres must stay in the candidate set: hole-pitch gaps are centre-to-centre.
+    assert "list_circular_edges" in body, (
+        "circle centres dropped out of the candidate points — hole pitches cannot match")
+    return "sheet metres converted to mm; circle centres remain in the candidate set"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3727,6 +3763,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.128 gap matcher units", assert_gap_matcher_converts_units),
     ("0.8.126 title block guards None", assert_title_block_guards_none_position),
     ("0.8.126 bilateral lower is negative", assert_bilateral_lower_is_negative),
     ("0.8.124 perf receipt matches spec 9.1", assert_perf_receipt_matches_spec_schema),

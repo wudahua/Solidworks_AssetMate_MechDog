@@ -6919,6 +6919,29 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             pt = row.get("sheet_center") or row.get("sheet_point_on_circle") or row.get("sheet_start")
             if pt:
                 points.append((idx, float(pt[0]), float(pt[1])))
+
+        # Report 2026-11-04 P1-2: 13 gaps, all `no_geometry`, including values that are
+        # plainly measurable — 31 (two counterbore centres), 12 (Ø5 spacing), 13 (Ø14.2
+        # position). Those are CIRCLE-to-CIRCLE distances, and the point set above holds only
+        # straight edges, so every hole-pitch gap was guaranteed to miss.
+        #
+        # Circle centres are appended with a synthetic negative index so they cannot collide
+        # with edge indices, and tagged so a candidate can say which kind of pair it is.
+        circle_points = []
+        try:
+            circles_payload = list_circular_edges(drawing_path)
+            for ci, circle in enumerate(circles_payload.get("circles") or []):
+                if circle.get("x") is None or circle.get("y") is None:
+                    continue
+                circle_points.append(
+                    (-(ci + 1), float(circle["x"]), float(circle["y"]),
+                     circle.get("diameter_mm")))
+        except Exception as _exc:
+            circle_points = []
+            _circle_error = str(_exc)[:160]
+        else:
+            _circle_error = None
+        points = points + [(pid, x, y) for pid, x, y, _ in circle_points]
         if len(points) < 2:
             return error("not_enough_edges",
                          "need at least two edges with sheet coordinates, found %d" % len(points),
@@ -6949,12 +6972,19 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                     # A dimension measures along ONE axis for linear extents; accept a match
                     # on either axis and record which, rather than a euclidean distance that
                     # no linear dimension ever uses.
-                    for axis, span in (("x", dx), ("y", dy)):
-                        if abs(span - target) <= tolerance_mm:
+                    for axis, span_m in (("x", dx), ("y", dy)):
+                        # Sheet coordinates are METRES; `target` is millimetres and
+                        # `tolerance_mm` is millimetres. Comparing them directly made the
+                        # tolerance 1000x too tight in practice: a 31 mm gap spans 0.031 in
+                        # sheet units, so |0.031 - 31| = 30.97 never cleared 0.05. That is
+                        # why every part since PR4 reported 13/13 `no_geometry` — the matcher
+                        # could not match anything, at any tolerance.
+                        span_mm = span_m * 1000.0
+                        if abs(span_mm - target) <= tolerance_mm:
                             matches.append({
                                 "edge_a": points[i][0], "edge_b": points[j][0],
-                                "axis": axis, "measured_mm": round(span, 3),
-                                "delta_mm": round(span - target, 4),
+                                "axis": axis, "measured_mm": round(span_mm, 3),
+                                "delta_mm": round(span_mm - target, 4),
                                 "centres": [[round(x1, 4), round(y1, 4)],
                                             [round(x2, 4), round(y2, 4)]],
                             })
