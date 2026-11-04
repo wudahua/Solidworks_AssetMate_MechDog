@@ -145,7 +145,8 @@ def main():
     from solidworks_assetmate_mechdog.sw_session import get_sw
     from solidworks_assetmate_mechdog.tools import (assembly, bodies, bom, drawing, export,
                                                     layout, ledger, recolor, capabilities,
-                                                    sheet_metal, planner, rename, material)
+                                                    sheet_metal, planner, rename, material,
+                                                    pipeline)
 
     try:
         get_sw()
@@ -1206,6 +1207,33 @@ def main():
         return "%d wrappers, %d forwarding calls bind" % (len(wrappers), checked)
 
     r.check("views, dimensions, title block", _views_and_dims)
+
+    def _assembly_drawing():
+        """0.8.116: produce_drawing had NEVER run on an assembly.
+
+        Every drawing measurement so far used parts. Assemblies take a different path —
+        lightening, component visibility, and reconcile has nothing to compare against
+        (coverage=None) — so a green part matrix said nothing about this case.
+        Measured 2026-11-04: ok=True, 26 dimensions inserted, 10 callouts, 2 views at 1:2,
+        36 dimensions after audit, 538 KB, verdict 待设计审核.
+
+        What this asserts is that the drawing is not an EMPTY SHELL: an assembly can return
+        ok=True with zero views or zero geometry, and the old receipt had no field that
+        would tell you which.
+        """
+        asm_out = os.path.join(workdir, "smoke_asm_drw.SLDDRW")
+        payload = require(pipeline.produce_drawing(asm_copy, output_path=asm_out))
+        assert payload.get("ok"), payload.get("message")
+        views = payload.get("views") or []
+        assert len(views) >= 1, "assembly drawing produced no views"
+        assert payload.get("view_count") == len(views), (
+            "view_count disagrees with views: %r" % (payload.get("view_count"),))
+        audit = drawing.drawing_audit(asm_out)
+        assert int(audit.get("total_dimensions") or 0) > 0, (
+            "assembly drawing has views but no dimensions - an empty shell")
+        drawing.close_document(asm_out)
+        return "%d views, %d dims, verdict=%s" % (
+            len(views), audit.get("total_dimensions"), payload.get("verdict"))
     r.check("part tools (material/flat pattern)", _part_tools)
     r.check("single hole callout", _hole_callout_single)
     r.check("rename components (dry-run)", _rename)
