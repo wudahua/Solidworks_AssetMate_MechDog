@@ -1294,6 +1294,49 @@ def main():
         return "%d -> %d views, dims held at %d" % (n_before, n_after, d_before)
 
     r.check("section + detail after produce_drawing", _section_and_detail)
+
+    def _paper_scaling():
+        """0.8.119: every drawing measurement so far used A3.
+
+        The safe-area logic reads the sheet's own frame, so paper size should not matter — but
+        "should not" is not "measured". Measured 2026-11-04 on 履带 (the heaviest part):
+
+            A4  297x210 mm  scale=0.1  151.5x47.9 mm  inside=True
+            A2  594x420 mm  scale=0.2  314.9x107.8 mm inside=True
+
+        The scale adapts (1:10 on A4, 1:5 on A2) and both views stay inside the frame. That
+        auto-scaling is what makes an oversized part fit a small sheet at all; if it stopped
+        working the views would simply hang off the edge and only a visual check would notice.
+
+        Asserted here: the view rectangles are inside the sheet rectangle on both papers, and
+        the larger paper does not use a smaller scale (that would mean the fit logic inverted).
+        """
+        scales = {}
+        for paper in ("A4", "A2"):
+            out = os.path.join(workdir, "smoke_%s.SLDDRW" % paper)
+            payload = pipeline.produce_drawing(part_copy, output_path=out, paper=paper)
+            assert payload.get("ok"), "%s: %s" % (paper, payload.get("message"))
+            doc = drawing._open_drawing(out)
+            views = [v for v in drawing._iter_views(doc) if getattr(v, "Type", None) != 1]
+            sheets = [v for v in drawing._iter_views(doc) if getattr(v, "Type", None) == 1]
+            assert views and sheets, "%s: no views or no sheet" % paper
+            frame = list(sheets[0].GetOutline)
+            for v in views:
+                box = drawing.precise_outline(v)
+                assert box, "%s: view %r has no outline" % (paper, str(v.Name))
+                inside = (box[0] >= frame[0] - 1e-4 and box[1] >= frame[1] - 1e-4
+                          and box[2] <= frame[2] + 1e-4 and box[3] <= frame[3] + 1e-4)
+                assert inside, (
+                    "%s: view %r sticks out of the sheet (%r vs %r)"
+                    % (paper, str(v.Name), box, frame))
+            scales[paper] = float(views[0].ScaleDecimal)
+            drawing.close_document(out)
+        assert scales["A2"] >= scales["A4"], (
+            "a bigger sheet produced a smaller scale: A4=%s A2=%s"
+            % (scales["A4"], scales["A2"]))
+        return "A4 scale=%s A2 scale=%s, all views inside" % (scales["A4"], scales["A2"])
+
+    r.check("paper scaling keeps views inside", _paper_scaling)
     r.check("part tools (material/flat pattern)", _part_tools)
     r.check("single hole callout", _hole_callout_single)
     r.check("rename components (dry-run)", _rename)
