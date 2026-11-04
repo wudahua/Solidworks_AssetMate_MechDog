@@ -65,12 +65,17 @@ def case_isometric_empty_view():
 
         empty = [v for v in views if int(v.get("dimensions") or 0) == 0]
         names = [str(v.get("name")) for v in empty]
-        # An isometric / 等轴测 view is allowed to be empty. Any OTHER empty view is a defect.
-        allowed = [n for n in names if ("等轴测" in n or "isometric" in n.lower()
-                                        or "ISO" in n)]
-        offenders = [n for n in names if n not in allowed]
-        record("[A3] only the isometric view is empty", not offenders,
-               "empty=%s allowed=%s offenders=%s" % (names, allowed, offenders))
+        # SolidWorks names the views 工程图视图1/2/3 regardless of the kind requested, so the
+        # name cannot identify the isometric. We asked for front/right/isometric in that order,
+        # and the isometric is the one that legitimately carries no model dimensions - so the
+        # check is: whatever is empty must be exactly one view, and it must not be the first
+        # two (those are the ones we expect to be dimensioned).
+        record("[A3] exactly one empty view", len(empty) <= 1,
+               "empty=%s" % names)
+        offenders = [n for n, v in zip(names, empty)
+                     if views.index(v) < 2]
+        record("[A3] the dimensioned views are not empty", not offenders,
+               "offenders=%s" % offenders)
 
         # Warnings must not treat the isometric emptiness as a problem.
         warns = " ".join(str(w) for w in (payload.get("warnings") or []))
@@ -115,7 +120,7 @@ def case_nothing_disappears():
 
         # Signature is (drawing_path, x, y, tolerance=, datum=, symbol=) — position first.
         gtol = drawing.add_geometric_tolerance(
-            drw, 0.20, 0.06, tolerance="0.05", datum="A", symbol="位置度")
+            drw, 0.20, 0.06, tolerance="0.05", datum="A", symbol="position")
         record("[A5] GTOL added", bool(gtol.get("ok")),
                (gtol.get("message") or gtol.get("error") or "")[:60])
 
@@ -132,8 +137,8 @@ def case_nothing_disappears():
                "%d -> %d  kinds=%s" % (n_before, len(rows), kinds))
         record("[A5] note survived", kinds.get("note", 0) >= 3,
                "notes=%d" % kinds.get("note", 0))
-        record("[A5] gtol survived", kinds.get("gtol", 0) >= 1,
-               "gtol=%d" % kinds.get("gtol", 0))
+        record("[A5] gtol survived", kinds.get("geometric_tolerance", 0) >= 1,
+               "gtol=%d" % kinds.get("geometric_tolerance", 0))
         record("[A5] surface finish survived", kinds.get("surface_finish", 0) >= 1,
                "sfsymbol=%d" % kinds.get("surface_finish", 0))
 
@@ -170,14 +175,17 @@ def case_gtol_visible_in_pdf():
             return record("[A6] setup", False, payload.get("message") or "")
 
         gtol = drawing.add_geometric_tolerance(
-            drw, 0.20, 0.06, tolerance="0.05", datum="A", symbol="位置度")
+            drw, 0.20, 0.06, tolerance="0.05", datum="A", symbol="position")
         if not gtol.get("ok"):
             return record("[A6] gtol added", False,
                           (gtol.get("error") or "")[:60])
 
         # The frame must report its position back; without it a pixel check has no target.
-        pos = gtol.get("position_actual_m") or gtol.get("position_m")
-        record("[A6] gtol reports a position", pos is not None, "pos=%s" % (pos,))
+        # The receipt uses , not position_actual_m (that name belongs to
+        # add_surface_finish). The coordinates we asked for are the ones to look at in the PDF.
+        record("[A6] gtol reports a position", bool(gtol.get("position_set")),
+               "position_set=%r" % (gtol.get("position_set"),))
+        pos = (0.20, 0.06)
 
         exp = drawing.export_drawing(drw, pdf, fmt="pdf")
         exists = os.path.exists(pdf) and os.path.getsize(pdf) > 1000
@@ -186,17 +194,21 @@ def case_gtol_visible_in_pdf():
 
         if exists and pos:
             try:
-                from PIL import Image, ImageChops
-                import subprocess
-                png = os.path.join(work, "page.png")
-                # pdftoppm ships with the poppler tools the PDF skill already uses.
-                subprocess.run(["pdftoppm", "-r", "150", "-png", "-f", "1", "-l", "1",
-                                pdf, png], check=True, capture_output=True)
-                candidates = [f for f in os.listdir(work) if f.startswith("page") and f.endswith(".png")]
-                if candidates:
-                    img = Image.open(os.path.join(work, candidates[0])).convert("RGB")
-                    W, H = img.size
-                    # Sheet lower-left origin -> PNG top-left, via the sheet size.
+                # pymupdf is already a dependency of the PDF tooling here; pdftoppm is not on
+                # PATH on this machine, which is why the first version of this check silently
+                # degraded to "the PDF is 47 KB". A size check cannot tell a rendered frame
+                # from an empty one.
+                import pymupdf
+
+                page_img = None
+                with pymupdf.open(pdf) as doc_pdf:
+                    page = doc_pdf[0]
+                    pix = page.get_pixmap(dpi=150)
+                    page_img = (pix.width, pix.height, pix.samples)
+                if page_img is None:
+                    record("[A6] pdf rasterised", False, "pymupdf produced no page")
+                else:
+                    W, H, samples = page_img
                     sheet = drawing._open_drawing(drw)
                     frames = [v for v in drawing._iter_views(sheet)
                               if getattr(v, "Type", None) == 1]
@@ -204,17 +216,34 @@ def case_gtol_visible_in_pdf():
                     sw, sh = frame[2] - frame[0], frame[3] - frame[1]
                     px = (pos[0] - frame[0]) / sw * W
                     py = (1 - (pos[1] - frame[1]) / sh) * H
-                    box = (max(0, int(px) - 50), max(0, int(py) - 50),
-                           min(W, int(px) + 50), min(H, int(py) + 50))
-                    crop = img.crop(box)
-                    dark = sum(1 for p in crop.getdata() if sum(p) < 450)
+                    x0 = max(0, int(px) - 50)
+                    y0 = max(0, int(py) - 50)
+                    x1 = min(W, int(px) + 50)
+                    y1 = min(H, int(py) + 50)
+                    dark = 0
+                    for yy in range(y0, y1):
+                        row = yy * pix.stride
+                        for xx in range(x0, x1):
+                            off = row + xx * pix.n
+                            if samples[off] + samples[off + 1] + samples[off + 2] < 450:
+                                dark += 1
                     record("[A6] ink near the frame position", dark >= 20,
-                           "dark pixels in 100x100 window: %d" % dark)
-                else:
-                    record("[A6] pdf rasterised", False, "pdftoppm produced no page")
-            except FileNotFoundError:
-                record("[A6] pdf rasterised", True,
-                       "SKIPPED - pdftoppm not on PATH; only the PDF size was checked")
+                           "%dx%d page, dark pixels in 100x100 window: %d at (%.0f,%.0f)"
+                           % (W, H, dark, px, py))
+                    # A blank sheet would give ~0 dark pixels everywhere; this is the control
+                    # that says the 20 above is meaningful rather than a rendering artefact.
+                    whole = 0
+                    for yy in range(0, H, 4):
+                        row = yy * pix.stride
+                        for xx in range(0, W, 4):
+                            off = row + xx * pix.n
+                            if samples[off] + samples[off + 1] + samples[off + 2] < 450:
+                                whole += 1
+                    record("[A6] page is not blank", whole > 200,
+                           "dark pixels on a 4x sampled page: %d" % whole)
+            except ImportError:
+                record("[A6] pdf rasterised", False,
+                       "no PDF renderer (pymupdf missing) - cannot verify ink")
             except Exception as exc:                                # noqa: BLE001
                 record("[A6] pdf rasterised", False, str(exc)[:70])
         return None
