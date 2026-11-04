@@ -3766,6 +3766,46 @@ def assert_requirements_respect_safe_area():
     assert "max(margin, float((safe_area or {}).get(\"left\"" in body, (
         "auto placement still starts from a hardcoded 10 mm margin")
     return "requirements block is bounded by the template safe area, in both paths"
+def assert_center_marks_and_orphans_are_discriminating():
+    """0.8.132 — two checks that could not tell "correct" from "unknown".
+
+    P2-6 (center marks): every model view on this build answers `Type == 7`, and the name is
+    just 工程图视图3, so neither obvious test identifies the isometric. `GetOrientationName`
+    does (`*等轴测`), and that is now what gates the skip. Measured: processed 2 of 3 views,
+    the axonometric one listed under `skipped_views` with a reason instead of silently
+    dropped, and each view carries its own `center_mark_count`.
+
+    P2-5 (orphans): `GetAttachedEntities2` returns empty for dimensions brought in by
+    InsertModelItems, so "no attachments" was reported as "orphan" — a fillet radius read as
+    a broken dimension. The witness is the DISPLAY dimension's type, and it has to be read as
+    `ann.GetSpecificAnnotation.GetType` (2 linear / 5 diameter); `dim.GetType` answers 0 and
+    the first attempt therefore excused nothing.
+
+    Measured on 接槽: orphans 3 -> 1. `65` is excused by matching the view extent, `R10` by
+    being type 5, and `1` (a chamfer) stays an orphan — no geometric witness covers it, and
+    inventing one would be worse than reporting it.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+
+    marks = ast.get_source_segment(src, _function_node(tree, "add_center_marks")) or ""
+    assert "GetOrientationName" in marks, (
+        "center marks no longer identify axonometric views by orientation")
+    assert "skipped_views" in marks, (
+        "skipped axonometric views are not reported")
+    assert "center_mark_count" in marks, (
+        "per-view counts are gone; views_marked alone cannot prove the skip")
+
+    att = ast.get_source_segment(src, _function_node(tree, "verify_dimension_attachments")) or ""
+    assert "GetSpecificAnnotation" in att and "dim_type" in att, (
+        "dimension type is not read from the display dimension")
+    assert "diameter_or_radius" in att, (
+        "diameter/radius dimensions are not excused")
+    assert "matches_view_extent" in att, (
+        "overall-size dimensions are not excused by the view extent")
+    assert "unattached_plausible" in att, (
+        "plausible-unattached is not separated from orphans")
+    return "axonometric skipped by orientation; orphans separated by geometric witnesses"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3889,6 +3929,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.132 marks + orphans discriminate", assert_center_marks_and_orphans_are_discriminating),
     ("0.8.131 requirements stay in frame", assert_requirements_respect_safe_area),
     ("0.8.130 projection selectable", assert_projection_angle_is_selectable),
     ("0.8.129 placement is reported", assert_datum_and_move_report_placement),

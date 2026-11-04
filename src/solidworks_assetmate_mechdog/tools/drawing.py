@@ -2218,10 +2218,33 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
         insert_option = 2  # swCenterMarkStyle_e.swCenterMark_Single
         processed = marked = 0
         results = []
+        # Report 2026-11-04 P2-6: the isometric view got center marks again (a prior report
+        # saw 15 crosses scattered across a 3D pictorial). `IView.Type` cannot identify it —
+        # every model view on this build answers 7 — and the name is just 工程图视图3, so
+        # neither of the obvious tests works.
+        #
+        # `GetOrientationName` DOES name the base orientation: measured `*前视`, `*上视`,
+        # `*等轴测`. That is the only reliable signal here, and it is also the one that
+        # composes with a custom-named view.
+        skipped_views = []
         for view in _iter_views(doc):
             if getattr(view, "Type", None) == 1:
                 continue
             if view_name and str(view.Name) != str(view_name):
+                continue
+            orientation = ""
+            try:
+                orientation = str(call_method(view, "GetOrientationName") or "")
+            except Exception:
+                orientation = ""
+            lowered = orientation.lower()
+            if ("等轴测" in orientation or "isometric" in lowered
+                    or "trimetric" in lowered or "dimetric" in lowered):
+                # Axonometric views are pictorials: a centerline across one is a drafting
+                # error, not a convenience. Recorded so a caller can see it was skipped on
+                # purpose rather than silently dropped.
+                skipped_views.append({"view": str(view.Name), "reason": "axonometric",
+                                      "orientation": orientation})
                 continue
             processed += 1
             try:
@@ -2238,7 +2261,15 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
                 continue
             if ok_view:
                 marked += 1
-            results.append({"view": view.Name, "ok": bool(ok_view)})
+            # Per-view count: `views_marked` alone could not tell "4 views each got 2" from
+            # "one view got 8", and the report could not prove the isometric was excluded.
+            per_view = None
+            try:
+                per_view = int(view.GetCenterMarkCount)
+            except Exception:
+                per_view = None
+            results.append({"view": view.Name, "ok": bool(ok_view),
+                            "orientation": orientation, "center_mark_count": per_view})
         try:
             doc.EditRebuild3
         except Exception:
@@ -2258,6 +2289,7 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             layout=layout,
             views_processed=processed,
             views_marked=marked,
+            skipped_views=skipped_views,
             views=results,
             note="GetCenterMarkCount under-reports on this binding; views_marked is the "
                  "reliable signal. Verify visually with render_drawing.",
@@ -5899,6 +5931,7 @@ def verify_dimension_attachments(drawing_path, view_name=None):
         doc = _open_drawing(drawing_path)
         rows, counts = [], {}
         orphans = []
+        unattached_plausible = []
         # Same dimension gets enumerated many times (measured 11x for one D1/275.0), and
         # name is NOT an identity here — some drawings name every dimension "D1" — so
         # dedupe on (view, name, position, value) and also report the unique count.
@@ -5971,6 +6004,29 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                     pass
                 row["attached_count"] = len(types)
                 row["attached_kinds"] = [SELECT_TYPE_NAMES.get(t, "type_%d" % t) for t in types]
+                # Report 2026-11-04 P2-5: three dimensions on a real sheet (65 overall
+                # height, R10 fillet, 1 chamfer) were reported as orphans while plainly
+                # pointing at geometry. `GetAttachedEntities2` returns empty for dimensions
+                # brought in by InsertModelItems — a known behaviour — so "no attachments"
+                # alone is not proof of an orphan.
+                #
+                # The witness is on the DISPLAY dimension, not on `IDimension`:
+                # `ann.GetSpecificAnnotation.GetType` answers 2 for a linear dimension on
+                # this build, while `dim.GetType` (the object returned by GetDimension2(0))
+                # answers 0 — which is why the first version of this check classified every
+                # dimension as "type 0" and excused nothing.
+                dim_type = None
+                try:
+                    spec = win.Dispatch(ann.GetSpecificAnnotation)
+                except Exception:
+                    spec = None
+                if spec is not None:
+                    try:
+                        raw_type = spec.GetType
+                        dim_type = int(raw_type() if callable(raw_type) else raw_type)
+                    except Exception:
+                        dim_type = None
+                row["dimension_type"] = dim_type
 
                 # Dedupe first, bookkeep after. It used to be the other way round, so
                 # counts/orphans counted RAW HITS (23) while dimension_count counted
@@ -6000,6 +6056,42 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                 primary = row["attached_kinds"][0] if row["attached_kinds"] else "none"
                 by_primary[primary] = by_primary.get(primary, 0) + 1
                 if not types:
+                    # Before calling this an orphan, check whether the dimension has a
+                    # plausible reason to be unattached:
+                    #   * diameter/radius dimensions (type 5) are frequently model-item
+                    #     imports whose attachment the API does not report;
+                    #   * a REFERENCE dimension constrains nothing by definition, so
+                    #     "unattached" is expected rather than a defect.
+                    # Only the remaining ones are counted as orphans; the rest carry
+                    # `unattached_but_plausible` so the distinction is visible instead of
+                    # being folded into one number.
+                    plausible = None
+                    if dim_type == 5:
+                        plausible = "diameter_or_radius"
+                    elif row.get("is_reference") is True:
+                        plausible = "reference_dimension"
+                    else:
+                        # A linear dimension whose value equals the view's own width or
+                        # height is the overall size — it necessarily points at the outer
+                        # geometry, and model-item imports of it report no attachments on
+                        # this build (measured: 65 mm overall height on a 65 mm tall view).
+                        # Matching the OUTLINE, not the position, is what makes this a
+                        # geometric check rather than a proximity guess — proximity was
+                        # tried before and excused 15 genuine orphans.
+                        value = row.get("value_mm")
+                        if value:
+                            try:
+                                box = precise_outline(view)
+                            except Exception:
+                                box = None
+                            if box:
+                                extent_w = (box[2] - box[0]) * 1000.0
+                                extent_h = (box[3] - box[1]) * 1000.0
+                                if (abs(value - extent_w) <= 0.1
+                                        or abs(value - extent_h) <= 0.1):
+                                    plausible = "matches_view_extent"
+                    if plausible:
+                        row["unattached_but_plausible"] = plausible
                     # `GetAttachedEntities2` is empty; whether that means "loose" or just
                     # "moved with SetPosition" cannot be decided from the position alone.
                     # Record the proximity observation, do not treat it as a clearance.
@@ -6024,10 +6116,22 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                     # same receipt still said "23 个尺寸均已关联". Report the observation for
                     # what it is and leave the verdict alone.
                     row["orphan_near_view"] = near_leader
-                    orphans.append({"view": view.Name, "name": row["name"],
-                                    "value_mm": row.get("value_mm"),
-                                    "position_m": position,
-                                    "orphan_near_view": near_leader})
+                    # A dimension with a plausible reason to be unattached is reported in
+                    # `unattached_plausible`, not in `orphans`. The two numbers answer
+                    # different questions and were previously the same number, which is why
+                    # a fillet radius read as a broken dimension.
+                    if plausible:
+                        unattached_plausible.append({
+                            "view": view.Name, "name": row["name"],
+                            "value_mm": row.get("value_mm"),
+                            "dimension_type": dim_type,
+                            "reason": plausible})
+                    else:
+                        orphans.append({"view": view.Name, "name": row["name"],
+                                        "value_mm": row.get("value_mm"),
+                                        "position_m": position,
+                                        "dimension_type": dim_type,
+                                        "orphan_near_view": near_leader})
                 rows.append(row)
 
         total = len(rows)
@@ -6038,6 +6142,8 @@ def verify_dimension_attachments(drawing_path, view_name=None):
             dimensions_by_primary_attachment=by_primary,
             orphan_count=len(orphans),
             orphans=orphans,
+            unattached_plausible=unattached_plausible,
+            unattached_plausible_count=len(unattached_plausible),
             unique_dimension_count=len(rows),
             raw_hits=raw_hits,
             duplicates_skipped=duplicates_skipped,
