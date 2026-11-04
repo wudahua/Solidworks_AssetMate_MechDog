@@ -3640,6 +3640,42 @@ def assert_gap_matcher_converts_units():
     assert "list_circular_edges" in body, (
         "circle centres dropped out of the candidate points — hole pitches cannot match")
     return "sheet metres converted to mm; circle centres remain in the candidate set"
+def assert_datum_and_move_report_placement():
+    """0.8.129 — placement must be checkable without rendering a PDF.
+
+    Report 2026-11-04 P1-4 had two halves and both were about SILENT PLACEMENT:
+
+      * `add_datum_feature` put the actual landing point only inside
+        `readback.position_m`, so a caller looking for a top-level field concluded the tool
+        reported nothing. Measured on 旋转轴: requested [0.2, 0.06], actual
+        [0.0243, 0.1019] — 175 mm away — and nothing said so.
+      * `move_annotation` tested `applied = after != before`. A datum tag that moved in X
+        only still satisfies that, so `applied: true` shipped a tag sitting on a dimension.
+
+    Both now answer "is it where I asked" per axis, and `applied` means fully placed.
+    """
+    drawing_src = _read("tools/drawing.py")
+    layout_src = _read("tools/layout.py")
+
+    datum = ast.get_source_segment(
+        drawing_src, _function_node(ast.parse(drawing_src), "add_datum_feature")) or ""
+    for field in ("position_requested_m", "position_actual_m", "position_honoured"):
+        assert field in datum, "add_datum_feature does not report %s" % field
+
+    move = ast.get_source_segment(
+        layout_src, _function_node(ast.parse(layout_src), "move_annotation")) or ""
+    assert "axis_honoured" in move, (
+        "move_annotation collapsed both axes into one flag again")
+    assert "blocked_axes" in move, "move_annotation does not name the ignored axis"
+    assert "after != before" in move, (
+        "the raw movement test is gone — check that applied still requires actual movement")
+
+    caps = _read("tools/capabilities.py")
+    assert "符号为文字" not in caps, (
+        "capabilities still claims GTOL symbols are text; the 2022+ path writes real glyphs")
+    assert "IGTOL-PERP" in caps or "symbol_is_text: false" in caps, (
+        "the capability entry does not cite the measured native-symbol evidence")
+    return "datum + move report per-axis placement; GTOL capability text matches reality"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3763,6 +3799,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.129 placement is reported", assert_datum_and_move_report_placement),
     ("0.8.128 gap matcher units", assert_gap_matcher_converts_units),
     ("0.8.126 title block guards None", assert_title_block_guards_none_position),
     ("0.8.126 bilateral lower is negative", assert_bilateral_lower_is_negative),

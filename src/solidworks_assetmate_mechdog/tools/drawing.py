@@ -7424,7 +7424,36 @@ def add_datum_feature(drawing_path, view_name=None, edge_index=None, label="A",
                          "requested label %r but the tag reads %r"
                          % (label, readback.get("label")),
                          "Read-back is the only proof on this build.", **readback)
+
+        # Report 2026-11-04 P1-4: the actual landing point existed only inside
+        # `readback.position_m`, so a caller looking for a top-level field concluded the tool
+        # reported nothing and could only judge placement by rendering a PDF. Hoist it, and
+        # say plainly when the requested coordinate was NOT honoured — the datum is attached
+        # to an edge, so SolidWorks may place the tag itself and ignore SetPosition.
+        position_requested = None
+        if x_m is not None and y_m is not None:
+            position_requested = [round(float(x_m), 4), round(float(y_m), 4)]
+        position_actual = readback.get("position_m")
+        position_delta = None
+        position_honoured = None
+        if position_requested and position_actual:
+            dx = abs(position_actual[0] - position_requested[0])
+            dy = abs(position_actual[1] - position_requested[1])
+            position_delta = [round(dx, 4), round(dy, 4)]
+            # 1 mm is generous on purpose: the tag's anchor is not its text centre, so a
+            # small offset is expected and should not read as a failure.
+            position_honoured = bool(dx <= 0.001 and dy <= 0.001)
+        warning = None
+        if position_requested and position_honoured is False:
+            warning = ("请求的落点 %r 未被采纳，实际落在 %r。基准符号由所选边推导锚点，"
+                       "坐标只是建议值；换一条边重试，或按实际落点调整其它标注。"
+                       % (position_requested, position_actual))
         return drawing_ok(drawing=doc.GetTitle, attached_to="%s[%d]" % (target.Name, edge_index),
+                          position_requested_m=position_requested,
+                          position_actual_m=position_actual,
+                          position_delta_m=position_delta,
+                          position_honoured=position_honoured,
+                          warning=warning,
                           readback=readback)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -7708,9 +7737,10 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                   "先转换后写值，值只存在于 XML，图面不显示。"
                   "符号名两处写法不同：旧 API 带尖括号 <IGTOL-POSI>，XML 里不带。"
                   "形位公差是原生对象，可用 list_drawing_annotations 读出（kind="
-                  "geometric_tolerance）。0.8.20：符号格以可读文字写入第一格并回读校验"
-                  "（<MOD-*> 格式码在本环境只会被当字面文本，不解析成几何符号）；"
-                  "写入不生效会删除框格并返回 gtol_symbol_not_applied。"
+                  "geometric_tolerance）。符号走 2022+ 原生路径：symbol='position' 等英文名"
+                  "经 _GD_T_SYMBOL_NAMES 映射到 IGTOL-*，回执 symbol_is_text=false 且"
+                  "PDF 渲染为真实几何符号（2026-11-04 复测，旧版本文档说的「符号是文字」"
+                  "已过期）。<MOD-*> 格式码只在旧路径上会被当字面文本，故不再使用。"
                   "symbol=none 时不写符号，只有公差值与基准。"),
         )
     except (FileNotFoundError, ValueError) as exc:

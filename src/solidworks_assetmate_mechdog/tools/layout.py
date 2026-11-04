@@ -1522,9 +1522,35 @@ def move_annotation(drawing_path, name, x_m, y_m, save=True, position_m=None):
             pass
         if save:
             _save_drawing(doc)
+        # Report 2026-11-04 P1-4: a datum tag accepted only the X part of a move and the
+        # receipt still said `applied: true`, because the test was `after != before` — the
+        # annotation HAD moved (in X), so the flag was technically true and practically
+        # useless. A caller reading `applied` concluded both axes landed and shipped a tag
+        # sitting on top of a dimension.
+        #
+        # `applied` now means "the annotation is where you asked", which is what callers
+        # actually mean. The per-axis detail says which half was ignored.
+        requested = [round(float(x_m), 4), round(float(y_m), 4)]
+        axis_honoured = None
+        blocked_axes = []
+        if after and len(after) >= 2:
+            dx = abs(after[0] - requested[0])
+            dy = abs(after[1] - requested[1])
+            # 1 mm: the annotation's anchor is not its text centre, so a sub-millimetre
+            # residual is expected and is not a refusal.
+            axis_honoured = {"x": dx <= 0.001, "y": dy <= 0.001}
+            blocked_axes = [axis for axis in ("x", "y") if not axis_honoured[axis]]
+        applied = bool(after != before) and not blocked_axes if after else (after != before)
+        warning = None
+        if blocked_axes:
+            warning = ("请求 %r，实际 %r — %s 方向未被采纳（基准/尺寸标签的锚点可能被几何"
+                       "约束）。`applied` 只在两个方向都落地时才为 true。"
+                       % (requested, after, "/".join(blocked_axes)))
         return drawing_ok(moved=name, position_before_m=before, position_after_m=after,
-                          requested=[round(float(x_m), 4), round(float(y_m), 4)],
-                          applied=after != before, saved=bool(save))
+                          requested=requested,
+                          axis_honoured=axis_honoured,
+                          blocked_axes=blocked_axes,
+                          applied=applied, saved=bool(save), warning=warning)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

@@ -342,21 +342,28 @@ CAPABILITIES = [
     },
     {
         "id": "geometric_tolerance",
-        "status": "partial",
-        "summary": "形位公差框格（符号为文字）",
-        "why": ("**可以做**（2026-10-28 突破）。此前判定「不可创建」是调用方式错误："
-                "pywin32 把 InsertGtol 当作属性派发（PROPERTYGET），必然报 "
-                "DISP_E_MEMBERNOTFOUND，改用 DISPATCH_METHOD 即可拿到 Gtol 对象，"
-                "SetFrameValues2 写入公差与基准并回读确认。"
-                "0.8.20：符号格改用**可读文字**（位置度/平面度…）写入第一格，"
-                "再用 GetFrameSymbols2 回读校验；`<MOD-*-PAR>` 格式码实测只会被存成"
-                "字面文本、不解析成几何符号，故已弃用。写入不生效会删除框格并返回 "
-                "`gtol_symbol_not_applied`，不再谎报符号已标注。"),
-        "workaround": ("符号是文字不是真正的 GD&T 几何符号，出正式图纸请在界面替换；"
-                       "或用 symbol='none' 只写公差值与基准"),
-        "evidence": ("2026-10-28 实测 door.SLDPRT：2 个框格 frame1 回读正确；"
-                     "2026-10-31 实测 GetFrameSymbols2 回读 ('位置度','','','','','')，"
-                     "SetFrameSymbols2 返回 None 必须以回读判定"),
+        "status": "verified",
+        "summary": "形位公差框格（原生 GD&T 符号，位置可控）",
+        "why": ("**可以做，而且是原生符号**。两个历史结论都已过期，写在这里免得有人"
+                "照着旧文档直接放弃这项能力：\n"
+                "1) 「不可创建」是调用方式错误——pywin32 把 InsertGtol 当属性派发"
+                "（PROPERTYGET）必然报 DISP_E_MEMBERNOTFOUND，改用 DISPATCH_METHOD "
+                "即可拿到 Gtol 对象。\n"
+                "2) 0.8.20 曾把符号格写成**可读文字**（因为 `<MOD-*-PAR>` 格式码在旧路径"
+                "上只被当字面文本）。**2026-11-04 在 0.8.124 + SW32.4.0 上复测：** "
+                "`symbol='position'/'perpendicularity'/...` 走 2022+ 原生路径，回执为 "
+                "`symbol_written: 'IGTOL-PERP'`、`symbol_is_text: false`、"
+                "`symbol_render_verified: true`、`gtol_text_count: 0`，PDF 渲染出来是"
+                "真正的 ⊥ / ⌖ / ▱ 几何符号。\n"
+                "框格坐标 `x/y` 也被如实采纳（`position_set: true`），可以精确摆放。\n"
+                "**仍然受限的是基准符号**，不是框格：`add_datum_feature` 的落点由所选边"
+                "推导，传入坐标被忽略，详见 `datum_feature`。"),
+        "workaround": ("框格可直接用于正式图纸。若需要基准符号落在指定位置，"
+                       "用 `add_datum_feature` 选边后回读 `position_actual_m` 判断落点，"
+                       "不合适就换一条边重试（或用 add_note 手工标，但那就不是原生基准了）"),
+        "evidence": ("2026-11-04 实测 接槽.SLDPRT（v0.8.124）：三处框格 ▱0.1 / ⊥0.1 A / "
+                     "⌖0.2 A B 在 PDF 里是真符号，symbol_is_text=false；"
+                     "2026-10-28 实测 door.SLDPRT frame1 回读正确"),
     },
     {
         "id": "surface_finish",
