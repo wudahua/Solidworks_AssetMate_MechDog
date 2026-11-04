@@ -275,7 +275,17 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
     if not path.lower().endswith((".sldprt", ".sldasm")):
         return error("bad_input", "Expected a .SLDPRT/.SLDASM, got %s" % os.path.basename(path))
 
-    model = open_document(path)  # type inferred from extension: assemblies failed here
+    # 0.8.118: this call sat OUTSIDE the try below, so a failed open raised straight out
+    # of an MCP tool. Callers got an uncaught RuntimeError instead of the structured error
+    # every other path returns. The case that exposed it is the same-name conflict, where
+    # SolidWorks refuses the second file and the message is the only thing explaining why.
+    try:
+        model = open_document(path)  # type inferred from extension: assemblies hit this
+    except Exception as exc:
+        return error(
+            "open_failed", str(exc),
+            "The model could not be opened. A same-named document already open in "
+            "SolidWorks is the most common cause (see docs/com-quirks.md, section 2).")
     try:
         config_name = config
         if not config_name:

@@ -3424,6 +3424,34 @@ def assert_gap_planner_only_fills_unambiguous_gaps():
     assert "if len(matches) == 1" in body, (
         "the single-match rule is gone - ambiguous gaps would be filled by guessing")
     return "only single-match gaps are fillable; ambiguity and missing geometry are reported"
+def assert_ledger_open_failure_is_structured():
+    """0.8.118 — `open_document` sat OUTSIDE build_feature_ledger's try.
+
+    Consequence: a failed open raised straight out of the MCP tool. Every other failure path
+    in this package returns `{"ok": false, "error": ..., "message": ...}`, so a caller had no
+    uniform way to handle it — and an uncaught exception from a tool surfaces to the agent as
+    a crash, not as a result it can react to.
+
+    Found by tests/test_save_paths.py, case "same name conflict": SolidWorks refuses to open
+    a second file with the same basename, and the RuntimeError escaped. Before the fix the run
+    ended with `RuntimeError` and no receipt at all; after it the caller gets
+    error=ledger_failed with the full explanation intact.
+
+    The specific message matters here: "same name already open" is the single most common
+    cause (docs/com-quirks.md section 2) and the only thing that tells a user what to close.
+    """
+    src = _read("tools/ledger.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "build_feature_ledger")) or ""
+    assert "open_document" in body, "the open call moved"
+    assert "open_failed" in body, (
+        "a failed open is no longer converted to a structured error")
+    # The call must be inside a try: check that the nearest preceding `try:` is before it.
+    idx = body.find("model = open_document")
+    assert idx > 0, "open call shape changed"
+    before = body[:idx]
+    assert before.rstrip().endswith("try:"), (
+        "open_document is outside its try block again - a failed open will raise")
+    return "a failed open returns a structured error with the conflict reason"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3547,6 +3575,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.118 ledger open is structured", assert_ledger_open_failure_is_structured),
     ("0.8.113 gap planner no guessing", assert_gap_planner_only_fills_unambiguous_gaps),
     ("0.8.112 drawing batch opt-in", assert_drawing_batch_defaults_off_and_restores),
     ("0.8.111 pipeline saves once", assert_pipeline_saves_once),
