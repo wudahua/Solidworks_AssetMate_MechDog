@@ -1,20 +1,59 @@
-# 自造 BOM 夹具：走通了零件，卡在装配体
+# 自造 BOM 夹具：装配体通了，`add_bom_table` 仍然失败
 
-**日期**：2026-11-05
-**目标**：让 `add_bom_table` 的真机用例不再 SKIP 已经 6 轮
+**日期**：2026-11-05（第二轮）
+**状态**：**夹具已能造出来**；`add_bom_table` 在它上面**仍然失败**，原因未定
 
-## 为什么值得做
+## 一、突破了什么
 
-`add_bom_table` 是**唯一出过「签名断链、100% 必炸」事故的工具**（v0.8.2）。
-那次事故能活到发布，正是因为它的真机用例一直是 SKIP（夹具 `SAB1_0000_000.SLDASM`
-在 `测试用例/`，而该目录整树 gitignore）。修好之后**用例还是 SKIP** ——
-等于修完之后仍然没有覆盖。
+`AddComponent5` 一直返回 `False`，`ActivateDoc3` / `ActivateDoc2` 报「类型不匹配」。
+试过路径、两种配置选项、`InsertComponent`（方法根本不存在）。
 
-## 走通的部分（已验证）
+**真正的原因是两个，都不是参数**：
+
+### ① 零件必须先 `OpenDoc`，再传**文档标题**
+
+```python
+pa = sw.OpenDoc(path_a, 1)                      # 必须先打开
+asm = sw.NewDocument(TPL_ASM, 0, 0, 0)
+sw.ActivateDoc(asm.GetTitle)                    # 旧版 ActivateDoc，不要 ActivateDoc2/3
+act.AddComponent5(pa.GetTitle, 0, "", False, "", 0, 0, 0)   # ← 标题，不是路径
+```
+
+- 传**路径** → `False`
+- 传**已打开文档的标题** → `True`，组件数 +1
+
+实测：
+
+```
+add block_a.SLDPRT -> True
+add block_b.SLDPRT -> True
+comps: 2 | saved: True
+```
+
+### ② `ActivateDoc2` / `ActivateDoc3` 在 pywin32 上类型不匹配
+
+```
+ActivateDoc    -> True
+ActivateDoc2   -> ERR (-2147352571, '类型不匹配。', None, 3)
+ActivateDoc3   -> ERR (-2147352571, '类型不匹配。', None, 4)
+```
+
+参数里需要 `VARIANT`（`Errors`/`Warnings` 之类），`None` 不行。
+**直接用旧版 `ActivateDoc(title)`** 就够了。
+
+### ③ `EditRebuild3` 在这个绑定上是属性
+
+```python
+act.EditRebuild3()      # TypeError: 'bool' object is not callable
+```
+
+去掉括号即可。`com-quirks.md` 已记过同类陷阱。
+
+## 二、零件构建（同样已验证）
 
 ```python
 TPL_PART = r'C:\ProgramData\SOLIDWORKS\SOLIDWORKS 2024\templates\gb_part.prtdot'
-NULL = sw_session.byref_dispatch_null()      # ← 关键
+NULL = sw_session.byref_dispatch_null()      # ← Callout 必须是 byref dispatch
 
 doc = sw.NewDocument(TPL_PART, 0, 0, 0)
 doc.Extension.SelectByID2("前视基准面", "PLANE", 0, 0, 0, False, 0, NULL, 0)
@@ -28,60 +67,57 @@ doc.FeatureManager.FeatureExtrusion2(
 doc.SaveAs(path)
 ```
 
-实测结果（两个不同尺寸的方块）：
-
 ```
 part A: plane=True  extrude=True  bodies=1 saved=True
 part B: plane=True  extrude=True  bodies=1 saved=True
 ```
 
-**两个零件都能正常运行。**
+**模板路径不能靠 `GetUserPreferenceStringValue(196/197/198)`** —— 本机三个全返回空字符串，
+必须自己找 `.prtdot` / `.asmdot`。
 
-### 两个坑（都已解决，值得记）
+## 三、现在卡在哪
 
-1. **模板路径**：`GetUserPreferenceStringValue(196/197/198)` 在本机**全返回空字符串** ——
-   默认模板没设。必须自己找 `.prtdot`（本机在
-   `C:\ProgramData\SOLIDWORKS\SOLIDWORKS 2024\templates\gb_part.prtdot`）。
-2. **`SelectByID2` 的 Callout 参数**：传 `None` 抛「类型不匹配」。
-   必须用项目里的 `sw_session.byref_dispatch_null()`（`VT_BYREF | VT_DISPATCH`）——
-   这个坑 `docs/com-quirks.md` 第三节早就写了，我照抄了文档才没再踩第二次。
+夹具齐了，链路走到最后一步：
 
-## 卡住的部分
+```
+comps: 2 | saved: True
+drawing ok=True | views: 1（工程图视图1，非空）
+bom ok=False
+```
 
-装配体里插零件，试了三条路都不通：
+```
+error: bom_table_failed
+message: InsertBomTable4(Indented) returned None [sw_version=32.4.0]
+```
 
-| 调用 | 结果 |
-|---|---|
-| `asm.AddComponent5(path, 0, "", False, "", 0, 0, 0)` | 返回 **False**，`GetComponents` = 0 |
-| `asm.AddComponent(path, 0, 0, 0)` | 未走到（上一条没抛异常，只是返回 False） |
-| `asm.ActivateDoc3(title, False, 0, 0)` | **类型不匹配**（参数类型问题） |
-| `asm.InsertComponent(doc)` | 未测到（卡在 ActivateDoc3） |
+**`sw_version = 32.4.0` 就是 SW2024 SP4** —— 也就是能力表里写着「仅 SW2024 SP4 验证」的那个版本。
+**所以这不是"版本不对"**，而是别的原因。
 
-`NewDocument(TPL_ASM)` 本身是成功的（拿到「装配体1」），`SaveAs` 也成功 ——
-**卡在"往装配体里放组件"这一步**。
+## 四、下一步查什么
 
-## 下一步怎么试（按可能性排序）
+1. **装配体是否需要在保存前 `Rebuild`** —— 我只 `SaveAs` 了，没重建过。视图能看到两个零件
+   （`views: 1` 非空），但 BOM 读的是配置/属性树，可能需要一次真实重建。
+2. **`InsertBomTable4` 的第一个参数** —— 代码传的是 `Indented`；能力表提到
+   「两步法：Indented → TopLevelOnly」。也许 `Indented` 在**没有子装配**时会返回 None，
+   应该先试 `TopLevelOnly`。
+3. **视图的 `ReferencedConfiguration`** —— 若为空，BOM 可能拿不到配置名。
+4. **零件是否需要 `Description` / `PartNumber` 自定义属性** —— 空属性可能让行生成为 0，
+   但那应该返回一个空表而不是 None。
 
-1. **`IAssemblyDoc.AddComponent5` 的 `ConfigOption` 不是 `0`** —— 查 `swAddComponentConfigOptions_e`，
-   可能应该传 `1`（`swAddComponentConfigOptions_CurrentSelectedConfig`）而不是 `0`。
-2. **先 `ActivateDoc`（旧版，非 `ActivateDoc3`）** —— `ActivateDoc3` 的第二个参数可能需要
-   `VARIANT`，试 `sw.ActivateDoc(title)`。
-3. **用 `InsertComponent` 但先 `SelectByID2` 一个基准面** —— 有些版本要求有插入点。
-4. **完全换路子**：`sw.OpenDoc` 打开一个**已有的最小装配体**（项目 `测试用例/` 里有 140 个
-   `.SLDASM`，虽然 gitignore，但**作者本机有**），在测试里断言「本机存在则用、不存在则 SKIP」——
-   **但这只解决作者本机，不解决发布包**，等于没修。
+## 五、为什么还没写进 smoke
 
-## 为什么没有强行写进 smoke
+**夹具已经能造出来了，但 BOM 用例现在会 FAIL。**
 
-写一半进主线的代价：**多一条可能自身就坏的用例**。
-`_bom_table` 现在的 SKIP 是**诚实的**（`FixtureMissing` + 说明），
-换成一条"造夹具也造不出来"的 FAIL 会更糟。
+写进 smoke 的后果：`add_bom_table (native, populated)` 从 SKIP 变成 **FAIL**，
+而 **FAIL 的真实含义（"工具在这个装配体上确实不行"还是"夹具缺了某个前置"）还没查清**。
 
-**零件构建部分可以随时捡起来用** —— 它在上面，已验证。
-剩下的只有「装配体插组件」一步。
+**在查清之前写进去，等于用一个不确定的红换掉一个诚实的灰。**
 
-## 相关
+先把夹具构建能力记在这里：**它已经可用**，上面三段代码可以直接搬进 smoke，
+剩下的只是 BOM 那一步。
 
-- `tests/smoke.py:529` `_bom_table` 的夹具查找
-- `tests/_fixtures.py` 夹具解析（0.8.158 加的）
-- `docs/com-quirks.md` 第三节 `SelectByID2` 的 Callout 坑
+## 六、相关
+
+- `tests/smoke.py:529` `_bom_table`
+- `docs/com-quirks.md` 第三节（`SelectByID2` 的 Callout）
+- `src/.../tools/capabilities.py` `bom_table` 条目（「仅 SW2024 SP4 验证」）
