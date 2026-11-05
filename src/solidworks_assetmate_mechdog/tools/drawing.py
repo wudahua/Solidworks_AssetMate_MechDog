@@ -963,6 +963,29 @@ def create_drawing(
             lightweight_resolve_attempted=is_assembly,
             lightweight_unresolved=lightweight_unresolved,
         )
+        # Report 2026-11-05 (P1): v0.8.90 moved the path guard BEFORE `_new_document()`, so
+        # the common "target already open" case no longer leaks. But three blockers remain
+        # AFTER the document is created — a second path_locked guard, `saveas_failed`, and
+        # `save_not_written` — and they did:
+        #
+        #     result.update(saved=False, ...)
+        #     return ok(**result)          # top-level ok True, document never closed
+        #
+        # Measured by pointing the output at a directory: `ok=True, saved=False,
+        # save_error=save_not_written`, docs 35 -> 37 — a blank drawing left open at an
+        # EMPTY path (invisible to both cleanup passes) plus its locked source part.
+        #
+        # A tool whose top-level `ok` is true while `saved` is false is the same lie the
+        # rest of this project spent the day removing. If the file was not written, the
+        # call failed, and whatever was created for it must not survive.
+        if blocker:
+            try:
+                sw.CloseDoc(drw.GetTitle)
+            except Exception:
+                pass
+            return error(blocker[0], blocker[1],
+                         "The drawing document was closed; nothing was written to %s."
+                         % out, **result)
         return ok(**result)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

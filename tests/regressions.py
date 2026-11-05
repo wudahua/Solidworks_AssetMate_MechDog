@@ -5038,6 +5038,49 @@ def assert_test_fixtures_are_reachable_from_a_release():
     return "no test builds a path into the gitignored fixture tree"
 
 
+def assert_a_failed_save_cannot_report_ok():
+    """0.8.159 — `ok: true` next to `saved: false`, and a blank sheet left behind.
+
+    Report 2026-11-05 (P1): v0.8.90 moved the path guard before `_new_document()`, so the
+    common "target already open" case stopped leaking. Three blockers still sit AFTER the
+    document exists — a second path_locked guard, `saveas_failed`, and `save_not_written` —
+    and all three did:
+
+        result.update(saved=False, save_error=..., save_reason=...)
+        return ok(**result)
+
+    Top-level `ok` stayed True and nothing called `CloseDoc`. Measured by making the output
+    path a directory (so SaveAs cannot possibly write it):
+
+        before: ok=True  saved=False  save_error=save_not_written  docs 35 -> 37
+        after : ok=False error=save_not_written  docs unchanged except the source part
+
+    Two documents leaked per failed call — a blank drawing at an EMPTY path (which both
+    cleanup passes miss, because they match on directory) plus the source part it locked.
+
+    The invariant this asserts is the one the whole day was about: **a tool may not report
+    success for work it did not do**. `ok` and `saved=False` must not coexist, and anything
+    created for a write that failed must be closed.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "create_drawing")) or ""
+
+    assert "if blocker:" in body, "the blocker branch is gone"
+    # There are TWO blocker branches: the pre-create guard (fixed in v0.8.90) and the
+    # post-create one this is about. `find` lands on the first, which legitimately has no
+    # CloseDoc — take the last.
+    start = body.rfind("if blocker:")
+    # Wide enough to reach the CloseDoc + return error past the long error() argument list.
+    segment = body[start:start + 2500]
+    assert "sw.CloseDoc" in segment, (
+        "a failed save leaves the drawing open — it leaked two documents per call")
+    assert "return error(" in segment, (
+        "a failed save still returns ok — `ok: true` beside `saved: false` is the lie this "
+        "project spent the day removing")
+    return "a failed save closes the document and reports failure"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5186,6 +5229,7 @@ STATIC_REGRESSIONS = [
     ("0.8.156 gap statuses agree", assert_gap_status_enum_is_the_same_in_every_consumer),
     ("0.8.157 shaft views keep a bar", assert_shaft_default_views_keep_a_long_bar),
     ("0.8.158 fixtures reachable", assert_test_fixtures_are_reachable_from_a_release),
+    ("0.8.159 failed save cannot report ok", assert_a_failed_save_cannot_report_ok),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
