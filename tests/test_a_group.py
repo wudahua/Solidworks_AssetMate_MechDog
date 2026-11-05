@@ -28,7 +28,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from solidworks_assetmate_mechdog.tools import drawing, layout, pipeline   # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-SRC = os.path.join(ROOT, "测试用例", "旋转轴-工程图", "旋转轴.SLDPRT")
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _fixtures import FixtureMissing, resolve_part, exit_missing      # noqa: E402
+
+try:
+    SRC = resolve_part(script="tests/test_a_group.py")
+except FixtureMissing as _exc:
+    exit_missing(_exc)
 
 results = []
 

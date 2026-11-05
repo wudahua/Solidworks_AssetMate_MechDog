@@ -27,8 +27,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from solidworks_assetmate_mechdog.sw_session import get_sw              # noqa: E402
 from solidworks_assetmate_mechdog.tools import drawing, pipeline        # noqa: E402
 
-SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                   "测试用例", "旋转轴-工程图", "旋转轴.SLDPRT")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _fixtures import FixtureMissing, resolve_part, exit_missing      # noqa: E402
+
+try:
+    SRC = resolve_part(script="tests/test_save_paths.py")
+except FixtureMissing as _exc:
+    exit_missing(_exc)
 
 results = []
 

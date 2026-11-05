@@ -4981,6 +4981,63 @@ def assert_shaft_default_views_keep_a_long_bar():
     return "shaft defaults keep a view that can carry axial dimensions"
 
 
+def assert_test_fixtures_are_reachable_from_a_release():
+    """0.8.158 — the new A/B/C test groups scored 0/7 on a clean install.
+
+    Report 2026-11-05 (P1): three files hardcoded
+
+        ROOT / "测试用例" / "旋转轴-工程图" / "旋转轴.SLDPRT"
+
+    while `.gitignore` says, with a comment explaining the intent:
+
+        # Whole tree on purpose: nothing under 测试用例/ belongs in the package.
+        测试用例/
+
+    A release tarball therefore never contains that part. Measured on a clean install:
+    four cases raised `FileNotFoundError` before their first assertion, one module crashed
+    during import, and **none of the seven said why**.
+
+    This is the second time. v0.8.24 reported smoke pointing at a gitignored fixture; that
+    was fixed with `FixtureMissing` plus guidance, and three new files then repeated it.
+    The fix is a shared `tests/_fixtures.resolve_part()` — `--part` override, actionable
+    message, exit 2 (skipped, not failed) — so there is one implementation to drift.
+
+    This assertion is the part that makes it stick: any test file that mentions the
+    gitignored tree must go through the resolver. Without it the next new test can hardcode
+    the path again and pass locally, which is exactly how this happened.
+    """
+    tests_dir = os.path.join(ROOT, "tests")
+    offenders = []
+
+    for name in sorted(os.listdir(tests_dir)):
+        if not name.endswith(".py") or name in ("_fixtures.py", "regressions.py",
+                                                "check_all.py", "static_check.py"):
+            continue
+        path = os.path.join(tests_dir, name)
+        src = open(path, encoding="utf-8").read()
+        if "测试用例" not in src:
+            continue
+        # Mentioning the tree is fine (docs, messages); BUILDING a path from it is not.
+        if 'os.path.join(' in src and '"测试用例"' in src:
+            # Going through the shared resolver is the new path;  is the
+            # older equivalent (smoke.py, fixed in v0.8.24). Either counts as handled —
+            # what must not happen is a bare path with no fallback at all.
+            if "_fixtures" not in src and "FixtureMissing" not in src:
+                offenders.append(name)
+
+    assert not offenders, (
+        "these test files build a path into the gitignored 测试用例/ tree without going "
+        "through tests/_fixtures.resolve_part(): %s — on a release install their fixtures "
+        "do not exist and every case fails before it starts" % ", ".join(offenders))
+
+    # The resolver itself must offer the override and the guidance.
+    resolver = open(os.path.join(tests_dir, "_fixtures.py"), encoding="utf-8").read()
+    assert "--part" in resolver, "the resolver has no --part override"
+    assert "SystemExit(2)" in resolver, (
+        "a missing fixture must exit 2 (skipped), not 1 (failed)")
+    return "no test builds a path into the gitignored fixture tree"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5128,6 +5185,7 @@ STATIC_REGRESSIONS = [
     ("0.8.156 applied values are checked", assert_applied_dimensions_are_checked_against_what_was_drawn),
     ("0.8.156 gap statuses agree", assert_gap_status_enum_is_the_same_in_every_consumer),
     ("0.8.157 shaft views keep a bar", assert_shaft_default_views_keep_a_long_bar),
+    ("0.8.158 fixtures reachable", assert_test_fixtures_are_reachable_from_a_release),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

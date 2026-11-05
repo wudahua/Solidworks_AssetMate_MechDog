@@ -35,8 +35,13 @@ SW_INPUT_DIMVAL_ON_CREATE = 10
 SW_DRAWING_AUTOMATIC_VIEW_UPDATE = 90
 SW_DETAILING_NO_OPTION = 0
 
-SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                   "测试用例", "旋转轴-工程图", "旋转轴.SLDPRT")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _fixtures import FixtureMissing, resolve_part, exit_missing      # noqa: E402
+
+try:
+    SRC = resolve_part(script="tests/test_rollback.py")
+except FixtureMissing as _exc:
+    exit_missing(_exc)
 
 #: Which payload step each injected stage corresponds to, so a stage that never runs can be
 #: reported as skipped instead of silently passing.
