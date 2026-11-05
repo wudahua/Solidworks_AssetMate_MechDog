@@ -3994,6 +3994,41 @@ def assert_ledger_dedupes_by_full_name():
     return "ledger is one row per full_name; multi-owner features preserved"
 
 
+def assert_pipeline_closes_what_it_opened():
+    """0.8.138 — the pipeline left its documents open, poisoning the NEXT run.
+
+    Old backlog item, promoted because it is not cosmetic: every `produce_drawing` left both
+    the part and the drawing open, so the run deposited a `~$*.SLDDRW` lock file and the next
+    run could not open the same name — `OpenDoc6 returned null with errors=65536`. That is
+    exactly the error that failed a smoke item on 2026-11-04, and a reader would have blamed
+    the part.
+
+    Measured after the fix: two consecutive runs on the same output path both return ok, both
+    report two closed documents, and the directory holds no `~$` files.
+
+    Closing is the right default for a tool. `close_when_done=False` keeps them for
+    inspection; `close_document` matches on the exact path, so a document the caller already
+    had open is not touched.
+    """
+    src = _read("tools/pipeline.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "produce_drawing")
+    assert fn is not None, "produce_drawing is gone"
+    args = [a.arg for a in fn.args.args] + [a.arg for a in fn.args.kwonlyargs]
+    assert "close_when_done" in args, "the pipeline has no way to keep documents open"
+    assert "close_when_done=True" in (ast.get_source_segment(src, fn) or ""), (
+        "closing is not the default — the lock files will come back")
+
+    body = ast.get_source_segment(src, fn) or ""
+    assert "close_document" in body, "the pipeline does not close anything"
+    assert "documents_closed" in body, "the receipt does not say what was closed"
+
+    # Both exits must close: a failed run leaves the same locks as a successful one.
+    assert body.count("documents_closed=closed") >= 2, (
+        "only one exit closes — the failure path still leaks a lock file")
+    return "pipeline closes both documents on success and on failure"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4119,6 +4154,7 @@ STATIC_REGRESSIONS = [
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
     ("0.8.137 version strings agree", assert_version_strings_agree),
+    ("0.8.138 pipeline closes documents", assert_pipeline_closes_what_it_opened),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

@@ -82,7 +82,7 @@ def _callout_warning(callouts):
 def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     category=None, do_hole_callouts=None, do_surface_finish=None,
                     do_derived_check=True, hole_budget_s=45.0, prune_to_plan=True,
-                    overwrite=False, projection="first"):
+                    overwrite=False, projection="first", close_when_done=True):
     """Run the whole chain and report each step plus the delivery verdict.
 
     Steps (each failure is recorded, not fatal — a partial drawing beats no drawing):
@@ -314,11 +314,32 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     _CRITICAL = ("create_drawing", "dimensions", "save")
     _failed_critical = [st["step"] for st in steps
                         if st["step"] in _CRITICAL and not st["ok"]]
+    # Close what this run opened. Report 2026-11-05 (old backlog): the pipeline left the part
+    # and the drawing open, so every run deposited a `~$*.SLDDRW` lock file and the NEXT run
+    # could not open the same name — `OpenDoc6 returned null with errors=65536`, the exact
+    # failure that made a smoke item fail on 2026-11-04 and that a reader would have blamed on
+    # the part instead of on the previous run.
+    #
+    # Closing is the correct default for a tool: it should not leave documents behind for the
+    # caller to find and clean up. `close_when_done=False` keeps them open for inspection.
+    # Neither branch touches anything the caller already had open — `close_document` matches
+    # on the exact path this run produced.
+    closed = []
+    if close_when_done:
+        for _doc_path in (target, path):
+            try:
+                _res = drawing_tools.close_document(_doc_path)
+                closed.append({"document": _doc_path, "ok": bool(_res.get("ok", True))})
+            except Exception as exc:
+                closed.append({"document": _doc_path, "ok": False, "error": str(exc)[:80]})
+        record("close_documents", {"ok": True}, "closed %d document(s)" % len(closed))
+
     if _failed_critical:
         return error(
             "critical_step_failed",
             "%s failed; the drawing is not usable" % ", ".join(_failed_critical),
-            "steps: %s" % "; ".join("%s=%s" % (st["step"], st["ok"]) for st in steps))
+            "steps: %s" % "; ".join("%s=%s" % (st["step"], st["ok"]) for st in steps),
+            documents_closed=closed)
 
     return ok(
         model=path,
@@ -333,6 +354,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         warnings=audit.get("warnings"),
         view_count=audit.get("view_count"),
         steps=steps,
+        documents_closed=closed,
         defaults_applied={
             "general_tolerance": defaults["general_tolerance"],
             "roughness": roughness,
