@@ -5976,6 +5976,41 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
 
+        # Overall size (外形尺寸). Report 2026-11-05: the pipeline planned 总长 107 as
+        # `kind: derived`, never inserted it (no driving dimension exists to import), and
+        # `delivery_check` said 待设计审核 with 0 blockers. A shaft drawing with no overall
+        # length cannot be cut — the shop has to add 56+21.5+1.5+1.5+10+17 by hand and hope
+        # it closes.
+        #
+        # This is a PENDING item, not a blocker: a sheet can legitimately omit an overall
+        # dimension when it is implied by a chain that does close, and the check cannot tell
+        # which. Saying it out loud is the value; refusing delivery would be wrong.
+        try:
+            bbox_mm = led.get("bbox_mm") or []
+            extents = [float(v) for v in bbox_mm if v]
+            #  already came from list_drawing_annotations(drawing_path) — the doc
+            # handle is not in scope here, and re-opening it would cost a second COM pass.
+            sheet_vals = [float(a.get("value_mm")) / 1000.0
+                          for a in (anns.get("annotations") or [])
+                          if a.get("kind") == "dimension" and a.get("value_mm")]
+            if extents and sheet_vals:
+                biggest = max(extents)
+                tolerance = max(biggest * 0.01, 0.2)
+                has_overall = any(abs(v * 1000 - biggest) <= tolerance for v in sheet_vals
+                                  if v)
+                record("overall_dimension", has_overall,
+                       ("图上最大尺寸 %.2f mm 对应模型最大外形 %.2f mm"
+                        % (max(sheet_vals) * 1000, biggest)) if has_overall else
+                       ("图上没有任何尺寸接近模型最大外形 %.2f mm（最大只有 %.2f mm）——"
+                        "总长/总宽/总高未标注，车间无法下料。这类外形尺寸是包围盒值，"
+                        "模型里没有驱动尺寸，auto_dimension 插不进去，"
+                        "需用 add_distance_dimension 补。"
+                        % (biggest, max(sheet_vals) * 1000)),
+                       blocking=False, model_max_mm=round(biggest, 2),
+                       sheet_max_mm=round(max(sheet_vals) * 1000, 2))
+        except Exception:
+            pass
+
         # Cosmetic threads (装饰螺纹线) — P0-3 of a 2026-11-03 report: a shaft with a real
         # 10 mm cosmetic thread passed every check, because the thread lives nowhere the
         # ledger looks. Verified on the reporter's own part:

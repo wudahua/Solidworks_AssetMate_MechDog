@@ -4274,6 +4274,58 @@ def assert_docs_numbers_match_the_code():
     return "README tool count and regression count match the code"
 
 
+def assert_derived_dimensions_are_reported_as_unfillable():
+    """0.8.144 — a shaft drawing with no overall length, and every step said ok.
+
+    Report 2026-11-05 (P1): `plan.keep_dimensions` listed 总长 107 as
+    `kind: "derived"` — a bounding-box value with no driving dimension behind it. The plan's
+    own source comment already admits "auto_dimension can never insert them". Measured: 10
+    dimensions reached the sheet, none of them 107, and the axial chain did not close either.
+
+    The receipt said
+
+        "note": "规划已生效：插入后按 keep_dimensions 删除多余尺寸…"
+        "verdict": "待设计审核", "blockers": []
+
+    so the one document a shop would read first claimed the plan had been applied, while the
+    dimension the plan called "any drawing must show this" was absent.
+
+    Two additions, both reporting-only:
+      * `dimension_gap.derived_unfilled` names them and says which tool can still place them
+        (`add_distance_dimension`, which already existed since 0.8.78).
+      * `delivery_check` gains an `overall_dimension` pending item comparing the biggest
+        dimension on the sheet against the model's largest bbox extent. Pending, not
+        blocking: an implicit chain can legitimately omit it, and guessing wrong would
+        refuse a usable drawing.
+    """
+    pipe = _read("tools/pipeline.py")
+    tree = ast.parse(pipe)
+    fn = _function_node(tree, "produce_drawing")
+    assert fn is not None
+    body = ast.get_source_segment(pipe, fn) or ""
+    assert "derived_unfilled" in body, (
+        "the gap receipt does not separate derived entries — the note will claim the whole "
+        "plan took effect again")
+    assert "add_distance_dimension" in body, (
+        "the note does not say how to fill them")
+
+    draw = _read("tools/drawing.py")
+    dtree = ast.parse(draw)
+    dc = _function_node(dtree, "delivery_check")
+    assert dc is not None
+    dbody = ast.get_source_segment(draw, dc) or ""
+    assert '"overall_dimension"' in dbody, (
+        "delivery_check no longer looks for an overall dimension")
+    assert "add_distance_dimension" in dbody, (
+        "the check does not name the tool that can fix it")
+    # Pending, not blocking: refusing delivery over an implied chain would be wrong.
+    marker = dbody.find('"overall_dimension"')
+    segment = dbody[marker:marker + 600]
+    assert "blocking=False" in segment, (
+        "overall_dimension became a blocker — an implied chain can be legitimate")
+    return "derived dimensions are named as unfillable, and the sheet is checked for one"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4406,6 +4458,7 @@ STATIC_REGRESSIONS = [
     ("0.8.142 native callout text is fine", assert_native_callout_text_is_not_called_unresolved),
     ("0.8.143 no refuted claim in docs", assert_no_refuted_claim_is_still_in_the_docs),
     ("0.8.143 doc numbers match code", assert_docs_numbers_match_the_code),
+    ("0.8.144 derived dims reported", assert_derived_dimensions_are_reported_as_unfillable),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

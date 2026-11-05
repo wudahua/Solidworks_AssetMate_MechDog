@@ -413,12 +413,36 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             "planned": keep_dimensions,
             "inserted": (summary or {}).get("dimension"),
             "pruned_to_plan": bool(prune_to_plan),
-            "note": ("规划已生效：插入后按 keep_dimensions 删除多余尺寸，"
-                     if prune_to_plan else
-                     "规划未生效（prune_to_plan=False）：实际导入的是模型全部标记为工程图用的尺寸，"
-                     "需人工删减或按需补标。")
-                    + ("filter 失败/未命中时不会删除，见 dimensions 步骤的 filter_aborted。"
-                       if prune_to_plan else ""),
+            # `kind == "derived"` entries are BOUNDING-BOX values (总长/总宽/总高). There is
+            # no driving dimension behind them in the model, so `auto_dimension` — which
+            # imports model dimensions — can never insert one. Report 2026-11-05: the gap
+            # listed 总长 107 as "外形尺寸，任何图纸都必须标注", not one of them reached the
+            # sheet, and the note still read "规划已生效" while every step said ok. The
+            # drawing therefore had no overall length at all — unusable for cutting stock.
+            #
+            # They are separated out here because the fix is different: they need
+            # `add_distance_dimension` between two edges, not a filter tweak. Saying "the
+            # plan took effect" without that qualifier is the part that misled.
+            "derived_unfilled": [d for d in keep_dimensions
+                                 if str(d.get("kind") or "").lower() == "derived"],
+            "note": (
+                ("规划已生效：插入后按 keep_dimensions 删除多余尺寸，"
+                 if prune_to_plan else
+                 "规划未生效（prune_to_plan=False）：实际导入的是模型全部标记为工程图用的尺寸，"
+                 "需人工删减或按需补标。")
+                + ("filter 失败/未命中时不会删除，见 dimensions 步骤的 filter_aborted。"
+                   if prune_to_plan else "")
+                + ((" 另有 %d 条 derived 项（外形总长/总宽/总高）不在插入路径上——"
+                    "模型里没有对应的驱动尺寸，auto_dimension 插不进去，"
+                    "需用 add_distance_dimension 在两视图边之间补标：%s。"
+                    % (len([d for d in keep_dimensions
+                            if str(d.get("kind") or "").lower() == "derived"]),
+                       "、".join("%s=%s" % (d.get("dimension"), d.get("value_mm"))
+                                for d in keep_dimensions
+                                if str(d.get("kind") or "").lower() == "derived")))
+                   if any(str(d.get("kind") or "").lower() == "derived"
+                          for d in keep_dimensions) else "")
+            ),
         }),
         annotations=summary,
         layout_warnings=layout_warnings,
