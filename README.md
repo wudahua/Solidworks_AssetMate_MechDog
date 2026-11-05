@@ -12,6 +12,9 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 
 差异化不在"会调 API"，而在把 SolidWorks COM 的坑固化进代码与文档 → [docs/com-quirks.md](docs/com-quirks.md)。
 
+最近一轮外部反馈的逐条对照（11 条问题、根因、证据强度、未做的理由）→
+[docs/2026-11-05-feedback-closure.md](docs/2026-11-05-feedback-closure.md)。
+
 ---
 
 ## 实际产出
