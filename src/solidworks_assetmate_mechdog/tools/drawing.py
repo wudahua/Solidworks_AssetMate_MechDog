@@ -7458,7 +7458,8 @@ def _sf_visibility_check(doc, x, y, before_img, after_img):
 @perf_hooks.timed("surface_finish")
 @perf_hooks.timed("dimension_gaps")
 def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
-                        max_candidates_per_gap=3, apply_gaps=False):
+                        max_candidates_per_gap=3, apply_gaps=False,
+                        apply_indices=None, apply_candidate=0):
     """PR4: turn reconcile_ledger's `missing_truly` into actionable edge pairs.
 
     The spec asks for the missing-coverage list FIRST and manual dimensions only for real
@@ -7588,14 +7589,44 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
 
         fillable = [r for r in results if r["status"] == "fillable"]
         applied = []
-        if apply_gaps and fillable:
-            for item in fillable:
-                cand = item["candidates"][0]
+        # Report 2026-11-05: `apply_gaps=True` could only act on `status == "fillable"`,
+        # which requires EXACTLY ONE candidate. The reported part had 7 gaps, all
+        # `ambiguous` with 2-3 candidates each at delta_mm 0.0 — so the tool announced ten
+        # precise edge pairs and then refused to place any of them. "Candidates are right
+        # but nothing gets drawn" is the same dead end the report hit two versions ago.
+        #
+        # `apply_indices` lets the caller pick which gaps to fill (0-based, in `gaps`
+        # order) and `apply_candidate` which candidate to use. That keeps the tool honest —
+        # it still will not GUESS between equally valid pairs — while making the data it
+        # already computed actually usable.
+        _explicit = set()
+        if apply_indices:
+            for _i in apply_indices:
+                try:
+                    _explicit.add(int(_i))
+                except (TypeError, ValueError):
+                    continue
+        _to_apply = []
+        for _idx, item in enumerate(results):
+            if _idx in _explicit:
+                _to_apply.append((_idx, item, int(apply_candidate)))
+            elif apply_gaps and item["status"] == "fillable":
+                _to_apply.append((_idx, item, 0))
+        if _to_apply:
+            for _idx, item, _cand_i in _to_apply:
+                _cands = item.get("candidates") or []
+                if not _cands:
+                    continue
+                cand = _cands[min(max(_cand_i, 0), len(_cands) - 1)]
                 pt = cand["centres"][0]
                 added = add_distance_dimension(
                     drawing_path, cand["edge_a"], cand["edge_b"],
                     x_m=pt[0], y_m=pt[1] - 0.015)
                 applied.append({"value_mm": item["value_mm"],
+                                "gap_index": _idx,
+                                "candidate_index": _cand_i,
+                                "edge_a": cand.get("edge_a"),
+                                "edge_b": cand.get("edge_b"),
                                 "ok": bool(added.get("ok")),
                                 "error": added.get("error"),
                                 "message": (added.get("message") or "")[:160]})
@@ -7609,8 +7640,11 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             fillable=len(fillable),
             ambiguous=sum(1 for r in results if r["status"] == "ambiguous"),
             no_geometry=sum(1 for r in results if r["status"] == "no_geometry"),
-            applied=applied if apply_gaps else [],
-            applied_count=len([a for a in applied if a["ok"]]) if apply_gaps else 0,
+            applied=applied,
+            apply_indices_used=sorted(_explicit),
+            ambiguous_not_applied=[r["value_mm"] for r in results
+                                   if r["status"] == "ambiguous"],
+            applied_count=len([a for a in applied if a["ok"]]),
             gaps=results,
             coverage=rec.get("coverage"),
             note=("apply_gaps=False (default): this is a PLAN. Each gap lists the edge pairs "

@@ -4530,6 +4530,55 @@ def assert_circle_detection_does_not_need_a_vertex():
     return "circle detection is independent of whether a vertex resolved"
 
 
+def assert_gap_planner_can_place_an_ambiguous_gap():
+    """0.8.151 — the planner found the right edge pairs and then refused to use them.
+
+    Report 2026-11-05 (P2-G): 10 gaps, `fillable: 1`, `ambiguous: 6`, and `apply_gaps=True`
+    placed nothing on the ambiguous ones — because `fillable` requires EXACTLY ONE
+    candidate. With two or three equally-closed edge pairs (all `delta_mm: 0.0`) the tool
+    correctly refuses to GUESS, but it also gave the caller no way to say "use the first
+    one". Every run ended in manual work, which is the same dead end the report hit before.
+
+    `apply_indices` + `apply_candidate` are that way: the tool still does not choose, and
+    the caller names the gap. Measured on 接槽:
+
+        apply_indices=[1] -> applied: [{value_mm: 13.0, gap_index: 1, edge_a: 0,
+                                        edge_b: 3, ok: true}]
+
+    Two receipt bugs surfaced while testing this and are fixed here too:
+      * `applied_count` was gated on `apply_gaps`, so an explicit `apply_indices` run
+        reported 0 while the dimension had in fact been added — success that looks exactly
+        like a no-op.
+      * `applied[]` did not say WHICH gap was filled; with 10 gaps and duplicate values
+        that is unreadable.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "plan_dimension_gaps")
+    assert fn is not None
+    args = [a.arg for a in fn.args.args] + [a.arg for a in fn.args.kwonlyargs]
+    assert "apply_indices" in args, (
+        "there is no way to place an ambiguous gap; every run ends in manual work")
+    assert "apply_candidate" in args, (
+        "the caller cannot choose between equally valid candidates")
+
+    body = ast.get_source_segment(src, fn) or ""
+    assert "_explicit" in body and "in _explicit" in body, (
+        "explicit indices are not consulted")
+    assert 'if apply_gaps else 0' not in body.replace("\n", " "), (
+        "applied_count is gated on apply_gaps again — an explicit run will report zero "
+        "successes while adding dimensions")
+    assert '"gap_index"' in body, (
+        "the receipt does not say which gap was filled")
+
+    server = _read("server.py")
+    start = server.find("def plan_dimension_gaps(")
+    block = server[start:server.find(") -> str:", start)]
+    assert "apply_indices" in block, "the MCP wrapper does not expose apply_indices"
+    assert "apply_candidate" in block, "the MCP wrapper does not expose apply_candidate"
+    return "an ambiguous gap can be placed when the caller names it"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4668,6 +4717,7 @@ STATIC_REGRESSIONS = [
     ("0.8.148 tolerance enum matches SW", assert_tolerance_types_follow_the_real_enum),
     ("0.8.149 title block reads before write", assert_title_block_reads_before_it_writes),
     ("0.8.150 circle detection needs no vertex", assert_circle_detection_does_not_need_a_vertex),
+    ("0.8.151 ambiguous gap can be placed", assert_gap_planner_can_place_an_ambiguous_gap),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

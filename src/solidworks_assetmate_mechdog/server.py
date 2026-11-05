@@ -795,6 +795,8 @@ def plan_dimension_gaps(
     tolerance_mm: Annotated[float, Field(description="How close an edge-pair distance must be to a missing value to count as a candidate (millimetres).")] = 0.05,
     max_candidates_per_gap: Annotated[int, Field(description="How many matching edge pairs to report per gap (nearest first).")] = 3,
     apply_gaps: Annotated[bool, Field(description="Actually add the dimensions. Default False returns a PLAN only. Even when True, only gaps with EXACTLY ONE matching edge pair are filled; ambiguous ones are left for a human.")] = False,
+    apply_indices: Annotated[list | None, Field(description="Explicit gaps to fill, 0-based indices into `gaps`. Use this for `ambiguous` entries: the tool will not choose between equally valid edge pairs on its own, but it will place the one you name.")] = None,
+    apply_candidate: Annotated[int, Field(description="Which candidate to use for each explicitly requested gap (0-based into that gap's `candidates`, nearest first).")] = 0,
 ) -> str:
     """PR4: turn truly-missing dimensions into edge-pair candidates, optionally fill them.
 
@@ -812,7 +814,8 @@ def plan_dimension_gaps(
     """
     return _json(drawing.plan_dimension_gaps(
         model_path, drawing_path, tolerance_mm=tolerance_mm,
-        max_candidates_per_gap=max_candidates_per_gap, apply_gaps=apply_gaps))
+        max_candidates_per_gap=max_candidates_per_gap, apply_gaps=apply_gaps,
+        apply_indices=apply_indices, apply_candidate=apply_candidate))
 
 
 @mcp.tool()
