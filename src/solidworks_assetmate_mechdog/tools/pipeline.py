@@ -368,11 +368,21 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     closed = []
     skipped_open_by_caller = []
     if close_when_done:
-        if not _preexisting:
+        # Tri-state, and the three cases must read differently (report 2026-11-05, P2-1):
+        #   None        enumeration FAILED -> close nothing, and say that we could not tell
+        #   set()       empty session      -> nothing belonged to a caller, close freely
+        #   set(paths)  those were open    -> skip exactly those
+        #
+        # The old code tested `if not _preexisting:` for both None and set(), printed
+        # "未关闭任何文档" in BOTH cases, and then went on to close them anyway — the
+        # sentence and the behaviour disagreed, and `close_documents` counted the
+        # enumeration failure as "1 skipped as caller-owned".
+        _enum_failed = _preexisting is None
+        if _enum_failed:
             skipped_open_by_caller.append(
-                "会话内的文档无法枚举，未关闭任何文档——宁可留下锁文件，也不误关调用者"
-                "正在编辑的图纸。")
-        for _doc_path in (target, path):
+                "无法枚举会话内已打开的文档（GetDocuments 失败），因此本次不关闭任何文档"
+                "——宁可留下锁文件，也不误关调用者正在编辑的图纸。")
+        for _doc_path in ([] if _enum_failed else (target, path)):
             _norm = os.path.normcase(os.path.normpath(str(_doc_path)))
             if _preexisting and _norm in _preexisting:
                 skipped_open_by_caller.append(

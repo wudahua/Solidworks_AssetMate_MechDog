@@ -2373,14 +2373,41 @@ def open_document_paths():
     "Matches the exact path this run produced" was true and irrelevant: the user's document
     has the same path.
 
-    Returns a set. Empty set when the session cannot be enumerated — callers must treat that
-    as "unknown" and skip closing rather than assume nothing was open.
+    Returns a TRI-STATE, because "nothing is open" and "I cannot tell" must not look alike:
+
+        set()          the session enumerated fine and nothing is open  -> safe to close
+        set(paths)     the session enumerated; these were already open   -> skip these
+        None           enumeration FAILED                                -> close NOTHING
+
+    Report 2026-11-05 (third round, P2-1): the old version returned `set()` for both the
+    empty session and the failure, so `produce_drawing` could not tell them apart and did
+    the worst of both:
+
+        documents_skipped_open_by_caller: ["会话内的文档无法枚举，未关闭任何文档……"]
+        documents_closed: [{"closed_count": 1}, {"closed_count": 1}]
+        close_documents: "closed 2 document(s); 1 skipped as caller-owned"
+
+    Three statements, three different stories: the message said nothing was closed, the
+    data said two were, and the detail line counted the enumeration failure as a
+    caller-owned skip. The comment in the caller claimed "nothing is closed when the
+    session cannot be enumerated" — that was true of the sentence, not of the code.
     """
     try:
         from ..sw_session import get_sw
         sw = get_sw()
+        documents = sw.GetDocuments
+        if documents is None:
+            # Measured 2026-11-05: a LIVE session with nothing open returns `None` here, not
+            # an empty tuple. So `None` alone cannot mean "enumeration failed" — that would
+            # make the empty-session case look like a bridge failure and skip closing
+            # forever. Ask a property that answers regardless of what is open.
+            try:
+                _ = sw.RevisionNumber
+                return set()          # session alive, nothing open: safe to close
+            except Exception:
+                return None           # the property itself is dead: do not touch anything
         paths = set()
-        for document in (sw.GetDocuments or ()):
+        for document in documents:
             try:
                 name = document.GetPathName or ""
             except Exception:
@@ -2389,7 +2416,7 @@ def open_document_paths():
                 paths.add(os.path.normcase(os.path.normpath(str(name))))
         return paths
     except Exception:
-        return set()
+        return None
 
 
 def close_document(drawing_path):

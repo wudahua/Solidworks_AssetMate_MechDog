@@ -5117,6 +5117,54 @@ def assert_smoke_judges_hatch_missing_the_same_way_twice():
     return "hatch_missing is judged the same way at every section check"
 
 
+def assert_document_ownership_is_tri_state():
+    """0.8.161 — "nothing is open" and "I cannot tell" were the same value.
+
+    Report 2026-11-05 (third round, P2-1, reported for the third time): after clearing the
+    session, `produce_drawing` returned
+
+        documents_skipped_open_by_caller: ["会话内的文档无法枚举，未关闭任何文档……"]
+        documents_closed: [{"closed_count": 1}, {"closed_count": 1}]
+        close_documents: "closed 2 document(s); 1 skipped as caller-owned"
+
+    Three statements, three stories. The message said nothing was closed, the data said two
+    were, and the detail counted the enumeration failure as a caller-owned skip.
+
+    Root cause: `open_document_paths()` returned `set()` for BOTH the empty session and a
+    failure, so the caller could not distinguish them — and its comment claimed "nothing is
+    closed when the session cannot be enumerated", which described the sentence rather than
+    the code (`if _preexisting and ...` is False for an empty set, so it closed everything).
+
+    Measured 2026-11-05: a live session with nothing open reports `GetDocuments is None`,
+    not an empty tuple. So `None` alone cannot mean failure either — the probe must ask a
+    property that answers regardless of what is open (`RevisionNumber`).
+
+    Now: `set()` = alive and empty, `set(paths)` = those were open, `None` = cannot tell.
+    Verified on an empty session: closed 2, skipped [], detail "0 skipped".
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "open_document_paths")) or ""
+
+    assert "return None" in body, (
+        "the resolver cannot express 'I cannot tell' — the empty session and a dead bridge "
+        "will look identical again")
+    assert "RevisionNumber" in body, (
+        "the probe does not ask a property that answers on an empty session; "
+        "`GetDocuments is None` is what an empty session actually returns")
+    assert body.count("return set()") >= 1, (
+        "the resolver can no longer say 'alive and empty'")
+
+    pipe = _read("tools/pipeline.py")
+    pbody = ast.get_source_segment(pipe, _function_node(ast.parse(pipe),
+                                                        "produce_drawing")) or ""
+    assert "_enum_failed" in pbody, (
+        "the caller does not distinguish an enumeration failure from an empty session")
+    assert "[] if _enum_failed else" in pbody, (
+        "an enumeration failure still closes documents — the sentence says it does not")
+    return "document ownership distinguishes empty, known and unknown"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5267,6 +5315,7 @@ STATIC_REGRESSIONS = [
     ("0.8.158 fixtures reachable", assert_test_fixtures_are_reachable_from_a_release),
     ("0.8.159 failed save cannot report ok", assert_a_failed_save_cannot_report_ok),
     ("0.8.160 hatch_missing judged once", assert_smoke_judges_hatch_missing_the_same_way_twice),
+    ("0.8.161 doc ownership tri-state", assert_document_ownership_is_tri_state),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
