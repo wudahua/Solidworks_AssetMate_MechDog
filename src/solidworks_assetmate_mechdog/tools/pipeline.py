@@ -423,7 +423,8 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             # They are separated out here because the fix is different: they need
             # `add_distance_dimension` between two edges, not a filter tweak. Saying "the
             # plan took effect" without that qualifier is the part that misled.
-            "derived_unfilled": [d for d in keep_dimensions
+            # `keep_dimensions` above is the COUNT (planned: 9). The dicts are `keep_list`.
+            "derived_unfilled": [d for d in keep_list
                                  if str(d.get("kind") or "").lower() == "derived"],
             "note": (
                 ("规划已生效：插入后按 keep_dimensions 删除多余尺寸，"
@@ -435,13 +436,13 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                 + ((" 另有 %d 条 derived 项（外形总长/总宽/总高）不在插入路径上——"
                     "模型里没有对应的驱动尺寸，auto_dimension 插不进去，"
                     "需用 add_distance_dimension 在两视图边之间补标：%s。"
-                    % (len([d for d in keep_dimensions
+                    % (len([d for d in keep_list
                             if str(d.get("kind") or "").lower() == "derived"]),
                        "、".join("%s=%s" % (d.get("dimension"), d.get("value_mm"))
-                                for d in keep_dimensions
+                                for d in keep_list
                                 if str(d.get("kind") or "").lower() == "derived")))
                    if any(str(d.get("kind") or "").lower() == "derived"
-                          for d in keep_dimensions) else "")
+                          for d in keep_list) else "")
             ),
         }),
         annotations=summary,
