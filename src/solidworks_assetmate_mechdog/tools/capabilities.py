@@ -279,8 +279,13 @@ CAPABILITIES = [
     {
         "id": "section_line_follows_view",
         "status": "verified",
-        "summary": "移动父视图时剖面切割线跟着走（0.8.57 起；此前线画在图纸坐标里，移了就断联）",
-        "why": ("**0.8.57 之前做不到，之后自然成立。** 关键在于线画在哪个坐标系："
+        "summary": ("移动父视图时剖面切割线跟着走（0.8.57 起；此前线画在图纸坐标里，"
+                    "移了就断联）· 实测仅 SW2024 SP4 + 飞达动力轴"),
+        "why": ("**限定**：`verified` 的依据是 2026-11-02 在 **SW2024 SP4 + 飞达动力轴**"
+                "上的位移比对（父视图与剖视位移完全一致）。**没有在其他版本或其他零件上复测**——"
+                "2026-11-05 的核对在 SW2026 + 另一夹具上得到 `GetFaceHatchCount() == 0`，"
+                "那只说明切不出剖面线（见 section_view 的限定），但足以说明本项的证据面很窄。\n\n"
+                "**0.8.57 之前做不到，之后自然成立。** 关键在于线画在哪个坐标系："
                 "旧实现按**图纸坐标**画（`pos[0] ± half`），线是相对图纸原点的绝对位置，"
                 "视图一移动就与几何脱开；而且那条线其实压根没落在视图草图里，"
                 "剖视因此静默退化成投影（`GetFaceHatchCount() == 0`）。"
@@ -398,7 +403,8 @@ CAPABILITIES = [
     {
         "id": "section_view",
         "status": "partial",
-        "summary": "剖视图（模型坐标剖切面 + 剖切 sanity 校验）",
+        "summary": ("剖视图（模型坐标剖切面 + 剖切 sanity 校验）· 剖面线取决于几何，"
+                    "部分零件必然 `hatch_missing`"),
         "why": ("0.8.21 起 `cut_plane_normal` / `cut_plane_origin` 可用**模型坐标**指定剖切面；"
                 "内部按「视图 deflated outline 与零件包围盒的尺寸匹配」确定图纸轴 ↔ 模型轴"
                 "（`GetViewPlaneNormal` 不存在、`ModelToViewTransform` 的 16 个数不是行主序 "
@@ -407,7 +413,13 @@ CAPABILITIES = [
                 "`cut_plane_oblique` / `cut_plane_not_in_view_plane` / `cut_plane_unmapped`。"
                 "`verify_cut=True` 默认开启：垂直于图纸水平轴的剖切不改变宽度，故剖视宽必须"
                 "等于源视图宽（竖切比高），容差 10%；超出返回 `section_suspicious`，"
-                "`edge_count==0` 返回 `section_empty`，两者都保留视图供检查。"),
+                "`edge_count==0` 返回 `section_empty`，两者都保留视图供检查。\n\n"
+                "**限定（2026-11-05）**：剖切面切出来有没有剖面线（`GetFaceHatchCount`）"
+                "**取决于零件几何**，不是代码问题。同一台 SW2026 上，飞达动力轴回调 "
+                "`hatch_count: 1`，而另一夹具 `hatch_count: 0` → `hatch_missing`。"
+                "0.8.56 起这种情况**如实返回 `hatch_missing` 而不是 `ok:true`**，"
+                "能力状态因此是 `partial`：视图能建、剖切面能定位，但**剖面线不保证**。"
+                "需要剖面线时请换一个能切出实体截面的视图或零件。"),
         "workaround": ("映射靠尺寸匹配，正立方体这类各向等长的零件会 `axes_ambiguous`，"
                        "此时改传 orientation + offset_m；部分剖（depth>0）尺寸本就缩小，"
                        "sanity 记 checked=false 不判定"),

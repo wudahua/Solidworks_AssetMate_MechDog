@@ -5248,6 +5248,61 @@ def assert_gap_candidates_are_checked_against_the_model():
     return "gap candidates are gated on model distance before being offered"
 
 
+def assert_no_tool_reports_success_for_work_it_did_not_do():
+    """0.8.164 — the rule this whole day kept rediscovering, as a static check.
+
+    Every serious defect of 2026-11-05 had the same shape: a receipt saying the job was done
+    when it was not.
+
+        duplicates_removed: 0      a NameError swallowed by `except`
+        before: ""                 a getter that was never called
+        sheet_point_on_circle      a field that was never populated
+        applied: value: 8.0        the planned value, never compared to the drawn one
+        ok: true, saved: false     a save that failed, reported as success
+        未关闭任何文档 + closed 2   two sentences in one receipt
+
+    v0.8.159 fixed the last one in `create_drawing`. The report asked for the general rule,
+    and it is worth having: **nothing may return `ok(**result)` while `result` already says
+    the work did not happen.**
+
+    Scope is deliberately narrow — only `saved=False`, the one flag whose meaning is
+    unambiguous. It must be followed by a `return error(` before any `return ok(`; that is
+    the shape v0.8.159 established. Flags like `triangle_verified=False` are nested inside
+    sub-objects and describe a detail, not the outcome, so they are out of scope.
+    """
+    offenders = []
+    for module in sorted(os.listdir(os.path.join(ROOT, "src",
+                                                 "solidworks_assetmate_mechdog", "tools"))):
+        if not module.endswith(".py"):
+            continue
+        path = os.path.join(ROOT, "src", "solidworks_assetmate_mechdog", "tools", module)
+        src = open(path, encoding="utf-8").read()
+        if "saved=False" not in src:
+            continue
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = ast.get_source_segment(src, node) or ""
+            saved_at = body.find('"saved": False')
+            if saved_at < 0:
+                saved_at = body.find("saved=False")
+            if saved_at < 0:
+                continue
+            after = body[saved_at:]
+            ok_at = after.find("return ok(")
+            if ok_at < 0:
+                continue
+            err_at = after.find("return error(")
+            if err_at < 0 or err_at > ok_at:
+                offenders.append("%s:%s" % (module, node.name))
+
+    assert not offenders, (
+        "these functions can return ok() after recording saved=False — success reported "
+        "for work that failed: %s" % ", ".join(offenders))
+    return "no function reports ok after recording that nothing was saved"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5401,6 +5456,7 @@ STATIC_REGRESSIONS = [
     ("0.8.161 doc ownership tri-state", assert_document_ownership_is_tri_state),
     ("0.8.162 library scan cached", assert_the_material_library_scan_is_cached),
     ("0.8.163 candidates gated on model", assert_gap_candidates_are_checked_against_the_model),
+    ("0.8.164 no ok after saved=False", assert_no_tool_reports_success_for_work_it_did_not_do),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
