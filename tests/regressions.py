@@ -4108,6 +4108,48 @@ def assert_every_implementation_param_reaches_mcp():
     return "implementation params are reachable through the MCP wrappers"
 
 
+def assert_pipeline_closes_only_what_it_opened():
+    """0.8.141 — closing by path also closes the USER's copy of that path.
+
+    Report 2026-11-05 (P1): `produce_drawing` closed `(target, path)` unconditionally and
+    `close_document` matches purely on path, so running the pipeline while the user had that
+    part open in the editor would close their document — unsaved edits included. The previous
+    receipt even justified itself with "close_document matches on the exact path this run
+    produced", which is true and irrelevant: the user's document has the same path.
+
+    Two more defects in the same code:
+      * `close_document` answers ok=True when it found nothing, so `documents_closed[].ok`
+        was always true and the step was unconditionally ok — "closed 2" and "closed 0"
+        looked identical. The real count now comes from `closed_count`.
+      * an un-enumerable session returned an empty set, which must NOT be read as "nothing
+        was open". It is treated as "unknown" and nothing is closed.
+
+    Measured after the fix, with the part pre-opened:
+        pre-open count: 2      closed: [('d_xxx.SLDDRW', 1)]      skipped: 1
+    """
+    src = _read("tools/pipeline.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "produce_drawing")
+    assert fn is not None
+    body = ast.get_source_segment(src, fn) or ""
+
+    assert "open_document_paths" in body, (
+        "no snapshot is taken — caller-owned documents will be closed again")
+    pre_at = body.find("_preexisting = ")
+    first_open = body.find("drawing_tools.create_drawing(")
+    assert first_open > 0, "the create_drawing call is gone"
+    assert 0 < pre_at < first_open, (
+        "the snapshot is taken after the first document is opened; it must come before")
+    assert "skipped_open_by_caller" in body, (
+        "caller-owned documents are skipped but not reported")
+    assert "closed_count" in body, (
+        "the receipt is back to a bare boolean that cannot tell 'closed 2' from 'closed 0'")
+
+    helper = _function_node(ast.parse(_read("tools/drawing.py")), "open_document_paths")
+    assert helper is not None, "the snapshot helper is gone"
+    return "the pipeline closes only documents it opened, and says what it skipped"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4236,6 +4278,7 @@ STATIC_REGRESSIONS = [
     ("0.8.138 pipeline closes documents", assert_pipeline_closes_what_it_opened),
     ("0.8.139 field names mean what they say", assert_receipts_say_what_the_fields_mean),
     ("0.8.140 impl params reach MCP", assert_every_implementation_param_reaches_mcp),
+    ("0.8.141 closes only its own documents", assert_pipeline_closes_only_what_it_opened),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

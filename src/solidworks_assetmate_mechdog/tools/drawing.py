@@ -2340,6 +2340,35 @@ def move_view(drawing_path, view_name, x_m, y_m, save=True):
         return error("move_view_failed", str(exc)[:120])
 
 
+def open_document_paths():
+    """Normalised paths of every document currently open in the SolidWorks session.
+
+    Exists so a caller can snapshot BEFORE doing work and close only what it opened.
+    Report 2026-11-05: `produce_drawing` closed `(target, path)` unconditionally, and
+    `close_document` matches purely on path — so running the pipeline while the user had
+    that same part open in the editor would close THEIR document, discarding unsaved edits.
+    "Matches the exact path this run produced" was true and irrelevant: the user's document
+    has the same path.
+
+    Returns a set. Empty set when the session cannot be enumerated — callers must treat that
+    as "unknown" and skip closing rather than assume nothing was open.
+    """
+    try:
+        from ..sw_session import get_sw
+        sw = get_sw()
+        paths = set()
+        for document in (sw.GetDocuments or ()):
+            try:
+                name = document.GetPathName or ""
+            except Exception:
+                continue
+            if name:
+                paths.add(os.path.normcase(os.path.normpath(str(name))))
+        return paths
+    except Exception:
+        return set()
+
+
 def close_document(drawing_path):
     """Close a document SolidWorks still holds open.
 

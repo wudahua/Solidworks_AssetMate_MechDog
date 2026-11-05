@@ -161,6 +161,17 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # 0.8.120: outline reads are COUNTERS, not a cache. Reset per run so the number in the
     # receipt describes this drawing, and report it so the "should we cache" question is
     # answered from data (see docs/PR3-布局缓存-不建议实施说明.md).
+    # Snapshot BEFORE anything is opened. `close_document` matches purely on path, so a run
+    # that closes `(target, path)` unconditionally will also close the user's own copy of
+    # that part if they happen to have it open in the editor — and their unsaved edits go
+    # with it. Report 2026-11-05 flagged this as a data-loss risk; the previous receipt even
+    # claimed "close_document matches on the exact path this run produced", which is true and
+    # irrelevant because the user's document has the same path.
+    #
+    # An empty set means the session could not be enumerated. In that case nothing is closed:
+    # leaving a lock file behind is annoying, silently closing someone's work is not
+    # recoverable.
+    _preexisting = drawing_tools.open_document_paths()
     drawing_tools.reset_outline_stats()
 
     # 1) ledger — also tells us the category when the caller did not
@@ -325,14 +336,36 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # Neither branch touches anything the caller already had open — `close_document` matches
     # on the exact path this run produced.
     closed = []
+    skipped_open_by_caller = []
     if close_when_done:
+        if not _preexisting:
+            skipped_open_by_caller.append(
+                "会话内的文档无法枚举，未关闭任何文档——宁可留下锁文件，也不误关调用者"
+                "正在编辑的图纸。")
         for _doc_path in (target, path):
+            _norm = os.path.normcase(os.path.normpath(str(_doc_path)))
+            if _preexisting and _norm in _preexisting:
+                skipped_open_by_caller.append(
+                    "%s 在本次运行开始前就已打开，判定属于调用者，不关闭。" % _doc_path)
+                continue
             try:
                 _res = drawing_tools.close_document(_doc_path)
-                closed.append({"document": _doc_path, "ok": bool(_res.get("ok", True))})
+                # `close_document` answers ok=True even when it found nothing, so ok alone
+                # cannot distinguish "closed 2" from "closed 0". The real count comes from
+                # `closed_count`, which the old receipt threw away.
+                closed.append({"document": _doc_path,
+                               "ok": bool(_res.get("ok", False)),
+                               "closed_count": int(_res.get("closed_count") or 0),
+                               "closed_titles": _res.get("closed") or []})
             except Exception as exc:
-                closed.append({"document": _doc_path, "ok": False, "error": str(exc)[:80]})
-        record("close_documents", {"ok": True}, "closed %d document(s)" % len(closed))
+                closed.append({"document": _doc_path, "ok": False, "closed_count": 0,
+                               "error": str(exc)[:80]})
+        _actually_closed = sum(c.get("closed_count", 0) for c in closed)
+        record("close_documents",
+               {"ok": _actually_closed > 0 or not closed,
+                "actually_closed": _actually_closed},
+               "closed %d document(s); %d skipped as caller-owned"
+               % (_actually_closed, len(skipped_open_by_caller)))
 
     if _failed_critical:
         return error(
@@ -355,6 +388,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         view_count=audit.get("view_count"),
         steps=steps,
         documents_closed=closed,
+        documents_skipped_open_by_caller=skipped_open_by_caller,
         defaults_applied={
             "general_tolerance": defaults["general_tolerance"],
             "roughness": roughness,
