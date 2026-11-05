@@ -4064,6 +4064,50 @@ def assert_receipts_say_what_the_fields_mean():
     return "receipts distinguish decoded text, two annotation counts, and document type"
 
 
+def assert_every_implementation_param_reaches_mcp():
+    """0.8.140 — 14 parameters existed in Python but not over MCP.
+
+    Report 2026-11-05 (P0): `produce_drawing` was missing `projection`, `close_when_done`,
+    `do_derived_check` and `hole_budget_s`; `create_drawing` was missing `projection`; and
+    six more wrappers had the same gap. FastMCP runs with `extra=ignore`, so a caller who
+    passed them got `isError: false` and no effect — the parameter was accepted, dropped,
+    and never mentioned.
+
+    The reason it survived ten releases is that `check_wrapper_signatures` only checked ONE
+    direction: "does the wrapper forward a keyword the target rejects". The opposite — a
+    target parameter the wrapper never offers — passed silently. This is the third time the
+    class shipped (0.8.2 add_bom_table, 0.8.4 view_positions, now 0.8.139), so the rule
+    lives in static_check rather than in another round of manual patching.
+
+    `save` / `known_values` / `config` stay internal on purpose: the pipeline batches saves,
+    `known_values` is a dedupe hint, and `config` is resolved from the active document.
+    """
+    src = open(os.path.join(ROOT, "tests", "static_check.py"), encoding="utf-8").read()
+
+    assert "INTERNAL_ONLY" in src, (
+        "the internal-parameter whitelist is gone; the reverse check has no basis")
+    assert "never exposes them" in src, (
+        "the reverse check no longer reports unexposed parameters")
+    assert "wrapper_params" in src, (
+        "the wrapper's own parameter set is not collected — only forwarded kwargs are, "
+        "which cannot detect a parameter that was never offered")
+
+    # The five parameters this report named must be reachable now.
+    server = _read("server.py")
+    for param, where in (
+            ("projection", "produce_drawing"),
+            ("close_when_done", "produce_drawing"),
+            ("do_derived_check", "produce_drawing"),
+            ("hole_budget_s", "produce_drawing"),
+            ("projection", "create_drawing")):
+        start = server.find("def %s(" % where)
+        assert start > 0, "%s wrapper is gone" % where
+        end = server.find(") -> str:", start)
+        block = server[start:end]
+        assert param in block, "%s() still does not expose %s" % (where, param)
+    return "implementation params are reachable through the MCP wrappers"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4191,6 +4235,7 @@ STATIC_REGRESSIONS = [
     ("0.8.137 version strings agree", assert_version_strings_agree),
     ("0.8.138 pipeline closes documents", assert_pipeline_closes_what_it_opened),
     ("0.8.139 field names mean what they say", assert_receipts_say_what_the_fields_mean),
+    ("0.8.140 impl params reach MCP", assert_every_implementation_param_reaches_mcp),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

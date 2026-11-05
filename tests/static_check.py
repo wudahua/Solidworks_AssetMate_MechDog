@@ -245,9 +245,11 @@ def check_wrapper_signatures(server_path):
         sys.path.insert(0, src_dir)
 
     wrappers = {}
+    wrapper_params = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
+        own = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
         for inner in ast.walk(node):
             if not isinstance(inner, ast.Call):
                 continue
@@ -259,6 +261,12 @@ def check_wrapper_signatures(server_path):
             passed = [kw.arg for kw in inner.keywords if kw.arg]
             if passed:
                 wrappers.setdefault((module_name, func_name), set()).update(passed)
+                # The wrapper's OWN parameters decide what an MCP client can pass. Collecting
+                # only the forwarded kwargs (the original approach) can see "the wrapper
+                # forwards something the target rejects" but never "the target accepts
+                # something the wrapper never offers" — which is the direction that actually
+                # bit this project three times.
+                wrapper_params.setdefault((module_name, func_name), (node.name, own))
 
     for (module_name, func_name), kwargs in sorted(wrappers.items()):
         try:
@@ -280,6 +288,29 @@ def check_wrapper_signatures(server_path):
                 "— every call will fail with 'unexpected keyword argument'"
                 % (os.path.basename(server_path), ", ".join(extra),
                    module_name, func_name, ", ".join(sorted(allowed))))
+
+        # ---- reverse direction: parameters the implementation takes but MCP never offers ----
+        #
+        # v0.8.130 added `projection` to create_drawing and v0.8.138 added
+        # `close_when_done` to produce_drawing; neither reached the MCP wrapper, so
+        # `tools/call` silently dropped them (FastMCP uses extra=ignore). Report
+        # 2026-11-05 measured 14 such parameters across 8 wrappers, and this is the THIRD
+        # time the same class shipped (0.8.2 add_bom_table, 0.8.4 view_positions, now these).
+        #
+        # `save` and `known_values` are deliberately not exposed: the pipeline batches saves
+        # itself and `known_values` is an internal dedupe hint. Everything else must be
+        # reachable, or a user-facing capability simply does not exist over MCP.
+        INTERNAL_ONLY = {"save", "known_values", "config"}
+        entry = wrapper_params.get((module_name, func_name))
+        if entry and not accepts_kwargs:
+            wrapper_name, own = entry
+            hidden = sorted(set(sig.parameters) - own - INTERNAL_ONLY)
+            if hidden:
+                problems.append(
+                    "%s: %s() takes %s but the MCP tool %s() never exposes them "
+                    "— tools/call drops them silently, so the capability does not exist"
+                    % (os.path.basename(server_path), func_name, ", ".join(hidden),
+                       wrapper_name))
     return problems
 
 

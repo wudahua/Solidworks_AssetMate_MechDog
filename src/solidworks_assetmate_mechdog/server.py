@@ -160,7 +160,12 @@ def produce_drawing(
     category: Annotated[str | None, Field(description="Part category used to pick views and the dimension strategy, e.g. '轴类'.")] = None,
     do_hole_callouts: Annotated[bool | None, Field(description="Include hole callouts in the one-shot pipeline.")] = None,
     do_surface_finish: Annotated[bool | None, Field(description="Include surface-finish symbols in the one-shot pipeline.")] = None,
-    prune_to_plan: Annotated[bool, Field(description="Delete inserted dimensions that the plan did not ask for.")] = True,    overwrite: Annotated[bool, Field(description="Rebuild even if output_path already exists. Without it an existing drawing is refused (output_exists) instead of having a second full set of dimensions appended to it.")] = False,
+    prune_to_plan: Annotated[bool, Field(description="Delete inserted dimensions that the plan did not ask for.")] = True,
+    overwrite: Annotated[bool, Field(description="Rebuild even if output_path already exists. Without it an existing drawing is refused (output_exists) instead of having a second full set of dimensions appended to it.")] = False,
+    projection: Annotated[str, Field(description="Projection convention for the sheet: 'first' (GB/T 14692, default) or 'third' (ISO/US). Chooses where the top view and the side view are placed.")] = "first",
+    close_when_done: Annotated[bool, Field(description="Close the part and drawing this run opened. False keeps them open for inspection — only useful when a human is watching the SolidWorks window.")] = True,
+    do_derived_check: Annotated[bool, Field(description="Reconcile the model's driving dimensions against the sheet and report coverage. Costs one ledger read; turn off for a faster run.")] = True,
+    hole_budget_s: Annotated[float, Field(description="Seconds allowed for hole callouts before that step gives up. Raise it for parts with many holes; the step reports budget_exceeded when it runs out.")] = 45.0,
 ) -> str:
     """Model in, annotated and judged drawing out — the whole chain in one call.
 
@@ -178,7 +183,11 @@ def produce_drawing(
         views=tuple(views) if views else None, category=category,
         do_hole_callouts=do_hole_callouts, do_surface_finish=do_surface_finish,
         prune_to_plan=prune_to_plan,
-        overwrite=overwrite))
+        overwrite=overwrite,
+        projection=projection,
+        close_when_done=close_when_done,
+        do_derived_check=do_derived_check,
+        hole_budget_s=hole_budget_s))
 
 
 @mcp.tool()
@@ -799,6 +808,7 @@ def survey_drawings(
     sample_size: Annotated[int, Field(description="How many drawings to include in the survey sample.")] = 100,
     seed: Annotated[int, Field(description="Random seed, so a sample can be reproduced.")] = 28,
     html_path: Annotated[str | None, Field(description="Where to write the survey report (HTML).")] = None,
+    pattern: Annotated[str, Field(description="Glob pattern used to find drawings under the survey root, e.g. '*.SLDDRW'.")] = "*.SLDDRW",
 ) -> str:
     """Audit a random sample of real drawings and report the statistical baseline.
 
@@ -811,6 +821,7 @@ def survey_drawings(
     """
     return _json(survey.survey_drawings(
         folder, sample_size=sample_size, seed=seed, html_path=html_path,
+        pattern=pattern,
     ))
 
 
@@ -938,6 +949,7 @@ def create_drawing(
     view_scales: Annotated[dict | None, Field(description="Per-view scale, keyed by view name; overrides the sheet scale.")] = None,
     paper: Annotated[str, Field(description="Sheet size, e.g. 'A3' or 'A4'; drives the template and the usable area.")] = "A3",
     view_positions: Annotated[list | None, Field(description="Per-view sheet positions [x, y] in metres, keyed by view name.")] = None,
+    projection: Annotated[str, Field(description="Projection convention: 'first' (GB/T 14692, default) or 'third' (ISO/US). Chooses where the top view and the side view are placed.")] = "first",
 ) -> str:
     """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
 
@@ -951,6 +963,7 @@ def create_drawing(
         model_path, output_path=output_path, template=template,
         views=views or ["front", "top", "isometric"], scale=scale, auto_fit=auto_fit,
         view_scales=view_scales, paper=paper, view_positions=view_positions,
+        projection=projection,
     ))
 
 
@@ -1099,7 +1112,9 @@ def auto_dimension(
     dimension_filter: Annotated[list | None, Field(description="Keep only these dimensions. Pass plan_drawing()['keep_dimensions'] AS-IS (a list of dicts with feature/value_mm) — mapping it to bare full-name strings loses the value, and model vs sheet feature names differ (Sketch1 vs 草图2).")] = None,
     place_outside: Annotated[bool, Field(description="Push every inserted dimension just outside its view. Defaults to TRUE — leaving them inside covers the part with dimension lines (measured 2026-11-03: 18 dimensions all landed inside the outline, sheet unusable). Pass False for the old behaviour.")] = True,
     outside_gap_m: Annotated[float, Field(description="Distance from the view outline to the first dimension, in metres.")] = 0.012,
-    outside_step_m: Annotated[float, Field(description="Spacing between stacked dimensions, in metres.")] = 0.008,    detect_same_value: Annotated[bool, Field(description="Group dimensions by (value, type) to flag same-value duplicates. OFF by default: it reads every annotation on every view and measured 18.4 s of auto_dimension's 27.0 s (68%) on 旋转轴. It only reports — it never deletes. Turn on when a sheet shows two identical values and you need the candidates.")] = False,
+    outside_step_m: Annotated[float, Field(description="Spacing between stacked dimensions, in metres.")] = 0.008,
+    audit: Annotated[bool, Field(description="Run the post-insert audit (overlaps, off-sheet, unresolved text) as part of this call. Costs a second pass over every annotation.")] = True,
+    detect_same_value: Annotated[bool, Field(description="Group dimensions by (value, type) to flag same-value duplicates. OFF by default: it reads every annotation on every view and measured 18.4 s of auto_dimension's 27.0 s (68%) on 旋转轴. It only reports — it never deletes. Turn on when a sheet shows two identical values and you need the candidates.")] = False,
 ) -> str:
     """Insert the model's driving dimensions into the drawing (Insert Model Items).
 
@@ -1118,7 +1133,7 @@ def auto_dimension(
         drawing_path, all_views=all_views, include_unmarked=include_unmarked,
         eliminate_duplicates=eliminate_duplicates, dimension_filter=dimension_filter,
         place_outside=place_outside, outside_gap_m=outside_gap_m,
-        outside_step_m=outside_step_m,
+        outside_step_m=outside_step_m, audit=audit,
         detect_same_value=detect_same_value))
 
 
@@ -1177,6 +1192,7 @@ def add_drawing_dimension(
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
     tolerance: Annotated[float, Field(description="Tolerance value. For add_drawing_dimension it is a length in metres; for add_geometric_tolerance it is the frame value as text.")] = 0.01,
     edge_index: Annotated[int | None, Field(description="Index into list_drawing_edges for this view; lets you attach to an edge without sheet coordinates.")] = None,
+    skip_duplicates: Annotated[bool, Field(description="Refuse to add a dimension that duplicates an existing one on the sheet (same value, same view). Default True — a second identical dimension reads as a drafting error.")] = True,
 ) -> str:
     """Add ONE dimension on a projected edge at sheet point (x, y) in meters.
 
@@ -1187,6 +1203,7 @@ def add_drawing_dimension(
     return _json(drawing.add_drawing_dimension(
         drawing_path, x, y, value=value, offset_x=offset_x, offset_y=offset_y,
         view_name=view_name, tolerance=tolerance, edge_index=edge_index,
+        skip_duplicates=skip_duplicates,
     ))
 
 
@@ -1252,6 +1269,7 @@ def set_title_block(
     material: Annotated[str | None, Field(description="Material text for the title block.")] = None,
     apply: Annotated[bool, Field(description="False (default) is a dry run that reports what WOULD change; True actually writes.")] = False,
     include_reversed: Annotated[bool, Field(description="Also update the 180-degree-rotated title-block copy in the sheet corner.")] = True,
+    scale: Annotated[float | None, Field(description="Sheet scale to write into the 比例 cell (2.0 means 2:1). Omit to leave the cell alone; the sheet's own ScaleDecimal is the usual source.")] = None,
 ) -> str:
     """Fill title-block placeholders (图样名称 / 图样代号 / 材质) in a drawing.
 
@@ -1264,7 +1282,7 @@ def set_title_block(
     """
     return _json(drawing.set_title_block(
         drawing_path, name=name, code=code, material=material, apply=apply,
-        include_reversed=include_reversed,
+        include_reversed=include_reversed, scale=scale,
     ))
 
 
