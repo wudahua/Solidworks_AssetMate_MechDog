@@ -46,7 +46,19 @@ CATEGORY_DEFAULTS = {
         # A shaft's top view is a second long bar — redundant on a turned part. The
         # isometric carries the keyway and cross-holes instead (report 2026-11-05 also
         # complained that front+top+left gave "两张几乎一样的长轴视图").
-        "views": ["front", "isometric"],
+        # Report 2026-11-05 (P0): v0.8.146 changed this to ["front", "isometric"] on the
+        # assumption that `front` is the long bar and `top` a redundant second one. That
+        # holds only when the shaft is laid out ACROSS the front view. On 飞达动力轴 the
+        # front view is the END FACE — `precise_outline_m` 0.035 x 0.035 — while `right`
+        # is the 0.107 x 0.035 bar. Dropping `top` therefore dropped the ONLY view that
+        # could carry axial dimensions: measured 10 dimensions -> 3 (diameters only),
+        # coverage 0.444 -> 0.167, and all 13 steps still reported ok.
+        #
+        # `front + right + isometric` has a bar under EITHER orientation, and the isometric
+        # still carries the keyway and cross-holes that 0.8.146 was after. It is one view
+        # more than before, not one fewer — which is the correct direction for a shape
+        # whose orientation the category cannot predict.
+        "views": ["front", "right", "isometric"],
     },
     "装配体": {
         "general_tolerance": "未注公差按 GB/T 1804-m",

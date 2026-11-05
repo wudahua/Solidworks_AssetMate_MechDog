@@ -1126,9 +1126,12 @@ def main():
         assert gaps.get("ok") is not None, "plan_dimension_gaps returned no verdict"
         if gaps.get("ok") and gaps.get("gaps_found"):
             for item in (gaps.get("gaps") or []):
+                # 0.8.156: `no_applicable_candidate` was added in 0.8.155 and this tuple
+                # was not updated — a real run on any part with circular geometry would
+                # fail here with "gap has no status", which says the opposite of the truth.
                 assert item.get("status") in ("fillable", "ambiguous", "no_geometry",
-                                               "no_value"), (
-                    "gap has no status: %r" % (item,))
+                                               "no_applicable_candidate", "no_value"), (
+                    "gap status is not one this smoke knows: %r" % (item.get("status"),))
             assert gaps.get("applied_count", 0) == 0 or gaps.get("applied"), (
                 "apply without a record of what was applied")
         # 0.8.23 / P3-5: 0.0 entries are sketch constraints, not lengths — they must not sit

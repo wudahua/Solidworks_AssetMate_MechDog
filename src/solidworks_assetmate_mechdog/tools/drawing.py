@@ -7643,7 +7643,14 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             if _idx in _explicit:
                 _to_apply.append((_idx, item, int(apply_candidate)))
             elif apply_gaps and item["status"] == "fillable":
-                _to_apply.append((_idx, item, 0))
+                # Report 2026-11-05: `fillable` now means "exactly ONE APPLICABLE
+                # candidate" — but that candidate is not necessarily index 0. When the
+                # single usable one sat at index 1 and a circle centre sat at 0, the auto
+                # path passed 0, hit the applicability guard, and drew nothing while the
+                # gap was advertised as "safe to apply". Use the index the status was
+                # computed from.
+                _to_apply.append((_idx, item,
+                                  (item.get("applicable_candidates") or [0])[0]))
         if _to_apply:
             for _idx, item, _cand_i in _to_apply:
                 _cands = item.get("candidates") or []
@@ -7674,7 +7681,60 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                 added = add_distance_dimension(
                     drawing_path, cand["edge_a"], cand["edge_b"],
                     x_m=pt[0], y_m=pt[1] - 0.015)
+                # Report 2026-11-05 (P0): candidates are selected by SHEET distance —
+                # |paper span - target| <= tolerance — but AddDimension2 measures MODEL
+                # geometry. On AM_DOOR the two disagreed wildly: a gap of 8.0 mm was
+                # "filled" with a 1570.796 mm dimension (500π — the edge pair was an arc).
+                #
+                # The old code wrote `"value_mm": item["value_mm"]` — the PLANNED value —
+                # and read only `added.get("ok")`. `added["value_mm"]` was discarded, so the
+                # receipt said "filled 8.0" while the sheet carried 1570.796, and neither
+                # side raised. Worse, the ledger never saw 8.0 appear, so every later call
+                # decided the gap was still missing and inserted another 1570.796: three
+                # runs left 15 absurd dimensions on one sheet.
+                #
+                # A dimension that does not measure what we asked for is not a success.
+                # Compare the actual value, undo the insert, and say so.
+                _actual = added.get("value_mm")
+                _expected = item["value_mm"]
+                _mismatch = False
+                if _actual is None:
+                    _mismatch = bool(added.get("ok"))
+                else:
+                    try:
+                        _mismatch = abs(float(_actual) - float(_expected)) > tolerance_mm
+                    except (TypeError, ValueError):
+                        _mismatch = True
+                if _mismatch:
+                    # Do NOT auto-delete. There is no cheap way to address "the annotation
+                    # I just created": `delete_annotation` matches by name or position, and
+                    # a position hit could take out a legitimate dimension that happens to
+                    # be nearby. Leaving one visible wrong dimension that the receipt names
+                    # is recoverable; deleting the wrong thing is not.
+                    #
+                    # The important part is that this is now `ok: false` with the actual
+                    # value attached — the old code reported success and dropped it.
+                    applied.append({"value_mm": _expected,
+                                    "gap_index": _idx,
+                                    "candidate_index": _pick,
+                                    "candidate_kind": cand.get("candidate_kind"),
+                                    "edge_a": cand.get("edge_a"),
+                                    "edge_b": cand.get("edge_b"),
+                                    "actual_value_mm": _actual,
+                                    "value_delta_mm": (round(float(_actual) - float(_expected), 3)
+                                                       if _actual is not None else None),
+                                    "ok": False,
+                                    "error": "value_mismatch",
+                                    "inserted_but_wrong": True,
+                                    "message": ("这一对边在图纸上相距接近 %s，但 SolidWorks 按模型几何"
+                                                "量出的是 %s —— 纸面距离不等于模型尺寸。插入的这条"
+                                                "尺寸是错的，工具不会自动删除（按位置删有误删风险），"
+                                                "请用 position=[%s, %s] 手工删除后再换候选。"
+                                                % (_expected, _actual,
+                                                   round(pt[0], 4), round(pt[1] - 0.015, 4)))})
+                    continue
                 applied.append({"value_mm": item["value_mm"],
+                                "actual_value_mm": _actual,
                                 "gap_index": _idx,
                                     "candidate_index": _pick,
                                     "candidate_kind": cand.get("candidate_kind"),
@@ -7711,13 +7771,18 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             candidates_skipped=_candidates_skipped,
             gaps=results,
             coverage=rec.get("coverage"),
-            note=("apply_gaps=False (default): this is a PLAN. Each gap lists the edge pairs "
-                  "that measure its value. Only `fillable` gaps — exactly one matching pair — "
-                  "are applied when apply_gaps=True; `ambiguous` ones are left for a human "
-                  "because picking one would be a guess. Candidates tagged "
-                  "`candidate_kind: circle_centre` carry synthetic negative indices and are "
-                  "`applicable: false`: they cannot be passed to add_distance_dimension. "
-                  "Use each gap's `applicable_candidates` to choose an `apply_candidate`."),
+            note=("This is a PLAN unless apply_gaps or apply_indices was given. Each gap "
+                  "carries a status: `fillable` (exactly one APPLICABLE candidate), "
+                  "`ambiguous` (several), `no_applicable_candidate` (matches exist but none "
+                  "can be passed to add_distance_dimension), `no_geometry` (that value needs "
+                  "a section or detail view). apply_gaps=True fills only the `fillable` "
+                  "ones; apply_indices fills the gaps you name, ambiguous or not, and does "
+                  "not require apply_gaps. Candidates tagged `candidate_kind: circle_centre` "
+                  "carry synthetic negative indices and are `applicable: false` — choose "
+                  "from `applicable_candidates`. Every applied entry carries "
+                  "`actual_value_mm`; when it differs from the planned value the entry is "
+                  "`ok: false` with `error: value_mismatch`, because sheet distance is not "
+                  "model geometry."),
         )
     except Exception as exc:
         return error("dimension_gaps_failed", str(exc))

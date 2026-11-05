@@ -811,6 +811,8 @@ def plan_dimension_gaps(
       * `no_applicable_candidate` — matches exist but none can be passed to
                                 `add_distance_dimension` (see below)
       * `no_geometry`         — no edge pair matches; that value needs a section or detail view
+      * `no_value`            — the ledger entry carries no numeric value at all, so there
+                                is nothing to search for
 
     Candidate applicability: a gap whose value is met by a CIRCLE CENTRE cannot be filled.
     Circle centres carry synthetic negative indices, while `add_distance_dimension` indexes a

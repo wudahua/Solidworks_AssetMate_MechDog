@@ -4841,6 +4841,104 @@ def assert_circle_centre_candidates_never_reach_the_edge_array():
     return "circle-centre candidates cannot reach add_distance_dimension"
 
 
+def assert_applied_dimensions_are_checked_against_what_was_drawn():
+    """0.8.156 — `apply_gaps` filled an 8 mm gap with a 1570.796 mm dimension.
+
+    Report 2026-11-05 (P0): candidates are picked by SHEET distance
+    (`|paper span - target| <= tolerance_mm`), but `AddDimension2` measures MODEL geometry.
+    On AM_DOOR the two disagreed by two orders of magnitude — the chosen edge pair was an
+    arc, and the dimension came out as 500π.
+
+    The old code did:
+
+        added = add_distance_dimension(...)
+        applied.append({"value_mm": item["value_mm"],   # the PLANNED value
+                        "ok": bool(added.get("ok"))})   # and only the ok flag
+
+    `added["value_mm"]` — the value actually drawn — was discarded. So the receipt said
+    "filled 8.0" while the sheet carried 1570.796, nobody raised, and because the ledger
+    never saw 8.0 appear, every later call decided the gap was still open and inserted
+    another one. Three runs left 15 absurd dimensions on one sheet.
+
+    This is the same shape as everything else fixed today, one level worse: not a field
+    that lies, but a field that never reads the answer.
+
+    Now the actual value is compared, a mismatch is `ok: false` + `value_mismatch`, and the
+    entry names the position so the caller can delete the wrong dimension. It is NOT
+    auto-deleted: `delete_annotation` matches by name or position, and a position hit could
+    remove a legitimate neighbouring dimension.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+
+    assert 'added.get("value_mm")' in body, (
+        "the value actually drawn is discarded again — the receipt can report a fill that "
+        "never happened")
+    assert "value_mismatch" in body, (
+        "a dimension that measures the wrong thing is no longer reported as a failure")
+    assert '"actual_value_mm"' in body, (
+        "the receipt does not carry what SolidWorks actually measured")
+    assert "inserted_but_wrong" in body, (
+        "the caller is not told that a wrong dimension is now on the sheet")
+    # Guard must run before the success append, not after.
+    mismatch_at = body.find("if _mismatch:")
+    success_at = body.find('"actual_value_mm": _actual,')
+    assert 0 < mismatch_at < success_at, (
+        "the mismatch check runs after the success path — a wrong value would be recorded "
+        "as applied")
+    return "every applied dimension is checked against what SolidWorks actually measured"
+
+
+def assert_gap_status_enum_is_the_same_in_every_consumer():
+    """0.8.156 — one new status, three files, only two updated.
+
+    Report 2026-11-05 (fourth round): `no_applicable_candidate` was added in 0.8.155 and
+    written into the MCP docstring and the parameter schema. It was NOT added to
+    `tests/smoke.py`'s whitelist, so a real run on any part with circular geometry fails
+    with "gap has no status" — a message that states the opposite of the truth.
+
+    The reverse hole existed too: `no_value` is real (value is None) and smoke knows it,
+    but the docstring never listed it.
+
+    This compares the three sets: the statuses the implementation assigns, the statuses
+    smoke accepts, and the statuses the tool description lists. Signature checks cannot see
+    an enum change; this can.
+    """
+    import re as _re
+
+    draw = _read("tools/drawing.py")
+    body = ast.get_source_segment(draw, _function_node(ast.parse(draw),
+                                                       "plan_dimension_gaps")) or ""
+    implemented = set(_re.findall(r'"status"\]\s*=\s*"([a-z_]+)"', body))
+    assert implemented, "no status literals found — the assignment style changed"
+
+    smoke = open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8").read()
+    m = _re.search(r'item\.get\("status"\)\s+in\s+\(([^)]*)\)', smoke)
+    assert m, "smoke no longer whitelists gap statuses"
+    whitelisted = set(_re.findall(r'"([a-z_]+)"', m.group(1)))
+
+    server = _read("server.py")
+    start = server.find("def plan_dimension_gaps(")
+    # The docstring lives AFTER the signature, not in it.
+    sig_end = server.find(") -> str:", start) + len(") -> str:")
+    doc_start = server.find('"""', sig_end)
+    doc_end = server.find('"""', doc_start + 3)
+    doc = server[doc_start:doc_end]
+    documented = set(_re.findall(r"`([a-z_]+)`", doc))
+    documented &= {"fillable", "ambiguous", "no_geometry",
+                   "no_applicable_candidate", "no_value"}
+
+    missing_in_smoke = implemented - whitelisted
+    assert not missing_in_smoke, (
+        "statuses the implementation can return but smoke rejects: %s — a real run will "
+        "fail with 'gap has no status'" % sorted(missing_in_smoke))
+    missing_in_doc = {"no_value"} - documented
+    assert not missing_in_doc, (
+        "statuses missing from the tool description: %s" % sorted(missing_in_doc))
+    return "gap statuses agree across implementation, smoke and description"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4985,6 +5083,8 @@ STATIC_REGRESSIONS = [
     ("0.8.155 descriptions are sentences", assert_tool_descriptions_are_not_broken_sentences),
     ("0.8.155 gap receipt consistent", assert_gap_receipt_does_not_contradict_itself),
     ("0.8.155 circle centre never reaches edges", assert_circle_centre_candidates_never_reach_the_edge_array),
+    ("0.8.156 applied values are checked", assert_applied_dimensions_are_checked_against_what_was_drawn),
+    ("0.8.156 gap statuses agree", assert_gap_status_enum_is_the_same_in_every_consumer),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
