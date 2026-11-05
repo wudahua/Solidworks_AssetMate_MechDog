@@ -6879,14 +6879,41 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                 if _candidate and str(_candidate).strip():
                     _native = str(_candidate)
                     break
-            if _native and "<MOD-" not in _native.upper():
+            # Report 2026-11-04 P1-3, second pass: the native text ALREADY carries the
+            # counterbore. Measured on 接槽 with NOTHING rewritten:
+            #
+            #   slot 1: "<HOLE-SPOT><MOD-DIAM> 8 <HOLE-DEPTH> 4.40"
+            #   slot 3: "2 x <MOD-DIAM> 4.50 完全贯穿"
+            #
+            # That is the counterbore depth AND SolidWorks' own quantity count — everything
+            # the report asked us to synthesise. We were destroying it: the old guard was
+            # `"<MOD-" not in _native`, so ANY native text containing a format code fell
+            # through to SetText and got replaced by a bare "Ø8".
+            #
+            # A `<MOD-DIAM>` format code is how SolidWorks STORES a diameter; the renderer
+            # turns it into Ø. Discarding it because it "looks like a placeholder" is the
+            # mistake. Keep the native text whenever there is any.
+            if _native:
                 item["text"] = _native
                 item["text_source"] = "native"
+                item["native_text_complete"] = True
                 continue
             # The raw "<MOD-DIAM>" must be replaced or it prints literally, but writing only
             # the diameter leaves the DEPTH in another slot: a Ø15 hole then reads "Ø1515"
             # (the report's "Ø9 -> Θ99"). So write the diameter, then blank the other slots.
             diameter = item.get("diameter_mm")
+            # KNOWN LIMIT (2026-11-05): this fallback still prints the diameter sign as the
+            # Greek capital theta (Theta) instead of the diameter sign. It is reached ONLY
+            # when the native text could not be read at all, which is rare — the native path
+            # above is correct and keeps us out of here.
+            #
+            # Three encodings were measured in the exported PDF and all three fail:
+            #   chr(216)      -> Greek theta + 8   (what this line does today)
+            #   "%%c"         -> printed literally (a DWG export code, not an internal one)
+            #   "<MOD-DIAM>"  -> blank             (the token is swallowed by SetText)
+            # The native callouts prove <MOD-DIAM> renders correctly when SolidWorks writes
+            # it itself, so the token is fine and SetText is the problem. Without a working
+            # way to write the sign, an imperfect glyph beats another broken iteration.
             try:
                 target = chr(216) + "%g" % round(float(diameter), 2)
             except Exception:
@@ -6913,43 +6940,33 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             if filled:
                 item["text"] = filled[0]
 
-        # Report 2026-11-04 P1-3: eight callouts for four M4 counterbores carried no
-        # quantity prefix, so the sheet read Ø8 / Ø8 / Ø8 / Ø8 / Ø4.5 / Ø4.5 / Ø4.5 / Ø4.5
-        # instead of "4× Ø4.5". A shop reads a repeated callout as a single instruction.
+        # Report 2026-11-04 P1-3: eight callouts for four M4 counterbores read
+        # Ø8 / Ø8 / Ø8 / Ø8 / Ø4.5 / Ø4.5 / Ø4.5 / Ø4.5, with no quantity prefix.
         #
-        # The prefix is only written when the text is BARE (just a diameter). Adding "4× "
-        # to a callout that also carries a depth would need SetText with the full string,
-        # and SetText cannot clear the other text slots — the measured result of trying is
-        # "Ø1515" (see the KNOWN LIMIT note above). Quantity is reported for every group
-        # either way; only the bare ones get the text rewritten.
-        import re as _re_qty
-        _bare = _re_qty.compile(r"^\s*(?:Ø|%%c)\s*(\d+(?:\.\d+)?)\s*$")
+        # The quantity is now REPORTED per callout (and grouped per diameter), but the text
+        # is NOT rewritten. Three rewrite attempts were measured in the exported PDF and all
+        # three failed, each differently:
+        #
+        #   SetText with a literal Ø        -> "7× Θ8"        (Greek capital theta)
+        #   SetText with the DWG code %%c   -> "7× %%c8"      (printed literally)
+        #   SetText with <MOD-DIAM>         -> "7×" then blank (the token was swallowed)
+        #
+        # Meanwhile the native text needs no help at all. Measured with nothing rewritten:
+        #
+        #   slot 1: "<HOLE-SPOT><MOD-DIAM> 8 <HOLE-DEPTH> 4.40"   -> prints "Ø8  4.40"
+        #   slot 3: "2 x <MOD-DIAM> 4.50 完全贯穿"                 -> prints "2 x Ø4.50 完全贯穿"
+        #
+        # SolidWorks already writes the counterbore depth AND its own quantity count. Every
+        # prefix we added was strictly worse than leaving it alone, so the honest answer is
+        # to stop touching the text and report the grouping instead.
         _by_dia = {}
         for _item in created:
             _dia = _item.get("diameter_mm")
             if _dia is not None:
                 _by_dia.setdefault(round(float(_dia), 2), []).append(_item)
-        _prefixed = 0
         for _dia, _group in _by_dia.items():
-            _count = len(_group)
             for _item in _group:
-                _item["quantity"] = _count
-                if _count < 2:
-                    continue
-                _text = str(_item.get("text") or "")
-                if not _bare.match(_text):
-                    continue          # carries depth or other modifiers: leave it alone
-                _new_text = "%d\u00d7 %s" % (_count, _text.strip())
-                try:
-                    _annotation = _item.get("_display_dimension")
-                    if _annotation is None:
-                        continue
-                    _annotation.SetText(1, _new_text)
-                    _item["text"] = _new_text
-                    _item["text_source"] = "quantity_prefix"
-                    _prefixed += 1
-                except Exception:
-                    continue
+                _item["quantity"] = len(_group)
 
         for _item in created:
             _item.pop("_display_dimension", None)
@@ -6973,7 +6990,6 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                 [round(float(leader_x_m), 4), round(float(leader_y_m), 4)]
                 if leader_x_m is not None and leader_y_m is not None else None),
             unresolved_count=len(unresolved),
-            quantity_prefixed_count=_prefixed,
             callout_groups_by_diameter={("%g" % k): len(v) for k, v in
                                         sorted(_by_dia.items())},
             unresolved_note=(("%d 条标注的文本仍是未解析格式码（<MOD-DIAM> 等），渲染出来是"

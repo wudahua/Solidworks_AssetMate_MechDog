@@ -3845,23 +3845,28 @@ def assert_no_dimension_is_left_off_the_sheet():
         "the clamp runs after the save — the file on disk keeps the off-sheet coordinates")
     return "dimensions are clamped inside the frame before the sheet is saved"
 def assert_hole_callouts_carry_a_quantity():
-    """0.8.135 — repeated hole callouts carried no quantity prefix.
+    """0.8.135 — callouts report their quantity, and their text is left ALONE.
 
-    Report 2026-11-04 P1-3: four M4 counterbores produced eight callouts reading
-    Ø8 / Ø8 / Ø8 / Ø8 / Ø4.5 / Ø4.5 / Ø4.5 / Ø4.5. A shop reads a repeated callout as a
-    single instruction, so the sheet said "drill one Ø4.5" four times.
+    Report 2026-11-04 P1-3 asked for "n× Ø4.5" prefixes and for the counterbore to be
+    merged into one callout. Investigating showed SolidWorks already does both, and that we
+    were the ones destroying it:
 
-    Two traps were found while fixing it:
-      * `item.pop("_annotation")` removed the COM handle so it could not leak into JSON —
-        which also made it unreachable for the prefix pass, so the first version prefixed
-        nothing (`prefixed: 0` with six Ø4.5 callouts sitting right there). The handle now
-        survives under `_display_dimension` and is stripped just before the receipt.
-      * `r"\u00d8"` inside a RAW string is six literal characters, not Ø, so the "is this
-        text bare?" regex matched nothing. Written as the character itself.
+        nothing rewritten -> slot 1: "<HOLE-SPOT><MOD-DIAM> 8 <HOLE-DEPTH> 4.40"
+                             slot 3: "2 x <MOD-DIAM> 4.50 完全贯穿"
+        exported PDF      -> "Ø8  4.40" and "2 x Ø4.50 完全贯穿"
 
-    Only BARE text gets rewritten. A callout that also carries a depth needs SetText with
-    the full string, and SetText cannot clear the other text slots — the measured result is
-    "Ø1515" (see the KNOWN LIMIT note). Quantity is reported for every group regardless.
+    The old guard was `"<MOD-" not in native`, so any native text containing a format code
+    fell through to SetText and got replaced by a bare "Ø8" — which is exactly the
+    "沉孔信息丢失" the report saw. A `<MOD-DIAM>` code is how SolidWorks STORES a
+    diameter; the renderer turns it into Ø.
+
+    Three attempts to write the prefix ourselves all failed in the exported PDF:
+        literal Ø       -> "7× Θ8"       (Greek capital theta)
+        DWG code %%c    -> "7× %%c8"     (printed literally)
+        <MOD-DIAM>      -> "7×" + blank  (token swallowed)
+
+    So the text is never rewritten now. Quantity is reported per callout and grouped per
+    diameter; that is data, not ink, and it cannot be wrong.
     """
     src = _read("tools/drawing.py")
     tree = ast.parse(src)
@@ -3869,18 +3874,27 @@ def assert_hole_callouts_carry_a_quantity():
     assert fn is not None, "add_hole_callouts is gone"
     body = ast.get_source_segment(src, fn) or ""
 
-    assert "quantity_prefixed_count" in body, "the prefix count is not reported"
     assert "callout_groups_by_diameter" in body, (
         "the per-diameter grouping is not reported")
-    assert "_display_dimension" in body, (
-        "the COM handle is popped and lost again — the prefix pass will silently do nothing")
-    assert '_item.pop("_display_dimension"' in body, (
-        "the COM handle is not stripped before the receipt; it must not reach JSON")
-    assert "quantity_prefix" in body, "the text source is not labelled"
-    # The raw-string escape bug: a literal backslash-u sequence in the source is dead code.
-    assert 'r"^\\s*(?:\\u00d8' not in body, (
-        "the regex still uses a raw-string \\u00d8, which can never match Ø")
-    return "callouts report quantity and bare ones get an n× prefix"
+    assert 'item["quantity"]' in body, "per-callout quantity is not reported"
+
+    # The native text must be kept whenever it exists, format codes and all.
+    assert "native_text_complete" in body, "the native-complete flag is gone"
+    assert 'if _native:' in body, (
+        "the native-text guard is conditional again — format codes will trigger a rewrite")
+    code_only = chr(10).join(line.split('#', 1)[0] for line in body.splitlines())
+    assert '"<MOD-" not in _native' not in code_only, (
+        "the old guard is back: any native text with a format code gets overwritten")
+
+    # And no prefix may be written with SetText.
+    # Only the prefix block matters here: from the grouping to the point where the COM
+    # handles are stripped. Later SetText calls belong to unrelated annotation work.
+    prefix_start = code_only.find("_by_dia")
+    prefix_end = code_only.find('_item.pop("_display_dimension"', prefix_start)
+    assert prefix_start > 0 and prefix_end > prefix_start, "prefix block not found"
+    assert "SetText" not in code_only[prefix_start:prefix_end], (
+        "the quantity pass writes text again — all three encodings render wrong")
+    return "quantity reported per callout; native callout text never rewritten"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
