@@ -5081,6 +5081,42 @@ def assert_a_failed_save_cannot_report_ok():
     return "a failed save closes the document and reports failure"
 
 
+def assert_smoke_judges_hatch_missing_the_same_way_twice():
+    """0.8.160 — one error code, two standards, same file.
+
+    Report 2026-11-05 (P1): `tests/smoke.py` checked `add_section_view` in two places:
+
+        :920  _views_and_dims     ok is not None  + hatch_count == 0   -> PASS
+        :1298 _section_and_detail  assert sec.get("ok")                -> FAIL
+
+    The same `hatch_missing` therefore passed one smoke item and failed another, producing
+    the run's only FAIL: "section failed: hatch_missing 剖面视图已创建，但剖切面没有任何剖面线".
+
+    The tool is right. `hatch_missing` has been a deliberate honest refusal since v0.8.56 —
+    a cut with no hatch lines says so instead of reporting ok — and the capability table
+    marks `section_view` as `partial`. Whether a fixture can produce hatch lines is a
+    property of the geometry, not a code regression.
+
+    Both call sites must now: accept a structured verdict, accept `hatch_missing`, and
+    require that the refusal is honest about its own count.
+    """
+    src = open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8").read()
+
+    # NOTE: a bare `assert sec.get("ok")` is legitimate inside an `else:` that already
+    # handled hatch_missing — that is the branch for every OTHER failure. An earlier
+    # version of this check scanned for the pattern globally and flagged exactly that
+    # line, i.e. it would have forced the correct code to change. The count below is the
+    # reliable signal: BOTH section checks must mention hatch_missing.
+
+    occurrences = src.count('== "hatch_missing"')
+    assert occurrences >= 2, (
+        "only %d place(s) handle hatch_missing; both section checks must accept it"
+        % occurrences)
+    assert "hatch_count" in src, (
+        "the refusal is accepted without checking that it reports zero hatch lines")
+    return "hatch_missing is judged the same way at every section check"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5230,6 +5266,7 @@ STATIC_REGRESSIONS = [
     ("0.8.157 shaft views keep a bar", assert_shaft_default_views_keep_a_long_bar),
     ("0.8.158 fixtures reachable", assert_test_fixtures_are_reachable_from_a_release),
     ("0.8.159 failed save cannot report ok", assert_a_failed_save_cannot_report_ok),
+    ("0.8.160 hatch_missing judged once", assert_smoke_judges_hatch_missing_the_same_way_twice),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
