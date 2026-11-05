@@ -4251,34 +4251,67 @@ def assert_no_refuted_claim_is_still_in_the_docs():
 
 
 def assert_docs_numbers_match_the_code():
-    """0.8.143 — three headline numbers in README drifted and nothing noticed.
+    """0.8.154 — this assertion was a false pass for eleven releases.
 
-    Report 2026-11-05: README said "60 个工具函数" (actual 65), "136 条历史回归" (actual 155),
-    "默认 35 项" smoke (actual 39). All three are free text, so `check_readme` — which only
-    verifies the three section headers sum to the registered tool count — never looked.
+    Report 2026-11-05 (second round) opened it up and found three holes:
 
-    A number in prose is a claim like any other. This recomputes each one.
+      1. **It never ran.** The tool-count pattern required the words "扫描 server.py 里"
+         with no line break between "server.py" and "里"; README wraps that sentence across
+         two lines (383-384), so `re.search` returned None and `if m:` treated "no match"
+         as "nothing to check" and skipped the assertion entirely.
+      2. **The reference value was wrong.** The old code counted the literal string
+         "@mcp.tool()" in server.py's source — plain TEXT — and server.py's own module
+         docstring contains that phrase, so it returned 66 against a real 65.
+         `the @mcp.tool() function itself` — so it returned 66 against a real 65.
+         (AST: 65 decorated functions. tools/list: 65.)
+      3. **The third number was never implemented.** The docstring claimed it checked
+         "默认 35 项" smoke; there was no code for it at all.
+
+    So `165/165 passed` was reporting PASS on two README claims that were never read.
+    That is worse than having no assertion: a check that cannot fail looks like coverage.
+
+    Fixed by: AST for the tool count, `assert m` so "not found" fails, a whitespace-tolerant
+    pattern so a line wrap is not a match failure, and the smoke count removed entirely — `r.check`
+    calls live inside functions (41 total, in several helpers), so there is no stable
+    "number of default checks" to compare against, and a number nobody can recompute is a
+    number that will drift again.
     """
     import re
 
     readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
 
-    registered = len(re.findall(r"@mcp\.tool\(\)", _read("server.py")))
-    m = re.search(r"扫描 `server\.py` 里 (\d+) 个工具函数", readme)
-    if m:
-        assert int(m.group(1)) == registered, (
-            "README says %s tools, server.py registers %d"
-            % (m.group(1), registered))
+    # Count DECORATED FUNCTIONS, not the string. A text count picks up the docstring.
+    server_tree = ast.parse(_read("server.py"))
+    registered = 0
+    for node in ast.walk(server_tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                target = dec.func if isinstance(dec, ast.Call) else dec
+                if isinstance(target, ast.Attribute) and target.attr == "tool":
+                    registered += 1
+    assert registered == 65, (
+        "expected 65 registered tools, AST found %d — update this expectation "
+        "deliberately when a tool is added" % registered)
 
-    # The real count is the list itself — a regex over the source misses entries whose
-    # label does not start with a version number (measured: regex 149 vs list 157).
+    # Whitespace-tolerant because README wraps the sentence; `assert m` because not
+    # finding it is a FAILURE, not a no-op. That distinction is the whole report.
+    m = re.search(r"扫描 `server\.py`\s*里 (\d+) 个工具函数", readme)
+    assert m, ("README no longer contains the tool-count sentence; this assertion cannot "
+               "verify anything — restore the sentence or update the pattern")
+    assert int(m.group(1)) == registered, (
+        "README says %s tools, server.py registers %d" % (m.group(1), registered))
+
     static_count = len(STATIC_REGRESSIONS)
-    if static_count:
-        m2 = re.search(r"(\d+) 条历史回归", readme)
-        if m2:
-            assert int(m2.group(1)) == static_count, (
-                "README says %s regression entries, the file has %d"
-                % (m2.group(1), static_count))
+    m2 = re.search(r"(\d+) 条历史回归", readme)
+    assert m2, "README no longer states a regression count; this assertion cannot verify it"
+    assert int(m2.group(1)) == static_count, (
+        "README says %s regression entries, the file has %d"
+        % (m2.group(1), static_count))
+
+    # Deliberately NOT asserted: a smoke-item count. There is no recomputable number —
+    # `r.check` appears inside several helper functions (41 call sites, spread over
+    # helpers whose execution depends on flags), so "how many run by default" is control
+    # flow, not a count. README therefore no longer states one.
     return "README tool count and regression count match the code"
 
 
@@ -4620,6 +4653,58 @@ def assert_bent_leader_admits_it_cannot_be_verified():
     return "bent leaders disclose that their path is SolidWorks' and cannot be checked"
 
 
+def assert_the_doc_number_check_cannot_silently_skip():
+    """0.8.154 — a verifier that cannot fail is worse than no verifier.
+
+    Report 2026-11-05 (second round): `assert_docs_numbers_match_the_code` reported PASS
+    for eleven releases while checking ONE of the three numbers it claimed. The other two
+    were behind `if m:` — and `if m:` reads "pattern did not match" as "nothing to check".
+
+    That is the same failure shape as everything else this project fixed today
+    (`duplicates_removed` always 0, `before` always "", `sheet_point_on_circle` never
+    populated): **the validator itself was never validated.**
+
+    This asserts the shape that makes the check honest:
+      * no `if m:` / `if m2:` guard — the pattern must be asserted to match;
+      * the tool count comes from the AST, not from counting the string in the source;
+      * README states no smoke-item number, because no recomputable value exists for it.
+
+    Verified by mutation on 2026-11-05: breaking either number makes check_all fail with
+    "README says 60 tools, server.py registers 65" / "README says 136...".
+    """
+    src = open(os.path.join(ROOT, "tests", "regressions.py"), encoding="utf-8").read()
+
+    start = src.find("def assert_docs_numbers_match_the_code()")
+    assert start > 0, "the doc-number check is gone"
+    end = src.find("\ndef ", start + 10)
+    body = src[start:end if end > 0 else len(src)]
+
+    # Strip the docstring first: it QUOTES the old `if m:` when explaining the bug, and a
+    # naive substring check would trip on the explanation rather than the code. (Measured:
+    # it did, on the first run of this very assertion.)
+    _code = body
+    _doc_start = body.find('"""')
+    if _doc_start >= 0:
+        _doc_end = body.find('"""', _doc_start + 3)
+        if _doc_end > _doc_start:
+            _code = body[:_doc_start] + body[_doc_end + 3:]
+    assert "if m:" not in _code, (
+        "the match is guarded again — an unmatched pattern will silently pass")
+    assert "assert m," in _code, (
+        "a missing sentence is not treated as a failure")
+    assert "if m2:" not in _code, "the second match is guarded again"
+    assert "assert m2," in _code, "the regression count is not asserted to be found"
+    assert "ast.parse(_read(\"server.py\"))" in body, (
+        "the tool count is back to a text count, which picks up the docstring")
+    assert 're.findall(r"@mcp' not in body, (
+        "counting the decorator string again; server.py's docstring mentions it")
+
+    readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    assert "默认 **35 项**" not in readme, (
+        "README states a smoke count again; there is no recomputable value for it")
+    return "the doc-number check cannot pass without actually reading the numbers"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4760,6 +4845,7 @@ STATIC_REGRESSIONS = [
     ("0.8.150 circle detection needs no vertex", assert_circle_detection_does_not_need_a_vertex),
     ("0.8.151 ambiguous gap can be placed", assert_gap_planner_can_place_an_ambiguous_gap),
     ("0.8.152 bent leader is disclosed", assert_bent_leader_admits_it_cannot_be_verified),
+    ("0.8.154 doc check cannot skip", assert_the_doc_number_check_cannot_silently_skip),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

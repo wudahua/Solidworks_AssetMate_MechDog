@@ -7572,8 +7572,16 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                         # could not match anything, at any tolerance.
                         span_mm = span_m * 1000.0
                         if abs(span_mm - target) <= tolerance_mm:
+                            _ia, _ib = points[i][0], points[j][0]
+                            # Circle centres carry SYNTHETIC NEGATIVE indices (see above).
+                            # `add_distance_dimension` indexes a REAL edge array, so such a
+                            # pair can never be selected. Mark it here instead of letting
+                            # the caller discover it as a misleading `bad_edge_index`.
+                            _circle = _ia < 0 or _ib < 0
                             matches.append({
-                                "edge_a": points[i][0], "edge_b": points[j][0],
+                                "edge_a": _ia, "edge_b": _ib,
+                                "candidate_kind": ("circle_centre" if _circle else "edge"),
+                                "applicable": not _circle,
                                 "axis": axis, "measured_mm": round(span_mm, 3),
                                 "delta_mm": round(span_mm - target, 4),
                                 "centres": [[round(x1, 4), round(y1, 4)],
@@ -7581,6 +7589,9 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                             })
             matches.sort(key=lambda m: abs(m["delta_mm"]))
             entry["candidates"] = matches[:max_candidates_per_gap]
+            entry["applicable_candidates"] = [
+                i for i, c in enumerate(entry["candidates"])
+                if c.get("applicable", True)]
             if len(matches) == 1:
                 entry["status"] = "fillable"
             elif len(matches) > 1:
@@ -7589,6 +7600,8 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
 
         fillable = [r for r in results if r["status"] == "fillable"]
         applied = []
+        _all_cands = [c for r in results for c in (r.get("candidates") or [])]
+        _candidates_skipped = 0
         # Report 2026-11-05: `apply_gaps=True` could only act on `status == "fillable"`,
         # which requires EXACTLY ONE candidate. The reported part had 7 gaps, all
         # `ambiguous` with 2-3 candidates each at delta_mm 0.0 — so the tool announced ten
@@ -7617,15 +7630,36 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                 _cands = item.get("candidates") or []
                 if not _cands:
                     continue
-                cand = _cands[min(max(_cand_i, 0), len(_cands) - 1)]
+                _pick = min(max(_cand_i, 0), len(_cands) - 1)
+                cand = _cands[_pick]
+                if not cand.get("applicable", True):
+                    # Never pass a synthetic negative index to a function that indexes a
+                    # real edge array. Report an explicit limitation and tell the caller
+                    # which candidate indices WOULD work for this gap — without guessing
+                    # a different candidate on their behalf.
+                    _candidates_skipped += 1
+                    applied.append({"value_mm": item["value_mm"],
+                                    "gap_index": _idx,
+                                    "candidate_index": _pick,
+                                    "candidate_kind": cand.get("candidate_kind"),
+                                    "edge_a": cand.get("edge_a"),
+                                    "edge_b": cand.get("edge_b"),
+                                    "ok": False,
+                                    "error": "circle_centre_not_applicable",
+                                    "applicable_candidates": item.get(
+                                        "applicable_candidates") or [],
+                                    "message": ("candidate uses a circle-centre synthetic "
+                                                "index; choose via applicable_candidates")})
+                    continue
                 pt = cand["centres"][0]
                 added = add_distance_dimension(
                     drawing_path, cand["edge_a"], cand["edge_b"],
                     x_m=pt[0], y_m=pt[1] - 0.015)
                 applied.append({"value_mm": item["value_mm"],
                                 "gap_index": _idx,
-                                "candidate_index": _cand_i,
-                                "edge_a": cand.get("edge_a"),
+                                    "candidate_index": _pick,
+                                    "candidate_kind": cand.get("candidate_kind"),
+                                    "edge_a": cand.get("edge_a"),
                                 "edge_b": cand.get("edge_b"),
                                 "ok": bool(added.get("ok")),
                                 "error": added.get("error"),
@@ -7645,12 +7679,21 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             ambiguous_not_applied=[r["value_mm"] for r in results
                                    if r["status"] == "ambiguous"],
             applied_count=len([a for a in applied if a["ok"]]),
+            candidates_total=len(_all_cands),
+            candidates_applicable=sum(1 for c in _all_cands
+                                      if c.get("applicable", True)),
+            candidates_circle_centre=sum(1 for c in _all_cands
+                                         if c.get("candidate_kind") == "circle_centre"),
+            candidates_skipped=_candidates_skipped,
             gaps=results,
             coverage=rec.get("coverage"),
             note=("apply_gaps=False (default): this is a PLAN. Each gap lists the edge pairs "
                   "that measure its value. Only `fillable` gaps — exactly one matching pair — "
                   "are applied when apply_gaps=True; `ambiguous` ones are left for a human "
-                  "because picking one would be a guess."),
+                  "because picking one would be a guess. Candidates tagged "
+                  "`candidate_kind: circle_centre` carry synthetic negative indices and are "
+                  "`applicable: false`: they cannot be passed to add_distance_dimension. "
+                  "Use each gap's `applicable_candidates` to choose an `apply_candidate`."),
         )
     except Exception as exc:
         return error("dimension_gaps_failed", str(exc))
