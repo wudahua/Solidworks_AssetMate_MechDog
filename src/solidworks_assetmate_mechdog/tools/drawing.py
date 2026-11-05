@@ -3112,14 +3112,42 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                 slot = TITLE_SLOTS.get(field)
                 note = _note_at(sheet, slot) if slot else None
                 if note is not None:
+                    # `INote.GetText` is a METHOD; this read the bound method object and
+                    # then `isinstance(before, str)` quietly turned it into "". That is why
+                    # the 2026-11-05 report saw `"before": ""` for `material` while the
+                    # template visibly printed POM in that cell — the cell was NOT empty,
+                    # the read never happened. Every "is this cell free?" decision downstream
+                    # was therefore made on a value that was always "".
                     try:
-                        before = note.GetText
+                        _raw_before = note.GetText
+                        if callable(_raw_before):
+                            _raw_before = _raw_before()
+                        before = _raw_before if isinstance(_raw_before, str) else ""
                     except Exception:
                         before = ""
-                    planned.append({
+                    _entry = {
                         "field": field, "before": before if isinstance(before, str) else "",
                         "after": new_value, "note": note, "via": "position",
-                    })
+                    }
+                    _entry = {
+                        "field": field, "before": before if isinstance(before, str) else "",
+                        "after": new_value, "note": note, "via": "position",
+                    }
+                    if slot:
+                        _entry["cell_slot_m"] = [round(float(v), 4) for v in slot]
+                    _before = _entry["before"]
+                    if _before.strip() and _before.strip() != str(new_value):
+                        # The slot is a hard-coded coordinate measured on one template.
+                        # Report 2026-11-05: `material` resolved to the strip above
+                        # 共 张 第 张 / 版本 while the template's own POM cell already said
+                        # POM — two POMs on the sheet, both reported ok.
+                        _entry["already_filled"] = True
+                        _entry["warning"] = (
+                            "该格已有内容 %r，与要写入的 %r 不同。可能是模板静态文字，"
+                            "也可能是同名字段的另一处副本——cell_slot_m 是本次使用的"
+                            "固定坐标，请核对它是否落在你以为的格子里。"
+                            % (_before, new_value))
+                    planned.append(_entry)
                 elif slot:
                     # P1-4 third tier: the cell can be an EMPTY table cell with no note at
                     # all — the report on gb_a3.drwdot came back with planned: [] for every

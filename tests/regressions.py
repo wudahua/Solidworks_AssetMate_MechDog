@@ -4443,6 +4443,48 @@ def assert_tolerance_types_follow_the_real_enum():
     return "tolerance type codes match swTolType_e"
 
 
+def assert_title_block_reads_before_it_writes():
+    """0.8.149 — "before" was always empty because the getter was never called.
+
+    Report 2026-11-05 (P1-D): the title block receipt showed
+
+        {"field":"material","before":"","after":"POM","via":"position",
+         "note_name":null,"cell_position_m":null}
+
+    while the template visibly printed POM in that cell. The report read this as "the tool
+    wrote into the wrong cell" — and it may have — but the evidence it was based on was
+    phoney: `INote.GetText` is a METHOD, and the code did
+
+        before = note.GetText            # bound method, not text
+        ... isinstance(before, str) ...  # quietly False -> ""
+
+    so `before` was "" for every cell on every drawing. Every downstream "is this cell
+    free?" decision was made on a value that could never be non-empty.
+
+    Measured after the fix on 接槽: `before: "接槽"` for the name cell (non-empty, as it
+    should be) and `already_filled: true` where the existing text differs from the new one.
+
+    Also added: `cell_slot_m` and `already_filled`, so a caller can see which hard-coded
+    coordinate was used and whether it landed on text that was already there.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "set_title_block")
+    assert fn is not None
+    body = ast.get_source_segment(src, fn) or ""
+
+    assert "_raw_before = note.GetText" in body, (
+        "the before-read is gone again; the receipt will claim every cell is empty")
+    assert "callable(_raw_before)" in body, (
+        "the getter is not called conditionally — a property would raise, a method would "
+        "return the bound object and be discarded")
+    assert "already_filled" in body, (
+        "an overwrite of an already-populated cell is no longer reported")
+    assert "cell_slot_m" in body, (
+        "the receipt does not say which fixed coordinate was used")
+    return "title block reads the existing text before deciding whether to overwrite"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4579,6 +4621,7 @@ STATIC_REGRESSIONS = [
     ("0.8.146 default views carry the holes", assert_default_views_include_the_face_with_holes),
     ("0.8.147 ledger header intact", assert_the_regression_ledger_is_intact),
     ("0.8.148 tolerance enum matches SW", assert_tolerance_types_follow_the_real_enum),
+    ("0.8.149 title block reads before write", assert_title_block_reads_before_it_writes),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
