@@ -245,6 +245,40 @@ def assign_materials(paths, rules=None, database=DEFAULT_DATABASE, config="",
     )
 
 
+#: Resolved .sldmat paths, keyed by the database argument. Report 2026-11-05 (P2): the
+#: bare-filename branch walked PROGRAMDATA + APPDATA + PROGRAMFILES to find the file, which
+#: measured 31.8 s per call — and smoke calls it at least once, while `_planning` may hit it
+#: again. Only the PATHS are cached: the library itself can be edited or replaced between
+#: calls, and re-reading it is cheap compared to walking three trees.
+_LIBRARY_PATH_CACHE = {}
+
+
+#: Result of the "suggest something instead" scan, which is a recursive glob over
+#: PROGRAMFILES and costs ~9 s warm. Same policy as above: paths only, and empty is a
+#: cacheable answer.
+_AVAILABLE_CACHE = []
+
+
+def _forget_library_cache():
+    """Drop both path caches. Exposed for tests and for long-lived sessions."""
+    _LIBRARY_PATH_CACHE.clear()
+    _AVAILABLE_CACHE.clear()
+
+
+def _available_library_paths():
+    """Every .sldmat under the install roots, cached after the first scan."""
+    global _AVAILABLE_CACHE
+    if _AVAILABLE_CACHE:
+        return list(_AVAILABLE_CACHE)
+    found = []
+    for root in (os.environ.get("PROGRAMDATA", ""), os.environ.get("APPDATA", ""),
+                 os.path.join(os.environ.get("PROGRAMFILES", ""), "SOLIDWORKS Corp")):
+        if root and os.path.isdir(root):
+            found += glob.glob(os.path.join(root, "**", "*.sldmat"), recursive=True)
+    _AVAILABLE_CACHE = list(found)
+    return list(_AVAILABLE_CACHE)
+
+
 def material_library(database=DEFAULT_DATABASE):
     """List material names available in a material library.
 
@@ -259,26 +293,33 @@ def material_library(database=DEFAULT_DATABASE):
     elif os.path.isdir(database):
         candidates = sorted(glob.glob(os.path.join(database, "**", "*.sldmat"), recursive=True))
     else:
-        roots = [
-            os.environ.get("PROGRAMDATA", ""),
-            os.environ.get("APPDATA", ""),
-            os.path.join(os.environ.get("PROGRAMFILES", ""), "SOLIDWORKS Corp",
-                         "SOLIDWORKS", "lang"),
-        ]
-        for root in roots:
-            if not root or not os.path.isdir(root):
-                continue
-            for dirpath, _dirnames, filenames in os.walk(root):
-                for filename in filenames:
-                    if filename.lower() == database.lower():
-                        candidates.append(os.path.join(dirpath, filename))
+        _key = str(database).lower()
+        if _key in _LIBRARY_PATH_CACHE:
+            candidates = list(_LIBRARY_PATH_CACHE[_key])
+        else:
+            roots = [
+                os.environ.get("PROGRAMDATA", ""),
+                os.environ.get("APPDATA", ""),
+                os.path.join(os.environ.get("PROGRAMFILES", ""), "SOLIDWORKS Corp",
+                             "SOLIDWORKS", "lang"),
+            ]
+            for root in roots:
+                if not root or not os.path.isdir(root):
+                    continue
+                for dirpath, _dirnames, filenames in os.walk(root):
+                    for filename in filenames:
+                        if filename.lower() == database.lower():
+                            candidates.append(os.path.join(dirpath, filename))
+            # Cache even an EMPTY result: "not found" is exactly the case that pays the
+            # 31.8 s walk most often (a wrong name retried by every caller).
+            _LIBRARY_PATH_CACHE[_key] = list(candidates)
 
     if not candidates:
-        available = []
-        for root in (os.environ.get("PROGRAMDATA", ""), os.environ.get("APPDATA", ""),
-                     os.path.join(os.environ.get("PROGRAMFILES", ""), "SOLIDWORKS Corp")):
-            if root and os.path.isdir(root):
-                available += glob.glob(os.path.join(root, "**", "*.sldmat"), recursive=True)
+        # The "not found" path scans a THIRD time just to suggest alternatives, and that
+        # scan is recursive-glob over PROGRAMFILES — measured 9 s on this machine even with
+        # the path cache warm (40.9 s cold, 9.8 s warm before this). A caller retrying a
+        # wrong name paid it every time.
+        available = _available_library_paths()
         return error("library_not_found",
                      "No material library matching %r" % database,
                      "Available: %s" % (available[:6] or "none found"))

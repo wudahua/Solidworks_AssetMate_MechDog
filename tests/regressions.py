@@ -5165,6 +5165,45 @@ def assert_document_ownership_is_tri_state():
     return "document ownership distinguishes empty, known and unknown"
 
 
+def assert_the_material_library_scan_is_cached():
+    """0.8.162 — 31.8 s per call, and the "not found" path scanned three times.
+
+    Report 2026-11-05 (P2 + §6): `material_library()` with a bare filename walked
+    PROGRAMDATA + APPDATA + PROGRAMFILES looking for the .sldmat — measured **31.8 s for one
+    call**, and smoke calls it at least once. The report also noted it as the one definite
+    optimisation in an otherwise unexplained 10x slowdown.
+
+    Caching it revealed a second cost the report could only measure as "9 s warm": the
+    failure path runs a SEPARATE recursive glob to suggest alternatives, so a wrong name paid
+    the walk again — every time.
+
+    Measured after caching (same machine, cold then warm):
+        before: 40.9 s / 9.8 s / 9.1 s
+        after : 19.6 s / 0.00 s / 0.00 s
+
+    Only PATHS are cached, never parsed materials — a library can be edited between calls,
+    and re-reading one file is cheap next to walking three trees. Empty results are cached
+    too: "not found" is the case that repeats most.
+
+    `_forget_library_cache()` exists so a long-lived session (or a test) can force a rescan
+    after installing a library.
+    """
+    src = _read("tools/material.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "material_library")) or ""
+
+    assert "_LIBRARY_PATH_CACHE" in body, (
+        "the three-tree walk is uncached again — every call pays the full scan")
+    assert "_available_library_paths()" in body, (
+        "the not-found path scans separately again; a wrong name pays two walks per retry")
+    assert "_forget_library_cache" in src, (
+        "the cache cannot be dropped; a session that installs a library can never find it")
+
+    helper = _function_node(ast.parse(src), "_available_library_paths")
+    assert helper is not None, "the cached alternatives scan is gone"
+    return "the material library scan is cached and can be invalidated"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5316,6 +5355,7 @@ STATIC_REGRESSIONS = [
     ("0.8.159 failed save cannot report ok", assert_a_failed_save_cannot_report_ok),
     ("0.8.160 hatch_missing judged once", assert_smoke_judges_hatch_missing_the_same_way_twice),
     ("0.8.161 doc ownership tri-state", assert_document_ownership_is_tri_state),
+    ("0.8.162 library scan cached", assert_the_material_library_scan_is_cached),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
