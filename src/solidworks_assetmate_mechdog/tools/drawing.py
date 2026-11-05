@@ -1636,14 +1636,28 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             # 0.297 sheet). A dimension hugging the outline is readable; an off-sheet one
             # is not.
             offset = min(gap_m + slot * eff_step, max(room, 0.0))
+            # Clamp the PERPENDICULAR axis too. `place_outside` used to move only the
+            # stacking direction and keep the other coordinate untouched, on the assumption
+            # that SolidWorks had placed the dimension somewhere sensible along it. It has
+            # not: measured on 接槽, an 8.6 mm dimension arrived at y = -0.176 — 176 mm BELOW
+            # a 297 mm sheet — and pushing it to the right side of its view preserved that y,
+            # so the "fixed" dimension still printed outside the frame.
+            #
+            # A dimension is only placed when it is on the sheet in BOTH axes.
+            cross = position[1] if side in ("left", "right") else position[0]
+            if safe is not None:
+                if side in ("left", "right"):
+                    cross = min(max(cross, safe[1]), safe[3])
+                else:
+                    cross = min(max(cross, safe[0]), safe[2])
             if side == "left":
-                target = (box[0] - offset, position[1])
+                target = (box[0] - offset, cross)
             elif side == "right":
-                target = (box[2] + offset, position[1])
+                target = (box[2] + offset, cross)
             elif side == "bottom":
-                target = (position[0], box[1] - offset)
+                target = (cross, box[1] - offset)
             else:
-                target = (position[0], box[3] + offset)
+                target = (cross, box[3] + offset)
             try:
                 _t0 = time.perf_counter()
                 annotation.SetPosition(float(target[0]), float(target[1]), 0)
