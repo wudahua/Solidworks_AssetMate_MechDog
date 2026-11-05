@@ -104,7 +104,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `move_annotation` | **移动标注**到图纸坐标（米） |
 | `set_dimension_position` | **移动单个尺寸**到图纸坐标（米），校验目标是尺寸并回读数值与位置 |
 | `add_bom_table` | **原生 BOM 明细栏**（Indented→TopLevelOnly 两步，10 行 4 列含数量） |
-| `add_sheet_line` | **图纸空间直线**（米）——明细栏网格、图框内表格 |
+| `add_sheet_line` | ⚠️ **实测不渲染**（0 / 16,041,784 像素差分）。`CreateLine` 返回对象、回执 ok，但图上和 PDF 里都没有。默认 `verify_render=True` 返回 `line_not_rendered`。**不要用于图框、表格或引线。** |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
 | `list_drawing_edges` | 视图可见边（索引 + 模型坐标 + **图纸坐标** `sheet_start/end`；失败时 `sheet_projected:false` 带原因） |
 | `export_drawing` | PDF / DWG / DXF |
@@ -219,7 +219,6 @@ pending:   27/53 尺寸读不到关联
 
 | 限制 | 原因 | 影响 |
 |---|---|---|
-| **形位公差框格第一格是文字，不是几何符号** | `SetFrameSymbols2` 传 `<MOD-FLAT-PAR>` 这类格式码只会被当字面文本，不会解析成 GD&T 符号；v0.8.20 起改写中文文字（如「位置度」）并用 `GetFrameSymbols2` 回读校验，写不进就删框报错 | 框格有、数值对、第一格可读；真正的几何符号仍需界面补 |
 | **孔标注只覆盖朝向观察者的孔边** | 同一孔的两个面只有正面能标，背面返回 null（实测 door.SLDPRT：Ø8/Ø15 成功，Ø6 背面 8 条全失败） | 记 `hidden_side`，用 Ø 尺寸补；或换视图 |
 | **`material_library` 按文件名查找不可靠** | 传绝对路径可用（UTF-16 已修）；按文件名在 PROGRAMDATA/APPDATA 下遍历可能漏 | 建议传完整路径 |
 | **A3 最多 3 个视图** | 视图多了会互相挤占；剖视的强制对齐已可用 `set_view(break_alignment=True)` 解除（内部先 `IView.RemoveAlignment` 再写坐标） | 必要时拆两张图（结构 + 展开） |
@@ -227,9 +226,8 @@ pending:   27/53 尺寸读不到关联
 | **尺寸跨视图去重需外部传值** | 图纸尺寸是投影长度，同一条边不同视图值不同 | 去重只能靠调用方给 `known_values` |
 | **`produce_drawing` 会多标尺寸** | 默认 `prune_to_plan=true` 已按规划删除多余尺寸；`dimension_filter` 全不匹配时一条不删 | 看 `dimension_gap.pruned_to_plan` 与 `filter_aborted` |
 | **图面利用率低** | 布局只保证不越界，不保证填满 | 视图偏小、留白多，需人工放大 |
-| **件号圆圈（BOM balloon）** | `InsertBOMBalloon2` 需 9 个必填参数；`InsertBalloon` 在 SW2024/SW2026 均 `DISP_E_UNKNOWNNAME` | 用 `add_note` 写文字 + `add_sheet_line` 画引线，或界面手插 |
+| **件号圆圈（BOM balloon）** | `InsertBOMBalloon2` 需 9 个必填参数；`InsertBalloon` 在 SW2024/SW2026 均 `DISP_E_UNKNOWNNAME` | 用 `add_note` 写数字（**不要配 `add_sheet_line` 画引线**——该工具在本环境不渲染），或界面手插 |
 | **展开计算与校验（flat_pattern_calc）** | 工具不读 K 因子，展开由 SolidWorks 自己算 | 用 `flat_pattern_report` 声明依据，不要拿它做展开验证 |
-| **移动父视图时切割线跟随** | 四组接口都够不着图纸上的线（详见 com-quirks 第二十六节）；0.8.32 只修正了初始位置 | **先摆视图再建剖面**；已移过就删了重建 |
 | **把驱动尺寸补插到第二个视图** | `InsertModelAnnotations3` 是文档级幂等，参数改不出来 | 用 `list_drawing_edges` + `add_drawing_dimension(view_name=...)` 在该视图重新标注 |
 | **建模 / 特征创建（geometry_creation）** | 本工具只处理已有模型的出图，不做 CAD 建模 | 用 SolidWorks 或 solidpilot 类工具建模 |
 | **批量读图需逐张关闭** | SolidWorks 开 40+ 文档后任何新文件都打不开 | 批量脚本必须 `CloseDoc` |
@@ -242,7 +240,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 136 条历史回归
+python tests/check_all.py     # 秒级：语法 + 结构 + 157 条历史回归
 python tests/smoke.py         # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
 

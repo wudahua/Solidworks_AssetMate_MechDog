@@ -4192,6 +4192,88 @@ def assert_native_callout_text_is_not_called_unresolved():
     return "native callout text is never reported as unresolved"
 
 
+def assert_no_refuted_claim_is_still_in_the_docs():
+    """0.8.143 — the capability table was right and the docs around it were still wrong.
+
+    Report 2026-11-05 (second report, section 3): `check_capabilities` had been corrected to
+    say `geometric_tolerance: verified` with a note reading "两个历史结论都已过期，写在这里
+    免得有人照着旧文档直接放弃这项能力" — while README's boundary table still said the frame
+    symbol is text and "真正的几何符号仍需界面补", and two tool descriptions still said the
+    opposite of their own capability entry.
+
+    README line 218 says "若与工具输出冲突，以工具为准", so a reader is told to trust the
+    tool — but they read the table first, and the table told them to give up.
+
+    `check_readme` only counted tools and checked that names appeared; nothing read the
+    claims. This scans the three places a claim can live: README, capabilities.py, and the
+    MCP docstrings in server.py.
+
+    Each string below was measured false on this build. If one comes back, it is a
+    regression, not a wording preference.
+    """
+    REFUTED = [
+        # GD&T: native symbols since SW2023; measured symbol_is_text: false.
+        "第一格是文字",
+        "真正的几何符号仍需界面补",
+        "符号是文字",
+        "readable TEXT",
+        # add_sheet_line / weld triangle: 0 changed pixels out of 16,041,784.
+        "it looks right and prints right",
+        "add_note 写文字 + add_sheet_line",
+        # Section line follows the view since v0.8.57 (drawn in view sketch space).
+        "四组接口都够不着",
+        "已移过就删了重建",
+    ]
+
+    sources = {
+        "README.md": open(os.path.join(ROOT, "README.md"), encoding="utf-8").read(),
+        "tools/capabilities.py": _read("tools/capabilities.py"),
+        "server.py": _read("server.py"),
+    }
+
+    hits = []
+    for name, text in sources.items():
+        for claim in REFUTED:
+            if claim in text:
+                hits.append("%s still says %r" % (name, claim))
+    assert not hits, (
+        "refuted claims are back in the docs (the capability table disagrees with them): "
+        + "; ".join(hits))
+    return "no refuted claim appears in README, capabilities or tool docstrings"
+
+
+def assert_docs_numbers_match_the_code():
+    """0.8.143 — three headline numbers in README drifted and nothing noticed.
+
+    Report 2026-11-05: README said "60 个工具函数" (actual 65), "136 条历史回归" (actual 155),
+    "默认 35 项" smoke (actual 39). All three are free text, so `check_readme` — which only
+    verifies the three section headers sum to the registered tool count — never looked.
+
+    A number in prose is a claim like any other. This recomputes each one.
+    """
+    import re
+
+    readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+
+    registered = len(re.findall(r"@mcp\.tool\(\)", _read("server.py")))
+    m = re.search(r"扫描 `server\.py` 里 (\d+) 个工具函数", readme)
+    if m:
+        assert int(m.group(1)) == registered, (
+            "README says %s tools, server.py registers %d"
+            % (m.group(1), registered))
+
+    # The real count is the list itself — a regex over the source misses entries whose
+    # label does not start with a version number (measured: regex 149 vs list 157).
+    static_count = len(STATIC_REGRESSIONS)
+    if static_count:
+        m2 = re.search(r"(\d+) 条历史回归", readme)
+        if m2:
+            assert int(m2.group(1)) == static_count, (
+                "README says %s regression entries, the file has %d"
+                % (m2.group(1), static_count))
+    return "README tool count and regression count match the code"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4322,6 +4404,8 @@ STATIC_REGRESSIONS = [
     ("0.8.140 impl params reach MCP", assert_every_implementation_param_reaches_mcp),
     ("0.8.141 closes only its own documents", assert_pipeline_closes_only_what_it_opened),
     ("0.8.142 native callout text is fine", assert_native_callout_text_is_not_called_unresolved),
+    ("0.8.143 no refuted claim in docs", assert_no_refuted_claim_is_still_in_the_docs),
+    ("0.8.143 doc numbers match code", assert_docs_numbers_match_the_code),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

@@ -385,9 +385,17 @@ def add_weld_symbol(drawing_path: Annotated[str, Field(description="Existing .SL
     **Read `representation` in the receipt: it is `sketch_block`, not a native weld
     annotation.** On this build `IWeldSymbol` stores the symbol name as text but never
     instantiates the geometry — `SetText` returns True, `GetText(2)` reads back "FILL", and
-    the sheet shows only a leader and the number. So this tool draws the standard GB/ISO
-    fillet symbol from sheet lines instead: it looks right and prints right, but it does
-    not update with a weldment feature and is not queryable as an IWeldSymbol.
+    the sheet shows only a leader and the number.
+
+    WARNING — the sheet-line fallback DOES NOT RENDER. Measured 2026-11-04: the triangle
+    produces 0 changed pixels out of 16,041,784 when the PDF is compared before/after, the
+    same result `add_sheet_line` reports for any stroke drawn in sheet space. `segments: 5`
+    only counts CreateLine calls that did not raise. The tool therefore returns
+    `weld_not_rendered` instead of pretending a symbol was drawn. Capability status:
+    `weld_symbol: unsupported`.
+
+    An earlier version of this docstring claimed the fallback rendered correctly; that
+    claim was wrong, and it is the reason this warning now lives here.
 
     Only `weld_type="fillet"` is supported. A groove/plug/spot symbol is a different shape
     and is refused with `weld_type_unsupported` rather than approximated — a wrong weld
@@ -615,9 +623,14 @@ def add_geometric_tolerance(
 
     symbol: none / position / flatness / perpendicularity / parallelism / concentricity /
     circularity / cylindricity / profile_line / profile_surface / angularity / symmetry /
-    runout / total_runout. The symbol is written as readable TEXT into the first frame
-    cell (SolidWorks does not parse <MOD-*> format codes here) and verified by read-back;
-    a failed write returns gtol_symbol_not_applied instead of a frame with no symbol.
+    runout / total_runout. On SW2023+ this goes through the NATIVE GD&T path: the frame
+    carries a real geometric symbol (measured `symbol_is_text: false`, `symbol_written:
+    'IGTOL-PERP'`, PDF renders ⊥ / ⌖ / ▱). The older Chinese-text fallback is only used
+    when the native write fails, and that case returns `gtol_symbol_not_applied` rather
+    than a frame with no symbol.
+
+    An earlier version of this docstring described the symbol as text, which contradicted
+    its own first sentence and the `geometric_tolerance: verified` capability entry.
     Pass view_name + edge_index to attach the leader to geometry.
     """
     return _json(drawing.add_geometric_tolerance(

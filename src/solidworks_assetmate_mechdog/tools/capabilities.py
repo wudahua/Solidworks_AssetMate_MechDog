@@ -81,8 +81,9 @@ CAPABILITIES = [
                 "`InsertBOMBalloon` 参数数目无效；`InsertBalloon` **名字解析不到**"
                 "（DISP_E_UNKNOWNNAME，GetIDsOfNames 直接 False）。"
                 "用户反馈在 SW2026 上 `InsertBalloon` 同样是 UNKNOWNNAME，与本地一致。"),
-        "workaround": ("件号暂时用 add_note 写文字 + add_sheet_line 画引线；"
-                       "或界面手工插（明细栏行号本身已经正确）"),
+        "workaround": ("件号用 add_note 写数字——**不要配 add_sheet_line 画引线**："
+                       "该工具在本环境 0 像素渲染（同文件 45 行外的 sheet_sketch_space "
+                       "条目已写明）；或界面手工插（明细栏行号本身已经正确）"),
         "evidence": ("2026-10-29 实测 SW2024 SP4：InsertBOMBalloon2 → 非选择性的参数；"
                      "InsertBOMBalloon → 无效的参数数目；InsertBalloon → 未知名称。"
                      "用户反馈 SW2026 同款失败。"),
