@@ -4371,6 +4371,31 @@ def assert_default_views_include_the_face_with_holes():
     return "default views include the face that carries the holes"
 
 
+def assert_the_regression_ledger_is_intact():
+    """0.8.147 — the ledger's own header went missing four times in one session.
+
+    Every time, the cause was the same: an edit whose `old_string` was exactly
+    `STATIC_REGRESSIONS = [` and whose `new_string` forgot to put it back. The result was a
+    SyntaxError ('unmatched ]'), which `check_all` did catch — so nothing shipped broken.
+
+    This assertion is not about catching the bug (the parser already does). It is about the
+    MESSAGE: "unmatched ]" at line 4145 says nothing about what happened, while this says
+    the ledger header is missing. Cheap, and the next person does not have to work it out.
+    """
+    import re as _re
+    src = open(os.path.join(ROOT, "tests", "regressions.py"), encoding="utf-8").read()
+    # Only a LINE-START occurrence is the definition. This function necessarily contains
+    # the same characters twice (once as the pattern, once in this comment's neighbourhood),
+    # and a plain .count() counted those and failed on its own source — measured: 3.
+    count = len(_re.findall(r"^STATIC_REGRESSIONS = \[", src, _re.M))
+    assert count == 1, (
+        "the ledger header appears %d times; it must appear exactly once "
+        "(a lost header means an edit dropped it, and the entry list follows it)" % count)
+    assert len(STATIC_REGRESSIONS) >= 100, (
+        "the ledger has only %d entries — did an edit truncate it?" % len(STATIC_REGRESSIONS))
+    return "the regression ledger has one header and %d entries" % len(STATIC_REGRESSIONS)
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4505,6 +4530,7 @@ STATIC_REGRESSIONS = [
     ("0.8.143 doc numbers match code", assert_docs_numbers_match_the_code),
     ("0.8.144 derived dims reported", assert_derived_dimensions_are_reported_as_unfillable),
     ("0.8.146 default views carry the holes", assert_default_views_include_the_face_with_holes),
+    ("0.8.147 ledger header intact", assert_the_regression_ledger_is_intact),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
