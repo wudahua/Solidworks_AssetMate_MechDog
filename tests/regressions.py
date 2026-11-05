@@ -4396,6 +4396,53 @@ def assert_the_regression_ledger_is_intact():
     return "the regression ledger has one header and %d entries" % len(STATIC_REGRESSIONS)
 
 
+def assert_tolerance_types_follow_the_real_enum():
+    """0.8.148 — "bilateral" was asking SolidWorks for LIMIT.
+
+    Report 2026-11-05 (P0-A): a 14.20 with +0.05/-0.05 printed as "-0.05" above "+0.05" —
+    upper deviation below lower, a negative tolerance band, illegal on a drawing.
+
+    The table had every name shifted by one against `swTolType_e`:
+
+        name        was   swTolType_e
+        basic        1    swTolBILAT     1
+        bilateral    2    swTolLIMIT     2   <- prints two LIMIT VALUES, not two deviations
+        limit        3    swTolSYMMETRIC 3
+        symmetric    4    swTolMIN       4
+        min          5    swTolMAX       5
+        max          6    swTolFIT       6
+        fit          7    swTolFITTOLONLY 7
+        basic        -    swTolBASIC     8
+
+    So `tolerance_type_readback: 2` was reported as success while the sheet carried limit
+    values. After the fix the same call reads back 1 and the PDF prints "±0.05" for equal
+    deviations — measured 2026-11-05 on 接槽.
+
+    Asserted by VALUE, not by round-tripping through the table: a test that reads the table
+    to build its expectation cannot detect a wrong table.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    node = None
+    for item in tree.body:
+        if isinstance(item, ast.Assign):
+            for t in item.targets:
+                if isinstance(t, ast.Name) and t.id == "TOLERANCE_TYPES":
+                    node = item
+    assert node is not None, "TOLERANCE_TYPES is gone"
+    table = ast.literal_eval(node.value)
+
+    expected = {
+        "none": 0, "bilateral": 1, "limit": 2, "symmetric": 3,
+        "min": 4, "max": 5, "fit": 6, "fit_with_tolerance": 7, "basic": 8,
+    }
+    for name, code in expected.items():
+        assert table.get(name) == code, (
+            "%s maps to %r; swTolType_e says %d — a shifted table silently selects the "
+            "wrong tolerance style" % (name, table.get(name), code))
+    return "tolerance type codes match swTolType_e"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4531,6 +4578,7 @@ STATIC_REGRESSIONS = [
     ("0.8.144 derived dims reported", assert_derived_dimensions_are_reported_as_unfillable),
     ("0.8.146 default views carry the holes", assert_default_views_include_the_face_with_holes),
     ("0.8.147 ledger header intact", assert_the_regression_ledger_is_intact),
+    ("0.8.148 tolerance enum matches SW", assert_tolerance_types_follow_the_real_enum),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

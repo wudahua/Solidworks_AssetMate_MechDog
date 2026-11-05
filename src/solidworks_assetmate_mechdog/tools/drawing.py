@@ -5150,9 +5150,33 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         return error("detail_failed", str(exc))
 
 
+# SolidWorks `swTolType_e`, in ITS order — not in the order the names read nicely.
+#
+# Report 2026-11-05 (P0-A): a "bilateral" 14.20 +0.05/-0.05 printed as
+#   "-0.05" above "+0.05"
+# i.e. upper deviation smaller than lower — a negative tolerance band, physically illegal.
+#
+# The cause was this table, which was shifted by one against the real enum:
+#     name       was   actually means
+#     basic       1    swTolBILAT   (1)
+#     bilateral   2    swTolLIMIT   (2)  <- two stacked LIMIT values, each with its sign
+#     limit       3    swTolSYMMETRIC (3)
+#     symmetric   4    swTolMIN     (4)
+#     ...
+# So "bilateral" was asking SolidWorks for LIMIT, which prints the two LIMIT VALUES
+# (nominal+upper and nominal+lower) rather than the two deviations. With upper=+0.05 and
+# lower=-0.05 the printed pair was "-0.05" over "+0.05" — the deviations, but in limit
+# order and read as deviations. Every tolerance type was affected, not just this one.
 TOLERANCE_TYPES = {
-    "none": 0, "basic": 1, "bilateral": 2, "limit": 3, "symmetric": 4,
-    "min": 5, "max": 6, "fit": 7, "fit_with_tolerance": 8,
+    "none": 0,                # swTolNone
+    "bilateral": 1,           # swTolBILAT
+    "limit": 2,               # swTolLIMIT
+    "symmetric": 3,           # swTolSYMMETRIC
+    "min": 4,                 # swTolMIN
+    "max": 5,                 # swTolMAX
+    "fit": 6,                 # swTolFIT
+    "fit_with_tolerance": 7,  # swTolFITTOLONLY
+    "basic": 8,               # swTolBASIC
 }
 
 
