@@ -521,6 +521,80 @@ def main():
         return "unique=%s duplicates_skipped=%s orphans=%s" % (
             unique, dupes, pruned.get("orphan_count_before"))
 
+    def self_built_assembly(workdir):
+        """Two extruded blocks + an assembly holding both, built from scratch.
+
+        No external fixture: `测试用例/` is gitignored as a whole tree, so a release install
+        never has SAB1_0000_000.SLDASM. Returns [asm_path] or None.
+
+        Three COM details that cost real time to find (2026-11-05):
+          * `SelectByID2` needs `sw_session.byref_dispatch_null()` for Callout, not None.
+          * `AddComponent5` wants the OPEN DOCUMENT'S TITLE, not its path.
+          * `ActivateDoc2/3` raise on this binding; the old `ActivateDoc` works.
+        """
+        tpl_part, tpl_asm = None, None
+        for root in (os.environ.get("PROGRAMDATA", ""),
+                     os.path.join(os.environ.get("PROGRAMFILES", ""),
+                                  "SOLIDWORKS Corp")):
+            if not root or not os.path.isdir(root):
+                continue
+            if tpl_part is None:
+                hits = glob.glob(os.path.join(root, "**", "gb_part.prtdot"), recursive=True)
+                tpl_part = hits[0] if hits else None
+            if tpl_asm is None:
+                hits = glob.glob(os.path.join(root, "**", "gb_assembly.asmdot"), recursive=True)
+                tpl_asm = hits[0] if hits else None
+            if tpl_part and tpl_asm:
+                break
+        if not (tpl_part and tpl_asm):
+            return None
+
+        from solidworks_assetmate_mechdog import sw_session as _sws
+
+        sw = get_sw()
+        null = _sws.byref_dispatch_null()
+
+        def block(path, size_mm):
+            doc = sw.NewDocument(tpl_part, 0, 0, 0)
+            if doc is None:
+                return None
+            ext = doc.Extension
+            ok = ext.SelectByID2("前视基准面", "PLANE", 0, 0, 0, False, 0, null, 0)
+            if not ok:
+                ok = ext.SelectByID2("Front Plane", "PLANE", 0, 0, 0, False, 0, null, 0)
+            if not ok:
+                return None
+            doc.InsertSketch2(True)
+            half = size_mm / 2000.0
+            doc.SketchManager.CreateCornerRectangle(-half, -half, 0, half, half, 0)
+            doc.ClearSelection2(True)
+            doc.FeatureManager.FeatureExtrusion2(
+                True, False, False, 0, 0, 0.005, 0.005, False, False, False, False,
+                0.0174532925199433, 0.0174532925199433, False, False, False, False,
+                True, True, True, 0, 0, False)
+            if not doc.SaveAs(path):
+                return None
+            return doc
+
+        a = block(os.path.join(workdir, "bom_fix_a.SLDPRT"), 20)
+        b = block(os.path.join(workdir, "bom_fix_b.SLDPRT"), 30)
+        if a is None or b is None:
+            return None
+
+        asm = sw.NewDocument(tpl_asm, 0, 0, 0)
+        if asm is None:
+            return None
+        sw.ActivateDoc(asm.GetTitle)
+        asm = sw.ActiveDoc
+        for doc in (a, b):
+            asm.AddComponent5(doc.GetTitle, 0, "", False, "", 0, 0, 0)
+        if len(list(asm.GetComponents(False) or ())) < 2:
+            return None
+        out = os.path.join(workdir, "bom_fix.SLDASM")
+        if not asm.SaveAs(out):
+            return None
+        return out
+
     def _bom_table():
         # Use the sheet-metal assembly, not --assembly: the BOM path goes through
         # InsertBomTable4(Indented) and not every assembly reports configurations in a way
@@ -529,7 +603,18 @@ def main():
             os.path.join(ROOT, "测试用例", "工程图测试用例", "**", "*.SLDASM"), recursive=True)
             if "SAB1_0000_000" in p]
         if not bom_assembly:
-            raise FixtureMissing("SAB1_0000_000.SLDASM (测试用例/ is gitignored)")
+            # 0.8.166: build the assembly instead of skipping. `add_bom_table` is the only
+            # tool that ever shipped a "100% must-fail" defect (v0.8.2), and its real-machine
+            # case had been SKIPPED for six rounds — the defect survived to release precisely
+            # because nothing ran it. Measured 2026-11-05: the self-built version exercises
+            # the same code path (InsertBomTable4 Indented -> TableType switch) and returns
+            # 3 rows x 4 columns.
+            bom_assembly = [self_built_assembly(workdir)]
+            if not bom_assembly:
+                raise FixtureMissing(
+                    "SAB1_0000_000.SLDASM (测试用例/ is gitignored) and the self-built "
+                    "substitute could not be created — check the default part/assembly "
+                    "templates are installed")
         drw = os.path.join(workdir, "smoke_bom.SLDDRW")
         require(drawing.create_drawing(bom_assembly[0], drw, views=["front"], paper="A3"))
         made = layout.add_bom_table(drw)

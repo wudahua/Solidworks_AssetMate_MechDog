@@ -1227,12 +1227,19 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
         return error("sheet_line_failed", str(exc))
 
 
-def add_bom_table(drawing_path, view_name=None, configuration="Default",
+def add_bom_table(drawing_path, view_name=None, configuration=None,
                   template=None, save=True):
     """Insert a POPULATED native TopLevelOnly BOM into an assembly drawing.
 
     Verified working 2026-10-29 on SW2024 SP4: 10 rows x 4 columns with a quantity
     column, stable across save/reopen.
+
+    `configuration` defaults to None, meaning "use the drawing's active configuration".
+    Report 2026-11-05: the old default was the literal string "Default", and on a Chinese
+    GB template the only configuration is named 默认 — so `InsertBomTable4(Indented)`
+    returned None and the receipt blamed the SW version ("only verified on SW2024 SP4")
+    while running ON SW2024 SP4. Measured: `configuration="Default"` -> bom_table_failed;
+    `configuration="默认"` -> ok, 3 rows x 4 columns.
 
     Why the two-step sequence is required (and why everything simpler failed):
       * `InsertBomTable4(BomType=TopLevelOnly=2)` creates ONLY the header here, and
@@ -1267,11 +1274,40 @@ def add_bom_table(drawing_path, view_name=None, configuration="Default",
             if target is None:
                 return error("view_not_found", "no view named %r" % view_name)
 
-        configuration = configuration or getattr(target, "ReferencedConfiguration", "Default")
+        # Resolution order, because getting this wrong looks exactly like a version bug:
+        #   1. what the caller passed
+        #   2. the view's ReferencedConfiguration (may be an empty string)
+        #   3. the referenced assembly's ACTIVE configuration
+        #   4. only then the literal "Default"
+        #
+        # Report 2026-11-05: step 4 is where a Chinese GB template dies — its only
+        # configuration is 默认, so "Default" matches nothing, InsertBomTable4(Indented)
+        # returns None, and the receipt blames the SolidWorks version while running on the
+        # exact version it claims to support.
+        if not configuration:
+            try:
+                configuration = str(getattr(target, "ReferencedConfiguration", "") or "")
+            except Exception:
+                configuration = ""
+        if not configuration:
+            try:
+                model_name = str(getattr(target, "GetReferencedModelName", "") or "")
+                if model_name:
+                    model_doc = _open_drawing(model_name) if model_name.lower().endswith(
+                        ".slddrw") else None
+                    if model_doc is None:
+                        from ..sw_session import get_sw
+                        model_doc = get_sw().OpenDoc(model_name, 2)   # 2 = assembly
+                    if model_doc is not None:
+                        configuration = str(
+                            model_doc.ConfigurationManager.ActiveConfiguration.Name or "")
+            except Exception:
+                pass
+        configuration = configuration or "Default"
 
         result = populate_top_level_bom(
             doc, target, template,
-            configuration=configuration or "Default",
+            configuration=configuration,
         )
         if save:
             _save_drawing(doc)

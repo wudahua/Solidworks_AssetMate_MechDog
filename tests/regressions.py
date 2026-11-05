@@ -5303,6 +5303,57 @@ def assert_no_tool_reports_success_for_work_it_did_not_do():
     return "no function reports ok after recording that nothing was saved"
 
 
+def assert_bom_configuration_falls_back_to_the_model():
+    """0.8.166 — the BOM failed on the exact version it claims to support.
+
+    Report 2026-11-05: `add_bom_table` returned
+
+        error: bom_table_failed
+        message: InsertBomTable4(Indented) returned None [sw_version=32.4.0]. This step is
+                 verified on SW2024 SP4 only — a SW2026 report fails right here, so version
+                 is the first thing to check.
+
+    `32.4.0` IS SW2024 SP4. The version hint was a red herring the tool itself printed.
+
+    Real cause: `configuration` defaulted to the literal string `"Default"`, and on a
+    Chinese GB template the only configuration is named 默认. The fallback chain was
+
+        configuration or getattr(view, "ReferencedConfiguration", "Default")
+
+    which lands on `"Default"` whenever the view reports an empty string — and it does.
+
+    Measured on a self-built two-block assembly:
+        configuration="Default" -> bom_table_failed
+        configuration="默认"    -> ok, 3 rows x 4 columns
+        no argument (default)   -> ok, 3 rows x 4 columns   (after this fix)
+
+    The chain is now: explicit -> view.ReferencedConfiguration -> the referenced model's
+    ACTIVE configuration -> "Default" as a last resort. The third step is the one that
+    knows the real name.
+    """
+    src = _read("tools/layout.py")
+    fn = _function_node(ast.parse(src), "add_bom_table")
+    assert fn is not None
+    args = [a.arg for a in fn.args.args]
+    defaults = [d for d in fn.args.defaults]
+    # `configuration` must no longer default to a hard-coded string.
+    idx = args.index("configuration")
+    offset = len(args) - len(defaults)
+    if idx >= offset:
+        default = defaults[idx - offset]
+        assert not (isinstance(default, ast.Constant) and isinstance(default.value, str)), (
+            "configuration defaults to a literal string again — a Chinese template's only "
+            "configuration is 默认, so this fails on the version it claims to support")
+
+    body = ast.get_source_segment(src, fn) or ""
+    assert "ActiveConfiguration" in body, (
+        "the fallback no longer asks the referenced model for its active configuration — "
+        "it will land on a name that does not exist")
+    assert 'configuration or "Default"' in body, (
+        "the last-resort default is gone; the parameter is now unbounded")
+    return "BOM configuration falls back to the model's active configuration"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5457,6 +5508,7 @@ STATIC_REGRESSIONS = [
     ("0.8.162 library scan cached", assert_the_material_library_scan_is_cached),
     ("0.8.163 candidates gated on model", assert_gap_candidates_are_checked_against_the_model),
     ("0.8.164 no ok after saved=False", assert_no_tool_reports_success_for_work_it_did_not_do),
+    ("0.8.166 BOM config falls back", assert_bom_configuration_falls_back_to_the_model),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
