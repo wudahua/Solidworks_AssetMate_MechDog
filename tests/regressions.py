@@ -5204,6 +5204,50 @@ def assert_the_material_library_scan_is_cached():
     return "the material library scan is cached and can be invalidated"
 
 
+def assert_gap_candidates_are_checked_against_the_model():
+    """0.8.163 — candidates were picked on paper distance and measured in model space.
+
+    Report 2026-11-05 (P0): `|sheet span - target| <= tolerance` decided whether an edge pair
+    was offered, while `AddDimension2` writes the MODEL distance. On AM_DOOR an 8.0 mm paper
+    gap produced a 1570.796 mm dimension (500π — the pair was an arc). v0.8.156 taught the
+    caller to notice the mismatch AFTER inserting; this is the earlier gate, so the wrong
+    candidate is never offered at all.
+
+    What the gate must do:
+      * compute the model span from `model_center` / `model_start` of both edges;
+      * drop a candidate whose model span misses the target, even when the paper matched;
+      * KEEP a candidate when no model point is available — refusing on missing data would
+        empty the list on any file where the model coordinates could not be projected;
+      * record `model_span_mm` on every candidate so the receipt shows both numbers.
+
+    NOT VERIFIED on real hardware: both fixtures on this machine produce only circle-centre
+    candidates (`candidate_kind: circle_centre`, no edge pairs at all), so the gate's drop
+    branch never ran. The fixture that exhibits the bug (`AM_DOOR`) was not available. The
+    logic is guarded by this assertion and by the 0.8.156 value check downstream; the gate
+    itself is unexercised.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+
+    assert "model_points" in body, (
+        "the model coordinates are no longer collected — candidates are back to paper-only")
+    assert "_model_span_mm" in body, (
+        "the model span is not computed")
+    assert 'if abs(_model_span_mm - target) > tolerance_mm:' in body, (
+        "a paper match alone is enough again — this is how 1570.796 gets offered")
+    assert '"model_span_mm"' in body, (
+        "candidates do not report the model span, so a caller cannot see both numbers")
+
+    # The gate must not fire when the model point is unknown.
+    gate_at = body.find('if abs(_model_span_mm - target) > tolerance_mm:')
+    guard_at = body.rfind("if _ma and _mb:", 0, gate_at)
+    assert 0 < guard_at < gate_at, (
+        "the model gate runs without checking that both model points exist — it would "
+        "drop every candidate on a file whose model coordinates are unavailable")
+    return "gap candidates are gated on model distance before being offered"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5356,6 +5400,7 @@ STATIC_REGRESSIONS = [
     ("0.8.160 hatch_missing judged once", assert_smoke_judges_hatch_missing_the_same_way_twice),
     ("0.8.161 doc ownership tri-state", assert_document_ownership_is_tri_state),
     ("0.8.162 library scan cached", assert_the_material_library_scan_is_cached),
+    ("0.8.163 candidates gated on model", assert_gap_candidates_are_checked_against_the_model),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

@@ -7556,10 +7556,30 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                          "Compensation needs the sheet's edges to measure between.")
         rows = edges_payload.get("edges") or []
         points = []
+        # Report 2026-11-05 (P0): candidates were selected purely on SHEET distance —
+        # `|paper span - target| <= tolerance` — while `add_distance_dimension` measures
+        # MODEL geometry. On AM_DOOR the two disagreed by two orders of magnitude: a paper
+        # span of 8 mm produced a 1570.796 mm dimension (the pair was an arc). Three calls
+        # left 15 absurd dimensions because nothing compared the two.
+        #
+        # So carry BOTH coordinate systems. The sheet pair decides where the dimension can
+        # sit; the model pair decides whether it will measure the right thing. A candidate
+        # that matches on paper but not in the model is discarded before it is offered.
+        #
+        # For a straight edge the model point is its start vertex. For a circular edge the
+        # only meaningful model point is the CENTRE — which is exactly right for the axial
+        # gaps this is meant to serve (two end-face circles on a shaft are their centre
+        # distance apart).
+        points = []
+        model_points = {}
         for idx, row in enumerate(rows):
             pt = row.get("sheet_center") or row.get("sheet_point_on_circle") or row.get("sheet_start")
             if pt:
                 points.append((idx, float(pt[0]), float(pt[1])))
+            mpt = row.get("model_center") or row.get("model_start")
+            if mpt and len(mpt) >= 2:
+                model_points[idx] = (float(mpt[0]), float(mpt[1]),
+                                     float(mpt[2]) if len(mpt) > 2 else 0.0)
 
         # Report 2026-11-04 P1-2: 13 gaps, all `no_geometry`, including values that are
         # plainly measurable — 31 (two counterbore centres), 12 (Ø5 spacing), 13 (Ø14.2
@@ -7582,6 +7602,24 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             _circle_error = str(_exc)[:160]
         else:
             _circle_error = None
+        # Circle candidates carry synthetic negative indices from `list_circular_edges`,
+        # which reports SHEET x/y only. Match them back to the edge rows by sheet position
+        # so they get a model point too — otherwise the model gate silently passes them
+        # (`model_span_mm: None`) and the 1570.796 class of error survives for exactly the
+        # pairs that produced it.
+        for _pid, _cx, _cy, _d in circle_points:
+            if _pid in model_points:
+                continue
+            for _idx, _row in enumerate(rows):
+                _sc = _row.get("sheet_center")
+                if not _sc:
+                    continue
+                if abs(float(_sc[0]) - _cx) < 1e-4 and abs(float(_sc[1]) - _cy) < 1e-4:
+                    _m = _row.get("model_center")
+                    if _m and len(_m) >= 2:
+                        model_points[_pid] = (float(_m[0]), float(_m[1]),
+                                              float(_m[2]) if len(_m) > 2 else 0.0)
+                    break
         points = points + [(pid, x, y) for pid, x, y, _ in circle_points]
         if len(points) < 2:
             return error("not_enough_edges",
@@ -7622,7 +7660,25 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                         # could not match anything, at any tolerance.
                         span_mm = span_m * 1000.0
                         if abs(span_mm - target) <= tolerance_mm:
+                            # Second gate: does the MODEL agree? A sheet-space match only
+                            # says the dimension would LOOK right where it is placed. The
+                            # value SolidWorks writes comes from the model. Report
+                            # 2026-11-05: an 8.0 mm paper gap became a 1570.796 mm
+                            # dimension because only the paper was consulted.
                             _ia, _ib = points[i][0], points[j][0]
+                            _ma, _mb = model_points.get(_ia), model_points.get(_ib)
+                            _model_span_mm = None
+                            if _ma and _mb:
+                                _model_span_mm = ((_ma[0] - _mb[0]) ** 2
+                                                  + (_ma[1] - _mb[1]) ** 2
+                                                  + (_ma[2] - _mb[2]) ** 2) ** 0.5 * 1000.0
+                                if abs(_model_span_mm - target) > tolerance_mm:
+                                    # Paper matched, model did not. Drop it: offering this
+                                    # candidate is how a wrong dimension gets drawn.
+                                    continue
+                            # (No model point -> cannot check. Kept, because refusing on
+                            # missing data would empty the list on files where the model
+                            # coordinates could not be projected at all.)
                             # Circle centres carry SYNTHETIC NEGATIVE indices (see above).
                             # `add_distance_dimension` indexes a REAL edge array, so such a
                             # pair can never be selected. Mark it here instead of letting
@@ -7633,6 +7689,8 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                 "candidate_kind": ("circle_centre" if _circle else "edge"),
                                 "applicable": not _circle,
                                 "axis": axis, "measured_mm": round(span_mm, 3),
+                                "model_span_mm": (round(_model_span_mm, 3)
+                                                  if _model_span_mm is not None else None),
                                 "delta_mm": round(span_mm - target, 4),
                                 "centres": [[round(x1, 4), round(y1, 4)],
                                             [round(x2, 4), round(y2, 4)]],
