@@ -6852,6 +6852,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         # characters. IDisplayDimension.SetText replaces it (value lands in slot 1, not 0).
         for item in created:
             dim_obj = item.pop("_annotation", None)
+            # Keep a handle for the quantity-prefix pass below. The pop above removes the
+            # COM object so it cannot leak into JSON, but that also made it unreachable
+            # later — the prefix pass looked for `_annotation`, found None on every item,
+            # and silently prefixed nothing (`prefixed: 0` while six Ø4.5 callouts existed).
+            if dim_obj is not None:
+                item["_display_dimension"] = dim_obj
             if dim_obj is None:
                 continue
             # Only rewrite a RAW FORMAT CODE. Writing "Ø15" into slot 1 replaced the
@@ -6907,6 +6913,47 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             if filled:
                 item["text"] = filled[0]
 
+        # Report 2026-11-04 P1-3: eight callouts for four M4 counterbores carried no
+        # quantity prefix, so the sheet read Ø8 / Ø8 / Ø8 / Ø8 / Ø4.5 / Ø4.5 / Ø4.5 / Ø4.5
+        # instead of "4× Ø4.5". A shop reads a repeated callout as a single instruction.
+        #
+        # The prefix is only written when the text is BARE (just a diameter). Adding "4× "
+        # to a callout that also carries a depth would need SetText with the full string,
+        # and SetText cannot clear the other text slots — the measured result of trying is
+        # "Ø1515" (see the KNOWN LIMIT note above). Quantity is reported for every group
+        # either way; only the bare ones get the text rewritten.
+        import re as _re_qty
+        _bare = _re_qty.compile(r"^\s*(?:Ø|%%c)\s*(\d+(?:\.\d+)?)\s*$")
+        _by_dia = {}
+        for _item in created:
+            _dia = _item.get("diameter_mm")
+            if _dia is not None:
+                _by_dia.setdefault(round(float(_dia), 2), []).append(_item)
+        _prefixed = 0
+        for _dia, _group in _by_dia.items():
+            _count = len(_group)
+            for _item in _group:
+                _item["quantity"] = _count
+                if _count < 2:
+                    continue
+                _text = str(_item.get("text") or "")
+                if not _bare.match(_text):
+                    continue          # carries depth or other modifiers: leave it alone
+                _new_text = "%d\u00d7 %s" % (_count, _text.strip())
+                try:
+                    _annotation = _item.get("_display_dimension")
+                    if _annotation is None:
+                        continue
+                    _annotation.SetText(1, _new_text)
+                    _item["text"] = _new_text
+                    _item["text_source"] = "quantity_prefix"
+                    _prefixed += 1
+                except Exception:
+                    continue
+
+        for _item in created:
+            _item.pop("_display_dimension", None)
+
         unresolved = [c for c in created
                       if "<MOD-" in str(c.get("text") or "").upper()]
         for item in unresolved:
@@ -6926,6 +6973,9 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                 [round(float(leader_x_m), 4), round(float(leader_y_m), 4)]
                 if leader_x_m is not None and leader_y_m is not None else None),
             unresolved_count=len(unresolved),
+            quantity_prefixed_count=_prefixed,
+            callout_groups_by_diameter={("%g" % k): len(v) for k, v in
+                                        sorted(_by_dia.items())},
             unresolved_note=(("%d 条标注的文本仍是未解析格式码（<MOD-DIAM> 等），渲染出来是"
                               "字面量——SetText 改写没成功。建议删掉改用 Ø 尺寸标注。")
                              % len(unresolved)) if unresolved else None,

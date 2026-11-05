@@ -3844,6 +3844,43 @@ def assert_no_dimension_is_left_off_the_sheet():
     assert clamp_at > 0 and save_at > 0 and clamp_at < save_at, (
         "the clamp runs after the save — the file on disk keeps the off-sheet coordinates")
     return "dimensions are clamped inside the frame before the sheet is saved"
+def assert_hole_callouts_carry_a_quantity():
+    """0.8.135 — repeated hole callouts carried no quantity prefix.
+
+    Report 2026-11-04 P1-3: four M4 counterbores produced eight callouts reading
+    Ø8 / Ø8 / Ø8 / Ø8 / Ø4.5 / Ø4.5 / Ø4.5 / Ø4.5. A shop reads a repeated callout as a
+    single instruction, so the sheet said "drill one Ø4.5" four times.
+
+    Two traps were found while fixing it:
+      * `item.pop("_annotation")` removed the COM handle so it could not leak into JSON —
+        which also made it unreachable for the prefix pass, so the first version prefixed
+        nothing (`prefixed: 0` with six Ø4.5 callouts sitting right there). The handle now
+        survives under `_display_dimension` and is stripped just before the receipt.
+      * `r"\u00d8"` inside a RAW string is six literal characters, not Ø, so the "is this
+        text bare?" regex matched nothing. Written as the character itself.
+
+    Only BARE text gets rewritten. A callout that also carries a depth needs SetText with
+    the full string, and SetText cannot clear the other text slots — the measured result is
+    "Ø1515" (see the KNOWN LIMIT note). Quantity is reported for every group regardless.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "add_hole_callouts")
+    assert fn is not None, "add_hole_callouts is gone"
+    body = ast.get_source_segment(src, fn) or ""
+
+    assert "quantity_prefixed_count" in body, "the prefix count is not reported"
+    assert "callout_groups_by_diameter" in body, (
+        "the per-diameter grouping is not reported")
+    assert "_display_dimension" in body, (
+        "the COM handle is popped and lost again — the prefix pass will silently do nothing")
+    assert '_item.pop("_display_dimension"' in body, (
+        "the COM handle is not stripped before the receipt; it must not reach JSON")
+    assert "quantity_prefix" in body, "the text source is not labelled"
+    # The raw-string escape bug: a literal backslash-u sequence in the source is dead code.
+    assert 'r"^\\s*(?:\\u00d8' not in body, (
+        "the regex still uses a raw-string \\u00d8, which can never match Ø")
+    return "callouts report quantity and bare ones get an n× prefix"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3967,6 +4004,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
     ("0.8.132 marks + orphans discriminate", assert_center_marks_and_orphans_are_discriminating),
     ("0.8.131 requirements stay in frame", assert_requirements_respect_safe_area),
