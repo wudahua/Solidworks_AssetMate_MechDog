@@ -3895,7 +3895,107 @@ def assert_hole_callouts_carry_a_quantity():
     assert "SetText" not in code_only[prefix_start:prefix_end], (
         "the quantity pass writes text again — all three encodings render wrong")
     return "quantity reported per callout; native callout text never rewritten"
+def assert_version_strings_agree():
+    """0.8.137 — the package reported 0.8.133 while the tag was v0.8.136.
+
+    Report 2026-11-05 (P1): three consecutive releases (0.8.134 / 0.8.135 / 0.8.136) were
+    committed and tagged WITHOUT bumping the version, so `health_check` answered
+    `package_version: 0.8.133` from a tree that contained 0.8.136 code.
+
+    The self-identifying fields added four rounds earlier (package_path / package_version /
+    python_executable) exist precisely because several install directories can coexist — and
+    they were pointing at the wrong version. `static_check` passed throughout because nothing
+    compared the two strings; neither did anything compare them to the tag.
+    """
+    with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as fh:
+        pyproject = fh.read()
+    m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M)
+    assert m, "pyproject has no version line"
+    declared = m.group(1)
+
+    with open(os.path.join(SRC, "__init__.py"), encoding="utf-8") as fh:
+        init = fh.read()
+    m2 = re.search(r'__version__\s*=\s*"([^"]+)"', init)
+    assert m2, "__init__.py has no __version__"
+    declared_dunder = m2.group(1)
+
+    assert declared == declared_dunder, (
+        "pyproject says %r but __version__ says %r" % (declared, declared_dunder))
+
+    # Compare with the tag only when HEAD sits exactly on one. A commit made between releases
+    # legitimately sits ahead of the last tag, and failing on that would train people to skip
+    # this check entirely.
+    tag_version = None
+    try:
+        import subprocess
+        out = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
+                             cwd=ROOT, capture_output=True, text=True, timeout=10)
+        if out.returncode == 0:
+            tag_version = out.stdout.strip().lstrip("v")
+    except Exception:
+        tag_version = None
+
+    if tag_version:
+        # Only "the tag is NEWER than the package" is a defect — that is exactly the shape of
+        # the 2026-11-05 report, where v0.8.136 was tagged over code declaring 0.8.133.
+        #
+        # "The package is newer than the tag" is the normal mid-release state (bump, commit,
+        # then tag), and failing on it would make this assertion unusable: it would go red on
+        # every release commit and train people to ignore it.
+        def _as_tuple(text):
+            parts = []
+            for piece in str(text).split("."):
+                try:
+                    parts.append(int(piece))
+                except ValueError:
+                    parts.append(0)
+            return tuple(parts)
+
+        assert _as_tuple(declared) >= _as_tuple(tag_version), (
+            "HEAD is tagged v%s but the package declares %r — that is the un-bumped case"
+            % (tag_version, declared))
+    return "version %s agrees across pyproject, __init__ and tag%s" % (
+        declared, (" v" + tag_version) if tag_version else " (untagged HEAD)")
+
+
+def assert_ledger_dedupes_by_full_name():
+    """0.8.137 — one model dimension was counted once per feature that touched it.
+
+    Report 2026-11-05 (P2): `D2@Sketch1@AM_DOOR.Part` was reported twice — once under
+    Sketch1 and once under Base-Flange1, the sheet-metal feature that consumes that sketch.
+    18 rows described 13 real dimensions, and `ledger_dimensions: 37` was inflated the same
+    way, so coverage (matched / ledger_dimensions) was systematically pushed DOWN and
+    `missing_truly: 18` told the caller to draw five dimensions that already existed.
+
+    The same list feeds `plan_dimension_gaps`, so fixing the ledger fixes both.
+
+    Measured after the fix on 接槽: `missing_truly: 7`, all seven names unique, while
+    `features` still records the second owner — attribution survives, counting does not
+    double.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "reconcile_ledger")
+    assert fn is not None, "reconcile_ledger is gone"
+    body = ast.get_source_segment(src, fn) or ""
+
+    assert "ledger_by_name" in body, (
+        "the ledger is keyed by (dimension, feature) again — duplicates will return")
+    assert "existing[\"features\"].append" in body, (
+        "the second owner is dropped instead of recorded; attribution is lost")
+    assert "ledger_rows = list(ledger_by_name.values())" in body, (
+        "rows are no longer materialised from the deduped map")
+    assert "ledger_rows_duplicate_count" in body, (
+        "the duplicate count is not computed — a clean ledger cannot be told from a quiet "
+        "one")
+    assert "coverage_formula" in body, (
+        "the coverage denominator is undocumented; cross-version comparison will read a "
+        "deliberate change as a regression")
+    return "ledger is one row per full_name; multi-owner features preserved"
+
+
 STATIC_REGRESSIONS = [
+
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
     ("0.8.5 dedupe before counting", assert_annotations_dedupe_before_counting),
@@ -4018,6 +4118,8 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.137 version strings agree", assert_version_strings_agree),
+    ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
     ("0.8.132 marks + orphans discriminate", assert_center_marks_and_orphans_are_discriminating),

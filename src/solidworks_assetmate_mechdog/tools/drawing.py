@@ -7060,6 +7060,8 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
         ceiling = diagonal * 2.0 if diagonal else None
 
         ledger_rows, skipped_non_length, skipped_oversize = [], [], []
+        ledger_by_name = {}
+        ledger_rows_duplicate_count = 0
         for feature in led.get("features") or []:
             for dim in feature.get("dimensions") or []:
                 kind = dim.get("dimension_type")
@@ -7076,13 +7078,39 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
                         "feature": feature.get("name"), "value": value,
                     })
                     continue
-                ledger_rows.append({
-                    "feature": feature.get("name"),
-                    "feature_type": feature.get("type"),
-                    "dimension": dim.get("name"),
-                    "value_mm": value,
-                    "dimension_type": kind,
-                })
+                # ONE ROW PER MODEL DIMENSION, not per (dimension, feature) pair.
+                #
+                # Report 2026-11-05 (P2): `D2@Sketch1@AM_DOOR.Part` appeared twice — once
+                # for Sketch1 and once for Base-Flange1, the sheet-metal feature that
+                # consumes that sketch — so 18 rows described 13 real dimensions, and
+                # `ledger_dimensions: 37` was inflated the same way. Every downstream number
+                # inherited it: coverage (matched / ledger_dimensions) was systematically
+                # pushed DOWN, and `missing_truly: 18` told callers to draw five dimensions
+                # that already existed.
+                #
+                # The full name IS the model-level identity, so it is the only key. The
+                # feature that "owns" the dimension is the first one seen; every other
+                # consumer is kept in `features` so the attribution is not lost.
+                name = dim.get("name")
+                key = name or ("%s#%s" % (feature.get("name"), value))
+                existing = ledger_by_name.get(key)
+                if existing is None:
+                    ledger_by_name[key] = {
+                        "feature": feature.get("name"),
+                        "feature_type": feature.get("type"),
+                        "features": [feature.get("name")],
+                        "dimension": name,
+                        "value_mm": value,
+                        "dimension_type": kind,
+                    }
+                else:
+                    owner = feature.get("name")
+                    if owner not in existing["features"]:
+                        existing["features"].append(owner)
+
+        ledger_rows = list(ledger_by_name.values())
+        ledger_rows_duplicate_count = sum(
+            max(len(r.get("features") or []) - 1, 0) for r in ledger_rows)
 
         matched, unmatched, skipped_zero = [], [], []
         # ONE-TO-ONE consumption. The old code did
@@ -7166,6 +7194,11 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
             drawing=doc.GetTitle,
             model=led.get("part"),
             ledger_dimensions=len(ledger_rows),
+            # How many rows the old (dimension, feature) pairing would have produced.
+            # Report 2026-11-05 P2 saw 18 rows for 13 dimensions; without this number a
+            # reader cannot tell whether the ledger is clean or merely quiet.
+            ledger_rows_duplicate_count=ledger_rows_duplicate_count,
+            coverage_formula="matched / ledger_dimensions (one-to-one, unique names)",
             drawing_dimensions=len(sheet_values),
             matched=len(matched),
             unmatched_count=len(unmatched),
