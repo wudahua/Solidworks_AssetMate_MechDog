@@ -7010,8 +7010,22 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         for _item in created:
             _item.pop("_display_dimension", None)
 
+        # Report 2026-11-05 (P0-C): this flagged every NATIVE callout as unresolved.
+        #
+        # `<MOD-DIAM>` is how SolidWorks STORES a diameter in the text layer; the renderer
+        # turns it into Ø. The PDF of 接槽 printed "2 × Ø4.50 完全贯穿" and "⌴ Ø8 ↧ 4.40"
+        # correctly while the receipt said `text_unresolved: true` and advised deleting the
+        # callouts — advice that would have removed the only annotation capability that
+        # actually renders.
+        #
+        # Only text this tool WROTE can be unresolved: a SetText that failed to take leaves
+        # the raw code in a string we own. Native text is SolidWorks' own and always renders.
+        # `text_source` is the discriminator; `native_text_complete` is the corroborating
+        # flag, and the two must never disagree.
         unresolved = [c for c in created
-                      if "<MOD-" in str(c.get("text") or "").upper()]
+                      if c.get("text_source") != "native"
+                      and not c.get("native_text_complete")
+                      and "<MOD-" in str(c.get("text") or "").upper()]
         for item in unresolved:
             item["text_unresolved"] = True
 
@@ -7031,9 +7045,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             unresolved_count=len(unresolved),
             callout_groups_by_diameter={("%g" % k): len(v) for k, v in
                                         sorted(_by_dia.items())},
-            unresolved_note=(("%d 条标注的文本仍是未解析格式码（<MOD-DIAM> 等），渲染出来是"
-                              "字面量——SetText 改写没成功。建议删掉改用 Ø 尺寸标注。")
+            unresolved_note=(("%d 条标注由本工具改写文字后仍留有未解析格式码，渲染可能是"
+                              "字面量。原生标注（text_source=native）不在此列——它们的 "
+                              "<MOD-*> 是 SolidWorks 内部表示，渲染器会正确解析成 Ø。")
                              % len(unresolved)) if unresolved else None,
+            text_resolution_basis=("native text is rendered by SolidWorks and is never "
+                                   "counted as unresolved; only SetText-rewritten text can be"),
             # Judge the budget with the same clock that produced elapsed_s: a run whose
             # candidates were all rejected never entered the insert loop, so it reported
             # budget_exceeded=False while taking 55 s of a 45 s budget.

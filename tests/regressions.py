@@ -4150,6 +4150,48 @@ def assert_pipeline_closes_only_what_it_opened():
     return "the pipeline closes only documents it opened, and says what it skipped"
 
 
+def assert_native_callout_text_is_not_called_unresolved():
+    """0.8.142 — the receipt told users to delete the only annotation that renders.
+
+    Report 2026-11-05 (P0-C): every native callout came back with
+
+        "text": "<HOLE-SPOT><MOD-DIAM> 8 <HOLE-DEPTH> 4.40",
+        "text_source": "native",
+        "native_text_complete": true,
+        "text_unresolved": true
+
+    and `unresolved_note` advised "建议删掉改用 Ø 尺寸标注". The PDF of the same sheet
+    printed "2 × Ø4.50 完全贯穿" and "⌴ Ø8 ↧ 4.40" — correctly.
+
+    `<MOD-DIAM>` is how SolidWorks STORES a diameter in the text layer; the renderer turns
+    it into Ø. Treating it as an unresolved literal is a category error, and acting on the
+    advice would remove the one annotation capability that actually works.
+
+    Only text this tool WROTE can be unresolved: a SetText that failed leaves the raw code
+    in a string we own. `text_source` is the discriminator, `native_text_complete` the
+    corroborating flag.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "add_hole_callouts")
+    assert fn is not None
+    body = ast.get_source_segment(src, fn) or ""
+
+    marker = body.find("unresolved = [c for c in created")
+    assert marker > 0, "the unresolved list is gone"
+    segment = body[marker:marker + 400]
+    assert 'c.get("text_source") != "native"' in segment, (
+        "native text is counted as unresolved again — the receipt will advise deletion")
+    assert "native_text_complete" in segment, (
+        "the corroborating flag is not consulted")
+    assert "text_resolution_basis" in body, (
+        "the receipt does not say why native text is exempt")
+    # The old advice must be gone: it is the harmful part, not just the wrong number.
+    assert "建议删掉改用" not in body, (
+        "the 'delete them' advice is back; it would remove working annotation")
+    return "native callout text is never reported as unresolved"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4279,6 +4321,7 @@ STATIC_REGRESSIONS = [
     ("0.8.139 field names mean what they say", assert_receipts_say_what_the_fields_mean),
     ("0.8.140 impl params reach MCP", assert_every_implementation_param_reaches_mcp),
     ("0.8.141 closes only its own documents", assert_pipeline_closes_only_what_it_opened),
+    ("0.8.142 native callout text is fine", assert_native_callout_text_is_not_called_unresolved),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
