@@ -7588,18 +7588,37 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                             [round(x2, 4), round(y2, 4)]],
                             })
             matches.sort(key=lambda m: abs(m["delta_mm"]))
-            entry["candidates"] = matches[:max_candidates_per_gap]
-            entry["applicable_candidates"] = [
-                i for i, c in enumerate(entry["candidates"])
-                if c.get("applicable", True)]
-            if len(matches) == 1:
+            # Report 2026-11-05 (P1-A): `status` used `len(matches)` — the FULL match count —
+            # while `candidates` was truncated to `max_candidates_per_gap`. With max=1 every
+            # gap kept exactly one candidate and still reported `ambiguous`, so the
+            # automatic path skipped all six. The two numbers must come from the same list.
+            #
+            # And `status` must count only APPLICABLE candidates: a gap whose single match
+            # is a circle centre cannot be applied either, and calling that `fillable`
+            # ("safe to apply") is the same misreport one level down.
+            _kept = matches[:max_candidates_per_gap]
+            entry["candidates"] = _kept
+            _usable = [i for i, c in enumerate(_kept) if c.get("applicable", True)]
+            entry["applicable_candidates"] = _usable
+            entry["candidates_matched_before_truncation"] = len(matches)
+            entry["candidates_truncated"] = len(matches) > len(_kept)
+            if len(_usable) == 1:
                 entry["status"] = "fillable"
-            elif len(matches) > 1:
+            elif len(_usable) > 1:
                 entry["status"] = "ambiguous"
+            elif matches:
+                # Geometry exists, but none of it can be handed to add_distance_dimension.
+                # Distinct from `no_geometry` so the caller knows to change candidate or
+                # view rather than assume the model has no dimension there.
+                entry["status"] = "no_applicable_candidate"
             results.append(entry)
 
         fillable = [r for r in results if r["status"] == "fillable"]
         applied = []
+        # Filled in after the apply loop: this must EXCLUDE gaps the same call just
+        # filled. Report 2026-11-05: a receipt carrying both "applied 13.0" and
+        # "13.0 not applied" invites the caller to dimension the same feature twice.
+        _ambiguous_not_applied = []
         _all_cands = [c for r in results for c in (r.get("candidates") or [])]
         _candidates_skipped = 0
         # Report 2026-11-05: `apply_gaps=True` could only act on `status == "fillable"`,
@@ -7668,6 +7687,12 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                 _save_drawing(_open_drawing(drawing_path))
             except Exception:
                 pass
+        # Every ambiguous gap that this run did NOT fill. Excluding the filled ones is the
+        # whole point: a receipt saying "applied 13.0" and "13.0 not applied" tells the
+        # caller to dimension the same feature twice.
+        _filled = set(a.get("gap_index") for a in applied if a.get("ok"))
+        _ambiguous_not_applied = [r["value_mm"] for _i, r in enumerate(results)
+                                  if r["status"] == "ambiguous" and _i not in _filled]
 
         return drawing_ok(
             gaps_found=len(results),
@@ -7676,8 +7701,7 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             no_geometry=sum(1 for r in results if r["status"] == "no_geometry"),
             applied=applied,
             apply_indices_used=sorted(_explicit),
-            ambiguous_not_applied=[r["value_mm"] for r in results
-                                   if r["status"] == "ambiguous"],
+            ambiguous_not_applied=_ambiguous_not_applied,
             applied_count=len([a for a in applied if a["ok"]]),
             candidates_total=len(_all_cands),
             candidates_applicable=sum(1 for c in _all_cands

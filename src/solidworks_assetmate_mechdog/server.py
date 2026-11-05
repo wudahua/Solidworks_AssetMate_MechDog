@@ -794,23 +794,43 @@ def plan_dimension_gaps(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to inspect and optionally modify. Absolute path; the file is opened and saved in place when apply_gaps=True.")],
     tolerance_mm: Annotated[float, Field(description="How close an edge-pair distance must be to a missing value to count as a candidate (millimetres).")] = 0.05,
     max_candidates_per_gap: Annotated[int, Field(description="How many matching edge pairs to report per gap (nearest first).")] = 3,
-    apply_gaps: Annotated[bool, Field(description="Actually add the dimensions. Default False returns a PLAN only. Even when True, only gaps with EXACTLY ONE matching edge pair are filled; ambiguous ones are left for a human.")] = False,
+    apply_gaps: Annotated[bool, Field(description="Fill the `fillable` gaps (exactly one APPLICABLE candidate each). Default False returns a PLAN. Ambiguous gaps are never auto-filled — name them in apply_indices instead. Note apply_indices fills gaps WITHOUT this flag.")] = False,
     apply_indices: Annotated[list | None, Field(description="Explicit gaps to fill, 0-based indices into `gaps`. Use this for `ambiguous` entries: the tool will not choose between equally valid edge pairs on its own, but it will place the one you name.")] = None,
-    apply_candidate: Annotated[int, Field(description="Which candidate to use for each explicitly requested gap (0-based into that gap's `candidates`, nearest first).")] = 0,
+    apply_candidate: Annotated[int, Field(description="Which candidate to use, 0-based into `candidates` (nearest first). The DEFAULT 0 may be `applicable: false` (a circle centre) — check that gap's `applicable_candidates` first, or the call returns circle_centre_not_applicable. One index is shared by every gap in apply_indices.")] = 0,
 ) -> str:
     """PR4: turn truly-missing dimensions into edge-pair candidates, optionally fill them.
 
-    Only 's  list is considered — values that are drawn but
-    unattributed () are NOT gaps and are not touched. AddDimension2
+    Only `reconcile_ledger`'s `missing_truly` list is considered — values that are drawn but
+    unattributed (`present_but_unmatched`) are NOT gaps and are not touched. `AddDimension2`
     takes only (x, y, z) and measures from the CURRENT SELECTION, so a gap (a value) has to
-    be paired with geometry before anything can be drawn. Each gap reports its matching edge
-    pairs and a status: fillable (exactly one pair), ambiguous, or no_geometry (that value
-    needs a section or detail view to be expressed).
+    be paired with geometry before anything can be drawn.
 
-    NOT VERIFIED ON REAL HARDWARE: the apply_gaps=True branch has never run against a part
-    that actually has a fillable gap. Every part tested returned 0 gaps or only no_geometry
-    ones, so that branch is covered by code review and the offline assertions only. Treat a
-    first apply as a trial, and check the result with list_drawing_annotations.
+    Each gap lists its matching edge pairs and a status:
+      * `fillable`            — exactly ONE applicable candidate; `apply_gaps=True` fills it
+      * `ambiguous`           — two or more applicable candidates; nothing is chosen
+      * `no_applicable_candidate` — matches exist but none can be passed to
+                                `add_distance_dimension` (see below)
+      * `no_geometry`         — no edge pair matches; that value needs a section or detail view
+
+    Candidate applicability: a gap whose value is met by a CIRCLE CENTRE cannot be filled.
+    Circle centres carry synthetic negative indices, while `add_distance_dimension` indexes a
+    real edge array; passing one used to fail with a misleading `bad_edge_index`. Such
+    candidates are now tagged `candidate_kind: "circle_centre"` and `applicable: false`, and
+    each gap reports `applicable_candidates` — the indices that WILL work.
+
+    Filling:
+      * `apply_gaps=True` fills only the `fillable` ones.
+      * `apply_indices=[n, ...]` fills the gaps you name, including `ambiguous` ones, and
+        does NOT require `apply_gaps=True`. Selecting an `applicable: false` candidate
+        returns `circle_centre_not_applicable` with that gap's `applicable_candidates`.
+      * `apply_candidate` is a SINGLE index applied to every gap in `apply_indices`; the
+        candidates differ per gap, so multi-gap calls with different needs take more than
+        one call.
+
+    Top-level counters: `candidates_total`, `candidates_applicable`,
+    `candidates_circle_centre`, `candidates_skipped`. Note that `max_candidates_per_gap`
+    truncates the list before these are counted, and `candidates_skipped` counts only
+    candidates that an APPLY attempt refused — in the default plan-only mode it stays 0.
     """
     return _json(drawing.plan_dimension_gaps(
         model_path, drawing_path, tolerance_mm=tolerance_mm,

@@ -3434,8 +3434,14 @@ def assert_gap_planner_only_fills_unambiguous_gaps():
         "the planner stopped distinguishing unattributed values from real gaps")
     assert "ambiguous" in body, "ambiguity is no longer reported"
     assert "no_geometry" in body, "the no-geometry case is no longer reported"
-    assert "if len(matches) == 1" in body, (
-        "the single-match rule is gone - ambiguous gaps would be filled by guessing")
+    # 0.8.155: the rule now counts APPLICABLE candidates from the TRUNCATED list, not the
+    # full match list — `max_candidates_per_gap=1` used to leave every gap `ambiguous`
+    # because status read `len(matches)` while `candidates` was cut to one.
+    assert "if len(_usable) == 1" in body, (
+        "the single-usable-candidate rule is gone - ambiguous gaps would be filled by "
+        "guessing, or a single-candidate gap would never be filled at all")
+    assert "if len(matches) == 1" not in body, (
+        "status is judging the untruncated match list again")
     return "only single-match gaps are fillable; ambiguity and missing geometry are reported"
 def assert_ledger_open_failure_is_structured():
     """0.8.118 — `open_document` sat OUTSIDE build_feature_ledger's try.
@@ -4705,6 +4711,136 @@ def assert_the_doc_number_check_cannot_silently_skip():
     return "the doc-number check cannot pass without actually reading the numbers"
 
 
+def assert_tool_descriptions_are_not_broken_sentences():
+    """0.8.155 — a mangled sentence survived 41 releases in the one text agents read.
+
+    Report 2026-11-05 (third round): `plan_dimension_gaps`'s MCP docstring read
+
+        Only 's  list is considered — values that are drawn but
+        unattributed () are NOT gaps and are not touched.
+
+    The identifiers had been stripped: it should have said "Only `reconcile_ledger`'s
+    `missing_truly` list … unattributed (`present_but_unmatched`)". Introduced in v0.8.113,
+    alive through v0.8.154 — 41 release numbers, 15 feedback reports, several rounds of
+    documentation hardening. Nothing read docstring BODIES:
+
+      * `check_readme` counts tool names and the three section totals
+      * `check_param_descriptions` only asks whether a description EXISTS
+      * the refuted-claim blacklist only stops old sentences coming BACK
+
+    Every one of those checks a shape, none reads a sentence. This reads sentences.
+
+    The markers are deliberately narrow — an empty `()`, an orphaned `'s`, an odd number of
+    backticks — because a broad rule would fire on legitimate prose. Measured across all 65
+    tool docstrings: only the one broken one hits "empty parens AND orphan 's".
+    """
+    src = _read("server.py")
+    tree = ast.parse(src)
+    problems = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        is_tool = False
+        for dec in node.decorator_list:
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            if isinstance(target, ast.Attribute) and target.attr == "tool":
+                is_tool = True
+        if not is_tool:
+            continue
+        doc = ast.get_docstring(node) or ""
+        if not doc:
+            problems.append("%s: no docstring at all" % node.name)
+            continue
+        # An empty () is only suspicious when it is not part of a real call chain.
+        empties = [m for m in __import__("re").finditer(r"\(\s*\)", doc)
+                   if not __import__("re").search(r"[A-Za-z_][\w.]*$", doc[:m.start()])]
+        if empties:
+            problems.append("%s: empty parentheses at offset %d"
+                            % (node.name, empties[0].start()))
+        if __import__("re").search(r"(?<![\w`])'s\s", doc):
+            problems.append("%s: orphaned possessive ('s with no word before it)" % node.name)
+        if doc.count("`") % 2:
+            problems.append("%s: odd number of backticks — a span is unterminated" % node.name)
+
+    assert not problems, "broken tool descriptions: " + "; ".join(problems)
+    return "all 65 tool docstrings read as complete sentences"
+
+
+def assert_gap_receipt_does_not_contradict_itself():
+    """0.8.155 — the receipt said a gap was both applied and not applied.
+
+    Report 2026-11-05 (third round, §4.2): `ambiguous_not_applied` listed EVERY ambiguous
+    gap regardless of what this run had just done:
+
+        "applied": [{"gap_index": 1, "value_mm": 13.0, "ok": true}],
+        "applied_count": 1,
+        "ambiguous_not_applied": [13.0, ...]      <- same gap, opposite claim
+
+    A caller following `ambiguous_not_applied` would dimension the same feature twice. For
+    a project whose selling point is "the receipt tells the truth", this is worse than a
+    wrong number — it is two numbers disagreeing inside one object.
+
+    Also guarded here: `status` must judge the TRUNCATED, APPLICABLE candidate list. It used
+    `len(matches)` while `candidates` was cut to `max_candidates_per_gap`, so `max=1` left
+    six single-candidate gaps reporting `ambiguous` and the automatic path skipped all of
+    them (report §2).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+
+    assert "_filled" in body, (
+        "ambiguous_not_applied no longer excludes what this run applied")
+    assert "_i not in _filled" in body, (
+        "the exclusion is gone — a gap can be reported as both applied and not applied")
+    assert "if len(_usable) == 1" in body, (
+        "status is not counting applicable candidates")
+    assert "no_applicable_candidate" in body, (
+        "a gap whose only match is unusable is indistinguishable from one with no geometry")
+    return "the gap receipt cannot report the same gap as applied and not applied"
+
+
+def assert_circle_centre_candidates_never_reach_the_edge_array():
+    """0.8.155 — the merged circle-centre patch shipped with no assertion at all.
+
+    Report 2026-11-05 (third round, P1-B): the previous release's headline fix was merged
+    verbatim and then guarded by nothing. `grep -rn "circle_centre_not_applicable|
+    candidates_circle_centre|applicable_candidates" tests/` returned nothing — in the very
+    release whose subject was "an assertion that never ran".
+
+    The contract being protected: `plan_dimension_gaps` marks a circle-centre candidate with
+    a SYNTHETIC NEGATIVE index (`-(ci+1)`), while `add_distance_dimension` indexes a real
+    edge array and validates `0 <= index < len(edges)`. Passing one through used to fail
+    with `bad_edge_index`, which reads like the caller computed an index wrong.
+
+    What must hold:
+      * candidates carry `candidate_kind` and `applicable`;
+      * each gap reports `applicable_candidates`;
+      * an inapplicable pick returns `circle_centre_not_applicable` and does NOT call
+        `add_distance_dimension`;
+      * the applicability check appears BEFORE the call in source order.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+
+    assert '"candidate_kind"' in body, "candidates no longer say what kind they are"
+    assert '"applicable"' in body, "candidates no longer carry applicability"
+    assert '"applicable_candidates"' in body, (
+        "the gap does not list which candidate indices actually work")
+    assert "circle_centre_not_applicable" in body, (
+        "the explicit error code is gone; a negative index would reach the edge array again")
+
+    guard_at = body.find("if not cand.get(\"applicable\", True):")
+    call_at = body.find("added = add_distance_dimension(")
+    assert guard_at > 0, "the applicability guard is gone"
+    assert call_at > guard_at, (
+        "add_distance_dimension is called before the applicability check — a synthetic "
+        "negative index would be passed through")
+    return "circle-centre candidates cannot reach add_distance_dimension"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4846,6 +4982,9 @@ STATIC_REGRESSIONS = [
     ("0.8.151 ambiguous gap can be placed", assert_gap_planner_can_place_an_ambiguous_gap),
     ("0.8.152 bent leader is disclosed", assert_bent_leader_admits_it_cannot_be_verified),
     ("0.8.154 doc check cannot skip", assert_the_doc_number_check_cannot_silently_skip),
+    ("0.8.155 descriptions are sentences", assert_tool_descriptions_are_not_broken_sentences),
+    ("0.8.155 gap receipt consistent", assert_gap_receipt_does_not_contradict_itself),
+    ("0.8.155 circle centre never reaches edges", assert_circle_centre_candidates_never_reach_the_edge_array),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
