@@ -8225,6 +8225,7 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
         # floats even though the call succeeds, so the receipt reports both the status and
         # the actual leader count.
         leader_status = None
+        leader_path_note = None
         if str(leader_style).lower() != "none" and annotation is not None:
             style_map = {"straight": 1, "bent": 2, "underlined": 3}
             side_map = {"smart": 0, "left": 1, "right": 2}
@@ -8236,6 +8237,23 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                     True, bool(perpendicular), False, False)
             except Exception as exc:
                 leader_status = "exception: %s" % str(exc)[:80]
+            # Report 2026-11-05 (P1): with `leader_style="bent"` the elbow segment ran
+            # horizontally THROUGH the tolerance value cell ("0.008") before turning up to
+            # the arrow. The report asked for a warning when the polyline intersects the
+            # frame bbox — that check cannot be built here: `SetLeader3` lets SolidWorks
+            # choose the elbow, and nothing on this binding exposes the resulting points
+            # (`IGtol.GetLeaderAtIndex2` does not exist; DXF writes the leader as plain
+            # LINEs among 362 others with no link back to the annotation).
+            #
+            # So the honest thing is to say the path is not ours to verify, at the moment
+            # the style is chosen, and name the one lever that changes it.
+            if str(leader_style).lower() == "bent":
+                leader_path_note = (
+                    "折弯引线的拐点由 SolidWorks 自己决定，本绑定读不到折线的实际坐标"
+                    "（`IGtol.GetLeaderAtIndex2` 不存在；DXF 里引线被拆成无归属的 LINE，"
+                    "362 条中无法定位哪条属于本标注）。实测出现过水平段横穿公差值格的情况；"
+                    "若发生，把 leader_side 换到另一侧（left/right）通常能改变拐点位置——"
+                    "工具无法预判哪一侧不会穿格。")
 
         try:
             doc.EditRebuild3()
@@ -8348,6 +8366,7 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
             leader_endpoint_m=leader_endpoint,
             leader_endpoint_source=leader_endpoint_source,
             leader_style_requested=str(leader_style),
+            leader_path_note=leader_path_note,
             leader_status=leader_status,
             leader_count=(int(annotation.GetLeaderCount)
                           if annotation is not None else None),

@@ -4579,6 +4579,47 @@ def assert_gap_planner_can_place_an_ambiguous_gap():
     return "an ambiguous gap can be placed when the caller names it"
 
 
+def assert_bent_leader_admits_it_cannot_be_verified():
+    """0.8.152 — the last item of the 2026-11-05 set, and the one that stays unfixed.
+
+    Report: with `leader_style="bent"` the horizontal elbow segment ran THROUGH the
+    tolerance value cell ("0.008") before turning up to the arrow, and the receipt said
+    nothing — `warning: null`.
+
+    The report asked for a warning when the polyline intersects the frame bbox. That check
+    cannot be built on this binding:
+
+      * `SetLeader3` lets SolidWorks choose the elbow; the caller picks style and side only.
+      * `IGtol.GetLeaderAtIndex2` does not exist, so the resulting points cannot be read
+        back for verification.
+      * DXF writes the leader as plain LINE entities among 362 others with no link back to
+        the annotation — I could not attribute a line to the callout, so even an offline
+        check has nothing to key on.
+
+    (The report's own DXF read worked because their export put the leader in millimetres
+    with a different origin; my export came back at 1600x875 with the leader unidentifiable.)
+
+    What CAN be done is say so at the moment the style is chosen, and name the one lever
+    that changes the outcome. `leader_path_note` carries that. A tool that returns
+    `warning: null` on a path it never inspected is making a claim it cannot support.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "add_geometric_tolerance")
+    assert fn is not None
+    body = ast.get_source_segment(src, fn) or ""
+
+    assert "leader_path_note" in body, (
+        "the bent-leader limitation is no longer disclosed")
+    assert 'leader_style).lower() == "bent"' in body, (
+        "the note is not tied to the bent style")
+    assert "GetLeaderAtIndex2" in body, (
+        "the reason the path cannot be verified is not stated")
+    assert "leader_side" in body.split("leader_path_note", 1)[1][:600], (
+        "the note does not name the lever that changes the elbow")
+    return "bent leaders disclose that their path is SolidWorks' and cannot be checked"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4718,6 +4759,7 @@ STATIC_REGRESSIONS = [
     ("0.8.149 title block reads before write", assert_title_block_reads_before_it_writes),
     ("0.8.150 circle detection needs no vertex", assert_circle_detection_does_not_need_a_vertex),
     ("0.8.151 ambiguous gap can be placed", assert_gap_planner_can_place_an_ambiguous_gap),
+    ("0.8.152 bent leader is disclosed", assert_bent_leader_admits_it_cannot_be_verified),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
