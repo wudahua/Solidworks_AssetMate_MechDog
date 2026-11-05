@@ -216,7 +216,12 @@ def create_drawing_with_bom(
     drawing.SaveAs3(output_drawing, 0, 0)
     result.update({
         "ok": True,
+        # See bom.py: "assembly" is kept for compatibility, `document_type` is the truth.
         "assembly": assembly_path,
+        "document": assembly_path,
+        "document_type": ("assembly" if str(assembly_path).lower().endswith(".sldasm")
+                          else "part" if str(assembly_path).lower().endswith(".sldprt")
+                          else "unknown"),
         "drawing": output_drawing,
         "configuration": configuration,
         "template": template,

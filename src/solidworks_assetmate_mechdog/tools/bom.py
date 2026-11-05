@@ -147,7 +147,14 @@ def export_bom(
             r["part"] for r in rows if r["material"] is None and r["mass_each_kg"] is not None
         ]
         result = {
+            # Report 2026-11-05: these receipts answered "assembly" even when the input
+            # was a part. The key is kept for compatibility; `document` and
+            # `document_type` say what was actually opened.
             "assembly": doc.GetTitle,
+            "document": doc.GetTitle,
+            "document_type": ("assembly" if str(path).lower().endswith(".sldasm")
+                              else "part" if str(path).lower().endswith(".sldprt")
+                              else "unknown"),
             "path": doc.GetPathName,
             "components": len(components),
             "part_types": len(rows),

@@ -4029,6 +4029,41 @@ def assert_pipeline_closes_what_it_opened():
     return "pipeline closes both documents on success and on failure"
 
 
+def assert_receipts_say_what_the_fields_mean():
+    """0.8.139 — three old backlog items where a field name lied.
+
+    Report 2026-11-05 listed them as "老账"; none breaks a drawing, all three cost a reader
+    time:
+
+      1. `text_is_format_code: true` sat next to a `text` reading "Ø8". The flag describes
+         the RAW text, not the field beside it, so the pair looked self-contradictory.
+         `text_decoded` now says the thing a reader needs, and `text_raw` keeps the original.
+      2. `_annotation_total()` (raw enumeration, including 审核/校核/设计 furniture) and
+         `annotation_count` (furniture stripped) are different numbers on purpose. The
+         docstring now says so and says which one to compare against what.
+      3. `"assembly": ...` was answered for parts too, in bom / bom_native / recolor /
+         rename. `document` and `document_type` are added; `assembly` stays for
+         compatibility because renaming it would break every existing caller.
+    """
+    drawing_src = _read("tools/drawing.py")
+    assert "text_decoded" in drawing_src, (
+        "the decode flag is gone; text_is_format_code will read as self-contradictory again")
+    assert drawing_src.count('row["text_decoded"] = True') >= 3, (
+        "not every site that decodes text sets the flag")
+
+    layout_src = _read("tools/layout.py")
+    assert "NOT the same number as `annotation_count`" in layout_src, (
+        "the two annotation counts are undocumented again")
+
+    for module in ("bom", "bom_native", "recolor", "rename"):
+        src = _read("tools/%s.py" % module)
+        assert '"document_type"' in src, "%s does not report document_type" % module
+        assert '"document"' in src, "%s does not report the neutral document key" % module
+        assert '"assembly"' in src, (
+            "%s dropped the compatibility key; existing callers would break" % module)
+    return "receipts distinguish decoded text, two annotation counts, and document type"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4155,6 +4190,7 @@ STATIC_REGRESSIONS = [
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
     ("0.8.137 version strings agree", assert_version_strings_agree),
     ("0.8.138 pipeline closes documents", assert_pipeline_closes_what_it_opened),
+    ("0.8.139 field names mean what they say", assert_receipts_say_what_the_fields_mean),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

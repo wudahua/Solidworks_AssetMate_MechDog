@@ -94,7 +94,12 @@ def _auto_rename(assembly_path, part_paths, mapping, prefix, suffix, save):
 
     result = {
         "mode": "auto",
+        # See bom.py: "assembly" kept for compatibility; document_type is the truth.
         "assembly": doc.GetTitle,
+        "document": doc.GetTitle,
+        "document_type": ("assembly" if str(doc.GetPathName).lower().endswith(".sldasm")
+                          else "part" if str(doc.GetPathName).lower().endswith(".sldprt")
+                          else "unknown"),
         "planned": [
             {
                 "old": p["old"],

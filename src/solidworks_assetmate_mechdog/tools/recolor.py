@@ -63,7 +63,12 @@ def recolor_assembly(assembly_path, palette, apply=False, save=True):
         missing = sorted(set(palette) - present)
         matched = [c for c in components if part_name(c.Name2) in palette]
         base = {
+            # See bom.py: "assembly" kept for compatibility; document_type is the truth.
             "assembly": doc.GetTitle,
+            "document": doc.GetTitle,
+            "document_type": ("assembly" if str(assembly_path).lower().endswith(".sldasm")
+                              else "part" if str(assembly_path).lower().endswith(".sldprt")
+                              else "unknown"),
             "path": doc.GetPathName,
             "components": len(components),
             "parts": parts,

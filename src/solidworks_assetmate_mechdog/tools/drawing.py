@@ -5603,8 +5603,16 @@ def list_drawing_annotations(drawing_path, view_name=None):
                     # handing the code straight to the caller is unreadable — flag it and
                     # convert the one code we know for sure.
                     row["text"] = callout_text or None
+                    row["text_raw"] = callout_text or None
                     if callout_text and "<MOD-" in callout_text.upper():
+                        # Report 2026-11-05: `text_is_format_code: true` next to a `text`
+                        # that reads "Ø8" looked self-contradictory — the flag describes the
+                        # RAW text, not the field it sits next to. `text_decoded` says the
+                        # thing a reader actually needs: "what you see here has been
+                        # translated". The old flag is kept for compatibility; `text_raw`
+                        # holds the untranslated original.
                         row["text_is_format_code"] = True
+                        row["text_decoded"] = True
                         row["text"] = (callout_text.upper()
                                        .replace("<MOD-DIAM>", "Ø")
                                        .replace("<MOD-DEG>", "°"))
@@ -5690,6 +5698,7 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                     row["text"] = resolved
                                 if "<MOD-" in raw_value_text.upper():
                                     row["text_is_format_code"] = True
+                                    row["text_decoded"] = True
                             # P3-1 of a 2026-11-03 report: a Ø10 came back as
                             # {"raw_text": "<MOD-DIAM>", "text": "Ø", "value_mm": 10.0} — the
                             # symbol resolved but the NUMBER did not, because the format
@@ -5738,6 +5747,7 @@ def list_drawing_annotations(drawing_path, view_name=None):
                             if resolved_note and resolved_note != text:
                                 row["display_text"] = resolved_note
                                 row["text_is_format_code"] = True
+                                row["text_decoded"] = True
                     except Exception:
                         pass
                     # Title-block and frame text is template furniture, not annotation the

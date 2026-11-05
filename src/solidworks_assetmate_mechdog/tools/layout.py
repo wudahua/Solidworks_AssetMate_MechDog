@@ -1320,6 +1320,18 @@ def _annotation_total(doc):
     dimensions belong to the model views. Comparing only the sheet made a successful
     delete answer `delete_failed`. Measured 2026-10-31 on a real sheet: the sheet stayed at
     83 while 工程图视图1 went 8 -> 7 and the total went 122 -> 121.
+
+    IMPORTANT — this is NOT the same number as `annotation_count` in
+    `list_drawing_annotations`. Report 2026-11-05 flagged the two as "两套口径" and it is
+    right that they disagree:
+
+      * this function counts EVERY annotation object SolidWorks hands back, including
+        template furniture (审核/校核/设计/标记 — a fresh A3 sheet reports 82 of them);
+      * `annotation_count` strips that furniture, because a user asking "how many
+        annotations are on my drawing" does not mean "including the printed title block".
+
+    They serve different purposes and must not be compared. This one is used only as a
+    before/after DELTA around a single delete, where the constant furniture cancels out.
     """
     total = 0
     counted = False
