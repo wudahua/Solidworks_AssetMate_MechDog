@@ -3184,8 +3184,16 @@ def assert_leader_endpoint_comes_from_the_attached_edge():
                                                       "add_geometric_tolerance")) or ""
     assert "leader_endpoint_source" in body, (
         "the receipt does not say where the endpoint came from — a null field is back")
-    assert "attached_edge_sheet_coords" in body, (
+    assert 'leader_endpoint_source = "attached_edge_%s" % _pt_source' in body, (
         "the endpoint is no longer sourced from the attached edge")
+    # 0.8.150: for a circular edge the endpoint must be a point ON the curve, not the
+    # centre — the centre was reported 15.000 mm (one radius) away from the DXF arrow tip.
+    assert '"sheet_point_on_circle", "circle_point"' in body, (
+        "the endpoint falls back to the circle centre again; a leader touches the curve")
+    order = body.find("sheet_point_on_circle")
+    centre = body.find("sheet_center\", \"circle_centre")
+    assert 0 < order < centre, (
+        "the point on the circle must be tried BEFORE the centre")
     assert "GetLeaderAtIndex2 does not" in body, (
         "the note that GetLeaderAtIndex2 is unavailable was lost")
     return "leader endpoint reports the attached edge's coords, with provenance"
@@ -4485,6 +4493,43 @@ def assert_title_block_reads_before_it_writes():
     return "title block reads the existing text before deciding whether to overwrite"
 
 
+def assert_circle_detection_does_not_need_a_vertex():
+    """0.8.150 — circular edges were invisible to every downstream tool.
+
+    Report 2026-11-05 (P1): `leader_endpoint_m` on a circular edge returned the CENTRE,
+    15.000 mm (one radius) from the arrow tip in the DXF — while carrying
+    `leader_endpoint_source: "attached_edge_sheet_coords"`, which made it look sourced.
+
+    The chain had two breaks:
+
+      1. `add_geometric_tolerance` preferred `sheet_center` over `sheet_point_on_circle`.
+         Fixed by trying circle_point -> edge_start -> circle_centre, and labelling which
+         one was used.
+      2. `sheet_point_on_circle` was never POPULATED. `list_drawing_edges` guarded the
+         circle branch with `if "model_start" not in item` — so any circular edge whose
+         start vertex happened to resolve skipped it. Measured: **0 of 145 edges across
+         three views** carried the field.
+
+    After the fix, 接槽 view 1 reports 5 circular edges out of 26, and the endpoint lands on
+    the curve: centre [0.18196, 0.23937] -> on_circle [0.18906, 0.23937].
+
+    A vertex resolving is an accident of the binding; `ICurve.CircleParams` answers on its
+    own. The guard must be about the field, not about a lucky vertex.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "list_drawing_edges")) or ""
+
+    assert 'if "radius_m" not in item:' in body, (
+        "the circle branch is gated on something other than the radius again — "
+        "edges with a resolved vertex will skip it and lose sheet_point_on_circle")
+    assert 'if "model_start" not in item:' not in body, (
+        "the old vertex-dependent guard is back")
+    assert "sheet_point_on_circle" in body, (
+        "the point on the curve is no longer computed")
+    return "circle detection is independent of whether a vertex resolved"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4622,6 +4667,7 @@ STATIC_REGRESSIONS = [
     ("0.8.147 ledger header intact", assert_the_regression_ledger_is_intact),
     ("0.8.148 tolerance enum matches SW", assert_tolerance_types_follow_the_real_enum),
     ("0.8.149 title block reads before write", assert_title_block_reads_before_it_writes),
+    ("0.8.150 circle detection needs no vertex", assert_circle_detection_does_not_need_a_vertex),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

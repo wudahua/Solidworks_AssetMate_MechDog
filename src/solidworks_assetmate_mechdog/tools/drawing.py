@@ -3592,7 +3592,17 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
                 # to project and reported sheet_projected:false even once the axes were
                 # known. `ICurve.CircleParams` still answers with centre + axis + radius,
                 # which is everything needed: project the centre, scale the radius.
-                if "model_start" not in item:
+                # Report 2026-11-05: this used to run only `if "model_start" not in item`.
+                # A circular edge whose start vertex DID resolve therefore skipped the
+                # branch entirely, so `radius_m` / `sheet_point_on_circle` were never set —
+                # measured: 0 of 145 edges across three views carried the field, which is
+                # why `add_geometric_tolerance` fell back to `sheet_center` and reported a
+                # leader endpoint one radius (15 mm) away from where DXF puts the arrow.
+                #
+                # Circle detection must not depend on whether a vertex happened to resolve;
+                # `CircleParams` answers independently. Still guarded, so a real straight
+                # edge is unaffected: an exception leaves the item untouched.
+                if "radius_m" not in item:
                     try:
                         edge = win.Dispatch(raw)
                         curve = win.Dispatch(call_method(edge, "GetCurve"))
@@ -8267,11 +8277,30 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
                     _rows = _cached.get("edges") or []
                     if 0 <= int(edge_index) < len(_rows):
                         _row = _rows[int(edge_index)]
-                        _pt = (_row.get("sheet_center") or _row.get("sheet_start"))
+                        # Report 2026-11-05: on a circular edge this reported the CENTRE,
+                        # 15.000 mm (one radius) from where the DXF shows the arrow tip.
+                        # A leader touches the curve, not its centre — `sheet_center` is
+                        # only correct for a point edge. Prefer the point ON the circle
+                        # (added in 0.8.98 for exactly this), then the edge start, and use
+                        # the centre only as a last resort.
+                        _pt = None
+                        _pt_source = None
+                        for _key, _label in (("sheet_point_on_circle", "circle_point"),
+                                             ("sheet_start", "edge_start"),
+                                             ("sheet_center", "circle_centre")):
+                            _candidate = _row.get(_key)
+                            if _candidate:
+                                _pt = _candidate
+                                _pt_source = _label
+                                break
                         if _pt:
                             leader_endpoint = [round(float(_pt[0]), 4),
                                                round(float(_pt[1]), 4)]
-                            leader_endpoint_source = "attached_edge_sheet_coords"
+                            leader_endpoint_source = "attached_edge_%s" % _pt_source
+                            if _pt_source == "circle_centre":
+                                # Only reachable when the row carries no point on the
+                                # curve; say so rather than passing a centre off as a tip.
+                                leader_endpoint_source += "_no_circle_point_available"
                             break
                 except Exception:
                     continue
