@@ -1753,6 +1753,96 @@ def survey_dimensions_by_view(drawing_path):
 
 
 @perf_hooks.timed("dimension_total")
+def clamp_dimensions_into_safe_area(drawing_path, inset_m=0.010, step_m=0.014):
+    """Pull any dimension that sits off the sheet back inside, stacked along the bottom.
+
+    Report 2026-11-04: eight reference dimensions (RD1..RD8) came out of InsertModelItems at
+    y = -0.068 .. -0.200 on a 297 mm sheet — 68 to 200 mm BELOW the paper. `place_outside`
+    never sees them (they are not in its buckets), and the perpendicular clamp it applies
+    only covers what it does push.
+
+    Standalone on purpose. Three earlier attempts embedded this inside `auto_dimension` and
+    all three missed for the same class of reason: the code ran before `place_outside` had
+    finished, or the anchor was matched at the wrong depth. A function called explicitly at
+    the END of the pipeline cannot be executed too early.
+
+    Stacking: dimensions are spread by `step_m` along the bottom margin. Snapping them all
+    to one y puts nine dimensions in an unreadable pile — only marginally better than being
+    off-sheet.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        frame = list(doc.GetFirstView.GetOutline or ())
+        if len(frame) < 4 or (frame[2] - frame[0]) <= 0.05:
+            return drawing_ok(clamped=[], clamped_count=0,
+                              note="sheet frame unavailable; nothing to clamp against")
+        lo_x, lo_y = frame[0] + inset_m, frame[1] + inset_m
+        hi_x, hi_y = frame[2] - inset_m, frame[3] - inset_m
+
+        offenders = []
+        scanned = 0
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            try:
+                raw = view.GetAnnotations
+            except Exception:
+                continue
+            items = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+            for item in items:
+                if item is None:
+                    continue
+                try:
+                    ann = win.Dispatch(item)
+                    if int(ann.GetType) != 4:
+                        continue
+                    pos = [float(v) for v in ann.GetPosition]
+                    name = str(ann.GetName)
+                except Exception:
+                    continue
+                scanned += 1
+                if lo_x <= pos[0] <= hi_x and lo_y <= pos[1] <= hi_y:
+                    continue
+                offenders.append((ann, name, pos))
+
+        offenders.sort(key=lambda entry: entry[2][0])
+        clamped = []
+        for i, (ann, name, pos) in enumerate(offenders):
+            nx = min(max(pos[0], lo_x), hi_x)
+            ny = min(lo_y + i * step_m, hi_y)
+            try:
+                ann.SetPosition(nx, ny, 0.0)
+                clamped.append({"name": name,
+                                "from_m": [round(pos[0], 4), round(pos[1], 4)],
+                                "to_m": [round(nx, 4), round(ny, 4)]})
+            except Exception as exc:
+                clamped.append({"name": name, "error": str(exc)[:80]})
+        if clamped:
+            try:
+                _call_method(doc, "EditRebuild3")
+            except Exception:
+                pass
+            try:
+                doc.GraphicsRedraw2()
+                perf_hooks.bump("redraw_calls")
+            except Exception:
+                pass
+            _save_drawing(doc)
+        return drawing_ok(clamped=clamped, clamped_count=len(clamped),
+                          dimensions_scanned=scanned,
+                          safe_area_m=[round(lo_x, 4), round(lo_y, 4),
+                                       round(hi_x, 4), round(hi_y, 4)],
+                          note=("no dimension was off the sheet" if not clamped else
+                                "%d 条尺寸原本在图框外，已拉回并按 %.0f mm 错开"
+                                % (len(clamped), step_m * 1000)))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("clamp_failed", str(exc))
+
+
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
                    dimension_filter=None, place_outside=True, detect_same_value=False,
                    save=True, audit=True,
@@ -2032,6 +2122,75 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 # sees a layout it did not ask for and cannot tell why.
                 notes.append("分层受安全区限制：%s。" % "；".join(outside_spills))
 
+        # Final gate, placed AFTER place_outside and immediately before the receipt.
+        #
+        # Report 2026-11-04: eight reference dimensions (RD1..RD8) came out of
+        # InsertModelItems at y = -0.068 .. -0.200 on a 297 mm sheet — 68 to 200 mm BELOW
+        # the paper. `place_outside` does not touch them (they are not in its buckets) and
+        # the perpendicular-axis clamp only applies to what it does push. A dimension that
+        # prints off the sheet is worse than a cramped one: the drawing states less than it
+        # appears to.
+        #
+        # The previous attempt put this gate BEFORE `place_outside`, so it clamped correct
+        # coordinates and place_outside then pushed them off again — `clamped=0` while nine
+        # dimensions stayed at y<0. Order is the whole point here.
+        clamped = []
+        try:
+            frame = list(doc.GetFirstView.GetOutline or ())
+            if len(frame) >= 4 and (frame[2] - frame[0]) > 0.05:
+                inset = 0.010
+                lo_x, lo_y = frame[0] + inset, frame[1] + inset
+                hi_x, hi_y = frame[2] - inset, frame[3] - inset
+                off_sheet = []
+                for view in _iter_views(doc):
+                    if getattr(view, "Type", None) == 1:
+                        continue
+                    try:
+                        raw = view.GetAnnotations
+                    except Exception:
+                        continue
+                    items = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+                    for item in items:
+                        if item is None:
+                            continue
+                        try:
+                            ann = _win_auto.Dispatch(item)
+                            if ann.GetType != 4:
+                                continue
+                            pos = [float(v) for v in ann.GetPosition]
+                        except Exception:
+                            continue
+                        if lo_x <= pos[0] <= hi_x and lo_y <= pos[1] <= hi_y:
+                            continue
+                        off_sheet.append((ann, str(ann.GetName), pos))
+                # Place them along the bottom margin, stacked so they do not land on one
+                # line — nine dimensions snapped to a single y overlap into an unreadable
+                # pile, which is only marginally better than being off-sheet.
+                off_sheet.sort(key=lambda entry: entry[2][0])
+                step = 0.014
+                for i, (ann, name, pos) in enumerate(off_sheet):
+                    nx = min(max(pos[0], lo_x), hi_x)
+                    ny = lo_y + i * step
+                    if ny > hi_y:
+                        ny = hi_y
+                    try:
+                        ann.SetPosition(nx, ny, 0.0)
+                        clamped.append({"name": name,
+                                        "from_m": [round(pos[0], 4), round(pos[1], 4)],
+                                        "to_m": [round(nx, 4), round(ny, 4)]})
+                    except Exception:
+                        continue
+        except Exception:
+            clamped = []
+        if clamped:
+            try:
+                _call_method(doc, "EditRebuild3")
+                perf_hooks.bump("rebuild_calls")
+            except Exception:
+                pass
+            notes.append("有 %d 条尺寸原本在图框外，已拉回安全区并按 %.0f mm 错开。"
+                         % (len(clamped), 14))
+
         return ok(
             drawing=doc.GetTitle,
             inserted=count,
@@ -2073,6 +2232,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             # audit simply was not run.
             audit_skipped=not bool(audit),
             outside_debug=outside_debug,
+            clamped_into_safe_area=clamped,
             # P2-5 of a 2026-11-03 report: a second call with place_outside=true returned
             # {"inserted": 1, "placed_outside": 0, "outside_debug": {"skip_before": 12,
             # "buckets": 0}} — the one new dimension stayed on the geometry AND duplicated

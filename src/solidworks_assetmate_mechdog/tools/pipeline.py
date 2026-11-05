@@ -250,6 +250,14 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # Every sub-tool now honours save=False (center marks, surface finish, hole callouts,
     # notes) — verified by the 0.8.111 assertion. This is the only save in a pipeline run.
     try:
+        # Last thing before the sheet is frozen: no dimension may be left off the paper.
+        # Report 2026-11-04 found eight reference dimensions at y = -0.068 .. -0.200 on a
+        # 297 mm sheet. Running this HERE, not inside auto_dimension, is deliberate — three
+        # attempts to clamp inside that function missed because they executed before
+        # `place_outside` had finished pushing dimensions around.
+        _clamp = drawing_tools.clamp_dimensions_into_safe_area(target)
+        record("clamp_dimensions", _clamp,
+               _clamp.get("note") or ("clamped=%s" % _clamp.get("clamped_count")))
         _doc = drawing_tools._open_drawing(target)
         drawing_tools._save_drawing(_doc)
         record("save", {"ok": True}, "one save for the whole run")

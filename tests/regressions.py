@@ -3806,6 +3806,44 @@ def assert_center_marks_and_orphans_are_discriminating():
     assert "unattached_plausible" in att, (
         "plausible-unattached is not separated from orphans")
     return "axonometric skipped by orientation; orphans separated by geometric witnesses"
+def assert_no_dimension_is_left_off_the_sheet():
+    """0.8.134 — dimensions were being printed outside the paper.
+
+    Report 2026-11-04 (found while measuring for P1-1, not reported by the user): eight
+    reference dimensions RD1..RD8 came out of InsertModelItems at
+    y = -0.068 .. -0.200 on a 297 mm sheet. `place_outside` never touches them — they are
+    not in its buckets — and the perpendicular clamp it gained only covers what it does
+    push. A dimension printed off the sheet is worse than a cramped one: the drawing states
+    less than it appears to.
+
+    Measured after the fix (接槽): annotation y range -0.176..0.262 -> 0.094..0.262, bottom
+    room -240.9 mm -> +29.0 mm.
+
+    Placement matters as much as the logic. Three attempts to clamp inside `auto_dimension`
+    all missed: one ran before `place_outside` finished, one matched its anchor at the wrong
+    depth, one was edited away by its own cleanup. A standalone step called from the pipeline
+    immediately before save cannot execute too early, and is the version that works.
+    """
+    drawing_src = _read("tools/drawing.py")
+    tree = ast.parse(drawing_src)
+    helper = _function_node(tree, "clamp_dimensions_into_safe_area")
+    assert helper is not None, "the clamp helper is gone"
+    body = ast.get_source_segment(drawing_src, helper) or ""
+    assert "GetOutline" in body, "the helper does not read the sheet frame"
+    assert "SetPosition" in body, "the helper does not move anything"
+    assert "step_m" in body, "offenders are stacked on one line again"
+
+    pipe_src = _read("tools/pipeline.py")
+    pipe = ast.get_source_segment(
+        pipe_src, _function_node(ast.parse(pipe_src), "produce_drawing")) or ""
+    assert "clamp_dimensions_into_safe_area" in pipe, (
+        "the pipeline no longer clamps before saving")
+    # It must run BEFORE the save, or the clamped version never reaches disk.
+    clamp_at = pipe.find("clamp_dimensions_into_safe_area")
+    save_at = pipe.find('record("save"')
+    assert clamp_at > 0 and save_at > 0 and clamp_at < save_at, (
+        "the clamp runs after the save — the file on disk keeps the off-sheet coordinates")
+    return "dimensions are clamped inside the frame before the sheet is saved"
 STATIC_REGRESSIONS = [
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
@@ -3929,6 +3967,7 @@ STATIC_REGRESSIONS = [
     ("0.8.85 same-value duplicates", assert_same_value_duplicates_are_listed_not_deleted),
     ("0.8.87 sheet lines prove render", assert_sheet_lines_prove_they_rendered),
     ("0.8.89 P3 receipts", assert_p3_receipts_say_what_they_mean),
+    ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
     ("0.8.132 marks + orphans discriminate", assert_center_marks_and_orphans_are_discriminating),
     ("0.8.131 requirements stay in frame", assert_requirements_respect_safe_area),
     ("0.8.130 projection selectable", assert_projection_angle_is_selectable),
