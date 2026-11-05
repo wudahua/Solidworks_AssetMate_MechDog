@@ -4939,6 +4939,48 @@ def assert_gap_status_enum_is_the_same_in_every_consumer():
     return "gap statuses agree across implementation, smoke and description"
 
 
+def assert_shaft_default_views_keep_a_long_bar():
+    """0.8.157 — a category-level view guess deleted the only usable view.
+
+    Report 2026-11-05 (P0): v0.8.146 set 轴类 to `["front", "isometric"]` on the reasoning
+    that a shaft's top view is a redundant second bar. That is true only when the shaft lies
+    ACROSS the front view. On 飞达动力轴 the front view is the END FACE —
+    `precise_outline_m` 0.035 x 0.035 — and `right` is the 0.107 x 0.035 bar. Removing `top`
+    removed the only view that could carry axial dimensions:
+
+        default (front+isometric)   3 dimensions, coverage 0.167, all 13 steps ok
+        explicit (front+right)     10 dimensions, coverage 0.444
+
+    A category cannot know how a model is oriented, so the default must keep a view set that
+    has a bar under EITHER orientation. `front + right + isometric` does: `right` is the bar
+    in one layout, `front` in the other.
+
+    Verified on the reporter's own part, 2026-11-05:
+        default front+right+isometric -> 3 views, 10 dimensions, coverage 0.444
+        explicit front+right          -> 2 views, 10 dimensions, coverage 0.444
+    Same dimension set (`1.5 1.5 10 17 20 21.5 30 30 35 56`), one extra view.
+    """
+    src = _read("tools/pipeline.py")
+    start = src.find('"轴类": {')
+    assert start > 0, "the shaft category is gone"
+    # Wide enough to reach the views key past its explanatory comments; stop at the next
+    # category so a later key cannot be mistaken for this one.
+    _next = src.find('"装配体": {', start)
+    block = src[start:_next if _next > start else start + 2000]
+    views_at = block.find('"views"')
+    assert views_at > 0, "the shaft category has no view list"
+    views_line = block[views_at:block.find("]", views_at) + 1]
+
+    assert '"right"' in views_line, (
+        "the shaft default lost `right` — on a shaft laid out across the front view, "
+        "`right` is the long bar and dropping it costs every axial dimension")
+    assert '"isometric"' not in views_line or '"right"' in views_line, (
+        "the isometric is present without a bar view")
+    assert not (views_line.count('"') == 4 and '"front"' in views_line), (
+        "the shaft default is down to two views with no bar — this is the 0.8.146 shape")
+    return "shaft defaults keep a view that can carry axial dimensions"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5085,6 +5127,7 @@ STATIC_REGRESSIONS = [
     ("0.8.155 circle centre never reaches edges", assert_circle_centre_candidates_never_reach_the_edge_array),
     ("0.8.156 applied values are checked", assert_applied_dimensions_are_checked_against_what_was_drawn),
     ("0.8.156 gap statuses agree", assert_gap_status_enum_is_the_same_in_every_consumer),
+    ("0.8.157 shaft views keep a bar", assert_shaft_default_views_keep_a_long_bar),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
