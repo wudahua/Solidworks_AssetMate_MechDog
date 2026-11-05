@@ -774,8 +774,39 @@ def create_drawing(
                 pass
 
         if explicit_positions:
-            # Caller placed the views; repacking would throw that away.
-            layout = {"fits": True, "columns": len(views), "explicit": True}
+            # Caller placed the views; repacking would throw that away. But `fits` must
+            # still be TRUE only if it is true.
+            #
+            # Report 2026-11-05 (§3.2 / this smoke run): this branch hard-coded
+            # `"fits": True` without measuring anything, so a 3-column A3 layout whose
+            # outlines summed to 439 mm on a 420 mm sheet reported fits=True, and
+            # `drawing_audit` immediately flagged `views_overlap` between views 2 and 3.
+            # The caller follows `fits`; the two must agree.
+            _boxes = []
+            for _v in view_objects:
+                try:
+                    _b = precise_outline(_v)
+                except Exception:
+                    _b = None
+                # precise_outline returns [x1, y1, x2, y2] in sheet metres.
+                if _b and len(_b) >= 4:
+                    _boxes.append((str(getattr(_v, "Name", "?")), _b))
+            _out_of_bounds = []
+            for _name, _b in _boxes:
+                if (_b[0] < safe_x0 - 1e-6 or _b[1] < safe_y0 - 1e-6
+                        or _b[2] > safe_x1 + 1e-6 or _b[3] > safe_y1 + 1e-6):
+                    _out_of_bounds.append(_name)
+            _overlaps = []
+            for _i in range(len(_boxes)):
+                for _j in range(_i + 1, len(_boxes)):
+                    _a, _c = _boxes[_i][1], _boxes[_j][1]
+                    if min(_a[2], _c[2]) - max(_a[0], _c[0]) > 1e-6 and                             min(_a[3], _c[3]) - max(_a[1], _c[1]) > 1e-6:
+                        _overlaps.append("%s<->%s" % (_boxes[_i][0], _boxes[_j][0]))
+            layout = {"fits": not _out_of_bounds and not _overlaps,
+                      "columns": len(views), "explicit": True,
+                      "measured": bool(_boxes),
+                      "out_of_bounds": _out_of_bounds,
+                      "overlaps": _overlaps}
         else:
             layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
         try:

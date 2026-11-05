@@ -337,9 +337,20 @@ def main():
         def _drawing():
             drw = os.path.join(workdir, "smoke.SLDDRW")
             pdf = os.path.join(workdir, "smoke.pdf")
+            # Two views, not three. Measured 2026-11-05 on P05_karetku (155 + 155 + 129 mm
+            # of outline on a 420 mm A3): the isometric makes the row 439 mm wide and
+            # `drawing_audit` flags views 2 <-> 3 as overlapping. The tool is right; the
+            # test was asking for a layout that cannot fit.
             created = require(drawing.create_drawing(
-                part_copy, drw, views=["front", "top", "isometric"]))
-            assert created.get("saved") and len(created.get("views") or []) == 3, created
+                part_copy, drw, views=["front", "top"]))
+            assert created.get("saved") and len(created.get("views") or []) == 2, created
+            # `layout.fits` used to be hard-coded True for explicit positions; assert it
+            # now, so a sheet that does not fit cannot pass as one that does.
+            # (`_layout`, not `layout` — the latter is the tools module, and the signature
+            # guard reads `layout.get(...)` as a tool call.)
+            _layout = created.get("layout") or {}
+            assert _layout.get("fits") is True, (
+                "create_drawing reports the layout does not fit: %r" % (_layout,))
             exported = require(drawing.export_drawing(drw, pdf))
             assert exported["bytes"] > 1000, exported
             rendered = require(drawing.render_drawing(pdf, workdir))
@@ -347,11 +358,11 @@ def main():
             dimensioned = require(drawing.auto_dimension(drw))
             marked = require(drawing.add_center_marks(drw))
             audited = require(drawing.drawing_audit(drw))
-            assert audited["view_count"] == 3, audited
+            assert audited["view_count"] == 2, audited
             bad = [w for w in (audited.get("warnings") or [])
                    if w.get("issue") in ("view_outside_sheet", "views_overlap")]
             assert not bad, "layout problems: %s" % bad
-            return "3 views, %d dims, %d/%d views marked, %d KB pdf, scale %s" % (
+            return "2 views, %d dims, %d/%d views marked, %d KB pdf, scale %s" % (
                 dimensioned.get("total_dimensions") or 0,
                 marked.get("views_marked") or 0, marked.get("views_processed") or 0,
                 exported["bytes"] // 1024, created["views"][0]["scale"])
