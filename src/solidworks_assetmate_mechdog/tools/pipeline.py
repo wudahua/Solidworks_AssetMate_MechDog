@@ -28,24 +28,32 @@ CATEGORY_DEFAULTS = {
         "roughness": "3.2",
         "hole_callouts": True,
         "center_marks": True,
+        # Holes live on the face, so the top view is where the callouts can attach.
+        "views": ["front", "top", "isometric"],
     },
     "一般零件": {
         "general_tolerance": "未注公差按 GB/T 1804-m",
         "roughness": "3.2",
         "hole_callouts": True,
         "center_marks": True,
+        "views": ["front", "top", "isometric"],
     },
     "轴类": {
         "general_tolerance": "未注公差按 GB/T 1804-m",
         "roughness": "1.6",
         "hole_callouts": False,
         "center_marks": True,
+        # A shaft's top view is a second long bar — redundant on a turned part. The
+        # isometric carries the keyway and cross-holes instead (report 2026-11-05 also
+        # complained that front+top+left gave "两张几乎一样的长轴视图").
+        "views": ["front", "isometric"],
     },
     "装配体": {
         "general_tolerance": "未注公差按 GB/T 1804-m",
         "roughness": "",
         "hole_callouts": False,
         "center_marks": False,
+        "views": ["front", "isometric"],
     },
 }
 FALLBACK_DEFAULTS = CATEGORY_DEFAULTS["一般零件"]
@@ -194,7 +202,17 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # 3) views
     target = output_path or os.path.splitext(path)[0] + ".SLDDRW"
     created = record("create_drawing",
-                     drawing_tools.create_drawing(path, target, views=views or ["front", "right"],
+                     drawing_tools.create_drawing(
+                         path, target,
+                         # Default views come from the CATEGORY, not a constant.
+                         # Report 2026-11-05: the pipeline built front+right, whose right
+                         # view is an END FACE — 7 circular edges, all of which
+                         # AddHoleCallout2 rejects. The holes live on the TOP view, which
+                         # was never created, so `callouts.created` was 0 while
+                         # `defaults.hole_callouts` said True. Measured on 接槽:
+                         # front+right -> scanned 7, created 0;
+                         # front+top+isometric -> scanned 30, created 13.
+                         views=views or defaults.get("views") or ["front", "top", "isometric"],
                                                   paper=paper, projection=projection),
                      "")
     if not created.get("ok"):

@@ -4326,6 +4326,51 @@ def assert_derived_dimensions_are_reported_as_unfillable():
     return "derived dimensions are named as unfillable, and the sheet is checked for one"
 
 
+def assert_default_views_include_the_face_with_holes():
+    """0.8.146 — hole callouts were enabled and produced nothing, for a layout reason.
+
+    Report 2026-11-05 (P0-C area) and my own two hours of isolation: `produce_drawing`
+    defaulted to `views or ["front", "right"]`. On 接槽 the RIGHT view is an END FACE —
+    7 circular edges, every one of which `AddHoleCallout2` rejects. **The holes live on the
+    TOP view, which was never created.** So `defaults.hole_callouts` said True while
+    `callouts.created` was 0, and no step reported a problem.
+
+    Measured:
+        front+right            -> scanned 7,  created 0
+        front+top+isometric    -> scanned 32, created 13
+
+    The fix is per-category, because one constant cannot serve both shapes: a shaft's top
+    view is a second long bar (the same report complained about "两张几乎一样的长轴视图"),
+    while a plate's holes only exist in the top view.
+
+    Everything else I isolated first — auto_dimension, center_marks, surface_finish,
+    save=False, the DrawingBatch scope, ledger+plan, dimension_filter, budget 45 vs 120 —
+    reproduced 13 every time. The view set was the only variable that mattered, and it was
+    invisible because all of those steps "worked".
+    """
+    src = _read("tools/pipeline.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "produce_drawing")
+    assert fn is not None
+    body = ast.get_source_segment(src, fn) or ""
+
+    assert '"front", "right"' not in body, (
+        "the pipeline is back to front+right, whose right view is an end face — "
+        "hole callouts will silently produce zero again")
+    assert 'defaults.get("views")' in body, (
+        "the view set no longer comes from the category")
+
+    for category in ("钣金", "一般零件"):
+        marker = '"%s": {' % category
+        start = src.find(marker)
+        assert start > 0, "category %s is gone" % category
+        block = src[start:start + 400]
+        assert '"top"' in block, (
+            "%s does not request the top view; its holes will have nowhere to attach"
+            % category)
+    return "default views include the face that carries the holes"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -4459,6 +4504,7 @@ STATIC_REGRESSIONS = [
     ("0.8.143 no refuted claim in docs", assert_no_refuted_claim_is_still_in_the_docs),
     ("0.8.143 doc numbers match code", assert_docs_numbers_match_the_code),
     ("0.8.144 derived dims reported", assert_derived_dimensions_are_reported_as_unfillable),
+    ("0.8.146 default views carry the holes", assert_default_views_include_the_face_with_holes),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
