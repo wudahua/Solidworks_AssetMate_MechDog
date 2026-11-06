@@ -7695,14 +7695,37 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
         # distance apart).
         points = []
         model_points = {}
+        _model_fallback = []
         for idx, row in enumerate(rows):
             pt = row.get("sheet_center") or row.get("sheet_point_on_circle") or row.get("sheet_start")
             if pt:
                 points.append((idx, float(pt[0]), float(pt[1])))
+            else:
+                # Report 2026-11-06 (P0, A2/A3): on a 60x60 part the axis mapping is
+                # ambiguous, so `list_drawing_edges` reports `sheet_projected: false` and
+                # NO row carries a sheet point. `points` came out empty, and the whole tool
+                # returned `not_enough_edges / "found 0"` — every sheet-coordinate-based gap
+                # finder died on exactly the parts that need it (a square is not exotic).
+                #
+                # The model coordinates are still there. Fall back to them: a distance is
+                # still a distance, we just lose the ability to place the dimension nicely.
+                # The receipt says which space was used, so a caller can tell.
+                m = row.get("model_center") or row.get("model_start")
+                if m and len(m) >= 2:
+                    _model_fallback.append((idx, float(m[0]), float(m[1]),
+                                            float(m[2]) if len(m) > 2 else 0.0))
             mpt = row.get("model_center") or row.get("model_start")
             if mpt and len(mpt) >= 2:
                 model_points[idx] = (float(mpt[0]), float(mpt[1]),
                                      float(mpt[2]) if len(mpt) > 2 else 0.0)
+
+        _coordinate_space = "sheet"
+        if not points and _model_fallback:
+            # Use the first two axes of the model; the matching loop below already tries
+            # both axes of whatever pair it is given, and a third pass is not worth the
+            # combinatorial cost for a fallback that only exists to avoid a hard zero.
+            points = [(idx, x, y) for idx, x, y, _z in _model_fallback]
+            _coordinate_space = "model_fallback"
 
         # Report 2026-11-04 P1-2: 13 gaps, all `no_geometry`, including values that are
         # plainly measurable — 31 (two counterbore centres), 12 (Ø5 spacing), 13 (Ø14.2
@@ -7746,9 +7769,14 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
         points = points + [(pid, x, y) for pid, x, y, _ in circle_points]
         if len(points) < 2:
             return error("not_enough_edges",
-                         "need at least two edges with sheet coordinates, found %d" % len(points),
-                         "Run list_drawing_edges(drawing_path, flip_x=...) first and check "
-                         "`sheet_axis_direction_verified`.")
+                         "need at least two edges with coordinates, found %d (space: %s)"
+                         % (len(points), _coordinate_space),
+                         ("The sheet projection was unavailable AND the model fallback found "
+                          "nothing. On a part whose X/Y extents are equal the axis mapping is "
+                          "ambiguous (`axes_mismatch`), so no sheet points exist — the model "
+                          "coordinates are the only route, and they are missing here too. "
+                          "Use add_distance_dimension(edge_a, edge_b) with explicit indices "
+                          "from list_drawing_edges."))
 
         results = []
         for gap in gaps:
@@ -8062,6 +8090,11 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
 
         return drawing_ok(
             gaps_found=len(results),
+            # Which space the candidates were matched in. `model_fallback` means the sheet
+            # projection was unavailable (ambiguous axes on an equal-extent part) and the
+            # distances come from model coordinates — the values are still comparable, but
+            # the placement hint (`centres`) is in model space, not on the sheet.
+            coordinate_space=_coordinate_space,
             fillable=len(fillable),
             ambiguous=sum(1 for r in results if r["status"] == "ambiguous"),
             no_geometry=sum(1 for r in results if r["status"] == "no_geometry"),

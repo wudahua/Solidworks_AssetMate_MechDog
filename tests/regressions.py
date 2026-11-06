@@ -5730,6 +5730,48 @@ def assert_delete_verifies_what_survived():
     return "a bulk delete reports what survived; angles are not lengths"
 
 
+def assert_gap_finder_survives_an_unmappable_axis():
+    """0.8.179 — a square part made the whole gap finder return zero candidates.
+
+    Report 2026-11-06 (P0, A2/A3): on a 60×60×10 part the sheet-axis mapping is ambiguous
+    (`axes_mismatch` — the deflated outline matches two model extents equally). So
+    `list_drawing_edges` reported `sheet_projected: false` with no sheet coordinates on any
+    row, `plan_dimension_gaps` built an empty point list, and returned
+
+        {"ok": false, "error": "not_enough_edges",
+         "message": "need at least two edges with sheet coordinates, found 0"}
+
+    Every sheet-coordinate-based capability — gap finding, dimension placement, edge
+    picking — collapsed on a part shape that is not remotely exotic.
+
+    The model coordinates were there the whole time. A distance is still a distance; what is
+    lost is the placement hint, not the measurability. So the tool now falls back to model
+    coordinates and SAYS SO via `coordinate_space`, instead of reporting that it found
+    nothing.
+
+    Not verified on real hardware: this machine has no equal-extent part, so the fallback
+    branch has never executed (`coordinate_space` always reads "sheet" here).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+
+    assert "_model_fallback" in body, (
+        "the model-coordinate fallback is gone — an ambiguous-axis part returns zero "
+        "candidates again while its model coordinates sit unused")
+    assert '_coordinate_space = "model_fallback"' in body, (
+        "the fallback is not labelled, so a caller cannot tell model distances from sheet "
+        "distances")
+    assert "coordinate_space=" in body, (
+        "the receipt does not report which space was used")
+
+    # The empty-result error must mention the space, or the next report will again have to
+    # guess whether the sheet projection or the model data was missing.
+    assert "(space: %s)" in body, (
+        "the not_enough_edges message does not say which coordinate space failed")
+    return "gap finding falls back to model coordinates and names the space"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5891,6 +5933,7 @@ STATIC_REGRESSIONS = [
     ("0.8.175 failed insert stops batch", assert_a_failed_insert_stops_the_batch),
     ("0.8.176 reversed capability consistent", assert_a_reversed_capability_does_not_linger_in_the_docs),
     ("0.8.178 delete verifies survivors", assert_delete_verifies_what_survived),
+    ("0.8.179 axis fallback", assert_gap_finder_survives_an_unmappable_axis),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
