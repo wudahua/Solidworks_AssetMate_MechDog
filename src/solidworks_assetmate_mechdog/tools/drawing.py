@@ -2279,7 +2279,12 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 "所以剖视/局部视图上的同源副本会被删掉——深度类尺寸可能因此无处安放"
                 "（实测 83 插入 → 删 44，两个剖视 0 尺寸）。需要剖视承载尺寸时，"
                 "改 eliminate_duplicates=False，或用 dimension_filter 精确保留。")
-        if total > 30:
+        # `total` is None when audit=False ("not measured"), so it must not be compared.
+        # 0.8.190 made it None to stop `inserted: 12 / total_dimensions: 0` reading as a
+        # contradiction, and this comparison then raised TypeError on every such call —
+        # which the pipeline turned into `dimensions failed; the drawing is not usable`
+        # for three smoke items, with no way to see the cause.
+        if total is not None and total > 30:
             notes.append(
                 "本图 %d 个尺寸；100 张真实工程图实测平均 14 个（中位 11）。"
                 "全量导入（include_unmarked=True）会把模型的每个驱动尺寸都倒到图上，"

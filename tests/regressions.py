@@ -5968,6 +5968,37 @@ def assert_a_length_is_judged_before_it_is_drawn():
     return "a non-length edge pair is refused before AddDimension2 runs"
 
 
+def assert_a_missing_measurement_is_not_compared():
+    """0.8.194 — turning a fallback 0 into None broke a comparison two versions later.
+
+    v0.8.190 changed `total_dimensions` from `0` (a lie: audit=False means "not measured")
+    to `None`, and added `total_dimensions_measured`. Two versions later three smoke items
+    failed with:
+
+        dimensions: auto_dimension_failed: '>' not supported between instances of
+        'NoneType' and 'int'
+
+    because `if total > 30:` still assumed a number. `produce_drawing` reported only
+    `dimensions failed; the drawing is not usable` — the actual reason was buried in
+    `steps[].detail`, which the failure branch never returned.
+
+    Two lessons, both asserted here:
+      * a value that can be None must be guarded before comparison;
+      * a failed step must carry its reason out of the pipeline.
+    """
+    src = _read("tools/drawing.py")
+    assert "if total is not None and total > 30:" in src, (
+        "`total` can be None (audit=False) and is compared again — TypeError on every such "
+        "call, surfacing as 'dimensions failed' with no visible cause")
+    assert "total_dimensions_measured" in src, (
+        "the receipt no longer distinguishes 'not measured' from 'zero'")
+
+    pipe = _read("tools/pipeline.py")
+    assert 'st.get("detail")' in pipe, (
+        "critical_step_failed reports only step names — a failure reads "
+        "'dimensions failed; the drawing is not usable' with no reason")
+    return "a None measurement is guarded, and a failed step carries its reason"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6134,6 +6165,7 @@ STATIC_REGRESSIONS = [
     ("0.8.183 receipts match geometry", assert_receipts_do_not_disagree_with_the_geometry),
     ("0.8.191 angular is not a length", assert_an_angular_dimension_is_not_a_length),
     ("0.8.192 judge before drawing", assert_a_length_is_judged_before_it_is_drawn),
+    ("0.8.194 guard a missing measurement", assert_a_missing_measurement_is_not_compared),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

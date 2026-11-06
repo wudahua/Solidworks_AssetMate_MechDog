@@ -444,7 +444,15 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         return error(
             "critical_step_failed",
             "%s failed; the drawing is not usable" % ", ".join(_failed_critical),
-            "steps: %s" % "; ".join("%s=%s" % (st["step"], st["ok"]) for st in steps),
+            # Include the DETAIL of each failed step, not just its name: three smoke items
+            # failed for two days with "dimensions failed; the drawing is not usable" and
+            # nothing else, because the reason lived in `steps[].detail` which this branch
+            # never returned.
+            "steps: %s | %s" % (
+                "; ".join("%s=%s" % (st["step"], st["ok"]) for st in steps),
+                "; ".join("%s: %s" % (st["step"], st.get("detail"))
+                          for st in steps if not st.get("ok") and st.get("detail"))
+                or "no detail recorded"),
             documents_closed=closed)
 
     return ok(
