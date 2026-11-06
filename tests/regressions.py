@@ -1701,23 +1701,48 @@ def assert_callout_text_carries_value():
 
 
 def assert_mojibake_is_repaired():
-    """0.8.33 / N-3 — feature names came back as ÂÝÎÆ¿××êÍ·Éî¶È (= 螺纹孔钻头深度).
+    """0.8.33 / N-3 / 0.8.172 — feature names came back as ÂÝÎÆ¿××êÍ·Éî¶È.
 
-    Reported three rounds running. GB2312 bytes decoded as Latin-1 are losslessly reversible;
-    real Chinese fails `.encode("latin-1")` and must pass through untouched, which is what
-    makes a blanket call safe.
+    Reported four rounds running. The previous version of THIS assertion is why it survived:
+    it grepped the source for `encode("latin-1")` / `decode("gb2312")`, so it stayed green
+    while the function did nothing on the strings that actually occur.
+
+    A real SolidWorks name is a MIXTURE:
+
+        ÂÝÎÆ¿××êÍ·Éî¶È@草图2@T_定位块.Part
+        └── mangled ──┘  └ CJK ┘ └── ASCII ──┘
+
+    `encode("latin-1")` meets 草图, raises, and the bare `except` returned the input. Zero
+    repairs on real data, 180/180 green.
+
+    So this now calls the function with real samples instead of reading its source.
     """
-    src = _read("sw_session.py")
-    node = _function_node(ast.parse(src), "fix_mojibake")
-    assert node is not None, "fix_mojibake is missing"
-    body = ast.get_source_segment(src, node) or ""
-    assert 'encode("latin-1")' in body and 'decode("gb2312")' in body, (
-        "the repair no longer round-trips through latin-1/gb2312")
-    assert "return text" in body, "no pass-through: real Chinese would be mangled"
-    drawing_src = _read("tools/drawing.py")
-    assert "fix_mojibake" in drawing_src, (
-        "ledger_missing still emits mojibake feature names")
-    return "lossless repair with a safe pass-through"
+    import importlib
+
+    mod = importlib.import_module("solidworks_assetmate_mechdog.sw_session")
+    fix = getattr(mod, "fix_mojibake", None)
+    assert fix is not None, "fix_mojibake is missing"
+
+    pure = "ÂÝÎÆ¿××êÍ·Éî¶È"                       # 螺纹孔钻头深度
+    assert fix(pure) == "螺纹孔钻头深度", (
+        "the pure mangled form no longer repairs: %r" % (fix(pure),))
+
+    mixed = "ÂÝÎÆ¿××êÍ·Éî¶È@草图2@T_定位块.Part"
+    got = fix(mixed)
+    assert got == "螺纹孔钻头深度@草图2@T_定位块.Part", (
+        "a MIXED name — mangled segment plus real Chinese plus ASCII — is the shape that "
+        "actually occurs, and it does not repair: %r" % (got,))
+
+    # Pass-through cases: a blanket call must never damage correct text.
+    for good in ("螺纹孔钻头深度@草图2@T_定位块.Part", "D1@草图1", "", "Ø30"):
+        assert fix(good) == good, "repair damaged a correct string: %r -> %r" % (good, fix(good))
+
+    # And the repair must be wired into the data source, not one consumer.
+    ledger = _read("tools/ledger.py")
+    assert "fix_mojibake" in ledger, (
+        "build_feature_ledger emits mangled names again — keep_dimensions built from them "
+        "can never match anything downstream")
+    return "mojibake repair verified on real mixed names, with safe pass-through"
 
 
 def assert_axis_map_scales_to_sheet():

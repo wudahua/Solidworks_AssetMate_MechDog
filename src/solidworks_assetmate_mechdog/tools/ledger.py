@@ -56,6 +56,14 @@ def _feature_dimensions(feature):
             dim = win.Dispatch(display).GetDimension2(0)
             if dim is not None:
                 name = ""
+                # Report 2026-11-06 (P1): names arrive as GB2312 bytes decoded one per
+                # Latin-1 char. Repairing only in `delivery_check` left every OTHER export
+                # mangled, and `keep_dimensions` with mangled names never matches anything
+                # downstream. Fix at the read.
+                try:
+                    from ..sw_session import fix_mojibake as _fix
+                except Exception:
+                    _fix = None
                 try:
                     name = str(dim.FullName)
                 except Exception:
@@ -63,6 +71,8 @@ def _feature_dimensions(feature):
                         name = str(dim.Name)
                     except Exception:
                         name = ""
+                if _fix is not None and name:
+                    name = _fix(name)
                 kind = None
                 try:
                     # swDimensionType_e: 0 linear, 1 angular, 2 diameter, 3 radial,

@@ -1305,13 +1305,19 @@ def _annotation_dimension_full_name(annotation, win):
         dim = win.Dispatch(specific.GetDimension2(0))
     except Exception:
         return None
+    # Repair at the read: mangled names break every downstream comparison, not just the
+    # one place that used to call fix_mojibake (2026-11-06 report, fourth round).
+    try:
+        from ..sw_session import fix_mojibake as _fix
+    except Exception:
+        _fix = None
     for attr in ("FullName", "Name"):
         try:
             value = str(getattr(dim, attr))
         except Exception:
             continue
         if value:
-            return value
+            return _fix(value) if _fix is not None else value
     return None
 
 
