@@ -5502,8 +5502,33 @@ def assert_auto_fit_updates_the_title_block():
     assert "apply=True" in body, (
         "set_title_block defaults to a dry run — without apply=True it reports success "
         "and writes nothing")
-    assert '"title_scale_synced"' in body or "title_scale_synced=" in body, (
-        "the sync result is not in the receipt, so a caller cannot tell whether it happened")
+
+    # 0.8.177: the first version of this fix was a FAKE fix, and this assertion let it pass
+    # because it only looked for the call. Report 2026-11-06: the receipt said
+    # `title_scale_synced: {text: "1:2"}` while the sheet still read 1:1. Three causes:
+    #
+    #   1. it ran BEFORE the save — set_title_block works by path, reopening the file on
+    #      disk, and the later SaveAsSilent overwrote that edit;
+    #   2. the return value was discarded — set_title_block reports failure with an error
+    #      dict, not an exception, so try/except saw nothing;
+    #   3. it only fired when auto_fit changed the scale, so an explicit `scale=0.5`
+    #      produced no sync at all.
+    #
+    # These three are now asserted in shape, because each one independently turned the
+    # receipt into a claim the code could not back.
+    save_at = body.find("SaveAsSilent")
+    sync_at = body.find("_title_scale_synced")
+    assert save_at > 0 and sync_at > save_at, (
+        "the title-block sync runs before the save again — SaveAsSilent will overwrite it, "
+        "and the receipt will claim a sync that got thrown away")
+    assert 'written") or []' in body or "written\") or []" in body, (
+        "the return value is discarded again — set_title_block signals failure with an "
+        "error dict, so a bare call always 'succeeds'")
+    assert "verified_by" in body, (
+        "nothing marks the sync as confirmed by written[].ok")
+    assert "abs(_final_scale - 1.0)" in body, (
+        "the trigger is back to 'changed from what was asked', so an explicit scale=0.5 "
+        "never syncs the title block")
 
     pipe = _read("tools/pipeline.py")
     assert "creation_warnings" in pipe, (

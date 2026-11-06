@@ -863,47 +863,6 @@ def create_drawing(
                         pass
                 auto_scale_adjustments.append({"from": current, "to": smaller})
                 layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
-        # Report 2026-11-06 (P0): auto_fit reduced the views from 1:1 to 1:2 and the title
-        # block still said 1:1 — the shop measures every linear dimension at the wrong
-        # ratio, and nothing in the receipt said the ratio had changed. A drawing whose
-        # title block disagrees with its geometry is worse than one that fails to build.
-        #
-        # Rewrite the 比例 cell whenever the surviving scale differs from what we asked for
-        # (or from 1:1 when nothing was asked). Best-effort: a template without that cell
-        # must not break drawing creation, so failures are recorded, not raised.
-        _title_scale_synced = None
-        try:
-            _final_scale = None
-            for _v in view_objects:
-                try:
-                    _final_scale = float(_v.ScaleDecimal)
-                    break
-                except Exception:
-                    continue
-            if _final_scale is not None:
-                _asked = float(chosen_scale) if chosen_scale else 1.0
-                if abs(_final_scale - _asked) > 1e-9:
-                    # 1:2 style text, matching what GB templates carry.
-                    _ratio = ("1:%g" % round(1.0 / _final_scale, 4)) if _final_scale < 1 \
-                        else ("%g:1" % round(_final_scale, 4))
-                    # `set_title_block` takes a PATH and reopens the drawing; use the path
-                    # the caller gave us (`out` is not bound yet at this point in the
-                    # function — measured: it raised "cannot access local variable 'out'").
-                    _target_path = output_path or (drw.GetPathName or "")
-                    if not _target_path:
-                        _title_scale_synced = {"text": _ratio,
-                                               "error": "no saved path; title block not written"}
-                    else:
-                        try:
-                            # `apply=True` — the default is a dry run, which would report
-                            # success while writing nothing.
-                            set_title_block(_target_path, scale=_ratio, apply=True)
-                            _title_scale_synced = {"from": _asked, "to": _final_scale,
-                                                   "text": _ratio}
-                        except Exception as _exc:                   # noqa: BLE001
-                            _title_scale_synced = {"error": str(_exc)[:80], "text": _ratio}
-        except Exception:
-            pass
         try:
             drw.GraphicsRedraw2()
             perf_hooks.bump("redraw_calls")
@@ -1008,6 +967,50 @@ def create_drawing(
             else:
                 result.update(saved=True, drawing_path=out,
                               bytes=os.path.getsize(out) if os.path.exists(out) else 0)
+        # Report 2026-11-06 (P0, second attempt): the first version of this ran BEFORE the
+        # save. `set_title_block` works by PATH — it reopens the file on disk, which at that
+        # moment is either absent (new path) or the previous version (overwrite) — and the
+        # subsequent `SaveAsSilent` wrote the in-memory document over it, discarding the
+        # edit. The receipt still reported `title_scale_synced: {text: "1:2"}`, because the
+        # return value was thrown away and `set_title_block` signals failure with an error
+        # dict rather than an exception.
+        #
+        # Measured by a report: title block read back as 1:1 while the views were 1:2, with
+        # `ok: true` and `title_scale_synced: {"from": 1.0, "to": 0.5, "text": "1:2"}`.
+        #
+        # Now: run AFTER the save, check `ok` and every `written[].ok`, and trigger whenever
+        # the final scale is not 1:1 — not only when auto_fit changed it. Manually passing
+        # `scale=0.5` produced no sync at all before.
+        if result.get("saved"):
+            try:
+                _final_scale = None
+                for _v in view_objects:
+                    try:
+                        _final_scale = float(_v.ScaleDecimal)
+                        break
+                    except Exception:
+                        continue
+                if _final_scale is not None and abs(_final_scale - 1.0) > 1e-9:
+                    _ratio = ("1:%g" % round(1.0 / _final_scale, 4)) if _final_scale < 1 \
+                        else ("%g:1" % round(_final_scale, 4))
+                    _tb = set_title_block(out, scale=_ratio, apply=True)
+                    _written = _tb.get("written") or []
+                    _all_ok = bool(_written) and all(w.get("ok") for w in _written)
+                    if _tb.get("ok") and _all_ok:
+                        _title_scale_synced = {"from": 1.0, "to": _final_scale,
+                                               "text": _ratio,
+                                               "verified_by": "written[].ok"}
+                    else:
+                        # Do not claim a sync that did not happen.
+                        _title_scale_synced = {
+                            "text": _ratio,
+                            "error": _tb.get("error") or (result.get("message")
+                                                          if isinstance(result, dict) else None)
+                            or "set_title_block did not confirm the write",
+                            "written": _written}
+            except Exception as _exc:                               # noqa: BLE001
+                _title_scale_synced = {"error": str(_exc)[:100]}
+        result.update(title_scale_synced=_title_scale_synced)
         result.update(
             safe_area_used={
                 "x": [round(safe_x0, 4), round(safe_x1, 4)],
