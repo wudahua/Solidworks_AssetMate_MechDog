@@ -1083,6 +1083,7 @@ def add_section_view(
     cut_plane_origin: Annotated[list[float] | None, Field(description="A point on the cut plane, in model metres.")] = None,
     verify_cut: Annotated[bool, Field(description="Check the result and return section_empty / section_suspicious / hatch_missing instead of a silent wrong cut.")] = True,
     cut_line_ratio: Annotated[float, Field(description="Cut-line length as a fraction of the view; clamped to half the SHORT edge so arrows stay on the geometry. Lower it for very flat views.")] = 0.55,
+    align_to_parent: Annotated[bool, Field(description="Keep the section in projection with its parent view (default True — correct drawing practice). A section is created aligned, so a requested y is silently rewritten to stay on the parent's axis; set False to break the alignment and honour the position you asked for. The receipt shows alignment_kept / position_axis_ignored / alignment_broken either way.")] = True,
 ) -> str:
     """Create a SECTION VIEW through a model view (exposes internal features).
 
@@ -1110,7 +1111,8 @@ def add_section_view(
         drawing_path, view_name=view_name, orientation=orientation,
         offset_m=offset_m, position=position, label=label, flip=flip, depth=depth,
         cut_plane_normal=cut_plane_normal, cut_plane_origin=cut_plane_origin,
-        verify_cut=verify_cut, cut_line_ratio=cut_line_ratio))
+        verify_cut=verify_cut, cut_line_ratio=cut_line_ratio,
+        align_to_parent=align_to_parent))
 
 
 @mcp.tool()
@@ -1197,6 +1199,7 @@ def auto_dimension(
     place_outside: Annotated[bool, Field(description="Push every inserted dimension just outside its view. Defaults to TRUE — leaving them inside covers the part with dimension lines (measured 2026-11-03: 18 dimensions all landed inside the outline, sheet unusable). Pass False for the old behaviour.")] = True,
     outside_gap_m: Annotated[float, Field(description="Distance from the view outline to the first dimension, in metres.")] = 0.012,
     outside_step_m: Annotated[float, Field(description="Spacing between stacked dimensions, in metres.")] = 0.008,
+    prefer_view: Annotated[str, Field(description="Which view KEEPS a dimension that appears in several views. Default keeps the first inserted (usually the main view), which strips a section view — the only place a depth dimension can live — of its copies. Pass the section view's name to keep them there.")] = None,
     audit: Annotated[bool, Field(description="Run the post-insert audit (overlaps, off-sheet, unresolved text) as part of this call. Costs a second pass over every annotation.")] = True,
     detect_same_value: Annotated[bool, Field(description="Group dimensions by (value, type) to flag same-value duplicates. OFF by default: it reads every annotation on every view and measured 18.4 s of auto_dimension's 27.0 s (68%) on 旋转轴. It only reports — it never deletes. Turn on when a sheet shows two identical values and you need the candidates.")] = False,
 ) -> str:
@@ -1218,7 +1221,7 @@ def auto_dimension(
         eliminate_duplicates=eliminate_duplicates, dimension_filter=dimension_filter,
         place_outside=place_outside, outside_gap_m=outside_gap_m,
         outside_step_m=outside_step_m, audit=audit,
-        detect_same_value=detect_same_value))
+        detect_same_value=detect_same_value, prefer_view=prefer_view))
 
 
 @mcp.tool()

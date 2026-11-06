@@ -5772,6 +5772,63 @@ def assert_gap_finder_survives_an_unmappable_axis():
     return "gap finding falls back to model coordinates and names the space"
 
 
+def assert_section_dimensions_have_somewhere_to_land():
+    """0.8.182 — three defects that only bite together: depth dimensions had nowhere to go.
+
+    Report 2026-11-06 (P1, B1/B2/B3). Each is small alone; together they made it impossible
+    to put a depth dimension on a section view:
+
+    **B1** — a section view is created in projection with its parent, so a requested y is
+    silently rewritten. Measured: asked (0.335, 0.17), got (0.335, 0.3018), with
+    `position_axis_ignored: "y"`. The caller had to make a SECOND call
+    (`set_view(break_alignment=True)`) to get what they asked for; two calls for one intent,
+    and the first looks like a bug.
+
+    **B2** — `place_outside` clamped against "sheet minus 10 mm", which on A3 is
+    [0.010, 0.410] x [0.010, 0.287]. The title block's top edge is at y = 0.065, so eleven
+    stacked dimensions reached y = 0.0595 and printed over it — inside the old bound, outside
+    the real one. Now clamped against `template_safe_area`.
+
+    **B3** — `eliminate_duplicates` kept the FIRST occurrence, and insertion order is view
+    creation order. The main view always won, so a section view (created later, and the only
+    place a depth dimension belongs) had its copies deleted and ended up with zero
+    dimensions. Now `prefer_view` chooses the survivor.
+    """
+    src = _read("tools/drawing.py")
+
+    # B1
+    assert "align_to_parent" in src, (
+        "add_section_view cannot honour an explicit position again — the caller needs a "
+        "second call to break the projection alignment")
+    assert "alignment_broken" in src, (
+        "the receipt does not say whether the alignment was broken, so a caller cannot tell "
+        "which of the two behaviours they got")
+
+    # B2
+    assert "template_safe_area(candidate" in src, (
+        "place_outside clamps against the sheet again instead of the frame interior — "
+        "dimensions will stack over the title block and still look 'inside'")
+    assert "inset = 0.010" in src, (
+        "no fallback when the template cannot be read")
+
+    # B3
+    assert "prefer_view" in src, (
+        "the dedupe pass has no view preference — a section view loses every copy and ends "
+        "up with zero dimensions")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_dedupe_inserted_dimensions")) or ""
+    assert "preferred = [e for e in entries if e[2] ==" in body, (
+        "prefer_view is accepted but never consulted")
+
+    # Both new parameters must reach the MCP surface, or tools/call drops them silently.
+    server = _read("server.py")
+    assert "align_to_parent: Annotated" in server, (
+        "align_to_parent exists in the implementation but not in the tool schema")
+    assert "prefer_view: Annotated" in server, (
+        "prefer_view exists in the implementation but not in the tool schema")
+    return "a section view can hold depth dimensions: position honoured, inside the frame, copies kept"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5934,6 +5991,7 @@ STATIC_REGRESSIONS = [
     ("0.8.176 reversed capability consistent", assert_a_reversed_capability_does_not_linger_in_the_docs),
     ("0.8.178 delete verifies survivors", assert_delete_verifies_what_survived),
     ("0.8.179 axis fallback", assert_gap_finder_survives_an_unmappable_axis),
+    ("0.8.182 section dims have a home", assert_section_dimensions_have_somewhere_to_land),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

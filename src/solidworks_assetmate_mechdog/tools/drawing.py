@@ -1325,14 +1325,20 @@ def _annotation_dimension_full_name(annotation, win):
 
 
 @perf_hooks.timed("dim_dedupe")
-def _dedupe_inserted_dimensions(doc, before_names, win):
+def _dedupe_inserted_dimensions(doc, before_names, win, prefer_view=None):
     """Delete duplicate driving dimensions among the annotations JUST inserted (P1-6).
 
     SolidWorks' own `eliminate_duplicates` flag on InsertModelAnnotations3 did not stop the
-    same D1@草图1 from landing once per view (56 dims across 4 views). Keep the FIRST
-    occurrence of each model full name and delete the rest. Only annotations whose sheet
-    name was absent before the insert are eligible, so dimensions the user already placed
-    are never touched. Returns (duplicate_groups, removed_names, failures).
+    same D1@草图1 from landing once per view (56 dims across 4 views). Keep ONE occurrence
+    of each model full name and delete the rest. Only annotations whose sheet name was
+    absent before the insert are eligible, so dimensions the user already placed are never
+    touched. Returns (duplicate_groups, removed_names, failures).
+
+    `prefer_view` decides WHICH copy survives. Report 2026-11-06 (P1, B3): the default
+    "keep the first" meant the main view always won, so a section view — created later, and
+    the only place a depth dimension can live — had its copies deleted and ended up with
+    zero dimensions. Deletion order is insertion order, and insertion order is view creation
+    order, which has nothing to do with where a dimension belongs.
     """
     groups = {}
     for view in _iter_views(doc):
@@ -1350,11 +1356,23 @@ def _dedupe_inserted_dimensions(doc, before_names, win):
                 continue
             full = _annotation_dimension_full_name(annotation, win)
             if full:
-                groups.setdefault(full, []).append((sheet_name, annotation))
+                groups.setdefault(full, []).append(
+                    (sheet_name, annotation, str(getattr(view, "Name", ""))))
     duplicates = {k: v for k, v in groups.items() if len(v) > 1}
     removed, failed = [], []
     for full, entries in duplicates.items():
-        for sheet_name, annotation in entries[1:]:
+        if prefer_view:
+            # Keep the copy in the preferred view (first match); fall back to the first
+            # entry when that view has none.
+            preferred = [e for e in entries if e[2] == prefer_view]
+            if preferred:
+                winner = preferred[0]
+                ordered = [e for e in entries if e is not winner]
+            else:
+                ordered = entries[1:]
+        else:
+            ordered = entries[1:]
+        for sheet_name, annotation, _view_name in ordered:
             try:
                 doc.ClearSelection2(True)
                 if not annotation.Select(False):
@@ -1665,9 +1683,31 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
                 continue
             frame = list(candidate.GetOutline or ())
             if len(frame) >= 4 and (frame[2] - frame[0]) > 0.05:
-                inset = 0.010
-                safe = (frame[0] + inset, frame[1] + inset,
-                        frame[2] - inset, frame[3] - inset)
+                # Report 2026-11-06 (P1, B2): this used to be "sheet minus 10 mm", which on
+                # A3 gives [0.010, 0.410] x [0.010, 0.287]. The real usable area inside the
+                # frame is [0.0588, 0.416] x [0.065, 0.293] — the bottom edge of the TITLE
+                # BLOCK sits at 0.065. So eleven stacked dimensions were pushed down to
+                # y = 0.0595, which "fits" by the old test and prints on top of the title
+                # block.
+                #
+                # Use the template's actual interior. Fall back to the old inset only if the
+                # template cannot be read.
+                _safe = None
+                try:
+                    _m = template_safe_area(candidate, frame[2] - frame[0],
+                                            frame[3] - frame[1])
+                    if _m:
+                        safe = (frame[0] + _m.get("left", 0.0),
+                                frame[1] + _m.get("bottom", 0.0),
+                                frame[2] - _m.get("right", 0.0),
+                                frame[3] - _m.get("top", 0.0))
+                        _safe = safe
+                except Exception:
+                    _safe = None
+                if _safe is None:
+                    inset = 0.010
+                    safe = (frame[0] + inset, frame[1] + inset,
+                            frame[2] - inset, frame[3] - inset)
         except Exception:
             continue
 
@@ -1951,7 +1991,7 @@ def clamp_dimensions_into_safe_area(drawing_path, inset_m=0.010, step_m=0.014):
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
                    dimension_filter=None, place_outside=True, detect_same_value=False,
                    save=True, audit=True,
-                   outside_gap_m=0.012, outside_step_m=0.008):
+                   outside_gap_m=0.012, outside_step_m=0.008, prefer_view=None):
     """Insert the model's driving dimensions into the drawing views.
 
     Equivalent to SolidWorks "Insert Model Items > Dimensions". Marked-for-drawing
@@ -2065,7 +2105,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         if eliminate_duplicates:
             try:
                 duplicates, removed, dedupe_failed = _dedupe_inserted_dimensions(
-                    doc, before_names, _win_auto)
+                    doc, before_names, _win_auto, prefer_view=prefer_view)
             except Exception as exc:
                 dedupe_failed = [{"reason": "dedupe pass failed: %s" % str(exc)[:80]}]
         # N3: honour plan_drawing()["keep_dimensions"]. Runs after the duplicate pass so
@@ -4610,7 +4650,7 @@ def _section_sanity(source_view, section, orientation, depth):
 def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                      offset_m=0.0, position=None, label="A", flip=False, depth=0.0,
                      cut_plane_normal=None, cut_plane_origin=None, verify_cut=True,
-                     cut_line_ratio=0.55):
+                     cut_line_ratio=0.55, align_to_parent=True):
     """Create a SECTION VIEW through a model view.
 
     Sign convention (measured on the 灌装阀阀体 top view, 59x28x80, bypass hole at z=28):
@@ -4968,6 +5008,27 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             elif dx > 1e-3:
                 dropped_axis = "x"
 
+        # Report 2026-11-06 (P1, B1): a section view is created in projection with its
+        # parent, so the requested y is silently rewritten to stay on the parent's axis.
+        # A caller who asked for (0.335, 0.17) got (0.335, 0.3018) — and had to call
+        # `set_view(break_alignment=True)` afterwards to get what they asked for. Two calls
+        # for one intent is a trap, and the first call looks like a bug.
+        #
+        # `align_to_parent=False` breaks the alignment here and re-applies the position.
+        alignment_broken = None
+        if not align_to_parent and position_requested is not None and alignment_kept:
+            try:
+                from . import layout as _layout_mod
+                alignment_broken = _layout_mod.set_view(
+                    drawing_path, section.Name, break_alignment=True,
+                    x_m=position_requested[0], y_m=position_requested[1], save=False)
+                try:
+                    position_actual = [round(float(v), 4) for v in section.Position]
+                except Exception:
+                    pass
+            except Exception as _exc:                               # noqa: BLE001
+                alignment_broken = {"ok": False, "error": str(_exc)[:100]}
+
         diag = {
             "drawing": doc.GetTitle, "section": section.Name, "source_view": target.Name,
             "label": str(label), "orientation": str(orientation), "flip": bool(flip),
@@ -4979,6 +5040,8 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             "position_requested_m": position_requested,
             "position_actual_m": position_actual,
             "alignment_kept": alignment_kept,
+            "align_to_parent": bool(align_to_parent),
+            "alignment_broken": alignment_broken,
             "position_axis_ignored": dropped_axis,
             "warning": ("请求的位置 %r 的 %s 被丢弃：剖面视图与父视图 %r 保持投影对齐，"
                         "实际落在 %r。要对齐就用这个位置；不要就再调 set_view(break_alignment=True)。"
