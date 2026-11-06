@@ -4332,8 +4332,8 @@ def assert_docs_numbers_match_the_code():
                 target = dec.func if isinstance(dec, ast.Call) else dec
                 if isinstance(target, ast.Attribute) and target.attr == "tool":
                     registered += 1
-    assert registered == 65, (
-        "expected 65 registered tools, AST found %d — update this expectation "
+    assert registered == 66, (
+        "expected 66 registered tools, AST found %d — update this expectation "
         "deliberately when a tool is added" % registered)
 
     # Whitespace-tolerant because README wraps the sentence; `assert m` because not

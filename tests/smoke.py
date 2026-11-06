@@ -639,6 +639,31 @@ def main():
     r.check("list_drawing_annotations with hole callouts (P0)", _annotations_with_callouts)
     r.check("hole callout leader anchor (P1-7)", _hole_callout_leader_anchor)
     r.check("verify_dimension_attachments dedupe", _dimension_dedupe)
+    def _add_sheet():
+        """`add_sheet` must fail LOUDLY, not silently or by leaving a half-built sheet.
+
+        The COM call is late-bound here (pywin32 cannot infer NewSheet4's 11-13 argument
+        signature), so the expected outcome is `sheet_creation_blocked` with the blocker
+        named. What must NOT happen: `ok: true` with no new sheet, or an exception.
+        If a future binding makes the call work, this accepts that too.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "门.SLDPRT"), "门.SLDPRT")
+        part = os.path.join(workdir, "smoke_sheet.SLDPRT")
+        drw = os.path.join(workdir, "smoke_sheet.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        made = layout.add_sheet(drw, name="图纸2", paper="A4")
+        if made.get("ok"):
+            assert made.get("sheets_after", 0) > made.get("sheets_before", 0), (
+                "add_sheet reported success without adding a sheet: %r" % (made,))
+            return "created: %s" % (made.get("sheets"),)
+        assert made.get("error") == "sheet_creation_blocked", (
+            "unexpected failure from add_sheet: %r" % (made,))
+        assert "makepy" in str(made.get("message") or ""), (
+            "the refusal does not name a workaround")
+        return "blocked as documented (late-bound NewSheet4)"
+
+    r.check("add_sheet (blocked or created)", _add_sheet)
     r.check("add_bom_table (native, populated)", _bom_table)
 
     # --- editing tools: create → move → delete, all by name -----------------------------

@@ -156,6 +156,27 @@ CAPABILITIES = [
                      "（v0.8.168 smoke，2026-11-06，同一构建 `add_bom_table` 项 PASS）。"),
     },
     {
+        "id": "multi_sheet",
+        "status": "unsupported",
+        "summary": "一个 .SLDDRW 内建多张图纸页 · 本环境调不通（late-bound，签名推不出）",
+        "why": ("`add_sheet` 工具已存在，但 `IDrawingDoc.NewSheet4` 在本绑定上是 late-bound，"
+                "pywin32 推不出它 11–13 个参数的签名。实测（SW2024 SP4）：\n\n"
+                "```\n"
+                "13 args -> 类型不匹配 (arg 6, TemplateIn)\n"
+                "11 args -> 类型不匹配 (arg 6)\n"
+                " 9 args -> 类型不匹配 (arg 6)\n"
+                "gencache.EnsureDispatch(doc) -> can not automate the makepy process\n"
+                "```\n\n"
+                "**注意这不是「工具做不到多页图纸」**，而是客户端环境缺类型库。"
+                "工具会返回 `sheet_creation_blocked` 并列出绕法，不会假装没有这个需求"
+                "（此前该能力根本不存在，用户只能拆成多个文件再外部合并 PDF）。"),
+        "workaround": ("三条路：① 用 `win32com.client.makepy` 对 SolidWorks 类型库生成一次，"
+                       "之后 `NewSheet4` 走 early-bound；② `SldWorks.RunCommand` 调「新建图纸」"
+                       "命令 id；③ 从预置的多页模板起步。"),
+        "evidence": ("SW2024 SP4 实测（2026-11-06，飞达动力轴 A3）：三种参数个数全部在 arg 6 "
+                     "返回 `类型不匹配`，`GetSheetNames` 返回属性元组 `('图纸1',)` 而非方法。"),
+    },
+    {
         "id": "sheet_sketch_space",
         "status": "verified",
         "summary": ("图纸草图坐标系 · 草图线能渲染（需要 `AddToDB`）"

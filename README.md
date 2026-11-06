@@ -71,7 +71,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（37）
+### 二、工程图（38）
 
 | 工具 | 作用 |
 |---|---|
@@ -107,6 +107,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `move_annotation` | **移动标注**到图纸坐标（米） |
 | `set_dimension_position` | **移动单个尺寸**到图纸坐标（米），校验目标是尺寸并回读数值与位置 |
 | `add_bom_table` | **原生 BOM 明细栏**（Indented→TopLevelOnly 两步，10 行 4 列含数量） |
+| `add_sheet` | 🚧 **本环境调不通**：`NewSheet4` 是 late-bound，pywin32 推不出 11–13 个参数的签名，返回 `sheet_creation_blocked` 并列出绕法（makepy 生成类型库 / `RunCommand` / 多页模板）。**这是客户端环境限制，不是功能缺失。** |
 | `add_sheet_line` | ✅ **能渲染，前提是 `AddToDB=True`**（2026-11-06 实测 572 像素；之前 0 像素是因为缺这个开关）。默认 `verify_render=True`，看 `visibility`：`changed_pixels>0` 画上了，`0` 返回 `line_not_rendered`，`checked:false` 表示渲染器不可用（**不等于没画**）。实测范围仅 SW2024 SP4 + 飞达动力轴 A3。 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
 | `list_drawing_edges` | 视图可见边（索引 + 模型坐标 + **图纸坐标** `sheet_start/end`；失败时 `sheet_projected:false` 带原因） |
@@ -381,7 +382,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 65 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 66 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash
