@@ -2190,7 +2190,13 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         else:
             audit_data = {}
         audit = audit_data
-        total = audit.get("total_dimensions") or 0
+        # Report 2026-11-06 (P1, B4): `total_dimensions` fell back to 0 when `audit=False`,
+        # so a receipt read `inserted: 12 / filter_kept: 9 / total_dimensions: 0`. Zero is a
+        # measurement; "not measured" is not. Use None and say so.
+        total = audit.get("total_dimensions")
+        _total_measured = total is not None
+        if total is None:
+            total = None
 
         # P1-6: report the model full names that HAD duplicates and what the automatic
         # pass actually removed. The old code only reported and told the caller to delete
@@ -2402,7 +2408,13 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             inserted=count,
             layout=layout,
             include_unmarked=bool(include_unmarked),
+            # None means "not measured" (audit=False), not "zero". A receipt that says
+            # `inserted: 12 / total_dimensions: 0` is self-contradictory.
             total_dimensions=total,
+            total_dimensions_measured=_total_measured,
+            total_dimensions_note=(None if _total_measured else
+                                   "audit=False, so the sheet was not re-read; this call "
+                                   "reports only what it inserted (see `inserted`)"),
             dimension_filter_applied=bool(dimension_filter),
             filter_kept=filter_kept,
             filter_removed=len(filter_removed),
@@ -2624,11 +2636,34 @@ def close_document(drawing_path):
                 closed.append(title)
             except Exception:
                 continue
+
+        # Report 2026-11-06 (P2, B13): three `~$xxx.SLDDRW` owner files (6 bytes each)
+        # survived a clean close, so a delivery directory looked dirty even though every
+        # document was gone. `CloseDoc` releases the document; it does not always remove
+        # the lock file. Delete only the lock that belongs to THIS path — `~$` + basename
+        # sits next to the file.
+        locks_removed, locks_failed = [], []
+        if closed:
+            target = str(drawing_path)
+            lock = os.path.join(os.path.dirname(os.path.abspath(target)),
+                                "~$" + os.path.basename(target))
+            if os.path.exists(lock):
+                try:
+                    os.remove(lock)
+                    locks_removed.append(os.path.basename(lock))
+                except Exception as exc:                            # noqa: BLE001
+                    locks_failed.append({"file": os.path.basename(lock),
+                                         "reason": str(exc)[:80]})
+
         return drawing_ok(
             drawing=os.path.basename(str(drawing_path)),
             closed=closed, closed_count=len(closed),
+            owner_files_removed=locks_removed,
+            owner_files_failed=locks_failed,
             note=("未找到已打开的该文档（可能本来就没开）。" if not closed
-                  else "已关闭 %d 个。" % len(closed)),
+                  else "已关闭 %d 个%s。" % (len(closed),
+                                            "，清理 %d 个锁文件" % len(locks_removed)
+                                            if locks_removed else "")),
         )
     except Exception as exc:
         return error("close_failed", str(exc)[:120],
@@ -8139,6 +8174,29 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                   (item.get("applicable_candidates") or [0])[0]))
         _mismatch_seen = 0
         _breaker_tripped = False
+        # Report 2026-11-06 (P0, 3.4): repeated calls kept inserting. The ledger cannot help
+        # (it never sees 1570.796), so the sheet is the memory: read the values already
+        # present and skip any gap whose TARGET is already there.
+        #
+        # SCOPE — this makes the happy path idempotent, and NOTHING MORE. It cannot stop a
+        # repeat of a WRONG insert: the sheet holds 1570.796, the gap asks for 8.0, and no
+        # comparison of those two numbers can tell "already attempted and failed" from
+        # "never attempted". Measured 2026-11-06 on the door fixture: call 1 -> 8→9, call 2
+        # -> 9→10, `already_present: 0` both times.
+        #
+        # Closing that needs per-gap memory that survives the call: either a persisted
+        # "attempted edge pairs" record, or a same-unit model prediction (3.5) so a wrong
+        # candidate can be rejected BEFORE inserting. Neither is done.
+        #
+        # One read for the whole batch (measured ~12 s on 40 annotations), not per gap.
+        _present_values = []
+        try:
+            _pre = list_drawing_annotations(drawing_path)
+            _present_values = [float(a["value_mm"]) for a in (_pre.get("annotations") or [])
+                               if a.get("kind") == "dimension" and a.get("value_mm")]
+        except Exception:
+            _present_values = []
+        _already_present = []
         if _to_apply:
             # Report 2026-11-06 (P0): one call inserted SIX wrong dimensions because the
             # loop had no memory of a failure. A wrong insert means the sheet-vs-model
@@ -8148,6 +8206,16 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             # This is a circuit breaker, not a heuristic: after a `value_mismatch` the tool
             # knows the候选 selection is unreliable on this sheet, so continuing can only
             # add more damage.
+            _kept = []
+            for _idx, item, _cand_i in _to_apply:
+                _target = float(item.get("value_mm") or 0.0)
+                if _target and any(abs(v - _target) <= tolerance_mm for v in _present_values):
+                    _already_present.append({"gap_index": _idx, "value_mm": _target,
+                                             "reason": "a dimension with this value is already "
+                                                       "on the sheet"})
+                    continue
+                _kept.append((_idx, item, _cand_i))
+            _to_apply = _kept
             for _idx, item, _cand_i in _to_apply:
                 if _mismatch_seen:
                     _breaker_tripped = True
@@ -8363,6 +8431,9 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             sheet_modified=any(a.get("inserted_but_wrong") for a in applied),
             rolled_back=len([a for a in applied if a.get("rolled_back")]),
             breaker_tripped=_breaker_tripped,
+            # Gaps whose value was already on the sheet: skipped, not attempted, not failed.
+            already_present=_already_present[:20],
+            already_present_count=len(_already_present),
             candidates_total=len(_all_cands),
             candidates_applicable=sum(1 for c in _all_cands
                                       if c.get("applicable", True)),
