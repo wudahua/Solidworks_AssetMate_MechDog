@@ -2457,3 +2457,97 @@ lm.GetLayerAtIndex(i)     # 不存在（<unknown>.GetLayerAtIndex）
 2. 宏录制：界面手动画一条草图线并导出 PDF，看它调了什么
 3. 换一个「没有图层」的新模板建图纸再试（排除模板自带图层 10 被隐藏）
 4. 在界面里看图层 10 的可见性，确认是不是它
+
+---
+
+## 五十六、一个尺寸有三套身份，而且互不认账（0.8.186 实测）
+
+> **结论先行**：想「删掉我刚插入的那一条尺寸」，在当前绑定上**做不到**。
+> `FullName`、`IAnnotation.GetName`、图纸坐标三套标识，在 `add_distance_dimension`
+> 插入之后互相对不上。**这不是没试过，是四层都试过了。**
+
+### 场景
+
+`plan_dimension_gaps(apply_gaps=True)` 插入一条尺寸，读到 `actual_value_mm = 1570.796`
+（目标 8.0，模型按 3D 欧氏距离量出来的是这个数）。既然插错了，就要撤回。
+
+### 四层，逐层失败
+
+**① 快照读的是磁盘，不是内存**
+
+`add_distance_dimension` 默认 `save=False`，插入只存在于内存文档。而快照函数
+`_dimension_full_names` 内部 `_open_drawing(path)` —— 它**重新读磁盘文件**，
+看到的是插入前的状态。
+
+```
+插入前 FullName 集合 = {13 个}
+插入后（重新读盘）= {13 个}      ← 差集永远空
+```
+
+**修法**：把内存文档句柄传进去。`_open_drawing` 对已打开的文档返回同一个 COM 对象，
+所以拿到的就是那份带新尺寸的内存文档。
+
+**② 修完之后 `name 'doc' is not defined`**
+
+`plan_dimension_gaps` **从不持有文档句柄**——它只在保存时 `_open_drawing` 一次。
+第一次改完直接崩。
+
+**修法**：插入前 `_doc_live = _open_drawing(drawing_path)`，两处快照共用。
+
+**③ 差集对了，还是删不掉**
+
+```
+before = 13
+after  = 14
+new    = ['RD6@工程图视图1@d.Drawing']
+```
+
+拿到新名字了。但 `delete_annotation(name=...)` **匹配的不是 `FullName`**：
+
+| 标识 | 形态 | 谁用 |
+|---|---|---|
+| `IDimension.FullName` | `RD6@工程图视图1@d.Drawing` | 模型层身份，跨视图唯一 |
+| `IAnnotation.GetName` | `细节项目34` / `D1` | 图纸层标签，**同一张图上会重名**（19 个 `D1` 实测过） |
+
+**两套身份，互相找不到。** 用 `RD6@...` 去查 `GetName` 永远是 0 命中。
+
+**修法**：改用插入位置删——插入位置就是当初请求 `add_distance_dimension` 的那个 `pt`，
+精确到 `[0.2512, 0.2269]`。
+
+**④ 按位置也删不掉**
+
+`rolled_back` 仍然 `false`，`rolled_back_names` 仍然 `[]`。
+
+**这一层没解决。** 与 0.8.155 那轮「按位置删有误删风险」是同一块地——
+只是这次连精确位置都删不动。
+
+### 为什么 `delete_annotation` 在这个场景失效（推测，未证实）
+
+同批插入的 `RD` 系列是 `InsertModelItems` 产生的**参考尺寸**，而
+`add_distance_dimension` 新建的是**驱动尺寸**。两者在 `IAnnotation` 上的
+`GetType` 都返回 4（尺寸），但 `Select(False)` 的行为可能不同——
+`delete_annotation` 依赖 `Select(False)` + `EditDelete`。
+
+**没验证这条推测**，因为验证它需要单独构造一个只有一条 `RD` 尺寸的图纸，
+再用 `Select` 逐个试。**下次谁要继续这条，从这里开始。**
+
+### 现在能保证什么，不能保证什么
+
+| | 保证 |
+|---|---|
+| **能** | 单次调用只插错 **1 条**（熔断：`breaker_tripped: true`，其余标 `not_attempted_after_mismatch`） |
+| **能** | 回执说清楚发生了什么：`inserted_but_wrong` / `sheet_modified` / `rolled_back` / `rollback_skipped_reason` |
+| **能** | 诊断字段 `snapshot_before` / `snapshot_after` / `new_names` 直接给出差集 |
+| **不能** | 自动删掉那条错的 —— **必须人工用界面删** |
+
+### 下次别再重走这四层
+
+如果以后有人提「按 `FullName` 删尺寸」：
+
+1. 先确认 `delete_annotation` 是否已支持 `FullName`（现在不支持，只支持 `GetName`）
+2. 如果要做，**别用 `Select(False)`**——先试 `IDisplayDimension.SetPosition` 之类不依赖选中的路径
+3. 验证时**必须**用 `add_distance_dimension(save=False)` 造场景，因为 `save=True` 会让
+   第 ① 层的磁盘/内存差异消失，测试假通过
+
+**第 3 条是这轮最大的教训**：如果当初用 `save=True` 测，就不会发现第 ① 层，
+也就不会知道「快照和插入用的不是同一份文档」。
