@@ -5567,6 +5567,45 @@ def assert_a_wrong_insert_does_not_stay_on_the_sheet_silently():
     return "a wrong insert is counted, scoped and never silently left behind"
 
 
+def assert_a_failed_insert_stops_the_batch():
+    """0.8.175 — one call inserted six wrong dimensions because the loop had no memory.
+
+    Report 2026-11-06 (P0): `apply_gaps` inserted six wrong dimensions per call
+    (`25 -> 31 -> 37` annotations, `1570.796` x5 -> x10). The receipt was honest per entry
+    and the batch kept going: every remaining gap came from the same candidate pool, so
+    every one failed the same way.
+
+    A `value_mismatch` is not a per-gap accident — it means the sheet-vs-model premise does
+    not hold for this drawing at all. Continuing can only add damage. So the first mismatch
+    trips a breaker and the rest are reported as `not_attempted_after_mismatch`, which is
+    distinguishable from "tried and failed" and from "nothing to do".
+
+    This is the same principle as the rest of the day: a failure must be observable, and it
+    must not silently continue into more of itself.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+
+    assert "_mismatch_seen" in body, (
+        "the insert loop can again run past a wrong insert")
+    assert '"not_attempted_after_mismatch"' in body, (
+        "the skipped gaps are not labelled — a caller cannot tell 'not tried' from "
+        "'tried and failed'")
+    assert "breaker_tripped" in body, (
+        "the receipt does not say the batch was stopped early")
+
+    # The counter must be defined before the branch, or the receipt raises NameError on a
+    # call that had nothing to apply. (Measured: the first version defined it inside
+    # `if _to_apply:` and used it at the end of the function.)
+    init_at = body.find("_mismatch_seen = 0")
+    branch_at = body.find("if _to_apply:")
+    assert 0 < init_at < branch_at, (
+        "the breaker counters are initialised inside the apply branch — a call with no "
+        "applicable gaps would raise NameError building its receipt")
+    return "a wrong insert stops the batch and says which gaps were skipped"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5725,6 +5764,7 @@ STATIC_REGRESSIONS = [
     ("0.8.170 verified caps do not disown", assert_verified_capabilities_do_not_disown_themselves),
     ("0.8.171 auto_fit syncs title block", assert_auto_fit_updates_the_title_block),
     ("0.8.174 wrong insert is scoped", assert_a_wrong_insert_does_not_stay_on_the_sheet_silently),
+    ("0.8.175 failed insert stops batch", assert_a_failed_insert_stops_the_batch),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

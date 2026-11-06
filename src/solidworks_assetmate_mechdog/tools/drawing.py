@@ -7887,8 +7887,29 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                 # computed from.
                 _to_apply.append((_idx, item,
                                   (item.get("applicable_candidates") or [0])[0]))
+        _mismatch_seen = 0
+        _breaker_tripped = False
         if _to_apply:
+            # Report 2026-11-06 (P0): one call inserted SIX wrong dimensions because the
+            # loop had no memory of a failure. A wrong insert means the sheet-vs-model
+            # premise does not hold for this drawing at all — the remaining gaps come from
+            # the same edge pool and will fail the same way. Stop at the first one.
+            #
+            # This is a circuit breaker, not a heuristic: after a `value_mismatch` the tool
+            # knows the候选 selection is unreliable on this sheet, so continuing can only
+            # add more damage.
             for _idx, item, _cand_i in _to_apply:
+                if _mismatch_seen:
+                    _breaker_tripped = True
+                    applied.append({"value_mm": item["value_mm"],
+                                    "gap_index": _idx,
+                                    "ok": False,
+                                    "error": "not_attempted_after_mismatch",
+                                    "inserted_but_wrong": False,
+                                    "message": ("本次调用已经插错一条尺寸（纸面距离不等于模型尺寸），"
+                                                "后续 gap 不再尝试——同一批候选来自同一组边，"
+                                                "会以同样方式失败。修正候选选择方式后再调用。")})
+                    continue
                 _cands = item.get("candidates") or []
                 if not _cands:
                     continue
@@ -8004,6 +8025,7 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                                     "（%d 条），图纸恢复原状。" % len(_deleted))
                                                    if _deleted else
                                                    "删除未能执行，这条错误尺寸仍在图上。"))})
+                    _mismatch_seen += 1
                     continue
                 applied.append({"value_mm": item["value_mm"],
                                 "actual_value_mm": _actual,
@@ -8046,6 +8068,7 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             # Explicit: `applied_count: 0` does NOT mean the drawing is untouched.
             sheet_modified=any(a.get("inserted_but_wrong") for a in applied),
             rolled_back=len([a for a in applied if a.get("rolled_back")]),
+            breaker_tripped=_breaker_tripped,
             candidates_total=len(_all_cands),
             candidates_applicable=sum(1 for c in _all_cands
                                       if c.get("applicable", True)),
