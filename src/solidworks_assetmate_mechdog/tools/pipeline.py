@@ -526,7 +526,13 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         coverage=recon.get("coverage"),
         verdict=verdict.get("verdict"),
         blockers=[b.get("detail") for b in (verdict.get("blockers") or [])],
-        pending=[p.get("detail") for p in (verdict.get("pending") or [])],
+        pending=[p.get("detail") for p in (verdict.get("pending") or [])]
+                # Report 2026-11-06 (P3): a projection that violates GB/T 14692 went into
+                # `creation_warnings` only, so the verdict stayed "待设计审核" with an empty
+                # `pending` list. A compliance defect is not a hint — it is a reason the
+                # drawing is not ready. Surfaced here so it appears where a reviewer looks.
+                + ["GB/T 14692 投影不合规：%s" % w.get("detail")
+                   for w in creation_warnings if w.get("issue") == "projection_note"],
         note=("流水线按类别套默认值；defaults_applied 里写明了假定什么。"
               "某一步失败不会中断后续步骤，逐条看 steps。"),
     )

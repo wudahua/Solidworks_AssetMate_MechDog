@@ -3331,10 +3331,19 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                     return (1 if candidate["_reversed"] else 0, distance)
 
                 candidates.sort(key=_rank)
-                chosen = candidates[0]
-                chosen.pop("_reversed", None)
-                planned.append(chosen)
-                for entry in candidates[1:]:
+                # Report 2026-11-06 (P1, B7): the parameter is called `include_reversed`
+                # and passing True still left the 180-degree 图样代号 as a placeholder —
+                # `_rank` sorts reversed cells last, so the upright one won and the reversed
+                # copy went to `skipped_extra_matches`. A caller who asked for reversed cells
+                # to be written got the opposite, with no way to tell.
+                #
+                # Now the flag decides: True writes every cell that carries the marker,
+                # False keeps only the upright one.
+                _take = candidates if include_reversed else candidates[:1]
+                for entry in _take:
+                    entry.pop("_reversed", None)
+                    planned.append(entry)
+                for entry in candidates[len(_take):]:
                     skipped_extra.append({
                         "field": field, "text": entry.get("before"),
                         "position": entry.get("position"),
@@ -6066,6 +6075,21 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                         row["text"] = "%s%g" % (
                                             _prefix, round(float(dimension_value), 3))
                                         row["text_was_bare_symbol"] = True
+                                # Report 2026-11-06 (P2, B12): the sheet prints `4-R7`,
+                                # but this row carried `text: "4-R"` and `value_mm: 7` as
+                                # two disconnected pieces. A reader (or a downstream
+                                # consumer) has to know the drafting convention to join
+                                # them. `full_text` does the join; `text` and `value_mm`
+                                # stay as they were so nothing that parses them breaks.
+                                _bare_full = str(row.get("text") or "").strip()
+                                _diam = row.get("diameter_mm")
+                                if _bare_full and _diam is not None \
+                                        and "full_text" not in row:
+                                    _num = "%g" % round(float(_diam), 3)
+                                    if _num not in _bare_full:
+                                        row["full_text"] = "%s%s" % (_bare_full, _num)
+                                    else:
+                                        row["full_text"] = _bare_full
                             try:
                                 row["tolerance_type"] = int(dim.GetToleranceType)
                             except Exception:
