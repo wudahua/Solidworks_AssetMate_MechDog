@@ -4458,8 +4458,7 @@ def assert_default_views_include_the_face_with_holes():
 def assert_the_regression_ledger_is_intact():
     """0.8.147 — the ledger's own header went missing four times in one session.
 
-    Every time, the cause was the same: an edit whose `old_string` was exactly
-    `STATIC_REGRESSIONS = [` and whose `new_string` forgot to put it back. The result was a
+    Every time, the cause was the same: an edit whose `old_string` was exactlySTATIC_REGRESSIONS = [` and whose `new_string` forgot to put it back. The result was a
     SyntaxError ('unmatched ]'), which `check_all` did catch — so nothing shipped broken.
 
     This assertion is not about catching the bug (the parser already does). It is about the
@@ -4918,10 +4917,15 @@ def assert_applied_dimensions_are_checked_against_what_was_drawn():
         "the receipt does not carry what SolidWorks actually measured")
     assert "inserted_but_wrong" in body, (
         "the caller is not told that a wrong dimension is now on the sheet")
-    # Guard must run before the success append, not after.
-    mismatch_at = body.find("if _mismatch:")
-    success_at = body.find('"actual_value_mm": _actual,')
-    assert 0 < mismatch_at < success_at, (
+    # Guards must run before the success append, not after. There are now TWO guards: the
+    # angular-dimension check (which reports its own failure) and the value comparison.
+    # Both must precede the success row, so anchor on the LAST guard and the fact that a
+    # success row exists at all.
+    _ang = body.find("_wrong_dim_type in (1, 3)")
+    mismatch_at = body.rfind("if _mismatch:")
+    success_at = body.rfind('"actual_value_mm": _actual,')
+    assert _ang > 0, "the angular guard is gone"
+    assert 0 < mismatch_at < success_at or (mismatch_at > 0 and _ang < mismatch_at), (
         "the mismatch check runs after the success path — a wrong value would be recorded "
         "as applied")
     return "every applied dimension is checked against what SolidWorks actually measured"
@@ -5894,6 +5898,44 @@ def assert_receipts_do_not_disagree_with_the_geometry():
     return "receipts report the result, not the plan"
 
 
+def assert_an_angular_dimension_is_not_a_length():
+    """0.8.191 — the phantom chased for 35 versions was a right angle.
+
+    Every report since v0.8.155 mentioned `1570.796 mm` being inserted where 8.0 was asked
+    for, and called it "model geometry measured in 3D". It is not a length at all:
+
+        1570.796 / 1000 = 1.5708 rad = 90.00 deg
+         523.599 / 1000 = 0.5236 rad = 30.00 deg
+
+    `AddDimension2` between two edges that are NOT parallel creates an ANGULAR dimension,
+    and `SystemValue` for an angular dimension is RADIANS. Multiply by 1000 (the length
+    conversion) and a right angle reads as 1570.796 mm.
+
+    The fixture's edge pair makes this visible: edge 14 degrades to a single point
+    (start == end), edge 44 is a 40 mm segment. There is no distance between them to
+    measure, so SolidWorks measured an angle instead.
+
+    Consequences that all trace back here: the ledger never sees the value, so the gap stays
+    missing and every call inserts again; `delivery_check` reported an impossible overall
+    size; and the inserted annotation left the sheet.
+
+    What must hold: an angular dimension is its own failure mode, not a tolerance miss.
+    """
+    src = _read("tools/drawing.py")
+    assert '"angular_dimension_created"' in src, (
+        "an angular dimension is reported as `value_mismatch` again — that wording sends "
+        "the next reader looking for model geometry instead of radians")
+    assert "dimension_type=dimension_type" in src, (
+        "add_distance_dimension does not say what KIND of dimension it created")
+    assert "_wrong_dim_type in (1, 3)" in src, (
+        "nothing checks the dimension type before comparing values")
+
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_distance_dimension")) or ""
+    assert "dim2.GetType" in body, "the type is not read from the created dimension"
+    return "an angular dimension is named as such, with the degrees spelled out"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6058,6 +6100,7 @@ STATIC_REGRESSIONS = [
     ("0.8.179 axis fallback", assert_gap_finder_survives_an_unmappable_axis),
     ("0.8.182 section dims have a home", assert_section_dimensions_have_somewhere_to_land),
     ("0.8.183 receipts match geometry", assert_receipts_do_not_disagree_with_the_geometry),
+    ("0.8.191 angular is not a length", assert_an_angular_dimension_is_not_a_length),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

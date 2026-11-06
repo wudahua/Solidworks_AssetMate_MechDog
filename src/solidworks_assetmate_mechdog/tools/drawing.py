@@ -4058,9 +4058,21 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
 
         display = win.Dispatch(raw)
         value_mm = None
+        dimension_type = None
         try:
             dim2 = win.Dispatch(call_method(display, "GetDimension2", 0))
             value_mm = round(float(dim2.SystemValue) * 1000.0, 3)
+            # Callers need to know whether this is a LENGTH. Between two non-parallel edges
+            # `AddDimension2` creates an angular dimension whose SystemValue is radians;
+            # ×1000 that becomes 1570.796 for a right angle, which reads as a length and
+            # sent this project chasing a phantom for 35 versions.
+            try:
+                dimension_type = int(dim2.GetType)
+            except Exception:
+                try:
+                    dimension_type = int(dim2.Type)
+                except Exception:
+                    dimension_type = None
         except Exception:
             pass
         try:
@@ -4080,6 +4092,8 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
             drawing=doc.GetTitle, view=str(target.Name),
             edge_a=int(edge_a), edge_b=int(edge_b),
             value_mm=value_mm,
+            dimension_type=dimension_type,
+            value_is_angular=(dimension_type in (1, 3)) if dimension_type is not None else None,
             position_m=[round(float(x_m), 4), round(float(y_m), 4)],
             note=("这是两条边之间的距离，不是任何一条边的长度。"
                   "总长这类「由多段相加得到」的尺寸只能这样标。"
@@ -8290,6 +8304,44 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                 # Compare the actual value, undo the insert, and say so.
                 _actual = added.get("value_mm")
                 _expected = item["value_mm"]
+                # ROOT CAUSE, found 2026-11-06 after 35 versions of chasing this:
+                # `AddDimension2` between two edges that are NOT parallel creates an ANGULAR
+                # dimension, and its `SystemValue` is radians. Multiplied by 1000 that is
+                # 1570.796 for a right angle and 523.599 for 30 degrees — both read as
+                # millimetres and both looked like absurd model geometry.
+                #
+                # The edges in this fixture: 14 degrades to a single point (start == end),
+                # 44 is a 40 mm segment; there is no distance between them to measure.
+                #
+                # So the value is not "wrong by a tolerance" — it is the wrong KIND of
+                # quantity, and no amount of prediction would make a length out of it.
+                _wrong_dim_type = added.get("dimension_type")
+                if _wrong_dim_type in (1, 3):
+                    applied.append({"value_mm": _expected,
+                                    "gap_index": _idx,
+                                    "candidate_index": _pick,
+                                    "candidate_kind": cand.get("candidate_kind"),
+                                    "edge_a": cand.get("edge_a"),
+                                    "edge_b": cand.get("edge_b"),
+                                    "actual_value_mm": _actual,
+                                    "dimension_type": _wrong_dim_type,
+                                    "ok": False,
+                                    "error": "angular_dimension_created",
+                                    "inserted_but_wrong": True,
+                                    "rolled_back": False,
+                                    "rollback_skipped_reason":
+                                        "an angular dimension cannot be corrected by deleting "
+                                        "and retrying — the edge pair does not define a length",
+                                    "message": ("这两条边之间建出来的是**角度**尺寸，不是长度"
+                                                "（type=%s）。%s 是弧度值当 mm 用的结果 —— "
+                                                "%0.4f rad = %.2f°。这条边对不构成可测的长度，"
+                                                "请换候选。" % (
+                                                    _wrong_dim_type, _actual,
+                                                    (float(_actual) / 1000.0) if _actual else 0.0,
+                                                    (float(_actual) / 1000.0 * 180.0
+                                                     / 3.141592653589793) if _actual else 0.0))})
+                    _mismatch_seen += 1
+                    continue
                 _mismatch = False
                 if _actual is None:
                     _mismatch = bool(added.get("ok"))
