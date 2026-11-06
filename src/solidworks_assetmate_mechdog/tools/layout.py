@@ -1073,6 +1073,33 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
         if save:
             _save_drawing(doc)
 
+        # Report 2026-11-06 (P1): `triangle_verified` was the constant False, with a note
+        # saying "the triangle probably is not drawn". A report rendered the PDF and SAW a
+        # complete fillet symbol: reference line, right triangle, the "6.0" text and the
+        # leader. The constant was the bug, and it also poisoned `capabilities`
+        # (status: unsupported, "0 pixels") and the tool docstring (which cited an error
+        # code, `weld_not_rendered`, that does not exist anywhere in the package).
+        #
+        # The earlier reasoning was right about ONE thing: a whole-page diff taken after
+        # `add_note` cannot tell the triangle from the note. The fix is to take the diff
+        # BEFORE the note exists. That isolates the sketch geometry exactly.
+        _lines_only_pixels = 0
+        _lines_visibility = {"checked": False, "reason": "render helper unavailable"}
+        if _weld_before is not None:
+            try:
+                from .drawing import _sf_render_page
+                from PIL import Image, ImageChops
+                _lines_pdf = os.path.join(_weld_dir, "lines_only.pdf")
+                _lines_img = _sf_render_page(doc, _lines_pdf, _weld_dir)
+                _ld = ImageChops.difference(_weld_before.convert("RGB"),
+                                            _lines_img.convert("RGB"))
+                _lines_only_pixels = sum(1 for _p in _ld.get_flattened_data()
+                                         if _p != (0, 0, 0))
+                _lines_visibility = {"checked": True, "changed_pixels": _lines_only_pixels,
+                                     "visible": _lines_only_pixels > 0}
+            except Exception as _exc:
+                _lines_visibility = {"checked": False, "reason": str(_exc)[:120]}
+
         text_result = add_note(drawing_path, str(size_mm),
                                x + gap * 0.2, y + s * 1.15,
                                height_mm=max(2.5, min(5.0, s * 1000 * 0.6)),
@@ -1109,13 +1136,17 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
             is_native_weld_symbol=False,
             segments=len(segments),
             visibility=_weld_visibility,
-            # The triangle cannot be separated from the note in a whole-page diff.
-            triangle_verified=False,
+            # Measured, not assumed: the diff was taken before the note existed, so these
+            # pixels can only be the sketch geometry.
+            triangle_verified=(_lines_only_pixels > 0),
+            lines_only_visibility=_lines_visibility,
             triangle_note=(
-                "changed_pixels 证明「这一页多了东西」，但那 602 像素来自本函数同时写的 note"
-                "（note 是原生注解，能渲染）。三角形本身无法从整页差分里分离——"
-                "同一张图上单独 CreateLine（三种线型）都是 0 像素变化，"
-                "所以三角形大概率仍然没画出来。请在界面核对。"),
+                "`triangle_verified` comes from a lines-only diff: the sheet was rendered "
+                "BEFORE `add_note` ran, so the changed pixels are the sketch geometry alone. "
+                "A previous version hard-coded this to False and the capability table said "
+                "\"0 pixels\"; a report rendered the PDF and saw the full symbol, which "
+                "means the constant — not the drawing — was wrong. If `checked` is false "
+                "the renderer was unavailable and nothing was verified either way."),
             size_text=str(size_mm),
             text_written=bool((text_result or {}).get("ok")),
             position_m=[round(x, 4), round(y, 4)],
@@ -1171,11 +1202,26 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
         except Exception:
             pass
         sketch = doc.SketchManager
+        # Report 2026-11-06: `add_weld_symbol` sets `AddToDB` before drawing and its
+        # geometry DOES appear in the PDF (2134 changed pixels, lines-only diff); this
+        # function never set it and reported 0. That correlation is the strongest lead so
+        # far, and the earlier "sheet sketch never renders" conclusion was drawn without it.
+        #
+        # AddToDB disables snapping and inference, so the stroke lands where the caller
+        # asked instead of jumping to nearby geometry.
+        try:
+            sketch.AddToDB = True
+        except Exception:
+            pass
         # Sheet space -> sketch space: a drawing sketch is placed at the sheet origin, so
         # sheet metres are already the right unit. Passing millimetres is what produced the
         # scaled fan of lines.
         sketch.CreateLine(float(x1_m), float(y1_m), 0.0,
                           float(x2_m), float(y2_m), 0.0)
+        try:
+            sketch.AddToDB = False
+        except Exception:
+            pass
         sketch.InsertSketch(True)
         try:
             _call_method(doc, "EditRebuild3")

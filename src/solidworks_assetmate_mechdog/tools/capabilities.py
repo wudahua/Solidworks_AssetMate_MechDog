@@ -157,11 +157,19 @@ CAPABILITIES = [
     },
     {
         "id": "sheet_sketch_space",
-        "status": "partial",
-        "summary": "图纸草图坐标系",
-        "why": "`add_sheet_line` 的单位换算正确，但**图纸草图不渲染**，调用返回 `line_not_rendered`；表格布线请用原生 Table 对象，不要用草图线",
-        "workaround": "先算好每段线的米坐标，批量调用",
-        "evidence": "2026-10-28 实测 ok（未做整表验证）",
+        "status": "verified",
+        "summary": "图纸草图坐标系 · 草图线能渲染（需要 `AddToDB`）",
+        "why": ("早先这里写「图纸草图不渲染，调用返回 `line_not_rendered`」—— **2026-11-06 更正**："
+                "缺的是 `SketchManager.AddToDB = True`。同包的 `add_weld_symbol` 一直设它，"
+                "它的几何能渲染；`add_sheet_line` 没设，于是 0 像素。补上之后实测 "
+                "`changed_pixels: 572, visible: true`。\n\n"
+                "`AddToDB` 的作用是关闭捕捉与推断，线才会落 在调用方给的坐标上"
+                "（否则会吸附到邻近视图几何）。"),
+        "workaround": ("先算好每段线的米坐标，批量调用。若 `visibility.changed_pixels` 为 0，"
+                       "先确认模板没有锁住图纸草图，而不是直接判「画不出来」。"),
+        "evidence": ("SW2024 SP4 实测（2026-11-06，飞达动力轴 A3）：`add_sheet_line(0.30,0.24 → "
+                     "0.35,0.24)` → `ok:true`，`visibility {checked:true, changed_pixels:572, "
+                     "visible:true}`。补 `AddToDB=True` 之前同一调用是 0 像素。"),
     },
     {
         "id": "sheet_metal_qc",
@@ -250,16 +258,28 @@ CAPABILITIES = [
     },
     {
         "id": "weld_symbol",
-        "status": "unsupported",
-        "summary": "焊接符号（`sketch_block` 实现）：文字能写、三角画不出来（与 `add_sheet_line` 同源）",
+        "status": "partial",
+        "summary": "焊接符号（`sketch_block` 实现）：线、三角、尺寸文字都渲染，但不是原生对象",
         "why": ("`IWeldSymbol` 只存符号名不实例化几何（SW32.4.0，两个零件实测：`SetText` 返回 True、"
-                "`GetText(2)` 读回 \"FILL\"、图上只有引线和尺寸数字）。改用图纸草图线画三角形"
-                "（`InsertSketch` + `CreateLine` + `AddToDB=True`）之后，2026-11-03 用 PDF 像素复测："
-                "**仍然 0 像素**。`AddToDB=True` 不是让草图渲染的关键。"
-                "所以三角形从来没出现过，`segments: 5` 只统计了 CreateLine 没抛异常的调用次数。"),
-        "workaround": ("调用会返回 `weld_not_rendered`（带 `visibility.changed_pixels`）。"
-                       "只有注记（`add_note`）是真能显示的，三角形请在界面手工添加。"
+                "`GetText(2)` 读回 \"FILL\"、图上只有引线和尺寸数字），所以改用图纸草图线画"
+                "（`InsertSketch` + `CreateLine` + `AddToDB=True`）。\n\n"
+                "**2026-11-06 更正**：早先这里写「仍然 0 像素、三角形从来没出现过」，并据此把"
+                "状态定为 `unsupported` —— **那是错的**。当时用的是整页差分，而本函数同时写了"
+                "note（note 是原生注解，能渲染），两者混在一起无法分离；作者由此推断三角形没画出来，"
+                "把「直线画不出来」的结论外推到了焊缝。\n\n"
+                "现在的判据是 **lines-only 差分**：写完线、**在写 note 之前**渲染一次，差值只可能"
+                "来自草图几何。实测 2134 像素（整页 2230，差 96 = note 文字），三角形、参考线、"
+                "引线都在。`triangle_verified` 因此是真测量值，不再是常量 False。"),
+        "workaround": ("调用后看 `triangle_verified` 与 `lines_only_visibility`：`checked:true` 且"
+                       "`changed_pixels>0` 表示几何确实渲染了；`checked:false` 表示渲染器不可用、"
+                       "两种情况都没验证，不代表画不出来。"
+                       "**局限**：不是 `IWeldSymbol` 原生对象，不随焊件特征更新、无法按焊接注解查询；"
                        "`weld_type=\"butt\"` 仍是明确拒绝，不做近似。"),
+        "evidence": ("SW2024 SP4 实测（2026-11-06，飞达动力轴 A3）：`ok:true`，"
+                     "`triangle_verified:true`，"
+                     "`lines_only_visibility {checked:true, changed_pixels:2134, visible:true}`，"
+                     "`visibility {changed_pixels:2230}`；PDF 目视可见完整角焊缝符号"
+                     "（水平参考线 + 直角三角形 + 「6.0」+ 斜引线）。"),
     },
     {"id": "datum_feature_symbol",
         "status": "verified",

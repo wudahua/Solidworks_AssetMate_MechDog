@@ -2474,13 +2474,25 @@ def assert_weld_symbol_is_declared_as_sketch():
     index = caps.index('"weld_symbol"')
     end = caps.find('"id":', index + 10)
     segment = caps[index:end if end > 0 else index + 1500]
-    # 0.8.91: flipped from partial to unsupported. `AddToDB = True` did NOT make sheet
-    # sketches render (three line styles measured, all 0 pixels). The 602 pixels this tool
-    # does produce come from its NOTE, not the triangle.
-    assert '"unsupported"' in segment, (
-        "weld_symbol claims partial again — the triangle has never rendered")
-    assert "triangle_verified=False" in _read("tools/layout.py"), (
-        "the receipt claims the triangle was verified, which a whole-page diff cannot do")
+    # 0.8.173: flipped BACK to partial, and this time with evidence the earlier check could
+    # not have produced. v0.8.91 measured a WHOLE-PAGE diff taken after `add_note` ran, so
+    # the pixels could not be attributed to the triangle — and "the triangle is not drawn"
+    # was inferred from a test that could not show it either way.
+    #
+    # A report rendered the PDF and saw the full symbol. The decisive measurement is a
+    # LINES-ONLY diff (render after the sketch lines, before the note): 2134 changed pixels.
+    # Whole page 2230; the 96-pixel difference is the note text.
+    #
+    # What must hold now is that the flag comes from that measurement, not from a constant.
+    layout_src = _read("tools/layout.py")
+    assert "triangle_verified=False," not in layout_src, (
+        "triangle_verified is a hard-coded False again — the triangle DOES render "
+        "(2134 pixels, lines-only diff)")
+    assert "_lines_only_pixels" in layout_src, (
+        "the lines-only diff is gone; nothing measures the sketch geometry separately")
+    assert '"partial"' in segment, (
+        "weld_symbol should be partial: the geometry renders, but it is sheet sketch "
+        "geometry, not an IWeldSymbol that follows the weldment feature")
     assert "sketch_block" in segment, "the capability does not name the representation"
     return "weld symbol declared as sketch geometry, scaled correctly, types refused"
 

@@ -387,15 +387,21 @@ def add_weld_symbol(drawing_path: Annotated[str, Field(description="Existing .SL
     instantiates the geometry — `SetText` returns True, `GetText(2)` reads back "FILL", and
     the sheet shows only a leader and the number.
 
-    WARNING — the sheet-line fallback DOES NOT RENDER. Measured 2026-11-04: the triangle
-    produces 0 changed pixels out of 16,041,784 when the PDF is compared before/after, the
-    same result `add_sheet_line` reports for any stroke drawn in sheet space. `segments: 5`
-    only counts CreateLine calls that did not raise. The tool therefore returns
-    `weld_not_rendered` instead of pretending a symbol was drawn. Capability status:
-    `weld_symbol: unsupported`.
+    WARNING — the sheet-line fallback DOES render, but it is not a weld feature. Measured
+    2026-11-06 with a LINES-ONLY diff (the sheet is rendered after the sketch lines and
+    BEFORE the size note is written, so the changed pixels can only be the geometry):
+    `triangle_verified: true`, `lines_only_visibility {checked: true, changed_pixels: 2134}`.
+    The previous version of this docstring said the opposite, and cited an error code
+    (`weld_not_rendered`) that never existed in this package — the measurement behind that
+    claim was a whole-page diff taken AFTER the note was added, so it could not separate the
+    triangle from the note, and "the triangle is not drawn" was inferred from a test that
+    could not show it either way.
 
-    An earlier version of this docstring claimed the fallback rendered correctly; that
-    claim was wrong, and it is the reason this warning now lives here.
+    What is still true: this is sketch geometry on the sheet, not an `IWeldSymbol`. It does
+    not update with the weldment feature and cannot be queried as a weld annotation. Read
+    `triangle_verified` (a real measurement now) and `lines_only_visibility.checked` —
+    `checked: false` means nothing was verified, which is not the same as "not drawn".
+    Capability status: `weld_symbol: partial`.
 
     Only `weld_type="fillet"` is supported. A groove/plug/spot symbol is a different shape
     and is refused with `weld_type_unsupported` rather than approximated — a wrong weld
