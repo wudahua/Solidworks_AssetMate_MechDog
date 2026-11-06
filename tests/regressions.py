@@ -5689,6 +5689,47 @@ def assert_a_reversed_capability_does_not_linger_in_the_docs():
     return "a reversed capability no longer contradicts itself across the docs"
 
 
+def assert_delete_verifies_what_survived():
+    """0.8.178 — a bulk delete reported success while leaving an item behind.
+
+    Report 2026-11-06 (P0, B15): two consecutive `delete_dimensions(keep_values=[...])` calls
+    reported `removed: 3` and `removed: 1`, both `ok: true` / `failed: 0` — and
+    `list_drawing_annotations` still found a `D2 / 785.398` dimension afterwards. The caller
+    had no way to know: the receipt counted what the loop BELIEVED it deleted.
+
+    That leftover then left the sheet: its arc centre sat at sheet x < 0, and the exported
+    PDF carried three paths with negative x0 (down to -299.2 pt on an A2 page) — a large arc
+    and two leaders intruding into the main view. Delivery defect.
+
+    Same class as a save that does not save: **the receipt described an intention, not a
+    result.** So a delete must re-enumerate and name what survived.
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "delete_dimensions")) or ""
+
+    assert "remaining_matches" in body, (
+        "delete_dimensions does not report survivors — a partial delete looks like a clean "
+        "one, and an annotation left outside the sheet is a delivery defect")
+    assert "remaining_count" in body, "no count of survivors"
+    assert "verified_clean" in body, (
+        "the receipt cannot say 'nothing is left' as a verified fact")
+
+    # The re-enumeration must happen AFTER the deletes, or it measures the wrong state.
+    delete_at = body.find("doc.EditDelete()")
+    remain_at = body.find("remaining = []")
+    assert 0 < delete_at < remain_at, (
+        "the survivor scan runs before the deletions — it would report the pre-delete state")
+
+    # Angular dimensions must not masquerade as lengths in the overall-size check.
+    drawing_src = _read("tools/drawing.py")
+    assert 'dimension_type") or 0) not in (1, 3)' in drawing_src, (
+        "angular / arc-length dimensions can enter the overall-extent comparison again — a "
+        "45 degree angle reports 785.398 and makes `delivery_check` announce an impossible "
+        "overall size")
+    return "a bulk delete reports what survived; angles are not lengths"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5849,6 +5890,7 @@ STATIC_REGRESSIONS = [
     ("0.8.174 wrong insert is scoped", assert_a_wrong_insert_does_not_stay_on_the_sheet_silently),
     ("0.8.175 failed insert stops batch", assert_a_failed_insert_stops_the_batch),
     ("0.8.176 reversed capability consistent", assert_a_reversed_capability_does_not_linger_in_the_docs),
+    ("0.8.178 delete verifies survivors", assert_delete_verifies_what_survived),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

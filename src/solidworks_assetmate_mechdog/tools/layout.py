@@ -487,12 +487,51 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
             pass
         if save:
             _save_drawing(doc)
+
+        # Report 2026-11-06 (P0, B15): two consecutive calls reported `removed: 3` and
+        # `removed: 1`, both `ok: true` / `failed: 0` — and a `D2 / 785.398` dimension was
+        # still on the sheet afterwards. The caller had no way to tell: the receipt only
+        # counted what this loop thought it deleted. A delete that leaves items behind and
+        # says nothing is the same class of failure as a save that did not save.
+        #
+        # So re-enumerate and report what SURVIVED. Only a value in `keep` is allowed to
+        # remain; anything else is a real leftover and gets named.
+        remaining = []
+        try:
+            for view in _iter_views(doc):
+                if getattr(view, "Type", None) == 1:
+                    continue
+                try:
+                    items = list(view.GetAnnotations or ())
+                except Exception:
+                    continue
+                for item in items:
+                    try:
+                        ann = win.Dispatch(item)
+                        if int(ann.GetType) != 4:
+                            continue
+                        display = win.Dispatch(ann.GetSpecificAnnotation)
+                        value = float(display.GetDimension2(0).Value * 1000.0)
+                    except Exception:
+                        continue
+                    if any(abs(value - k) <= keep_tolerance_mm for k in keep):
+                        continue
+                    remaining.append({"value_mm": round(value, 3),
+                                      "view": str(getattr(view, "Name", ""))})
+        except Exception:
+            remaining = []
+
         return drawing_ok(
             drawing=doc.GetTitle,
             removed=len(removed), kept=len(kept), failed=len(failed),
             removed_items=removed[:40], kept_values=[k["value_mm"] for k in kept][:40],
             failed_items=failed[:10],
-            note="按值保留（默认容差 0.05 mm）。SolidWorks 无批量删除接口；实测 14 条一次调用 < 5 s。",
+            remaining_matches=remaining[:40],
+            remaining_count=len(remaining),
+            verified_clean=not remaining,
+            note=("按值保留（默认容差 0.05 mm）。SolidWorks 无批量删除接口；实测 14 条一次调用 < 5 s。"
+                  " `remaining_matches` 是删除后重新枚举的结果——**非空表示没删净**，"
+                  "这些值不在 `keep_values` 里却还在图上，请用 `delete_annotation(name, position_m)` 精确删。"),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

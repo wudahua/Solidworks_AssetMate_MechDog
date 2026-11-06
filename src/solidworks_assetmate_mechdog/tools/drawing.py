@@ -6186,7 +6186,16 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             # handle is not in scope here, and re-opening it would cost a second COM pass.
             sheet_vals = [float(a.get("value_mm")) / 1000.0
                           for a in (anns.get("annotations") or [])
-                          if a.get("kind") == "dimension" and a.get("value_mm")]
+                          if a.get("kind") == "dimension" and a.get("value_mm")
+                          # Report 2026-11-06 (P0, B5/B9): an un-deleted 45 degree angle
+                          # annotation reported `value_mm: 785.398` — the radian value
+                          # 0.785398 scaled by 1000 and treated as millimetres. That made
+                          # `delivery_check` announce "图上最大尺寸 785.40 mm 对应模型最大外形
+                          # 60.00 mm", which is nonsense and also masked the real problem
+                          # (the annotation had left the sheet). Angular and arc-length
+                          # dimensions are not lengths; they cannot participate in an
+                          # overall-extent comparison at all.
+                          and int(a.get("dimension_type") or 0) not in (1, 3)]
             if extents and sheet_vals:
                 biggest = max(extents)
                 tolerance = max(biggest * 0.01, 0.2)
