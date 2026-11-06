@@ -2429,11 +2429,27 @@ lm.GetLayerAtIndex(i)     # 不存在（<unknown>.GetLayerAtIndex）
 
 ### 当前可下的结论
 
-**图纸草图（InsertSketch + CreateLine）在图纸上不渲染，导出 PDF 也不含它。**
-草图画得出来（GetSketchSegments 能数到），但没有找到让它显示/打印的入口。
+**图纸草图（InsertSketch + CreateLine）能渲染 —— 缺的是 `SketchManager.AddToDB = True`。**
 
-**这一层是「图纸草图」这个能力的基础**——它不通，add_sheet_line、轴线中心线、
-任何手画的图框都出不来。add_sheet_line 已改为像素验证并如实返回 line_not_rendered。
+**2026-11-06 更正**：本节原先的结论「在图纸上不渲染」是错的。缺的是那一行开关。
+`AddToDB = True` 关闭捕捉与推断，线才会落在调用方给的坐标上；不设它时
+`CreateLine` 返回对象、`GetSketchSegments` 能数到，但图上和 PDF 里都没有。
+
+实测（SW2024 SP4 + 飞达动力轴 A3）：
+
+```
+不设 AddToDB：add_sheet_line(0.30,0.24 → 0.35,0.24) → 0 像素
+设  AddToDB：同一次调用                             → 572 像素，visible: true
+```
+
+同一个开关也让 `add_weld_symbol` 的三角形渲染出来（lines-only 差分 2134 像素）。
+
+**这一层是「图纸草图」这个能力的基础**——它通了，add_sheet_line、手画图框、
+引线才都有可能。`add_sheet_line` 现在做像素验证：`changed_pixels > 0` 表示画上了，
+`0` 返回 `line_not_rendered`，`checked: false` 表示渲染器不可用（**不等于没画出来**）。
+
+**证据面**：只测过 SW2024 SP4 + 飞达动力轴 A3 一次。换模板 / 换零件仍可能失败，
+所以保留了 `line_not_rendered` 分支 —— 它是真实存在的路径，不是历史遗留。
 
 ### 若要继续，该试的
 

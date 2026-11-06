@@ -158,7 +158,8 @@ CAPABILITIES = [
     {
         "id": "sheet_sketch_space",
         "status": "verified",
-        "summary": "图纸草图坐标系 · 草图线能渲染（需要 `AddToDB`）",
+        "summary": ("图纸草图坐标系 · 草图线能渲染（需要 `AddToDB`）"
+                    "· 实测于 SW2024 SP4 + 飞达动力轴 A3"),
         "why": ("早先这里写「图纸草图不渲染，调用返回 `line_not_rendered`」—— **2026-11-06 更正**："
                 "缺的是 `SketchManager.AddToDB = True`。同包的 `add_weld_symbol` 一直设它，"
                 "它的几何能渲染；`add_sheet_line` 没设，于是 0 像素。补上之后实测 "
@@ -166,7 +167,10 @@ CAPABILITIES = [
                 "`AddToDB` 的作用是关闭捕捉与推断，线才会落 在调用方给的坐标上"
                 "（否则会吸附到邻近视图几何）。"),
         "workaround": ("先算好每段线的米坐标，批量调用。若 `visibility.changed_pixels` 为 0，"
-                       "先确认模板没有锁住图纸草图，而不是直接判「画不出来」。"),
+                       "先确认模板没有锁住图纸草图，而不是直接判「画不出来」。\n\n"
+                       "**证据面**：只测过 SW2024 SP4 + 一个零件一次。这正是当年出错的原因之一 ——"
+                       "旧结论「不渲染」声称覆盖 SW2024/2026 两个版本，而它也只在一个环境下测过。"
+                       "所以这里不重复那个错误：`line_not_rendered` 分支保留，它是真实路径。"),
         "evidence": ("SW2024 SP4 实测（2026-11-06，飞达动力轴 A3）：`add_sheet_line(0.30,0.24 → "
                      "0.35,0.24)` → `ok:true`，`visibility {checked:true, changed_pixels:572, "
                      "visible:true}`。补 `AddToDB=True` 之前同一调用是 0 像素。"),
@@ -241,8 +245,8 @@ CAPABILITIES = [
     },
     {
         "id": "centerline",
-        "status": "unsupported",
-        "summary": "轴线中心线：做不出来——图纸草图本身不渲染",
+        "status": "partial",
+        "summary": "轴线中心线 · 前提已推翻（草图能渲染），本身未重测",
         "why": ("反馈试了五条路全失败。本轮追到根因，比中心线本身更底层："
                 "`InsertSketch` + `CreateLine` **能把线建出来**"
                 "（`GetSketchSegments` 数到 1 段），`SketchSegment.Style` 也能写，"

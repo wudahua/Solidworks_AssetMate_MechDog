@@ -559,18 +559,23 @@ def add_bom_table(
 
 @mcp.tool()
 def add_sheet_line(
-    drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], x1_m: Annotated[float, Field(description="Sheet X of the line start, in metres.")], y1_m: Annotated[float, Field(description="Sheet Y of the line start, in metres.")], x2_m: Annotated[float, Field(description="Sheet X of the line end, in metres.")], y2_m: Annotated[float, Field(description="Sheet Y of the line end, in metres.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,    verify_render: Annotated[bool, Field(description="Prove the line rendered by exporting the page before and after and diffing pixels (default True). On SW2024/2026 this always returns line_not_rendered — set False only if you want to skip the two PDF exports and trust the call blindly.")] = True,
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], x1_m: Annotated[float, Field(description="Sheet X of the line start, in metres.")], y1_m: Annotated[float, Field(description="Sheet Y of the line start, in metres.")], x2_m: Annotated[float, Field(description="Sheet X of the line end, in metres.")], y2_m: Annotated[float, Field(description="Sheet Y of the line end, in metres.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,    verify_render: Annotated[bool, Field(description="Prove the line rendered by exporting the page before and after and diffing pixels (default True). Costs two PDF exports. Read the result: visibility.checked=true and changed_pixels>0 means it drew; changed_pixels=0 returns line_not_rendered; visibility.checked=false means the renderer was unavailable, which is NOT the same as 'not drawn'.")] = True,
 ) -> str:
     """Draw a line in true sheet space (metres).
 
-    WARNING — this does NOT work on SW2024/2026: drawing-sheet sketches do not render.
-    `CreateLine` returns an object and `SketchSegment.Style` is writable, but the line
-    never appears on the sheet or in the exported PDF (measured 2026-11-03: before/after
-    pixel diff **0 / 16,041,784**). `verify_render=True` (default) proves it and returns
-    `line_not_rendered`; every call costs two PDF exports.
+    Sheet sketches DO render — but only with `SketchManager.AddToDB = True` set before
+    `CreateLine`. AddToDB disables snapping and inference; without it the stroke snaps to
+    nearby geometry (or does not appear at all). Measured 2026-11-06 on SW2024 SP4: with it,
+    `add_sheet_line(0.30,0.24 -> 0.35,0.24)` reports `changed_pixels: 572, visible: true`;
+    the identical call before the change reported 0.
 
-    **Do not use it for BOM frames or centre lines.** See `check_capabilities.centerline`
-    and docs/com-quirks.md §55.
+    (Earlier versions of this docstring said sheet sketches never render, based on a 0-pixel
+    diff taken before AddToDB was set. That conclusion was wrong; the fault was the missing
+    switch, not the capability.)
+
+    Read `visibility`: `checked: true` with `changed_pixels > 0` means it drew;
+    `changed_pixels: 0` returns `line_not_rendered`; **`checked: false` means the renderer
+    was unavailable — that is "not verified", not "not drawn"**.
 
     Historical note (the unit trap that is still true):
 

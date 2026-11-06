@@ -5606,6 +5606,64 @@ def assert_a_failed_insert_stops_the_batch():
     return "a wrong insert stops the batch and says which gaps were skipped"
 
 
+def assert_a_reversed_capability_does_not_linger_in_the_docs():
+    """0.8.176 — a capability flipped, and six of eight consumers kept telling callers "no".
+
+    Report 2026-11-06 (second review of the same day): v0.8.173 proved sheet sketch lines DO
+    render once `SketchManager.AddToDB = True` is set (572 px), and the weld triangle had
+    been rendering all along (2134 px, lines-only diff). `capabilities.py` and the
+    `add_weld_symbol` docstring were updated. Everything else still said it could not work:
+
+        server.py   add_sheet_line docstring   "does NOT work on SW2024/2026"
+        server.py   verify_render param        "always returns line_not_rendered"
+        README      tool table                 "实测不渲染（0 / 16,041,784 像素）"
+        README      capability table           "不要配 add_sheet_line 画引线"
+        com-quirks  §55                        "图纸草图在图纸上不渲染"
+        smoke.py    comment                    "an ok:true here is precisely the lie"
+        layout.py   old comment                "with AddToDB = True the diff is STILL 0"
+        capabilities centerline                "做不出来——图纸草图本身不渲染"
+
+    This is the mirror of v0.8.89 (proved it cannot draw, four places said it could). Same
+    disease, opposite direction, and 182/182 green both times because no assertion compared
+    the capability contract against the text a caller actually reads.
+
+    So: once a capability says a thing DOES work, the "it does not work" phrasing must not
+    survive in the consumer docs. Historical notes are fine if they say so — the check looks
+    for the bare claims, not for the topic.
+    """
+    # Phrases that assert the tool cannot do the thing.
+    banned = [
+        "does **NOT work on SW2024/2026**",
+        "图纸草图在图纸上不渲染",
+        "实测不渲染",
+        "图纸草图本身不渲染",
+        "always returns `line_not_rendered`",
+    ]
+    sources = {
+        "server.py": _read("server.py"),
+        "README.md": open(os.path.join(ROOT, "README.md"), encoding="utf-8").read(),
+        "docs/com-quirks.md": open(os.path.join(ROOT, "docs", "com-quirks.md"),
+                                   encoding="utf-8").read(),
+    }
+    offenders = []
+    for name, text in sources.items():
+        for phrase in banned:
+            if phrase in text:
+                offenders.append("%s: %r" % (name, phrase[:34]))
+
+    assert not offenders, (
+        "these still tell the caller the tool cannot render, while the capability contract "
+        "says it can (measured 572 / 2134 px): %s" % "; ".join(offenders))
+
+    # And the positive finding must be reachable BEFORE calling: `AddToDB` has to appear in
+    # at least one tool description, otherwise a reader cannot reproduce the result.
+    server = sources["server.py"]
+    assert "AddToDB" in server, (
+        "the fix itself (`AddToDB = True`) appears in zero tool descriptions — a caller "
+        "cannot know why it works here and not on their machine")
+    return "a reversed capability no longer contradicts itself across the docs"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5765,6 +5823,7 @@ STATIC_REGRESSIONS = [
     ("0.8.171 auto_fit syncs title block", assert_auto_fit_updates_the_title_block),
     ("0.8.174 wrong insert is scoped", assert_a_wrong_insert_does_not_stay_on_the_sheet_silently),
     ("0.8.175 failed insert stops batch", assert_a_failed_insert_stops_the_batch),
+    ("0.8.176 reversed capability consistent", assert_a_reversed_capability_does_not_linger_in_the_docs),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
