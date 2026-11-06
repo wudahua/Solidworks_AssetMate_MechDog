@@ -277,13 +277,23 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # 4) dimensions — N3: feed the plan back in, so "keep N" is what lands on the sheet.
     keep_list = plan_raw.get("keep_dimensions") or []
     if prune_to_plan and keep_list:
-        dims = record("dimensions",
-                      drawing_tools.auto_dimension(target, all_views=True,
-                                                   dimension_filter=keep_list,
-                                                   save=False, audit=False),
-                      "")
+        _dims_res = drawing_tools.auto_dimension(target, all_views=True,
+                                                 dimension_filter=keep_list,
+                                                 save=False, audit=False)
+        dims = record("dimensions", _dims_res,
+                      # Carry the failure reason into the step. `critical_step_failed` only
+                      # names the step, so a report read "dimensions failed; the drawing is
+                      # not usable" with no way to tell why — three smoke items failed with
+                      # that exact sentence and nothing else.
+                      "" if _dims_res.get("ok") else
+                      "%s: %s" % (_dims_res.get("error"),
+                                  str(_dims_res.get("message"))[:160]))
     else:
-        dims = record("dimensions", drawing_tools.auto_dimension(target, all_views=True, save=False, audit=False), "")
+        _dims_res = drawing_tools.auto_dimension(target, all_views=True, save=False, audit=False)
+        dims = record("dimensions", _dims_res,
+                      "" if _dims_res.get("ok") else
+                      "%s: %s" % (_dims_res.get("error"),
+                                  str(_dims_res.get("message"))[:160]))
 
     # 5) center marks
     if defaults["center_marks"]:
