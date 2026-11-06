@@ -432,6 +432,36 @@ def _dispatch_specific(annotation):
 
 
 @perf_hooks.timed("drawing_create")
+def _ratio_text(scale):
+    """`0.5` -> "1:2", `2.0` -> "2:1". None when the scale is unknown."""
+    try:
+        value = float(scale)
+    except (TypeError, ValueError):
+        return None
+    if abs(value) < 1e-12:
+        return None
+    if value < 1:
+        return "1:%g" % round(1.0 / value, 4)
+    return "%g:1" % round(value, 4)
+
+
+def _corrected_scale_reason(reason, final_scale, adjustments):
+    """Overwrite the scale fields that auto_fit invalidated.
+
+    Report 2026-11-06 (P1): after the views stepped from 1:1 to 1:2, `scale_reason` still
+    said `final_scale: 1.0` / `final_ratio: "1:1"` — and it is the field NAMED "final". A
+    caller filling a process sheet from it would record a ratio the drawing does not have.
+    """
+    merged = dict(reason or {})
+    if final_scale is None:
+        return merged
+    merged["final_scale"] = final_scale
+    merged["final_ratio"] = _ratio_text(final_scale)
+    if adjustments:
+        merged["corrected_after_auto_fit"] = True
+    return merged
+
+
 def create_drawing(
     model_path,
     output_path=None,
@@ -991,6 +1021,14 @@ def create_drawing(
                     except Exception:
                         continue
                 if _final_scale is not None and abs(_final_scale - 1.0) > 1e-9:
+                    # Keep `views[].scale` in step with reality. It was filled when the views
+                    # were created, before auto_fit stepped them down, so it said 1.0 while
+                    # every view was at 0.5. (2026-11-06 report, P1.)
+                    for _item in created:
+                        try:
+                            _item["scale"] = _final_scale
+                        except Exception:
+                            continue
                     _ratio = ("1:%g" % round(1.0 / _final_scale, 4)) if _final_scale < 1 \
                         else ("%g:1" % round(_final_scale, 4))
                     _tb = set_title_block(out, scale=_ratio, apply=True)
@@ -1021,12 +1059,14 @@ def create_drawing(
             auto_scale_adjustments=auto_scale_adjustments,
             title_scale_synced=_title_scale_synced,
             placement_deltas=placement_deltas,
-            # Record the FINAL scale too: the pre-layout step above can still step down
-            # (a 0.2 that overflowed became 0.1 on the 履带轮 test while scale_reason kept
-            # saying "1:5"), and a receipt that contradicts itself is worse than none.
-            chosen_scale=chosen_scale,
-            # Why the sheet got that scale (model box / view count / raw fit / the rule).
-            scale_reason=scale_reason,
+            # Report 2026-11-06 (P1): four fields disagreed with the geometry after auto_fit
+            # stepped the views down — `views[].scale` read 1.0 while the views were 0.5,
+            # `chosen_scale` 1.0, `scale_reason.final_scale` 1.0 / `final_ratio` "1:1". A
+            # caller filling a process sheet from `chosen_scale` got a ratio the drawing did
+            # not have. All of them are corrected from the views themselves, at the end.
+            chosen_scale=_final_scale if _final_scale is not None else chosen_scale,
+            scale_reason=_corrected_scale_reason(scale_reason, _final_scale,
+                                                 auto_scale_adjustments),
             outline_note=("`outline` 来自 IView.GetOutline，宽高各虚胖 %.1f mm（恒定常数，"
                           "非投影误差）；`precise_outline_m` 已内缩该常数，实测与渲染 ink bbox "
                           "吻合（58.98 mm vs 59.2 mm，0.4%%）。没有逐顶点版本："
@@ -1925,6 +1965,20 @@ def clamp_dimensions_into_safe_area(drawing_path, inset_m=0.010, step_m=0.014):
                               note="sheet frame unavailable; nothing to clamp against")
         lo_x, lo_y = frame[0] + inset_m, frame[1] + inset_m
         hi_x, hi_y = frame[2] - inset_m, frame[3] - inset_m
+        # Report 2026-11-06 (P2): the function is named `..._into_safe_area` and its
+        # criterion was the SHEET, so three dimensions at x = 0.0308 / 0.0468 / 0.0388
+        # (frame interior starts at 0.0588) were reported as "no dimension was off the
+        # sheet" while printing outside the frame. Use the template's interior; the inset
+        # stays only as a fallback when the template cannot be read.
+        _safe_source = "sheet_inset"
+        try:
+            _m = template_safe_area(doc.GetFirstView, frame[2] - frame[0], frame[3] - frame[1])
+            if _m:
+                lo_x, lo_y = frame[0] + _m.get("left", inset_m), frame[1] + _m.get("bottom", inset_m)
+                hi_x, hi_y = frame[2] - _m.get("right", inset_m), frame[3] - _m.get("top", inset_m)
+                _safe_source = _m.get("source") or "template"
+        except Exception:
+            pass
 
         offenders = []
         scanned = 0
@@ -1976,6 +2030,9 @@ def clamp_dimensions_into_safe_area(drawing_path, inset_m=0.010, step_m=0.014):
                 pass
             _save_drawing(doc)
         return drawing_ok(clamped=clamped, clamped_count=len(clamped),
+                          safe_area_source=_safe_source,
+                          safe_area_used={"x": [round(lo_x, 4), round(hi_x, 4)],
+                                          "y": [round(lo_y, 4), round(hi_y, 4)]},
                           dimensions_scanned=scanned,
                           safe_area_m=[round(lo_x, 4), round(lo_y, 4),
                                        round(hi_x, 4), round(hi_y, 4)],
@@ -5920,8 +5977,32 @@ def list_drawing_annotations(drawing_path, view_name=None):
                         specific = ann.GetSpecificAnnotation
                         dim = specific.GetDimension2(0)
                         if dim is not None:
-                            dimension_value = round(float(dim.SystemValue) * 1000, 3)
-                            row["value_mm"] = dimension_value
+                            # Report 2026-11-06 (B5/B9): `SystemValue` is a LENGTH in metres
+                            # for linear dimensions but an ANGLE IN RADIANS for angular ones.
+                            # Multiplying 45 deg by 1000 gave `value_mm: 785.398` — a number
+                            # that looks like a 785 mm length and made `delivery_check`
+                            # announce an impossible overall size, while masking the fact
+                            # that the annotation had left the sheet.
+                            #
+                            # Angular dimensions get `value_deg` and NO `value_mm`; a field
+                            # named `value_mm` must never carry degrees.
+                            _dim_type = 0
+                            try:
+                                _dim_type = int(dim.GetType)
+                            except Exception:
+                                try:
+                                    _dim_type = int(dim.Type)
+                                except Exception:
+                                    _dim_type = 0
+                            _raw = float(dim.SystemValue)
+                            if _dim_type in (1, 3):          # angular / arc-length
+                                row["value_deg"] = round(_raw * 180.0 / 3.141592653589793, 3)
+                                row["value_is_angular"] = True
+                                row["value_mm"] = None
+                                dimension_value = None
+                            else:
+                                dimension_value = round(_raw * 1000, 3)
+                                row["value_mm"] = dimension_value
                             # A callout whose text is just "Ø" / "R" (or None) tells the
                             # reader nothing, and the value is already on this row. Reports
                             # hit this four times: radius_callout text=None, hole_callout
@@ -5941,14 +6022,19 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                     row["diameter_mm"] = float(_printed.group(1))
                                     row["diameter_source"] = "text"
                                 elif _bare in ("", "Ø", "⌀", "R"):
-                                    row["diameter_mm"] = round(float(dimension_value), 3)
+                                    # `dimension_value` is None for angular dimensions —
+                                    # never format a callout from it without a guard.
+                                    row["diameter_mm"] = (round(float(dimension_value), 3)
+                                                          if dimension_value is not None
+                                                          else None)
                                     row["diameter_source"] = "value_unverified"
                                     _prefix = ("R" if (_bare == "R"
                                                        or kind == "radius_callout")
                                                else "Ø")
-                                    row["text"] = "%s%g" % (
-                                        _prefix, round(float(dimension_value), 3))
-                                    row["text_was_bare_symbol"] = True
+                                    if dimension_value is not None:
+                                        row["text"] = "%s%g" % (
+                                            _prefix, round(float(dimension_value), 3))
+                                        row["text_was_bare_symbol"] = True
                             try:
                                 row["tolerance_type"] = int(dim.GetToleranceType)
                             except Exception:
@@ -8914,7 +9000,18 @@ def add_geometric_tolerance(drawing_path, x, y, tolerance="0.05", datum="A",
 
         return drawing_ok(
             created=True, saved=bool(save), attached_to=attached,
+            # Report 2026-11-06 (P3): this is NOT where the leader's arrow lands. It is a
+            # point computed on the attached edge's circle (centre + radius), and a report
+            # measured 27.5 mm between it and the real DXF LEADER first point. The field name
+            # promised a measurement and delivered a prediction.
+            #
+            # `leader_target_m` is the honest name. `leader_endpoint_m` is kept so existing
+            # callers do not break, but it carries the same value and `leader_endpoint_m_is`
+            # says what it actually is.
+            leader_target_m=leader_endpoint,
+            leader_target_source=leader_endpoint_source,
             leader_endpoint_m=leader_endpoint,
+            leader_endpoint_m_is="computed_target_not_measured_arrow_position",
             leader_endpoint_source=leader_endpoint_source,
             leader_style_requested=str(leader_style),
             leader_path_note=leader_path_note,

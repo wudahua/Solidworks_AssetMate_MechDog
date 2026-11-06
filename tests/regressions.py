@@ -5829,6 +5829,65 @@ def assert_section_dimensions_have_somewhere_to_land():
     return "a section view can hold depth dimensions: position honoured, inside the frame, copies kept"
 
 
+def assert_receipts_do_not_disagree_with_the_geometry():
+    """0.8.183 — five small receipt defects, all the same shape: a field that lies.
+
+    Each was reported 2026-11-06 and each is the same failure as the big ones: the value
+    comes from a snapshot taken before the work, not from the result.
+
+    **1** `create_drawing` reported `views[].scale: 1.0` / `chosen_scale: 1.0` /
+    `scale_reason.final_scale: 1.0` while every view was at 0.5 after auto_fit stepped them
+    down. `scale_reason` is the field NAMED "final".
+
+    **2** `clamp_dimensions_into_safe_area` judged against the SHEET (frame ± 10 mm) while
+    its name says safe area — 3 dimensions at x = 0.0308 / 0.0468 / 0.0388 passed as "inside"
+    when the frame interior starts at 0.0588.
+
+    **3** `dimension_gap.note` said "规划已生效" unconditionally whenever `prune_to_plan`
+    was true, next to `planned 9 / inserted 12`.
+
+    **4** `leader_endpoint_m` is not the leader's endpoint — it is a computed point on the
+    attached edge's circle (centre + radius), measured 27.5 mm away from the real DXF LEADER
+    start.
+
+    **5** `value_mm: 785.398` for a 45 degree angle: `SystemValue` is radians for angular
+    dimensions, multiplied by 1000 and presented as a length.
+    """
+    src = _read("tools/drawing.py")
+
+    # 1 — the final scale must come from the views, at the end.
+    assert "_corrected_scale_reason" in src, (
+        "scale_reason can contradict the views again after auto_fit steps them down")
+    assert '_item["scale"] = _final_scale' in src, (
+        "views[].scale is a creation-time snapshot again, so it disagrees with ScaleDecimal")
+
+    # 2 — clamp against the frame interior
+    assert "template_safe_area(doc.GetFirstView" in src, (
+        "clamp_dimensions judges against the sheet again, so dimensions outside the frame "
+        "still report 'no dimension was off the sheet'")
+    assert "safe_area_source" in src, (
+        "the receipt does not say which area it clamped against")
+
+    # 3 — the note must state numbers
+    pipe = _read("tools/pipeline.py")
+    assert '"规划已生效" :=' not in pipe, "the conditional was replaced by an assignment"
+    assert "规划已生效（prune_to_plan=True）：计划" in pipe, (
+        "dimension_gap.note announces the plan took effect without stating planned vs "
+        "inserted")
+
+    # 4 — honest field name, alias kept
+    assert "leader_target_m=leader_endpoint" in src, (
+        "the field still claims to be the leader endpoint")
+    assert "computed_target_not_measured_arrow_position" in src, (
+        "the alias does not say what it actually holds")
+
+    # 5 — angular dimensions never carry value_mm
+    assert 'row["value_deg"]' in src, "angular dimensions are not given a degree value"
+    assert 'row["value_mm"] = None' in src, (
+        "an angular dimension can still report a value_mm — 45 degrees becomes 785.398 mm")
+    return "receipts report the result, not the plan"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5992,6 +6051,7 @@ STATIC_REGRESSIONS = [
     ("0.8.178 delete verifies survivors", assert_delete_verifies_what_survived),
     ("0.8.179 axis fallback", assert_gap_finder_survives_an_unmappable_axis),
     ("0.8.182 section dims have a home", assert_section_dimensions_have_somewhere_to_land),
+    ("0.8.183 receipts match geometry", assert_receipts_do_not_disagree_with_the_geometry),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

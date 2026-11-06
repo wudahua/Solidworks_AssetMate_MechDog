@@ -494,10 +494,19 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             "derived_unfilled": [d for d in keep_list
                                  if str(d.get("kind") or "").lower() == "derived"],
             "note": (
-                ("规划已生效：插入后按 keep_dimensions 删除多余尺寸，"
+                # Report 2026-11-06 (P2): this sentence was unconditional — it said "the
+                # plan took effect" whenever `prune_to_plan` was true, without looking at
+                # what actually landed. Measured: `planned 9 / inserted 12`. A receipt that
+                # announces success it has not checked is the same failure as a save that
+                # did not save. State the numbers instead.
+                (("规划已生效（prune_to_plan=True）：计划 %s 条，实际插入 %s 条%s。"
+                  % (len(keep_list), ((summary or {}).get("dimension") or 0),
+                     "（插入多于计划：`_filter_inserted_dimensions` 按值保留，"
+                     "同一数值的多条尺寸会一起保留，这是有意的兜底）"
+                     if ((summary or {}).get("dimension") or 0) > len(keep_list) else ""))
                  if prune_to_plan else
-                 "规划未生效（prune_to_plan=False）：实际导入的是模型全部标记为工程图用的尺寸，"
-                 "需人工删减或按需补标。")
+                 ("规划未生效（prune_to_plan=False）：实际导入的是模型全部标记为工程图用的尺寸"
+                  "（%s 条），需人工删减或按需补标。" % ((summary or {}).get("dimension") or 0)))
                 + ("filter 失败/未命中时不会删除，见 dimensions 步骤的 filter_aborted。"
                    if prune_to_plan else "")
                 + ((" 另有 %d 条 derived 项（外形总长/总宽/总高）不在插入路径上——"
