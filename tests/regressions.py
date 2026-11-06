@@ -5231,21 +5231,28 @@ def assert_gap_candidates_are_checked_against_the_model():
                                                       "plan_dimension_gaps")) or ""
 
     assert "model_points" in body, (
-        "the model coordinates are no longer collected — candidates are back to paper-only")
-    assert "_model_span_mm" in body, (
-        "the model span is not computed")
-    assert 'if abs(_model_span_mm - target) > tolerance_mm:' in body, (
-        "a paper match alone is enough again — this is how 1570.796 gets offered")
+        "the model coordinates are no longer collected at all")
+    assert "_model_span_mm" in body, "the model span is not computed"
     assert '"model_span_mm"' in body, (
         "candidates do not report the model span, so a caller cannot see both numbers")
+    assert '"model_check"' in body, (
+        "the candidate does not say whether the model check was available — 'cannot "
+        "verify' would look the same as 'verified'")
 
-    # The gate must not fire when the model point is unknown.
-    gate_at = body.find('if abs(_model_span_mm - target) > tolerance_mm:')
-    guard_at = body.rfind("if _ma and _mb:", 0, gate_at)
-    assert 0 < guard_at < gate_at, (
-        "the model gate runs without checking that both model points exist — it would "
-        "drop every candidate on a file whose model coordinates are unavailable")
-    return "gap candidates are gated on model distance before being offered"
+    # 0.8.169: the gate NO LONGER DROPS. It used to `continue` when the 3D model distance
+    # missed the target — but the sheet test is single-axis and the model figure is a 3D
+    # euclidean distance, so the two are not comparable. Measured on AM_DOOR: 13 gaps,
+    # 5 paper matches, all 5 dropped, `apply_gaps` produced nothing.
+    #
+    # The `continue` scan is deliberately limited to the exact gate expression: a window
+    # scan also matches the legitimate circle-centre `continue` further down, and an
+    # assertion that forces correct code to change is worse than no assertion. (Measured:
+    # it did, on the first version of this very check.)
+    gate_at = body.find("if abs(_model_span_mm - target) > tolerance_mm:")
+    assert gate_at < 0, (
+        "the model gate filters candidates again — a single-axis sheet span and a 3D model "
+        "distance are different quantities, so this rejects correct candidates")
+    return "gap candidates record the model span as evidence instead of filtering on it"
 
 
 def assert_no_tool_reports_success_for_work_it_did_not_do():

@@ -7703,13 +7703,27 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                 _model_span_mm = ((_ma[0] - _mb[0]) ** 2
                                                   + (_ma[1] - _mb[1]) ** 2
                                                   + (_ma[2] - _mb[2]) ** 2) ** 0.5 * 1000.0
-                                if abs(_model_span_mm - target) > tolerance_mm:
-                                    # Paper matched, model did not. Drop it: offering this
-                                    # candidate is how a wrong dimension gets drawn.
-                                    continue
-                            # (No model point -> cannot check. Kept, because refusing on
-                            # missing data would empty the list on files where the model
-                            # coordinates could not be projected at all.)
+                            # Report 2026-11-06 (P1): this used to `continue` when the model
+                            # span missed the target. That was WRONG, and it was mine.
+                            #
+                            # The sheet comparison above uses a SINGLE AXIS (`abs(x2-x1)`
+                            # or `abs(y2-y1)`) because a linear dimension measures along one
+                            # axis. The model figure here is a 3D EUCLIDEAN distance between
+                            # two vertices. On a drawing those are different quantities: the
+                            # sheet is a projection, so a 3.05 mm axial gap can span tens of
+                            # mm in the model's depth direction. Comparing them is an
+                            # apples-to-oranges test that rejects correct candidates.
+                            #
+                            # Measured on AM_DOOR: 13 gaps, 5 paper matches on one of them,
+                            # ALL dropped by this gate -> 12 `no_geometry` + 1
+                            # `no_applicable_candidate`, and `apply_gaps` produced nothing.
+                            # The v0.8.156 post-insert value check already catches a
+                            # genuinely wrong pair (`actual_value_mm` vs planned), so the
+                            # gate only cost candidates without adding safety.
+                            #
+                            # Kept as EVIDENCE (`model_span_mm`), not as a filter.
+                            # `model_check` states whether the figure exists, so "cannot
+                            # verify" never looks like "verified".
                             # Circle centres carry SYNTHETIC NEGATIVE indices (see above).
                             # `add_distance_dimension` indexes a REAL edge array, so such a
                             # pair can never be selected. Mark it here instead of letting
@@ -7722,6 +7736,9 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                 "axis": axis, "measured_mm": round(span_mm, 3),
                                 "model_span_mm": (round(_model_span_mm, 3)
                                                   if _model_span_mm is not None else None),
+                                "model_check": ("approximate_3d_distance"
+                                                if _model_span_mm is not None
+                                                else "unavailable"),
                                 "delta_mm": round(span_mm - target, 4),
                                 "centres": [[round(x1, 4), round(y1, 4)],
                                             [round(x2, 4), round(y2, 4)]],
