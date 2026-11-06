@@ -40,9 +40,18 @@ except FixtureMissing as _exc:
 results = []
 
 
-def record(name, ok, detail=""):
-    results.append((name, bool(ok), detail))
-    print("%-56s %s  %s" % (name, "PASS" if ok else "FAIL", detail))
+def record(name, ok, detail="", skip=False):
+    """Record one assertion.
+
+    `skip=True` means the assertion never RAN (a missing library, not a wrong result).
+    Report 2026-11-06: A6's three pixel assertions were all inside an `import pymupdf`
+    block, and the ImportError branch logged one FAIL — so a clean install printed
+    "14/15" and read like one small problem, while the question the case exists to answer
+    ("is the GTol visible in the PDF?") had not been asked at all.
+    """
+    results.append((name, bool(ok), detail, bool(skip)))
+    label = "SKIP" if skip else ("PASS" if ok else "FAIL")
+    print("%-56s %s  %s" % (name, label, detail))
     return ok
 
 
@@ -201,22 +210,36 @@ def case_gtol_visible_in_pdf():
 
         if exists and pos:
             try:
-                # pymupdf is already a dependency of the PDF tooling here; pdftoppm is not on
-                # PATH on this machine, which is why the first version of this check silently
-                # degraded to "the PDF is 47 KB". A size check cannot tell a rendered frame
-                # from an empty one.
-                import pymupdf
+                # pypdfium2, NOT pymupdf. Report 2026-11-06 (P1): this block imported
+                # `pymupdf`, which is in no dependency list anywhere — `pyproject.toml`'s
+                # hard deps are mcp / pywin32 / Pillow / pypdfium2. On a clean install the
+                # whole pixel check therefore never ran, and the failure was recorded as
+                # "no PDF renderer", which reads like a missing machine capability while the
+                # project's own renderer (pypdfium2) was installed and in use elsewhere in
+                # the same run.
+                #
+                # pdftoppm is not on PATH here either, which is why the first version of
+                # this check silently degraded to "the PDF is 47 KB". A size check cannot
+                # tell a rendered frame from an empty one.
+                import pypdfium2 as pdfium
 
-                page_img = None
-                with pymupdf.open(pdf) as doc_pdf:
-                    page = doc_pdf[0]
-                    pix = page.get_pixmap(dpi=150)
-                    page_img = (pix.width, pix.height, pix.samples)
-                if page_img is None:
-                    record("[A6] pdf rasterised", False, "pymupdf produced no page")
+                if not os.path.exists(pdf):
+                    record("[A6] pdf rasterised", False, "pdf missing")
                 else:
-                    W, H, samples = page_img
-                    sheet = drawing._open_drawing(drw)
+                    _pdf = pdfium.PdfDocument(pdf)
+                    if len(_pdf) == 0:
+                        record("[A6] pdf rasterised", False, "pdfium produced no page")
+                        _pdf.close()
+                    else:
+                        page0 = _pdf[0]
+                        # 150 dpi at 72 dpi base = scale 150/72
+                        bitmap = page0.render(scale=150 / 72.0)
+                        pil = bitmap.to_pil().convert("RGB")
+                        W, H = pil.size
+                        samples_bytes = pil.tobytes()
+                        page0.close()
+                        _pdf.close()
+                        sheet = drawing._open_drawing(drw)
                     frames = [v for v in drawing._iter_views(sheet)
                               if getattr(v, "Type", None) == 1]
                     frame = list(frames[0].GetOutline) if frames else [0, 0, 0.42, 0.297]
@@ -228,11 +251,14 @@ def case_gtol_visible_in_pdf():
                     x1 = min(W, int(px) + 50)
                     y1 = min(H, int(py) + 50)
                     dark = 0
+                    # PIL RGB: 3 bytes per pixel, tightly packed.
+                    _stride, _n = W * 3, 3
                     for yy in range(y0, y1):
-                        row = yy * pix.stride
+                        row = yy * _stride
                         for xx in range(x0, x1):
-                            off = row + xx * pix.n
-                            if samples[off] + samples[off + 1] + samples[off + 2] < 450:
+                            off = row + xx * _n
+                            if (samples_bytes[off] + samples_bytes[off + 1]
+                                    + samples_bytes[off + 2] < 450):
                                 dark += 1
                     record("[A6] ink near the frame position", dark >= 20,
                            "%dx%d page, dark pixels in 100x100 window: %d at (%.0f,%.0f)"
@@ -241,16 +267,24 @@ def case_gtol_visible_in_pdf():
                     # that says the 20 above is meaningful rather than a rendering artefact.
                     whole = 0
                     for yy in range(0, H, 4):
-                        row = yy * pix.stride
+                        row = yy * _stride
                         for xx in range(0, W, 4):
-                            off = row + xx * pix.n
-                            if samples[off] + samples[off + 1] + samples[off + 2] < 450:
+                            off = row + xx * _n
+                            if (samples_bytes[off] + samples_bytes[off + 1]
+                                    + samples_bytes[off + 2] < 450):
                                 whole += 1
                     record("[A6] page is not blank", whole > 200,
                            "dark pixels on a 4x sampled page: %d" % whole)
-            except ImportError:
+            except ImportError as exc:
+                # "Not verified" must not be recorded as "FAIL". Report 2026-11-06: the old
+                # branch logged one FAIL and stopped, so the run read "14/15, one small
+                # problem" while in fact all THREE pixel assertions of A6 had never run.
+                # The tool group's stated purpose is "GTol is visible in the PDF"; a
+                # missing renderer means that question went unanswered, not that the answer
+                # was no.
                 record("[A6] pdf rasterised", False,
-                       "no PDF renderer (pymupdf missing) - cannot verify ink")
+                       "SKIPPED — no renderer (%s); the 3 ink assertions did NOT run" % exc,
+                       skip=True)
             except Exception as exc:                                # noqa: BLE001
                 record("[A6] pdf rasterised", False, str(exc)[:70])
         return None
@@ -269,9 +303,12 @@ def main():
         except Exception as exc:                                    # noqa: BLE001
             record("[%s] raised" % fn.__name__, False,
                    "%s: %s" % (type(exc).__name__, str(exc)[:90]))
-    failed = [r for r in results if not r[1]]
+    failed = [r for r in results if not r[1] and not r[3]]
+    skipped = [r for r in results if r[3]]
     print("-" * 84)
-    print("%d passed / %d total" % (len(results) - len(failed), len(results)))
+    print("%d passed / %d total%s" % (
+        len(results) - len(failed) - len(skipped), len(results),
+        (", %d skipped" % len(skipped)) if skipped else ""))
     return 1 if failed else 0
 
 

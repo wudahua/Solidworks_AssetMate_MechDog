@@ -135,21 +135,25 @@ CAPABILITIES = [
     {
         "id": "bom_table",
         "status": "verified",
-        "summary": "装配明细栏（原生 BOM）· 仅 SW2024 SP4 验证",
-        "why": ("**仅 SW2024 SP4 验证**（2026-10-29）。SW2026 报告 `InsertBomTable4(Indented)` "
-                "返回 None，两步法第一步就拿不到表——与本项「verified」的口径不符，"
-                "故 status 保持 verified 但限定版本。"
-                "**已解决**（2026-10-29 实测）。直接 InsertBomTable4(BomType=TopLevelOnly=2) 在本环境"
-                "只出表头且无数量列，SetConfigurations 各种形式都不能修复。可行路径是两步："
-                "先用 Indented(3) + 有效配置建表（能出 120 行 4 列，证明装配/模板/引用都正常），"
-                "再把 BomFeature.TableType 切到 2——得到 9 行模块 + 一个重复数量列（5 列），"
-                "隐藏最后一列即得 10 行 4 列目标形态。"),
-        "workaround": ("用 add_bom_table；配置名传真实值（空则取视图的 ReferencedConfiguration）。"
+        "summary": "装配明细栏（原生 BOM）",
+        "why": ("两步法：`InsertBomTable4(BomType=Indented=3)` 建表（能出行），"
+                "再把 `BomFeature.TableType` 切到 2（TopLevelOnly）。"
+                "直接建 TopLevelOnly 只出表头且无数量列，`SetConfigurations` 各种形式都修不好。"
+                "切完会多一个重复数量列，隐藏最后一列即得目标形态。\n\n"
+                "**配置名必须传真实值**（2026-11-06 修正）：早先这里写「仅 SW2024 SP4 验证、"
+                "SW2026 返回 None」，把一次**配置名不匹配**误诊成了版本限制 —— 中文 GB 模板的"
+                "配置叫「默认」，而代码默认传 `\"Default\"`，于是 `InsertBomTable4(Indented)` "
+                "返回 None，回执还把责任推给版本（当时 `sw_version` 正是它声称支持的那个）。"
+                "0.8.166 起按 调用方 → 视图 `ReferencedConfiguration` → 引用装配的 "
+                "`ActiveConfiguration` → `\"Default\"` 逐层下探，SW2024 SP4 与 SW2026 都通过。"),
+        "workaround": ("用 add_bom_table，`configuration` 留空即可（会取真实配置名）。"
                        "不要在该流程里调 SetConfigurations（会把表清回表头），"
                        "也不要用 SetColumnType 补 Quantity 列（SolidWorks 禁止普通列改数量列，返回 False）。"),
-        "evidence": ("SW2024 SP4 实测 SAB1_0000_000.SLDASM：rows=10 cols=4 data_rows=9，"
-                     "headers=['项目号','零件号','说明','数量']，保存重开保持。"
-                     "SW2026 实测失败：InsertBomTable4(Indented) 返回 None。"),
+        "evidence": ("两版并列实测："
+                     "SW2024 SP4 + SAB1_0000_000.SLDASM → rows=10 cols=4 data_rows=9，"
+                     "headers=['项目号','零件号','说明','数量']，保存重开保持（2026-10-29）；"
+                     "SW2026 34.0.0 + 自造两零件装配体 → rows=3 cols=4 native=True"
+                     "（v0.8.168 smoke，2026-11-06，同一构建 `add_bom_table` 项 PASS）。"),
     },
     {
         "id": "sheet_sketch_space",
@@ -280,7 +284,7 @@ CAPABILITIES = [
         "id": "section_line_follows_view",
         "status": "verified",
         "summary": ("移动父视图时剖面切割线跟着走（0.8.57 起；此前线画在图纸坐标里，"
-                    "移了就断联）· 实测仅 SW2024 SP4 + 飞达动力轴"),
+                    "移了就断联）· 实测于 SW2024 SP4 + 飞达动力轴"),
         "why": ("**限定**：`verified` 的依据是 2026-11-02 在 **SW2024 SP4 + 飞达动力轴**"
                 "上的位移比对（父视图与剖视位移完全一致）。**没有在其他版本或其他零件上复测**——"
                 "2026-11-05 的核对在 SW2026 + 另一夹具上得到 `GetFaceHatchCount() == 0`，"
@@ -484,9 +488,13 @@ def check_capabilities(operation=None):
         payload.append(row)
 
     # Version context belongs in the answer: "verified" means verified on one SolidWorks
-    # build, and bom_table is SW2024 SP4 only. The PATH matters just as much — several copies
-    # of this package can coexist on one machine, and an editable install pinned to an old
-    # checkout is exactly what once sent a report after fixes that were already in the repo.
+    # build, and each entry names which builds it was measured on. (2026-11-06: this comment
+    # used to claim "bom_table is SW2024 SP4 only" — that was a misdiagnosis. The tool failed
+    # because a Chinese GB template names its configuration 默认 while the code passed
+    # "Default"; it has since passed on both SW2024 SP4 and SW2026.) The PATH matters just
+    # as much — several copies of this package can coexist on one machine, and an editable
+    # install pinned to an old checkout is exactly what once sent a report after fixes that
+    # were already in the repo.
     runtime = runtime_info()
     return ok(
         server_name="Solidworks_AssetMate_MechDog",

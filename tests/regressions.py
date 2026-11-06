@@ -5361,6 +5361,61 @@ def assert_bom_configuration_falls_back_to_the_model():
     return "BOM configuration falls back to the model's active configuration"
 
 
+def assert_verified_capabilities_do_not_disown_themselves():
+    """0.8.170 — a capability said "verified" and "fails on your version" at once.
+
+    Report 2026-11-06 (P1): `check_capabilities(operation="bom_table")` returned
+
+        status   : verified
+        summary  : 装配明细栏（原生 BOM）· 仅 SW2024 SP4 验证
+        why      : **仅 SW2024 SP4 验证**… SW2026 报告 InsertBomTable4(Indented) 返回 None…
+                   **已解决**
+        evidence : SW2024 SP4 实测 … SW2026 实测失败
+
+    while the SAME response carried `sw_version: 34.0.0` — SW2026 — and the same build's
+    smoke run had `add_bom_table` PASSING on that very machine (`rows=3 columns=4`).
+
+    The real cause was found and fixed in v0.8.166: a Chinese GB template names its only
+    configuration 默认, while the code passed the literal "Default", so
+    `InsertBomTable4(Indented)` returned None and the receipt blamed the version. The code
+    was corrected; **the capability table kept the old conclusion**, and it is the table a
+    caller reads before deciding whether to run a long pipeline.
+
+    This asserts the shape that made it possible: a `verified` entry may not also carry
+    version-exclusive or failure wording. Naming the builds an entry was measured on is
+    fine and expected — claiming it works *only* on one build, or that it failed on the
+    build you are running, is the contradiction.
+    """
+    src = _read("tools/capabilities.py")
+    tree = ast.parse(src)
+
+    caps = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == "CAPABILITIES" for t in node.targets):
+            caps = node.value
+            break
+    assert caps is not None, "CAPABILITIES is gone"
+
+    offenders = []
+    # Only outright FAILURE claims. "实测于 SW2024 SP4" states the evidence base and is
+    # wanted; "仅 SW2024 SP4 验证" is ambiguous (does it mean it fails elsewhere?), and
+    # quoting an old conclusion while correcting it is legitimate. The unambiguous lie is
+    # claiming an entry failed on some build while marking it verified.
+    exclusive = ("实测失败", "实测不通过", "fails on SW20")
+    for entry in ast.literal_eval(caps):
+        if entry.get("status") != "verified":
+            continue
+        blob = " ".join(str(entry.get(k) or "") for k in ("summary", "why", "evidence"))
+        for phrase in exclusive:
+            if phrase in blob:
+                offenders.append("%s contains %r" % (entry.get("id"), phrase))
+    assert not offenders, (
+        "verified capabilities that also disown themselves: %s — a caller reads this "
+        "before deciding whether to run the tool" % "; ".join(offenders))
+    return "no verified capability also claims it fails on some version"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5516,6 +5571,7 @@ STATIC_REGRESSIONS = [
     ("0.8.163 candidates gated on model", assert_gap_candidates_are_checked_against_the_model),
     ("0.8.164 no ok after saved=False", assert_no_tool_reports_success_for_work_it_did_not_do),
     ("0.8.166 BOM config falls back", assert_bom_configuration_falls_back_to_the_model),
+    ("0.8.170 verified caps do not disown", assert_verified_capabilities_do_not_disown_themselves),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

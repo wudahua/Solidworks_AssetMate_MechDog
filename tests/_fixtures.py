@@ -48,7 +48,7 @@ _GUIDANCE = """\
 三条出路，任选其一：
   1. 指定自己的零件：  python {script} --part "D:\\path\\to\\some_part.SLDPRT"
   2. 把该零件放回 {expected_dir}
-  3. 只跑不依赖夹具的部分：python tests/check_all.py   （离线 172 条，不需要 SolidWorks）
+  3. 只跑不依赖夹具的部分：python tests/check_all.py   （离线断言，不需要 SolidWorks）
 
 零件要求：任意 SLDPRT 均可（测试只关心"保存/覆盖/回滚/不丢内容"，
 不关心具体几何）。"""
