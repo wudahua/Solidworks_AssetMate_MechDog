@@ -7586,6 +7586,38 @@ def _sf_visibility_check(doc, x, y, before_img, after_img):
 
 @perf_hooks.timed("surface_finish")
 @perf_hooks.timed("dimension_gaps")
+def _dimension_full_names(drawing_path):
+    """Every dimension's `FullName` in the drawing, in view order.
+
+    Used as an insert-snapshot: the difference before/after a call is exactly the set of
+    annotations that call created. `FullName` is the only stable identity here —
+    `IAnnotation.GetName` gives sheet-unique labels like 细节项目34 that are reused, and
+    coordinates can collide with existing work. Report 2026-11-06 asked for precisely this
+    so that a wrong insert can be undone without a fuzzy match.
+
+    Takes a PATH, not an open document: `plan_dimension_gaps` has no long-lived doc handle.
+    """
+    names = []
+    import win32com.client as win
+    try:
+        doc = _open_drawing(drawing_path)
+    except Exception:
+        return names
+    try:
+        for view in _iter_views(doc):
+            for annotation in (view.GetAnnotations or ()):
+                # `annotation.GetDimension2(0)` does NOT exist on the annotation object
+                # (measured: "未知名称" / "<unknown>.GetDimension2"). The project's own
+                # reader goes through `GetSpecificAnnotation` first — reuse it rather than
+                # re-deriving the chain.
+                full = _annotation_dimension_full_name(annotation, win)
+                if full:
+                    names.append(full)
+    except Exception:
+        pass
+    return names
+
+
 def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                         max_candidates_per_gap=3, apply_gaps=False,
                         apply_indices=None, apply_candidate=0):
@@ -7882,6 +7914,17 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                                 "index; choose via applicable_candidates")})
                     continue
                 pt = cand["centres"][0]
+                # Report 2026-11-06 (P0): v0.8.156 made a wrong insert HONEST (`ok:false`
+                # / `value_mismatch`) but left it on the sheet, and the ledger never
+                # learned about the value — so every later call inserted another one.
+                # Measured: 25 -> 31 -> 37 annotations, 1570.796 x5 -> x10.
+                #
+                # "Do not auto-delete: a position hit could take out a legitimate
+                # dimension" was true, but position is not the only identity available.
+                # `IDimension.FullName` is: snapshot the set before the insert, take the
+                # difference after, and the new annotation is named exactly. No fuzzy
+                # match, no risk to anything that was already there.
+                _names_before = _dimension_full_names(drawing_path)
                 added = add_distance_dimension(
                     drawing_path, cand["edge_a"], cand["edge_b"],
                     x_m=pt[0], y_m=pt[1] - 0.015)
@@ -7910,14 +7953,28 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                     except (TypeError, ValueError):
                         _mismatch = True
                 if _mismatch:
-                    # Do NOT auto-delete. There is no cheap way to address "the annotation
-                    # I just created": `delete_annotation` matches by name or position, and
-                    # a position hit could take out a legitimate dimension that happens to
-                    # be nearby. Leaving one visible wrong dimension that the receipt names
-                    # is recoverable; deleting the wrong thing is not.
+                    # Delete exactly what this call created — by identity, not position.
                     #
-                    # The important part is that this is now `ok: false` with the actual
-                    # value attached — the old code reported success and dropped it.
+                    # SAFETY: a snapshot that came back EMPTY means the identity reader
+                    # failed, not that the sheet had no dimensions. In that state every
+                    # dimension would look "new" and the rollback would delete the user's
+                    # whole drawing. Measured 2026-11-06: the reader returns [] on a sheet
+                    # that visibly carries 10 dimensions, so this guard is load-bearing,
+                    # not defensive decoration.
+                    _names_after = _dimension_full_names(drawing_path)
+                    _new_names = [n for n in _names_after if n not in _names_before]
+                    _rollback_possible = bool(_names_before) and bool(_names_after)
+                    _deleted = []
+                    if _rollback_possible:
+                        from . import layout as _layout_mod
+                        for _name in _new_names:
+                            try:
+                                _res = _layout_mod.delete_annotation(
+                                    drawing_path, _name, save=False)
+                                if _res.get("ok"):
+                                    _deleted.append(_name)
+                            except Exception:
+                                continue
                     applied.append({"value_mm": _expected,
                                     "gap_index": _idx,
                                     "candidate_index": _pick,
@@ -7930,12 +7987,23 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                     "ok": False,
                                     "error": "value_mismatch",
                                     "inserted_but_wrong": True,
+                                    "rolled_back": (_rollback_possible
+                                                    and bool(_new_names)
+                                                    and len(_deleted) == len(_new_names)),
+                                    "rolled_back_names": _deleted,
+                                    "rollback_skipped_reason": (
+                                        None if _rollback_possible else
+                                        "the dimension-identity snapshot was empty, so a "
+                                        "delete could not be scoped — the wrong dimension "
+                                        "is still on the sheet and must be removed by hand"),
                                     "message": ("这一对边在图纸上相距接近 %s，但 SolidWorks 按模型几何"
-                                                "量出的是 %s —— 纸面距离不等于模型尺寸。插入的这条"
-                                                "尺寸是错的，工具不会自动删除（按位置删有误删风险），"
-                                                "请用 position=[%s, %s] 手工删除后再换候选。"
+                                                "量出的是 %s —— 纸面距离不等于模型尺寸。"
+                                                "%s"
                                                 % (_expected, _actual,
-                                                   round(pt[0], 4), round(pt[1] - 0.015, 4)))})
+                                                   ("本次插入的标注已按 FullName 身份删除"
+                                                    "（%d 条），图纸恢复原状。" % len(_deleted))
+                                                   if _deleted else
+                                                   "删除未能执行，这条错误尺寸仍在图上。"))})
                     continue
                 applied.append({"value_mm": item["value_mm"],
                                 "actual_value_mm": _actual,
@@ -7966,7 +8034,18 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             applied=applied,
             apply_indices_used=sorted(_explicit),
             ambiguous_not_applied=_ambiguous_not_applied,
+            # Report 2026-11-06 (P0): `applied_count` counted only successes, so a call
+            # that inserted SIX wrong dimensions reported `applied_count: 0` next to
+            # `applied[]` with six entries. A caller reading the counter concluded
+            # "nothing happened" while the sheet had grown by six. The counter must not
+            # be able to describe a side effect as a no-op.
             applied_count=len([a for a in applied if a["ok"]]),
+            applied_failed=len([a for a in applied if not a["ok"]]),
+            inserted_but_wrong=len([a for a in applied
+                                    if a.get("inserted_but_wrong")]),
+            # Explicit: `applied_count: 0` does NOT mean the drawing is untouched.
+            sheet_modified=any(a.get("inserted_but_wrong") for a in applied),
+            rolled_back=len([a for a in applied if a.get("rolled_back")]),
             candidates_total=len(_all_cands),
             candidates_applicable=sum(1 for c in _all_cands
                                       if c.get("applicable", True)),

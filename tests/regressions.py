@@ -5514,6 +5514,59 @@ def assert_auto_fit_updates_the_title_block():
     return "auto_fit keeps the title block ratio in agreement with the views"
 
 
+def assert_a_wrong_insert_does_not_stay_on_the_sheet_silently():
+    """0.8.174 — the P0 came back, and the counter described it as "nothing happened".
+
+    Report 2026-11-06 (P0): v0.8.169 removed the model gate (correctly — it was comparing a
+    single-axis sheet span against a 3D model distance). That also removed the only thing
+    preventing insertion, so `apply_gaps` inserted six wrong dimensions per call:
+
+        annotation_count  25 -> 31 -> 37
+        1570.796 count     5 -> 10
+        applied_count: 0     applied[]: 6 entries, all ok:false
+
+    The receipt was honest per-entry and misleading in aggregate: `applied_count` counts
+    successes, so "0" reads as "the drawing is untouched" while it grew by six.
+
+    Two things are asserted here:
+      * the counters can no longer describe a side effect as a no-op
+        (`applied_failed`, `inserted_but_wrong`, `sheet_modified`);
+      * the rollback that deletes the new annotation by identity has a SAFETY GUARD —
+        if the identity snapshot came back empty, nothing is deleted. Measured 2026-11-06:
+        `_dimension_full_names` returned [] until it went through
+        `GetSpecificAnnotation` (the annotation object has no `GetDimension2`), so an
+        unguarded rollback would have deleted every dimension on the sheet.
+
+    NOT yet true: the rollback itself is not verified on real hardware — the fixtures here
+    produce no `value_mismatch` case (no applicable edge pairs), so the delete path has
+    never executed.
+    """
+    src = _read("tools/drawing.py")
+
+    for field in ("applied_failed", "inserted_but_wrong", "sheet_modified"):
+        assert field in src, (
+            "`%s` is gone — `applied_count: 0` can again stand next to six inserted "
+            "dimensions without saying so" % field)
+
+    assert "_dimension_full_names" in src, (
+        "the identity snapshot is gone; a wrong insert cannot be scoped for rollback")
+    assert "_rollback_possible" in src, (
+        "the rollback can run with an empty snapshot — every dimension would look new and "
+        "the user's whole drawing would be deleted")
+    assert "rollback_skipped_reason" in src, (
+        "when the rollback cannot run, the receipt must say so instead of implying the "
+        "sheet was restored")
+
+    # The snapshot must go through the project's own reader, which knows the
+    # GetSpecificAnnotation -> GetDimension2 chain.
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_dimension_full_names")) or ""
+    assert "_annotation_dimension_full_name" in body, (
+        "the snapshot builds its own identity chain again; `annotation.GetDimension2` does "
+        "not exist on this binding (measured: 未知名称) and the snapshot silently returns []")
+    return "a wrong insert is counted, scoped and never silently left behind"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5671,6 +5724,7 @@ STATIC_REGRESSIONS = [
     ("0.8.166 BOM config falls back", assert_bom_configuration_falls_back_to_the_model),
     ("0.8.170 verified caps do not disown", assert_verified_capabilities_do_not_disown_themselves),
     ("0.8.171 auto_fit syncs title block", assert_auto_fit_updates_the_title_block),
+    ("0.8.174 wrong insert is scoped", assert_a_wrong_insert_does_not_stay_on_the_sheet_silently),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
