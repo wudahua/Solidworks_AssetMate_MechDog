@@ -5936,6 +5936,38 @@ def assert_an_angular_dimension_is_not_a_length():
     return "an angular dimension is named as such, with the degrees spelled out"
 
 
+def assert_a_length_is_judged_before_it_is_drawn():
+    """0.8.192 — the only place the angular-dimension trap can be prevented.
+
+    v0.8.191 learned that `1570.796` is a right angle in radians and started reporting it
+    as `angular_dimension_created`. That is honest, but the wrong dimension is already on
+    the sheet by then, and it cannot be deleted (com-quirks 56).
+
+    So the pair must be judged BEFORE `AddDimension2`: a degenerate edge defines no
+    direction, and non-parallel directions produce an angle rather than a distance.
+
+    Measured on the door fixture:
+
+        call1/2: dims 8->8 | wrong=0 | {'edge_pair_has_no_length': 6}
+        1570.796 on sheet: False
+        reasons: ['not_parallel_90.0deg', 'degenerate_edge']
+    """
+    src = _read("tools/drawing.py")
+    assert "_edges_define_a_length" in src, (
+        "the edge pair is not judged before insertion — a right angle will be drawn again")
+    assert '"edge_pair_has_no_length"' in src, "a refusal is not reported as its own code"
+    assert '"degenerate_edge"' in src, "degenerate edges (start == end) are not detected"
+    assert "not_parallel_" in src, "the rejection does not say how far from parallel"
+
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+    judge_at = body.find("_edges_define_a_length(")
+    insert_at = body.find("added = add_distance_dimension(")
+    assert 0 < judge_at < insert_at, (
+        "the judgement runs AFTER the insert — the wrong dimension is already on the sheet")
+    return "a non-length edge pair is refused before AddDimension2 runs"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6101,6 +6133,7 @@ STATIC_REGRESSIONS = [
     ("0.8.182 section dims have a home", assert_section_dimensions_have_somewhere_to_land),
     ("0.8.183 receipts match geometry", assert_receipts_do_not_disagree_with_the_geometry),
     ("0.8.191 angular is not a length", assert_an_angular_dimension_is_not_a_length),
+    ("0.8.192 judge before drawing", assert_a_length_is_judged_before_it_is_drawn),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

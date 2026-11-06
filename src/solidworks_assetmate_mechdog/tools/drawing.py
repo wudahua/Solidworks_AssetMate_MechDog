@@ -7889,6 +7889,54 @@ def _dimension_full_names(drawing_path, doc=None):
     return names
 
 
+def _edges_define_a_length(rows, edge_a, edge_b, parallel_tol=0.02):
+    """Can these two edges produce a LENGTH dimension? Judge BEFORE calling AddDimension2.
+
+    Report 2026-11-06 (root cause of the 1570.796 phantom): `AddDimension2` between two
+    non-parallel edges creates an ANGULAR dimension, whose `SystemValue` is radians.
+    Multiplied by 1000 a right angle becomes "1570.796 mm". No post-hoc value comparison
+    can recover from that — the quantity is the wrong kind, not the wrong size.
+
+    Two conditions must hold for a distance:
+      * neither edge is degenerate (start == end) — a point defines no direction;
+      * the two directions are parallel (or anti-parallel) within `parallel_tol` of the
+        unit-vector cross product magnitude. Perpendicular edges give an angle instead.
+
+    Returns (ok, reason). `reason` is a short code the caller puts in the receipt.
+    """
+    def _ends(idx):
+        for row in rows:
+            if row.get("index") == idx:
+                a = row.get("model_start")
+                b = row.get("model_end")
+                if a and b and len(a) >= 3 and len(b) >= 3:
+                    return ([float(a[0]), float(a[1]), float(a[2])],
+                            [float(b[0]), float(b[1]), float(b[2])])
+                return None
+        return None
+
+    pa, pb = _ends(edge_a), _ends(edge_b)
+    if pa is None or pb is None:
+        return False, "edge_endpoints_unavailable"
+    va = [pa[1][i] - pa[0][i] for i in range(3)]
+    vb = [pb[1][i] - pb[0][i] for i in range(3)]
+    la = sum(v * v for v in va) ** 0.5
+    lb = sum(v * v for v in vb) ** 0.5
+    if la < 1e-9 or lb < 1e-9:
+        return False, "degenerate_edge"
+    ua = [v / la for v in va]
+    ub = [v / lb for v in vb]
+    cross = [ua[1] * ub[2] - ua[2] * ub[1],
+             ua[2] * ub[0] - ua[0] * ub[2],
+             ua[0] * ub[1] - ua[1] * ub[0]]
+    if (sum(c * c for c in cross)) ** 0.5 > parallel_tol:
+        # Angle between the directions, for the receipt.
+        dot = max(-1.0, min(1.0, sum(ua[i] * ub[i] for i in range(3))))
+        import math as _math
+        return False, "not_parallel_%.1fdeg" % _math.degrees(_math.acos(dot))
+    return True, None
+
+
 def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                         max_candidates_per_gap=3, apply_gaps=False,
                         apply_indices=None, apply_candidate=0):
@@ -8284,6 +8332,28 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                     _doc_live = _open_drawing(drawing_path)
                 except Exception:
                     _doc_live = None
+                # Judge BEFORE inserting. `AddDimension2` between non-parallel edges makes
+                # an ANGLE, and its radians become "1570.796 mm" downstream. Refusing here
+                # is the only place the mistake can be prevented rather than reported.
+                _defines_length, _why_not = _edges_define_a_length(
+                    rows, cand.get("edge_a"), cand.get("edge_b"))
+                if not _defines_length:
+                    applied.append({"value_mm": item["value_mm"],
+                                    "gap_index": _idx,
+                                    "candidate_index": _pick,
+                                    "candidate_kind": cand.get("candidate_kind"),
+                                    "edge_a": cand.get("edge_a"),
+                                    "edge_b": cand.get("edge_b"),
+                                    "ok": False,
+                                    "error": "edge_pair_has_no_length",
+                                    "reason": _why_not,
+                                    "inserted_but_wrong": False,
+                                    "message": ("这对边在模型里不构成可测的长度（%s）。"
+                                                "在两条不平行的边之间 AddDimension2 会建出**角度**"
+                                                "尺寸，其 SystemValue 是弧度，乘 1000 就成了"
+                                                "「1570.796 mm」这类假长度 —— 所以不插入，"
+                                                "请换候选。" % _why_not)})
+                    continue
                 _names_before = _dimension_full_names(drawing_path, _doc_live)
                 added = add_distance_dimension(
                     drawing_path, cand["edge_a"], cand["edge_b"],
