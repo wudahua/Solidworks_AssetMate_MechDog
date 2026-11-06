@@ -6,7 +6,9 @@ Three layers, cheapest first:
 
     1. static_check.py   — structure: imported names, README sync, duplicate defs, property
                            traps, stale roadmap, wrapper signatures
-    2. regressions.py    — one assertion per shipped bug (170 of them)
+    2. regressions.py    — one assertion per shipped bug; the exact count is printed
+                          below rather than written here, because a hard-coded
+                          number drifts on every release (measured this session:/n                          134 -> 135 -> 136 -> 166 -> 170, each already stale)
     3. compileall        — syntax (fails fast if a file is broken at all)
 
 The behavioural layer (tests/smoke.py) needs a live SolidWorks and is NOT run here — it

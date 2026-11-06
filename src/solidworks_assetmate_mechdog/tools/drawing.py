@@ -863,6 +863,47 @@ def create_drawing(
                         pass
                 auto_scale_adjustments.append({"from": current, "to": smaller})
                 layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
+        # Report 2026-11-06 (P0): auto_fit reduced the views from 1:1 to 1:2 and the title
+        # block still said 1:1 — the shop measures every linear dimension at the wrong
+        # ratio, and nothing in the receipt said the ratio had changed. A drawing whose
+        # title block disagrees with its geometry is worse than one that fails to build.
+        #
+        # Rewrite the 比例 cell whenever the surviving scale differs from what we asked for
+        # (or from 1:1 when nothing was asked). Best-effort: a template without that cell
+        # must not break drawing creation, so failures are recorded, not raised.
+        _title_scale_synced = None
+        try:
+            _final_scale = None
+            for _v in view_objects:
+                try:
+                    _final_scale = float(_v.ScaleDecimal)
+                    break
+                except Exception:
+                    continue
+            if _final_scale is not None:
+                _asked = float(chosen_scale) if chosen_scale else 1.0
+                if abs(_final_scale - _asked) > 1e-9:
+                    # 1:2 style text, matching what GB templates carry.
+                    _ratio = ("1:%g" % round(1.0 / _final_scale, 4)) if _final_scale < 1 \
+                        else ("%g:1" % round(_final_scale, 4))
+                    # `set_title_block` takes a PATH and reopens the drawing; use the path
+                    # the caller gave us (`out` is not bound yet at this point in the
+                    # function — measured: it raised "cannot access local variable 'out'").
+                    _target_path = output_path or (drw.GetPathName or "")
+                    if not _target_path:
+                        _title_scale_synced = {"text": _ratio,
+                                               "error": "no saved path; title block not written"}
+                    else:
+                        try:
+                            # `apply=True` — the default is a dry run, which would report
+                            # success while writing nothing.
+                            set_title_block(_target_path, scale=_ratio, apply=True)
+                            _title_scale_synced = {"from": _asked, "to": _final_scale,
+                                                   "text": _ratio}
+                        except Exception as _exc:                   # noqa: BLE001
+                            _title_scale_synced = {"error": str(_exc)[:80], "text": _ratio}
+        except Exception:
+            pass
         try:
             drw.GraphicsRedraw2()
             perf_hooks.bump("redraw_calls")
@@ -975,6 +1016,7 @@ def create_drawing(
             },
             box_used_m=[round(v, 4) for v in box] if box else None,
             auto_scale_adjustments=auto_scale_adjustments,
+            title_scale_synced=_title_scale_synced,
             placement_deltas=placement_deltas,
             # Record the FINAL scale too: the pre-layout step above can still step down
             # (a 0.2 that overflowed became 0.1 on the 履带轮 test while scale_reason kept
@@ -7938,7 +7980,12 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                   "from `applicable_candidates`. Every applied entry carries "
                   "`actual_value_mm`; when it differs from the planned value the entry is "
                   "`ok: false` with `error: value_mismatch`, because sheet distance is not "
-                  "model geometry."),
+                  "model geometry. Each candidate also carries `model_check`: "
+                  "`approximate_3d_distance` (a 3D hint, not the same quantity as the sheet "
+                  "span) or `unavailable` (no model point, so no model evidence at all). "
+                  "Neither filters anything — the drawn value is verified after insertion. "
+                  "A gap whose `candidates_truncated` is true may still be solvable: raise "
+                  "`max_candidates_per_gap` and re-plan."),
         )
     except Exception as exc:
         return error("dimension_gaps_failed", str(exc))

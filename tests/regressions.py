@@ -4910,7 +4910,11 @@ def assert_gap_status_enum_is_the_same_in_every_consumer():
     draw = _read("tools/drawing.py")
     body = ast.get_source_segment(draw, _function_node(ast.parse(draw),
                                                        "plan_dimension_gaps")) or ""
-    implemented = set(_re.findall(r'"status"\]\s*=\s*"([a-z_]+)"', body))
+    # Both shapes count: the dict-literal initial value (`"status": "no_geometry"`) and the
+    # later assignments (`entry["status"] = "fillable"`). Matching only the assignment form
+    # dropped `no_geometry`, because that one is never reassigned — it is the default.
+    implemented = (set(_re.findall(r'"status":\s*"([a-z_]+)"', body))
+                   | set(_re.findall(r'\["status"\]\s*=\s*"([a-z_]+)"', body)))
     assert implemented, "no status literals found — the assignment style changed"
 
     smoke = open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8").read()
@@ -4925,17 +4929,29 @@ def assert_gap_status_enum_is_the_same_in_every_consumer():
     doc_start = server.find('"""', sig_end)
     doc_end = server.find('"""', doc_start + 3)
     doc = server[doc_start:doc_end]
-    documented = set(_re.findall(r"`([a-z_]+)`", doc))
-    documented &= {"fillable", "ambiguous", "no_geometry",
-                   "no_applicable_candidate", "no_value"}
+    # Extract the STATUS LIST specifically — the bullet items, not every backticked word.
+    # Report 2026-11-06: the previous version took all backticked words and then intersected
+    # with a hard-coded five-element set, so removing an entire status from the description
+    # still passed (measured: deleting `no_applicable_candidate` left 180/180 green). An
+    # assertion named "the same in every consumer" must fail when a consumer loses an entry.
+    # Extract the STATUS LIST specifically: from the sentence introducing it down to the
+    # first blank line. Taking every bullet item also picks up `apply_candidate`, which is
+    # a parameter bullet further down.
+    _intro = doc.find("a status:")
+    assert _intro > 0, "the status list introduction is gone from the description"
+    _block = doc[_intro:]
+    _blank = _block.find("\n\n")
+    if _blank > 0:
+        _block = _block[:_blank]
+    documented = set(_re.findall(r"^\s*\* `([a-z_]+)`", _block, _re.M))
 
-    missing_in_smoke = implemented - whitelisted
-    assert not missing_in_smoke, (
-        "statuses the implementation can return but smoke rejects: %s — a real run will "
-        "fail with 'gap has no status'" % sorted(missing_in_smoke))
-    missing_in_doc = {"no_value"} - documented
-    assert not missing_in_doc, (
-        "statuses missing from the tool description: %s" % sorted(missing_in_doc))
+    assert implemented == whitelisted, (
+        "implementation statuses %s != smoke whitelist %s — a real run will hit one the "
+        "smoke cannot classify" % (sorted(implemented), sorted(whitelisted)))
+    assert implemented == documented, (
+        "description lists %s but the implementation can return %s (missing: %s, extra: %s)"
+        % (sorted(documented), sorted(implemented),
+           sorted(implemented - documented), sorted(documented - implemented)))
     return "gap statuses agree across implementation, smoke and description"
 
 
@@ -5416,6 +5432,51 @@ def assert_verified_capabilities_do_not_disown_themselves():
     return "no verified capability also claims it fails on some version"
 
 
+def assert_auto_fit_updates_the_title_block():
+    """0.8.171 — the drawing was 1:2 and the title block still said 1:1.
+
+    Report 2026-11-06 (P0): with `views=["front","top","left"], projection="third"`,
+    `auto_fit` reduced all three views from 1:1 to 1:2 to keep them on the sheet — and the
+    title block kept saying **1:1**. A shop measuring off that sheet reads every linear
+    dimension at half its true size. This is not cosmetic.
+
+    Nothing in the receipt said the ratio had changed either: `produce_drawing` returned
+    `warnings: []`, and the only trace was `views[].scale = 0.5` buried in an array.
+
+    Now `create_drawing` writes the surviving ratio into the title block whenever it differs
+    from what was asked for, records it as `title_scale_synced`, and `produce_drawing`
+    surfaces `auto_scale_adjustments` as a warning.
+
+    Measured 2026-11-06 on 飞达动力轴:
+        adjustments: [{'from': 1.0, 'to': 0.5}]
+        title_scale_synced: {'from': 1.0, 'to': 0.5, 'text': '1:2'}
+        set_title_block -> written [{'field': 'scale', 'before': '1:1', 'after': '1:2',
+                                     'ok': True}]
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "create_drawing")) or ""
+
+    assert "_title_scale_synced" in body, (
+        "auto_fit can change the scale without touching the title block again — the shop "
+        "would measure at the wrong ratio")
+    assert "set_title_block(" in body, (
+        "the title block is no longer written when the scale changes")
+    assert "apply=True" in body, (
+        "set_title_block defaults to a dry run — without apply=True it reports success "
+        "and writes nothing")
+    assert '"title_scale_synced"' in body or "title_scale_synced=" in body, (
+        "the sync result is not in the receipt, so a caller cannot tell whether it happened")
+
+    pipe = _read("tools/pipeline.py")
+    assert "creation_warnings" in pipe, (
+        "produce_drawing still discards create_drawing's compliance notes and layout "
+        "findings — the one-click entry point is what most callers use")
+    assert '"scale_was_reduced"' in pipe or "scale_was_reduced" in pipe, (
+        "a reduced scale is not surfaced as a warning")
+    return "auto_fit keeps the title block ratio in agreement with the views"
+
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -5572,6 +5633,7 @@ STATIC_REGRESSIONS = [
     ("0.8.164 no ok after saved=False", assert_no_tool_reports_success_for_work_it_did_not_do),
     ("0.8.166 BOM config falls back", assert_bom_configuration_falls_back_to_the_model),
     ("0.8.170 verified caps do not disown", assert_verified_capabilities_do_not_disown_themselves),
+    ("0.8.171 auto_fit syncs title block", assert_auto_fit_updates_the_title_block),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

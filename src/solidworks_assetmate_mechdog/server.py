@@ -829,10 +829,23 @@ def plan_dimension_gaps(
         candidates differ per gap, so multi-gap calls with different needs take more than
         one call.
 
+    Candidate fields: `measured_mm` is the SHEET distance the match was made on, and
+    `model_span_mm` is a 3D model distance between the pair's vertices — a different
+    quantity, because a drawing is a projection. `model_check` says which case you have:
+    `approximate_3d_distance` (the figure exists, treat it as a hint), or `unavailable`
+    (the model point could not be projected, so the candidate carries NO model evidence).
+    **`model_span_mm` is never used to filter** — an earlier version did, and it dropped
+    correct candidates on every part (a 3.05 mm axial gap can be tens of mm apart in the
+    model's depth direction). The real value is checked after insertion instead: see
+    `actual_value_mm` below.
+
     Top-level counters: `candidates_total`, `candidates_applicable`,
     `candidates_circle_centre`, `candidates_skipped`. Note that `max_candidates_per_gap`
-    truncates the list before these are counted, and `candidates_skipped` counts only
-    candidates that an APPLY attempt refused — in the default plan-only mode it stays 0.
+    truncates the list BEFORE these are counted — each gap reports
+    `candidates_matched_before_truncation` and `candidates_truncated`, so a gap showing
+    `no_applicable_candidate` with `candidates_truncated: true` may still be solvable by
+    raising `max_candidates_per_gap`. `candidates_skipped` counts only candidates that an
+    APPLY attempt refused — in the default plan-only mode it stays 0.
     """
     return _json(drawing.plan_dimension_gaps(
         model_path, drawing_path, tolerance_mm=tolerance_mm,

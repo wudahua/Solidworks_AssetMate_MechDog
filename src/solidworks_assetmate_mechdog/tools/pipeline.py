@@ -231,6 +231,29 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         return error("create_failed", created.get("message") or "view creation failed",
                      "Drawing not produced; see create_drawing errors.")
 
+    # Report 2026-11-06 (P1, second round on this): `create_drawing` already computes
+    # compliance notes, a measured `layout`, the scale it chose and every auto-fit
+    # adjustment — and this pipeline read ONE field of it (`ok`) and threw the rest away.
+    # Measured: `create_drawing(views=["front","right"], projection="first")` returns a
+    # projection_notes entry about GB/T 14692; `produce_drawing` with the same arguments
+    # returns `warnings: []`. The one-click entry point is what most callers use, so the
+    # compliance hint was 100% lost there.
+    creation_warnings = []
+    for _note in (created.get("projection_notes") or []):
+        creation_warnings.append({"issue": "projection_note", "detail": str(_note)})
+    _lay = created.get("layout") or {}
+    if _lay.get("fits") is False:
+        creation_warnings.append({
+            "issue": "layout_does_not_fit",
+            "detail": ("views leave the safe area or overlap: out_of_bounds=%s overlaps=%s"
+                       % (_lay.get("out_of_bounds"), _lay.get("overlaps")))})
+    if created.get("auto_scale_adjustments"):
+        creation_warnings.append({
+            "issue": "scale_was_reduced",
+            "detail": ("auto_fit changed the scale: %s — the title block must agree, or the "
+                       "shop measures at the wrong ratio"
+                       % (created.get("auto_scale_adjustments"),))})
+
     # Section 3 of the spec puts every write inside a drawing_batch scope, so that preference
     # changes are undone even when the body raises. Options are the defaults, which switch
     # NOTHING: the A/B in v0.8.112 found no measurable gain from either switch, so enabling
@@ -424,7 +447,11 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         # running drawing_audit again. None of that is free (2 view reads), so surface it.
         outline_reads=drawing_tools.outline_stats(),
         views=audit.get("views"),
-        warnings=audit.get("warnings"),
+        # Both sources: what the audit measured on the finished sheet, and what
+        # `create_drawing` reported while building it (projection compliance, layout fit,
+        # auto-fit scale changes). Neither is complete alone.
+        warnings=(audit.get("warnings") or []) + list(creation_warnings),
+        creation_warnings=creation_warnings,
         view_count=audit.get("view_count"),
         steps=steps,
         documents_closed=closed,
