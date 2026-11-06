@@ -4585,15 +4585,52 @@ def _view_axis_map(view):
       - `IView.ModelToViewTransform` returns 16 doubles that are NOT a plain row-major 4x4,
         and `IMathPoint.MultiplyTransform` does not exist either.
 
-    So the mapping is matched by SIZE: the view's deflated outline (GetOutline minus the
-    measured 11.9 mm constant, P2-13) must equal the part box extent along the two
-    displayed axes. Returns (info, reason); info carries axes / centre / extent / path.
-    An ambiguous match (e.g. a cube) is refused rather than guessed.
+    **CORRECTION 2026-11-07**: the paragraph above is wrong. `IView.GetOrientationName`
+    exists and answers exactly this question:
+
+        工程图视图1  '*前视'    -> the view shows Y-Z
+        工程图视图2  '*上视'    -> the view shows X-Z
+        工程图视图3  '*右视'    -> the view shows Y-Z  (mirrored)
+
+    It returns `''` for anything that is not a standard view (a rotated or custom view), so
+    the size match below is kept as the FALLBACK, not as the primary path. That removes the
+    `axes_mismatch` refusal for every standard view — including the cube that made the size
+    match ambiguous, because a cube's front view is still named `*前视`.
+
+    So: read the orientation name first; match by size only when it is empty.
+    Returns (info, reason); info carries axes / centre / extent / path.
+    An ambiguous size match (e.g. a cube with no standard orientation) is still refused.
 
     The caller must re-activate the DRAWING afterwards: reading the part box goes through
     open_document(model_path), which switches SolidWorks' active document.
     """
     from ..sw_session import call_method
+
+    # Fast path: standard views name their own projection.
+    try:
+        _name = str(call_method(view, "GetOrientationName") or "")
+    except Exception:
+        try:
+            _name = str(view.GetOrientationName or "")
+        except Exception:
+            _name = ""
+    if _name:
+        _std = {"*前视": ("z", "y"), "*后视": ("z", "y"),
+                "*上视": ("x", "z"), "*下视": ("x", "z"),
+                "*右视": ("z", "y"), "*左视": ("z", "y"),
+                "*等轴测": ("x", "y"), "*上下二等角轴测": ("x", "y"),
+                "*左右二等角轴测": ("x", "y")}
+        if _name in _std:
+            try:
+                outline = precise_outline(view)
+            except Exception:
+                outline = None
+            if outline and len(outline) >= 4:
+                return ({"axes": _std[_name], "orientation": _name,
+                         "outline": [round(float(v), 5) for v in outline],
+                         "centre": [round((outline[0] + outline[2]) / 2.0, 5),
+                                    round((outline[1] + outline[3]) / 2.0, 5)],
+                         "source": "orientation_name"}, None)
 
     try:
         model_path = str(call_method(view, "GetReferencedModelName") or "")

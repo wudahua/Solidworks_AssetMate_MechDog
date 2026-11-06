@@ -5999,6 +5999,46 @@ def assert_a_missing_measurement_is_not_compared():
         "'dimensions failed; the drawing is not usable' with no reason")
     return "a None measurement is guarded, and a failed step carries its reason"
 
+def assert_a_view_names_its_own_projection():
+    """0.8.197 — the second "no such API" that did exist.
+
+    `_view_axis_map` carried a comment saying there is no reliable way to know which model
+    axes a drawing view displays:
+
+        - `IView.GetViewPlaneNormal` does not exist  (true)
+        - `IView.ModelToViewTransform` is not a row-major 4x4  (true)
+        - `IMathPoint.MultiplyTransform` does not exist  (true)
+
+    All three are true, and the conclusion was still wrong: `IView.GetOrientationName`
+    answers it directly.
+
+        工程图视图1  '*前视'   -> (z, y)
+        工程图视图2  '*上视'   -> (x, z)
+        工程图视图3  '*右视'   -> (z, y)
+
+    The size match is kept as a fallback for rotated/custom views (where the name is ''),
+    but every standard view — including a cube, which made the size match ambiguous —
+    now resolves without guessing.
+
+    Same failure as `add_sheet`: three failed probes were read as "the road is closed",
+    when they only meant "these three are not the road".
+    """
+    src = _read("tools/drawing.py")
+    assert 'GetOrientationName' in src, (
+        "the view no longer asks its own orientation name — standard views go back to "
+        "being matched by size, and a cube becomes ambiguous again")
+    assert '"orientation_name"' in src, (
+        "the receipt does not say which mechanism resolved the axes")
+
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_view_axis_map")) or ""
+    orient_at = body.find("GetOrientationName")
+    size_at = body.find("precise_outline")
+    assert 0 < orient_at, "the orientation lookup is gone"
+    assert "'*前视'" in body and "'*上视'" in body, (
+        "the standard-view table is gone")
+    return "a standard view reports its own projection; size match is fallback only"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6166,6 +6206,7 @@ STATIC_REGRESSIONS = [
     ("0.8.191 angular is not a length", assert_an_angular_dimension_is_not_a_length),
     ("0.8.192 judge before drawing", assert_a_length_is_judged_before_it_is_drawn),
     ("0.8.194 guard a missing measurement", assert_a_missing_measurement_is_not_compared),
+    ("0.8.197 a view names its projection", assert_a_view_names_its_own_projection),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
