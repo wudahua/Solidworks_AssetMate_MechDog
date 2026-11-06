@@ -7778,7 +7778,7 @@ def _sf_visibility_check(doc, x, y, before_img, after_img):
 
 @perf_hooks.timed("surface_finish")
 @perf_hooks.timed("dimension_gaps")
-def _dimension_full_names(drawing_path):
+def _dimension_full_names(drawing_path, doc=None):
     """Every dimension's `FullName` in the drawing, in view order.
 
     Used as an insert-snapshot: the difference before/after a call is exactly the set of
@@ -7787,14 +7787,20 @@ def _dimension_full_names(drawing_path):
     coordinates can collide with existing work. Report 2026-11-06 asked for precisely this
     so that a wrong insert can be undone without a fuzzy match.
 
-    Takes a PATH, not an open document: `plan_dimension_gaps` has no long-lived doc handle.
+    Pass the OPEN document when you have one. Report 2026-11-06: the rollback called this
+    with a path while `add_distance_dimension(save=False)` had only touched the in-memory
+    document, so `_open_drawing` re-read the file on DISK, saw the pre-insert state, and the
+    difference came out empty — the wrong dimension was never deleted and the receipt said
+    `rolled_back: false` with no reason. Measured on the AM_DOOR fixture: 1570.796 stayed on
+    the sheet.
     """
     names = []
     import win32com.client as win
-    try:
-        doc = _open_drawing(drawing_path)
-    except Exception:
-        return names
+    if doc is None:
+        try:
+            doc = _open_drawing(drawing_path)
+        except Exception:
+            return names
     try:
         for view in _iter_views(doc):
             for annotation in (view.GetAnnotations or ()):
@@ -8165,7 +8171,14 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                 # `IDimension.FullName` is: snapshot the set before the insert, take the
                 # difference after, and the new annotation is named exactly. No fuzzy
                 # match, no risk to anything that was already there.
-                _names_before = _dimension_full_names(drawing_path)
+                # One document handle for the whole insert+rollback. `add_distance_dimension`
+                # runs with save=False, so the insert lives in memory only; a snapshot that
+                # reopens the path reads the file on disk and sees nothing new.
+                try:
+                    _doc_live = _open_drawing(drawing_path)
+                except Exception:
+                    _doc_live = None
+                _names_before = _dimension_full_names(drawing_path, _doc_live)
                 added = add_distance_dimension(
                     drawing_path, cand["edge_a"], cand["edge_b"],
                     x_m=pt[0], y_m=pt[1] - 0.015)
@@ -8202,20 +8215,49 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                     # whole drawing. Measured 2026-11-06: the reader returns [] on a sheet
                     # that visibly carries 10 dimensions, so this guard is load-bearing,
                     # not defensive decoration.
-                    _names_after = _dimension_full_names(drawing_path)
+                    _names_after = _dimension_full_names(drawing_path, _doc_live)
                     _new_names = [n for n in _names_after if n not in _names_before]
                     _rollback_possible = bool(_names_before) and bool(_names_after)
+                    if not _rollback_possible:
+                        _rb_reason = ("the dimension-identity snapshot was empty, so a delete "
+                                      "could not be scoped")
+                    else:
+                        _rb_reason = None      # filled in below if the delete fails
                     _deleted = []
                     if _rollback_possible:
                         from . import layout as _layout_mod
-                        for _name in _new_names:
-                            try:
-                                _res = _layout_mod.delete_annotation(
-                                    drawing_path, _name, save=False)
-                                if _res.get("ok"):
-                                    _deleted.append(_name)
-                            except Exception:
-                                continue
+                        # `_new_names` holds FullName (RD6@工程图视图1@d.Drawing) while
+                        # `delete_annotation` matches on `IAnnotation.GetName` (细节项目34),
+                        # so name lookups found nothing and `rolled_back` stayed false.
+                        # The insert position is known exactly — it is the point we asked
+                        # `add_distance_dimension` to place at — so delete by position.
+                        _px, _py = float(pt[0]), float(pt[1]) - 0.015
+                        try:
+                            _res = _layout_mod.delete_annotation(
+                                drawing_path, _name or "_", save=False,
+                                position_m=[_px, _py])
+                            if _res.get("ok"):
+                                _deleted.extend(_new_names)
+                        except Exception:
+                            pass
+                        if _deleted:
+                            _rb_reason = None
+                        else:
+                            _rb_reason = ("scoped to %d new name(s) but delete_annotation "
+                                          "could not remove them (tried position %s) — the "
+                                          "wrong dimension is still on the sheet"
+                                          % (len(_new_names), [round(_px, 4), round(_py, 4)]))
+                        if not _deleted:
+                            # Fall back to the FullName one at a time; it may match on
+                            # builds where GetName and FullName agree.
+                            for _name in _new_names:
+                                try:
+                                    _res = _layout_mod.delete_annotation(
+                                        drawing_path, _name, save=False)
+                                    if _res.get("ok"):
+                                        _deleted.append(_name)
+                                except Exception:
+                                    continue
                     applied.append({"value_mm": _expected,
                                     "gap_index": _idx,
                                     "candidate_index": _pick,
@@ -8228,15 +8270,18 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                     "ok": False,
                                     "error": "value_mismatch",
                                     "inserted_but_wrong": True,
+                                    "snapshot_before": len(_names_before),
+                                    "snapshot_after": len(_names_after),
+                                    "new_names": _new_names[:6],
                                     "rolled_back": (_rollback_possible
                                                     and bool(_new_names)
                                                     and len(_deleted) == len(_new_names)),
                                     "rolled_back_names": _deleted,
-                                    "rollback_skipped_reason": (
-                                        None if _rollback_possible else
-                                        "the dimension-identity snapshot was empty, so a "
-                                        "delete could not be scoped — the wrong dimension "
-                                        "is still on the sheet and must be removed by hand"),
+                                    # Two different failures, two different messages.
+                                    # `null` here used to mean both "the scoped delete
+                                    # worked" and "it was attempted and failed" — the receipt
+                                    # said `rolled_back: false` with no explanation at all.
+                                    "rollback_skipped_reason": _rb_reason,
                                     "message": ("这一对边在图纸上相距接近 %s，但 SolidWorks 按模型几何"
                                                 "量出的是 %s —— 纸面距离不等于模型尺寸。"
                                                 "%s"
