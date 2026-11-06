@@ -848,9 +848,11 @@ def main():
         require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
 
         # sheet sketch primitives — unit trap: sheet coordinates are METRES
-        # 0.8.87: add_sheet_line now proves the line rendered. On this build it does NOT
-        # (0 pixels changed), so the documented outcome is line_not_rendered — assert THAT,
-        # because an ok:true here is precisely the lie this check was added to catch.
+        # 0.8.173: sheet sketches DO render once `AddToDB = True` is set before CreateLine
+        # (measured 572 changed pixels). The earlier comment here said the opposite and
+        # called an `ok:true` "the lie this check was added to catch" — that was true only
+        # while the switch was missing. What this check must reject is `ok:true` with
+        # `visibility.visible == false`, which the branch below still asserts.
         sheet_line = layout.add_sheet_line(drw, 0.02, 0.02, 0.06, 0.02)
         assert sheet_line.get("ok") is not None, "add_sheet_line returned no verdict"
         if sheet_line.get("ok"):

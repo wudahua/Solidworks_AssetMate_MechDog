@@ -5663,12 +5663,18 @@ def assert_a_reversed_capability_does_not_linger_in_the_docs():
         "实测不渲染",
         "图纸草图本身不渲染",
         "always returns `line_not_rendered`",
+        "is precisely the lie",
     ]
     sources = {
         "server.py": _read("server.py"),
         "README.md": open(os.path.join(ROOT, "README.md"), encoding="utf-8").read(),
         "docs/com-quirks.md": open(os.path.join(ROOT, "docs", "com-quirks.md"),
                                    encoding="utf-8").read(),
+        # The smoke comment said "an ok:true here is precisely the lie" long after the
+        # tool started working — a test file is documentation too, and it was the last
+        # place still asserting the opposite of the measured behaviour.
+        "tests/smoke.py": open(os.path.join(ROOT, "tests", "smoke.py"),
+                               encoding="utf-8").read(),
     }
     offenders = []
     for name, text in sources.items():
