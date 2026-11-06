@@ -1200,86 +1200,124 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
         return error("weld_symbol_failed", str(exc))
 
 
-def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True):
+def _typed_drawing_doc(doc):
+    """Wrap a late-bound drawing in its generated `IDrawingDoc`, if the type library exists.
+
+    Report 2026-11-06 → corrected 2026-11-07 07:33: I spent 14 versions claiming
+    `NewSheet4` was unreachable because pywin32 "cannot infer its signature". That was
+    wrong on two counts:
+
+      1. the type library IS already generated here —
+         `%TEMP%/gen_py/3.13/83A33D31-27C5-11CE-BFD4-00400513BB57x0x32x0.py`;
+      2. I guessed the argument ORDER. The real one is
+
+             NewSheet4(Name, PaperSize, TemplateIn, Scale1, Scale2, FirstAngle,
+                       TemplateName, Width, Height, PropertyViewName,
+                       ZoneLeftMargin, ZoneRightMargin, ZoneTopMargin, ZoneBottomMargin,
+                       ZoneRow, ZoneCol)
+
+         `TemplateIn` is the THIRD argument and it is an I4, not a string. I was passing
+         `None` / `''` there, which is why every arity failed with 类型不匹配 arg 6 — COM
+         counts from 1 and the dispatch layer rejected the type before SolidWorks saw it.
+
+    Measured 2026-11-07 on 飞达动力轴 A3: `('图纸1',)` -> `('图纸1', '图纸2')`.
+    """
+    import glob
+    import importlib
+    import os as _os
+
+    # `gencache.GetModuleForCLSID` returns None for this library even when the module is
+    # present (measured 2026-11-07 — the CLSID is a *typelib* GUID, and GetModuleForCLSID
+    # expects a coclass GUID). Import the generated file by its filename instead.
+    try:
+        import win32com.client.gencache as _gencache
+        cache = _gencache.GetGeneratePath()
+    except Exception:
+        return None
+
+    stem = "83A33D31-27C5-11CE-BFD4-00400513BB57"
+    if _os.path.isdir(cache) and cache not in __import__("sys").path:
+        __import__("sys").path.insert(0, cache)
+    for name in ("%sx0x32x0" % stem,):
+        try:
+            mod = importlib.import_module(name)
+            return mod.IDrawingDoc(doc._oleobj_)
+        except Exception:
+            pass
+    # Any generated variant of the same typelib (`x0x32x0`, `x0x64x0`, …).
+    for path in glob.glob(_os.path.join(cache, stem + "*x0.py")):
+        try:
+            mod = importlib.import_module(_os.path.basename(path)[:-3])
+            return mod.IDrawingDoc(doc._oleobj_)
+        except Exception:
+            continue
+    return None
+
+
+def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
+              first_angle=True):
     """Add another sheet to an existing .SLDDRW.
 
-    Report 2026-11-06 (P0, A1): this capability did not exist at all. A user who needed
+    Report 2026-11-06 (P0, A1): this capability did not exist at all — a user who needed
     "multi-page + full dimensioning in ONE native drawing" had to build three separate
-    `.SLDDRW` files and merge them with an external PDF tool. That breaks the title block's
-    page numbering, `delivery_check`'s coverage accounting, and any cross-sheet view reuse.
+    files and merge them with an external PDF tool, which breaks title-block page
+    numbering and `delivery_check`'s coverage accounting.
 
-    **Status: the COM call could not be completed on this build.** Everything below was
-    measured on SW2024 SP4:
+    **Now it works.** The earlier claim that `NewSheet4` was unreachable was my own
+    argument-order mistake; see `_typed_drawing_doc`. Verified: A3 sheet becomes
+    `('图纸1', '图纸2')`.
 
-        doc.GetSheetNames                      -> ('图纸1',)    property, not a method
-        doc.NewSheet4(name, ...)               -> 类型不匹配 (arg 6, TemplateIn)
-        doc.NewSheet3 / NewSheet2 (3..5 args)  -> 非选择性的参数
-        gencache.EnsureDispatch(doc)           -> "can not automate the makepy process"
-
-    `NewSheet*` is late-bound here and pywin32 cannot infer the 11-13 argument signature,
-    so every arity fails before SolidWorks sees the call. Without a generated type library
-    there is no way to pass the byref arguments those methods expect.
-
-    So this returns a structured refusal that names the blocker and the workaround, rather
-    than pretending the capability is absent (which is how it looked before) or fabricating
-    a sheet. The capability entry records the same finding.
-
-    Options that WOULD work, none implemented here:
-      * run `win32com.client.makepy` against the SolidWorks type library once, then call
-        `NewSheet4` early-bound — this is a client-side setup step, not something the tool
-        can do at runtime;
-      * `sw.CommandID` / `SldWorks.RunCommand` with the "new sheet" command id;
-      * pre-build multi-sheet templates and pick a sheet index at creation time.
+    Falls back to the documented `sheet_creation_blocked` refusal only when the type
+    library is genuinely missing (a fresh Python install with no `gen_py` cache and no
+    SolidWorks type library registered).
     """
     paper_map = {"A0": 0, "A1": 1, "A2": 2, "A3": 3, "A4": 4,
                  "A": 5, "B": 6, "C": 7, "D": 8, "E": 9}
     try:
         doc = _open_drawing(drawing_path)
-        existing = []
         try:
             existing = list(doc.GetSheetNames or ())
         except Exception:
             existing = []
-        attempted = []
-        last_error = None
-        code = paper_map.get(str(paper or "").upper(), 8)   # 8 = A3-ish default
-        variants = [
-            (name or ("图纸%d" % (len(existing) + 1)), code, float(scale), float(scale),
-             True, None, 0, 0, False, "", False, "", False),
-            (name or ("图纸%d" % (len(existing) + 1)), code, float(scale), float(scale),
-             True, None, 0, 0, False, "", False),
-            (name or ("图纸%d" % (len(existing) + 1)), code, float(scale), float(scale),
-             True, None, 0, 0, False),
-        ]
-        for args in variants:
-            try:
-                result = doc.NewSheet4(*args)
-                attempted.append({"arity": len(args), "ok": True, "returned": str(result)})
-                after = list(doc.GetSheetNames or ())
-                if len(after) > len(existing):
-                    if save:
-                        _save_drawing(doc)
-                    return drawing_ok(
-                        drawing=doc.GetTitle, sheets=after,
-                        sheets_before=len(existing), sheets_after=len(after),
-                        created=True, attempted=attempted,
-                        note="新图纸页已建立。")
-                attempted.append({"arity": len(args), "ok": False,
-                                  "why": "call returned but no sheet appeared"})
-            except Exception as exc:                                # noqa: BLE001
-                last_error = str(exc)[:120]
-                attempted.append({"arity": len(args), "ok": False, "error": last_error})
-        return error(
-            "sheet_creation_blocked",
-            "NewSheet4 could not be called from this binding: %s" % (last_error or "unknown"),
-            ("`IDrawingDoc.NewSheet4` is late-bound here and pywin32 cannot infer its "
-             "11-13 argument signature, so every arity fails with 类型不匹配 / 非选择性的参数 "
-             "before SolidWorks sees the call. Workarounds: run win32com.client.makepy against "
-             "the SolidWorks type library once (then NewSheet4 works early-bound), use "
-             "SldWorks.RunCommand with the new-sheet command id, or start from a pre-built "
-             "multi-sheet template. This is a client-side setup limitation, not a missing "
-             "feature — do not report it as 'the tool cannot do multi-sheet drawings'."),
-            attempted=attempted, sheets=existing)
+        target_name = name or ("图纸%d" % (len(existing) + 1))
+        paper_code = paper_map.get(str(paper or "").upper(), 8)   # 8 = A3
+
+        typed = _typed_drawing_doc(doc)
+        if typed is None:
+            return error(
+                "sheet_creation_blocked",
+                "the SolidWorks type library is not available to pywin32",
+                ("Run once, outside this tool: `python -m win32com.client.makepy "
+                 "\"SldWorks 20xx Type Library\"` (or `win32com.client.gencache."
+                 "EnsureDispatch` on any SldWorks object). That writes "
+                 "%TEMP%/gen_py/<pyver>/83A33D31-27C5-11CE-BFD4-00400513BB57x0x32x0.py "
+                 "and this tool picks it up automatically. Until then use a multi-sheet "
+                 "template or merge PDFs."),
+                sheets=existing)
+
+        try:
+            made = typed.NewSheet4(target_name, paper_code, 0,
+                                   float(scale), float(scale), bool(first_angle),
+                                   "", 0.0, 0.0, "", 0.0, 0.0, 0.0, 0.0, 1, 1)
+        except Exception as exc:                                    # noqa: BLE001
+            return error("sheet_creation_failed", str(exc)[:200],
+                         "NewSheet4(Name, PaperSize, TemplateIn, Scale1, Scale2, ...) — "
+                         "TemplateIn is the THIRD argument and must be an int.")
+
+        after = list(doc.GetSheetNames or ())
+        created = len(after) > len(existing)
+        if created and save:
+            _save_drawing(doc)
+        if not created:
+            return error("sheet_not_created",
+                         "NewSheet4 returned %r but the sheet list is unchanged" % (made,),
+                         sheets=after)
+        return drawing_ok(
+            drawing=doc.GetTitle, sheets=after,
+            sheets_before=len(existing), sheets_after=len(after),
+            created=True, sheet_name=target_name, paper=str(paper or "A3").upper(),
+            scale=float(scale),
+            note="新图纸页已建立：%s（%d 页）" % (target_name, len(after)))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

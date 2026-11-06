@@ -157,24 +157,29 @@ CAPABILITIES = [
     },
     {
         "id": "multi_sheet",
-        "status": "unsupported",
-        "summary": "一个 .SLDDRW 内建多张图纸页 · 本环境调不通（late-bound，签名推不出）",
-        "why": ("`add_sheet` 工具已存在，但 `IDrawingDoc.NewSheet4` 在本绑定上是 late-bound，"
-                "pywin32 推不出它 11–13 个参数的签名。实测（SW2024 SP4）：\n\n"
+        "status": "verified",
+        "summary": "一个 .SLDDRW 内建多张图纸页 · 可用（0.8.196 起）",
+        "why": ("**我错了 14 个版本。** 从 0.8.180 到 0.8.195 我一直写「`NewSheet4` 是 "
+                "late-bound，pywin32 推不出 11–13 个参数的签名」，还把它记成了"
+                "「客户端环境限制，不是功能缺失」。\n\n"
+                "真实情况两条都错：\n\n"
+                "1. **类型库早就生成了** —— `%TEMP%/gen_py/3.13/"
+                "83A33D31-27C5-11CE-BFD4-00400513BB57x0x32x0.py` 一直都在；\n"
+                "2. **我猜错了参数顺序**。真实签名是\n\n"
                 "```\n"
-                "13 args -> 类型不匹配 (arg 6, TemplateIn)\n"
-                "11 args -> 类型不匹配 (arg 6)\n"
-                " 9 args -> 类型不匹配 (arg 6)\n"
-                "gencache.EnsureDispatch(doc) -> can not automate the makepy process\n"
+                "NewSheet4(Name, PaperSize, TemplateIn, Scale1, Scale2, FirstAngle,\n"
+                "          TemplateName, Width, Height, PropertyViewName,\n"
+                "          ZoneLeftMargin, ZoneRightMargin, ZoneTopMargin, ZoneBottomMargin,\n"
+                "          ZoneRow, ZoneCol)\n"
                 "```\n\n"
-                "**注意这不是「工具做不到多页图纸」**，而是客户端环境缺类型库。"
-                "工具会返回 `sheet_creation_blocked` 并列出绕法，不会假装没有这个需求"
-                "（此前该能力根本不存在，用户只能拆成多个文件再外部合并 PDF）。"),
-        "workaround": ("三条路：① 用 `win32com.client.makepy` 对 SolidWorks 类型库生成一次，"
-                       "之后 `NewSheet4` 走 early-bound；② `SldWorks.RunCommand` 调「新建图纸」"
-                       "命令 id；③ 从预置的多页模板起步。"),
-        "evidence": ("SW2024 SP4 实测（2026-11-06，飞达动力轴 A3）：三种参数个数全部在 arg 6 "
-                     "返回 `类型不匹配`，`GetSheetNames` 返回属性元组 `('图纸1',)` 而非方法。"),
+                "`TemplateIn` 是**第三个**参数、类型 I4，我却一直把 `None` / `''` 塞在那里，"
+                "所以每种 arity 都在 `类型不匹配 arg 6` 上失败 —— 那是 COM 在派发层就把类型"
+                "挡了，SolidWorks 根本没收到调用。"),
+        "workaround": ("不需要。`add_sheet` 直接用 `gencache` 缓存里的 `IDrawingDoc` 包装"
+                       "late-bound 对象；缓存不存在时才退回 `sheet_creation_blocked` 并给"
+                       "makepy 命令。"),
+        "evidence": ("SW2024 SP4 实测（2026-11-07 07:53，飞达动力轴）：`('图纸1',)` → "
+                     "`['图纸1', '图纸2']`，`ok: true`。"),
     },
     {
         "id": "sheet_sketch_space",

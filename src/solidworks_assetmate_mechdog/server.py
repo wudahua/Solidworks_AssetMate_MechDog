@@ -559,24 +559,28 @@ def add_bom_table(
 
 @mcp.tool()
 def add_sheet(
-    drawing_path: Annotated[str, Field(description="Existing .SLDDRW to add a sheet to. Absolute path.")], name: Annotated[str, Field(description="Name for the new sheet, e.g. '图纸2'. Omit to auto-name from the current sheet count.")] = None, paper: Annotated[str, Field(description="Paper size: A0/A1/A2/A3/A4 (default A3).")] = None, scale: Annotated[float, Field(description="Sheet scale, e.g. 1.0 for 1:1, 0.5 for 1:2.")] = 1.0, save: Annotated[bool, Field(description="Save the document after adding the sheet (default True).")] = True,
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW to add a sheet to. Absolute path.")], name: Annotated[str, Field(description="Name for the new sheet, e.g. '图纸2'. Omit to auto-name from the current sheet count.")] = None, paper: Annotated[str, Field(description="Paper size: A0/A1/A2/A3/A4 (default A3).")] = None, scale: Annotated[float, Field(description="Sheet scale, e.g. 1.0 for 1:1, 0.5 for 1:2.")] = 1.0, save: Annotated[bool, Field(description="Save the document after adding the sheet (default True).")] = True, first_angle: Annotated[bool, Field(description="First-angle projection for the new sheet (default True, matching GB).")] = True,
 ) -> str:
     """Add another sheet to an existing drawing, so one .SLDDRW can carry several pages.
 
-    **Read the result.** On this build the COM call is expected to fail with
-    `sheet_creation_blocked`: `IDrawingDoc.NewSheet4` is late-bound and pywin32 cannot infer
-    its 11-13 argument signature, so the call dies before SolidWorks sees it. The receipt
-    names that blocker and lists the workarounds (generate the type library with makepy
-    once, use `RunCommand` with the new-sheet command id, or start from a multi-sheet
-    template).
+    **Works.** I spent 14 versions (0.8.180–0.8.195) documenting this as impossible:
+    "`IDrawingDoc.NewSheet4` is late-bound and pywin32 cannot infer its signature."
+    Both halves of that were wrong — the type library was already generated on this
+    machine, and I had guessed the argument ORDER. `TemplateIn` is the THIRD argument
+    and it is an I4; I was passing `None`/`''` there, so COM rejected the type at the
+    dispatch layer and SolidWorks never saw the call.
 
-    This exists because a user needed "multi-page + full dimensioning in ONE drawing" and
-    had to build three separate files plus an external PDF merge — which breaks title-block
-    page numbering and `delivery_check`'s coverage accounting. Reporting the real blocker is
-    better than the previous silence, and much better than fabricating a sheet.
+    Real signature:
+        NewSheet4(Name, PaperSize, TemplateIn, Scale1, Scale2, FirstAngle,
+                  TemplateName, Width, Height, PropertyViewName,
+                  ZoneLeftMargin, ZoneRightMargin, ZoneTopMargin, ZoneBottomMargin,
+                  ZoneRow, ZoneCol)
+
+    Verified 2026-11-07 on 飞达动力轴: `('图纸1',)` -> `['图纸1', '图纸2']`.
+    Falls back to `sheet_creation_blocked` only when the pywin32 cache is genuinely absent.
     """
     return _json(layout.add_sheet(drawing_path, name=name, paper=paper,
-                                  scale=scale, save=save))
+                                  scale=scale, save=save, first_angle=first_angle))
 
 
 @mcp.tool()

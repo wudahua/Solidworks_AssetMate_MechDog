@@ -107,7 +107,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `move_annotation` | **移动标注**到图纸坐标（米） |
 | `set_dimension_position` | **移动单个尺寸**到图纸坐标（米），校验目标是尺寸并回读数值与位置 |
 | `add_bom_table` | **原生 BOM 明细栏**（Indented→TopLevelOnly 两步，10 行 4 列含数量） |
-| `add_sheet` | 🚧 **本环境调不通**：`NewSheet4` 是 late-bound，pywin32 推不出 11–13 个参数的签名，返回 `sheet_creation_blocked` 并列出绕法（makepy 生成类型库 / `RunCommand` / 多页模板）。**这是客户端环境限制，不是功能缺失。** |
+| `add_sheet` | ✅ **可用**（0.8.196）：一个 `.SLDDRW` 内建多页。从 0.8.180 到 0.8.195 我一直写「`NewSheet4` 调不通」——**是我猜错了参数顺序**，`TemplateIn` 是第三个且必须是 int。实测 `('图纸1',)` → `['图纸1','图纸2']`。 |
 | `add_sheet_line` | ✅ **能渲染，前提是 `AddToDB=True`**（2026-11-06 实测 572 像素；之前 0 像素是因为缺这个开关）。默认 `verify_render=True`，看 `visibility`：`changed_pixels>0` 画上了，`0` 返回 `line_not_rendered`，`checked:false` 表示渲染器不可用（**不等于没画**）。实测范围仅 SW2024 SP4 + 飞达动力轴 A3。 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
 | `list_drawing_edges` | 视图可见边（索引 + 模型坐标 + **图纸坐标** `sheet_start/end`；失败时 `sheet_projected:false` 带原因） |
