@@ -2196,7 +2196,11 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         # pass actually removed. The old code only reported and told the caller to delete
         # by hand — the duplicates stayed on the sheet.
         duplicate_report = {
-            full: [sheet_name for sheet_name, _ in entries]
+            # Entries became 3-tuples when `prefer_view` needed to know which view each
+            # copy lives in. Unpacking two here raised `too many values to unpack` and took
+            # down `auto_dimension(eliminate_duplicates=True)` entirely — measured 2026-11-06
+            # on two smoke items ("edit tools by name", "assembly drawing").
+            full: [entry[0] for entry in entries]
             for full, entries in duplicates.items()
         }
 
@@ -4325,12 +4329,39 @@ def _template_lines(sheet, sheet_w=None, sheet_h=None):
     return segments
 
 
+_SAFE_AREA_CACHE = {}
+
+
 def template_safe_area(sheet, sheet_w, sheet_h):
     """Usable region of a sheet: inside the frame, clear of the title block / parts list.
 
     GB templates vary with paper size, so the margins are measured from the template's
     own lines instead of being hard-coded for A3 (which is why A2 layouts overflowed).
+
+    Memoised per sheet identity: `_template_lines` walks every sketch segment on the sheet
+    (measured as the dominant cost of `template_safe_area`), and callers such as
+    `_push_dimensions_outside` ask once per candidate frame. Measured 2026-11-06: an
+    assembly smoke item went from 41 s to 316 s after the safe-area clamp was switched from
+    the paper inset to this function — the geometry never changes within a call, so the read
+    does not need to repeat.
     """
+    try:
+        _key = (str(getattr(sheet, "Name", "") or ""), round(float(sheet_w), 6),
+                round(float(sheet_h), 6))
+    except Exception:
+        _key = None
+    if _key is not None and _key in _SAFE_AREA_CACHE:
+        return _SAFE_AREA_CACHE[_key]
+    _result = _template_safe_area_impl(sheet, sheet_w, sheet_h)
+    if _key is not None:
+        _SAFE_AREA_CACHE[_key] = _result
+        if len(_SAFE_AREA_CACHE) > 32:                  # a long session must not grow
+            _SAFE_AREA_CACHE.pop(next(iter(_SAFE_AREA_CACHE)))
+    return _result
+
+
+def _template_safe_area_impl(sheet, sheet_w, sheet_h):
+    """Uncached body of `template_safe_area`. See that function for the contract."""
     segments = _template_lines(sheet, sheet_w, sheet_h)
     fallback = {
         "left": sheet_w * 0.14, "right": sheet_w * 0.01,

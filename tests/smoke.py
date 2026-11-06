@@ -647,7 +647,7 @@ def main():
         named. What must NOT happen: `ok: true` with no new sheet, or an exception.
         If a future binding makes the call work, this accepts that too.
         """
-        src = _require_fixture(os.path.join(_model_dir(), "门.SLDPRT"), "门.SLDPRT")
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
         part = os.path.join(workdir, "smoke_sheet.SLDPRT")
         drw = os.path.join(workdir, "smoke_sheet.SLDDRW")
         shutil.copy2(src, part)
@@ -659,8 +659,10 @@ def main():
             return "created: %s" % (made.get("sheets"),)
         assert made.get("error") == "sheet_creation_blocked", (
             "unexpected failure from add_sheet: %r" % (made,))
-        assert "makepy" in str(made.get("message") or ""), (
-            "the refusal does not name a workaround")
+        # The workaround may live in `message` or `reason` depending on which error helper
+        # ran; stringify the whole receipt rather than guessing the key.
+        assert "makepy" in str(made), (
+            "the refusal does not name a workaround: %r" % (made,))
         return "blocked as documented (late-bound NewSheet4)"
 
     r.check("add_sheet (blocked or created)", _add_sheet)
