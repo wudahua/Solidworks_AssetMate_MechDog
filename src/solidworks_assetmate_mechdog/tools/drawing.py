@@ -3517,6 +3517,61 @@ def _note_name(note):
         return None
 
 
+def _note_text(annotation):
+    """The visible text of a note annotation, or "" if it cannot be read.
+
+    `IAnnotation` has NO `GetText` at all — the method lives on `INote`, and there it takes
+    NO arguments:
+
+        def GetText(self)          # INote
+        def GetText(self, slot)    # IDisplayDimension — a DIFFERENT interface
+
+    Calling `annotation.GetText(1)` raised, the `except` swallowed it, and every note read
+    back as `""`. That empty string is why `set_title_block` could never see that the
+    material cell already said POM, so `already_filled` never fired and each run wrote a
+    second copy on top of the first (report 2026-11-07, P1-D).
+
+    Measured 2026-11-07 on a GB A3 template: with `INote.GetText()` the title block reads
+    back correctly — `飞达动力轴` at (0.3907, 0.0363), `1:1` at (0.3591, 0.0304),
+    `重量` / `比例` as labels. With `GetText(1)` every one of them was `''`.
+    """
+    try:
+        import win32com.client as win
+        raw = annotation
+        try:
+            raw = annotation.GetSpecificAnnotation
+        except Exception:
+            pass
+        specific = win.Dispatch(raw)
+    except Exception:
+        return ""
+    # Typed route first (the only one that resolves GetText with no arguments), then two
+    # untyped fallbacks for builds where the generated cache is missing.
+    try:
+        import importlib
+        import sys as _sys
+        try:
+            import win32com.client.gencache as _gc
+            _path = _gc.GetGeneratePath()
+            if _path and _path not in _sys.path:
+                _sys.path.insert(0, _path)
+        except Exception:
+            pass
+        mod = importlib.import_module("83A33D31-27C5-11CE-BFD4-00400513BB57x0x32x0")
+        note = mod.INote(specific._oleobj_)
+        return str(note.GetText() or "")
+    except Exception:
+        pass
+    for call in (lambda: specific.GetText(), lambda: specific.Text):
+        try:
+            value = call()
+            if isinstance(value, str):
+                return value
+        except Exception:
+            continue
+    return ""
+
+
 def set_title_block(drawing_path, name=None, code=None, material=None, apply=False,
                    include_reversed=True, scale=None, sheet=None):
     """Fill title-block placeholders such as the literal text “图样名称” / “图样代号”.
@@ -3657,7 +3712,13 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                                   "one nearest the configured slot"})
             else:
                 slot = TITLE_SLOTS.get(field)
-                note = _note_at(sheet, slot) if slot else None
+                # `sheet` is the PARAMETER (a page name or None) since 0.8.204 — the
+                # local Sheet object was renamed to `_sheet_obj` and this call site was
+                # missed. `sheet.GetAnnotations` therefore raised on None/str, `_note_at`
+                # returned None, and EVERY field took the `via: "created"` path: instead of
+                # rewriting the existing cell it added a second note on top of it. That is
+                # the "two POMs / two JT-001" in the 2026-11-07 report, and it is mine.
+                note = _note_at(_sheet_obj, slot) if slot else None
                 if note is not None:
                     # `INote.GetText` is a METHOD; this read the bound method object and
                     # then `isinstance(before, str)` quietly turned it into "". That is why
@@ -3665,19 +3726,13 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                     # template visibly printed POM in that cell — the cell was NOT empty,
                     # the read never happened. Every "is this cell free?" decision downstream
                     # was therefore made on a value that was always "".
-                    try:
-                        _raw_before = note.GetText
-                        if callable(_raw_before):
-                            _raw_before = _raw_before()
-                        before = _raw_before if isinstance(_raw_before, str) else ""
-                    except Exception:
-                        before = ""
+                    # `_note_text` goes through INote.GetText(), which takes NO arguments.
+                    # The previous version called `note.GetText()` on the IAnnotation
+                    # dispatch, where that method does not exist — it raised, the except
+                    # returned "", and every cell looked empty forever.
+                    before = _note_text(note)
                     _entry = {
-                        "field": field, "before": before if isinstance(before, str) else "",
-                        "after": new_value, "note": note, "via": "position",
-                    }
-                    _entry = {
-                        "field": field, "before": before if isinstance(before, str) else "",
+                        "field": field, "before": before,
                         "after": new_value, "note": note, "via": "position",
                     }
                     if slot:

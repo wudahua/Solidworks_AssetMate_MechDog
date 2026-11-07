@@ -4562,11 +4562,23 @@ def assert_title_block_reads_before_it_writes():
     assert fn is not None
     body = ast.get_source_segment(src, fn) or ""
 
-    assert "_raw_before = note.GetText" in body, (
+    # 0.8.215: the reader moved to `_note_text`, because `IAnnotation` has no `GetText` at
+    # all — the method lives on `INote` and takes NO arguments. The old assertion pinned the
+    # exact expression that could never work (`note.GetText` on the annotation dispatch), so
+    # it guarded the bug for three releases. Assert the outcome now: the value must come
+    # from a helper that knows which interface owns the method.
+    assert "_note_text(note)" in body, (
         "the before-read is gone again; the receipt will claim every cell is empty")
-    assert "callable(_raw_before)" in body, (
-        "the getter is not called conditionally — a property would raise, a method would "
-        "return the bound object and be discarded")
+    helper = _read("tools/drawing.py")
+    assert "def _note_text(" in helper, "the INote reader is gone"
+    assert "INote(" in helper, (
+        "`_note_text` no longer goes through INote — IAnnotation has no GetText, so this "
+        "silently reads empty again")
+    # 0.8.215: the `callable()` dance is gone with the old expression. `_note_text` handles
+    # both shapes itself (typed INote method, then a property fallback), so assert THAT.
+    assert "specific.GetText()" in helper or "note.GetText()" in helper, (
+        "neither the typed nor the untyped GetText path is attempted any more")
+
     assert "already_filled" in body, (
         "an overwrite of an already-populated cell is no longer reported")
     assert "cell_slot_m" in body, (
@@ -6443,6 +6455,38 @@ def assert_a_failed_create_closes_what_it_opened():
         "the cleanup handle is bound inside the try, so the except block cannot reach it")
     return "a failed create_drawing closes what it opened and says so"
 
+def assert_title_block_looks_up_the_sheet_object_not_the_parameter():
+    """0.8.215 — I renamed a local variable and missed one consumer.
+
+    0.8.204 added a `sheet` PARAMETER to `set_title_block`. The existing local Sheet object
+    was renamed to `_sheet_obj` — but the `_note_at(sheet, slot)` call site was left passing
+    the parameter. With `sheet=None` (the default) `sheet.GetAnnotations` raised,
+    `_note_at` returned None, and EVERY field took the `via: "created"` path.
+
+    `created` does not rewrite the existing cell; it adds a NEW note next to it. That is the
+    "两处 POM / 两处 JT-001" the 2026-11-07 report measured — a regression I introduced, not
+    a template problem.
+
+    Underneath that sat a second, older defect: `_note_text` could never have worked, because
+    the read was `annotation.GetText(1)` and `IAnnotation` has no `GetText` at all — the
+    method is on `INote` and takes NO arguments.
+
+    Measured 2026-11-07 after both fixes (GB A3):
+        name      before='飞达动力轴'   via=position
+        material  before='  '          via=position
+        apply     written both ok=True
+        re-run    before='测试名'/'45钢'  -> no second write
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "set_title_block")) or ""
+    assert "_note_at(_sheet_obj, slot)" in body, (
+        "the lookup passes the `sheet` PARAMETER again — it is a page name or None, not a "
+        "Sheet object, so every field falls back to creating a duplicate note")
+    assert "_note_at(sheet," not in body, (
+        "`_note_at(sheet, ...)` is back; `sheet` is the parameter")
+    return "the title-block lookup uses the Sheet object, not the page-name parameter"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6620,6 +6664,7 @@ STATIC_REGRESSIONS = [
     ("0.8.209 too many matches is no answer", assert_too_many_matches_means_no_answer),
     ("0.8.210 pre-bind conditional field", assert_a_conditional_receipt_field_is_pre_bound),
     ("0.8.212 failed create closes its drawing", assert_a_failed_create_closes_what_it_opened),
+    ("0.8.215 title block uses the sheet object", assert_title_block_looks_up_the_sheet_object_not_the_parameter),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
