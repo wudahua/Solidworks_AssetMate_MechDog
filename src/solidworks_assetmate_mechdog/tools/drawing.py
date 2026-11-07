@@ -5581,31 +5581,43 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
 
 # SolidWorks `swTolType_e`, in ITS order — not in the order the names read nicely.
 #
-# Report 2026-11-05 (P0-A): a "bilateral" 14.20 +0.05/-0.05 printed as
-#   "-0.05" above "+0.05"
-# i.e. upper deviation smaller than lower — a negative tolerance band, physically illegal.
+# ⚠️ THIS TABLE WAS "FIXED" INTO A WORSE STATE ON 2026-11-05, AND CORRECTED BACK
+#    2026-11-07. Read this before touching it again.
 #
-# The cause was this table, which was shifted by one against the real enum:
-#     name       was   actually means
-#     basic       1    swTolBILAT   (1)
-#     bilateral   2    swTolLIMIT   (2)  <- two stacked LIMIT values, each with its sign
-#     limit       3    swTolSYMMETRIC (3)
-#     symmetric   4    swTolMIN     (4)
-#     ...
-# So "bilateral" was asking SolidWorks for LIMIT, which prints the two LIMIT VALUES
-# (nominal+upper and nominal+lower) rather than the two deviations. With upper=+0.05 and
-# lower=-0.05 the printed pair was "-0.05" over "+0.05" — the deviations, but in limit
-# order and read as deviations. Every tolerance type was affected, not just this one.
+# 2026-11-05 (P0-A): a "bilateral" 14.20 +0.05/-0.05 printed "-0.05" ABOVE "+0.05".
+# I diagnosed it as a shifted table and moved `bilateral` from 2 to 1.
+#
+# That diagnosis was wrong, and the "fix" broke the most common tolerance in machining:
+#
+#   2026-11-07 measured, `bilateral` with upper=0.05 lower=0.05  -> readback 1
+#     PDF: ┌────────┐
+#          │ Ø14.20 │      <- a BOX. That is swTolBASIC, i.e. a theoretically exact
+#          └────────┘         dimension with NO tolerance band at all.
+#   `symmetric` with the same values -> readback 3
+#     PDF: Ø14.25 / 14.25  <- two identical limits, band width ZERO. That is swTolLIMIT.
+#
+# The real enum (SolidWorks API `swTolType_e`) is:
+#     swTolNone = 0   swTolBASIC = 1   swTolBILAT = 2   swTolLIMIT = 3
+#     swTolSYMMETRIC = 4   swTolMIN = 5   swTolMAX = 6   swTolFIT = 7
+#     swTolFITTOLONLY = 8
+#
+# So the 2026-11-04 table was ALREADY CORRECT (`bilateral: 2`). The inverted pair came
+# from the ARGUMENT ORDER of `SetToleranceValues`, not from this table — see the call site
+# for the measured signature.
+#
+# Historical evidence that settles it: v0.8.139 with `bilateral = 2` printed the two
+# DEVIATIONS (+0.05 / -0.05), which only swTolBILAT does. With `bilateral = 1` we got a
+# box, which only swTolBASIC does. Two independent observations, same conclusion.
 TOLERANCE_TYPES = {
     "none": 0,                # swTolNone
-    "bilateral": 1,           # swTolBILAT
-    "limit": 2,               # swTolLIMIT
-    "symmetric": 3,           # swTolSYMMETRIC
-    "min": 4,                 # swTolMIN
-    "max": 5,                 # swTolMAX
-    "fit": 6,                 # swTolFIT
-    "fit_with_tolerance": 7,  # swTolFITTOLONLY
-    "basic": 8,               # swTolBASIC
+    "basic": 1,               # swTolBASIC      <- 方框，无公差带
+    "bilateral": 2,           # swTolBILAT      <- 上下两个偏差（机加工最常用）
+    "limit": 3,               # swTolLIMIT      <- 两个极限值
+    "symmetric": 4,           # swTolSYMMETRIC  <- ±
+    "min": 5,                 # swTolMIN
+    "max": 6,                 # swTolMAX
+    "fit": 7,                 # swTolFIT
+    "fit_with_tolerance": 8,  # swTolFITTOLONLY
 }
 
 
@@ -5692,15 +5704,28 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
             #
             # Only bilateral gets the sign. `symmetric` writes ±value and `limit` writes two
             # actual limits (e.g. 14.25 / 14.15), where a forced negative would be wrong.
-            _lower_arg = float(lower) / 1000.0
+            # GROUND TRUTH, read from the generated type library (2026-11-07):
+            #
+            #     def SetToleranceValues(self, TolMin, TolMax):
+            #         'Set the tolerance min and max values'
+            #
+            # The parameters are (MIN, MAX) — I was passing (upper, lower), i.e. exactly
+            # reversed. That is what printed "-0.05" above "+0.05" on 2026-11-05, and I
+            # "fixed" it by shifting the TYPE table, which broke `bilateral` into a BASIC
+            # box and `symmetric` into two identical limits.
+            #
+            # With (TolMin=0.05, TolMax=-0.05) SolidWorks drew max (-0.05) on top and min
+            # (+0.05) below — precisely the reported symptom, and it confirms the order.
+            _upper_m = float(upper) / 1000.0
+            _lower_m = float(lower) / 1000.0
             if str(tolerance_type).lower() == "bilateral":
-                _lower_arg = -abs(_lower_arg)
+                _lower_m = -abs(_lower_m)
             try:
-                dim.SetToleranceValues(float(upper) / 1000.0, _lower_arg)
+                dim.SetToleranceValues(_lower_m, _upper_m)
             except Exception:
                 # Symmetric takes a single value on some builds.
                 try:
-                    dim.SetToleranceValues(float(upper) / 1000.0, float(upper) / 1000.0)
+                    dim.SetToleranceValues(_upper_m, _upper_m)
                 except Exception:
                     pass
         try:
@@ -8273,10 +8298,28 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                             # pair can never be selected. Mark it here instead of letting
                             # the caller discover it as a misleading `bad_edge_index`.
                             _circle = _ia < 0 or _ib < 0
+                            # Report 2026-11-07 (P1, filed independently): `fillable: 6` on
+                            # AM_DOOR and `fillable: 1` on 接槽, then `apply_gaps` refused
+                            # every one of them with `edge_pair_has_no_length` —
+                            # `applied_count: 0`. Fourteen gaps, zero产出.
+                            #
+                            # The check was in the WRONG PHASE: `_edges_define_a_length` ran
+                            # inside the apply loop, so the plan advertised candidates that
+                            # could never land. Whether two edges define a length is a
+                            # STATIC property of the geometry — it belongs here, while the
+                            # candidate is being built, not at the moment of insertion.
+                            #
+                            # Now a non-length pair is marked `applicable: false` with a
+                            # reason, so `fillable` only ever means "will land".
+                            _length_ok, _length_why = (
+                                (None, None) if _circle
+                                else _edges_define_a_length(rows, _ia, _ib))
                             matches.append({
                                 "edge_a": _ia, "edge_b": _ib,
                                 "candidate_kind": ("circle_centre" if _circle else "edge"),
-                                "applicable": not _circle,
+                                "applicable": (not _circle) and (_length_ok is not False),
+                                "defines_length": _length_ok,
+                                "length_check_reason": _length_why,
                                 "axis": axis, "measured_mm": round(span_mm, 3),
                                 "model_span_mm": (round(_model_span_mm, 3)
                                                   if _model_span_mm is not None else None),
@@ -8308,9 +8351,16 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                 entry["status"] = "ambiguous"
             elif matches:
                 # Geometry exists, but none of it can be handed to add_distance_dimension.
-                # Distinct from `no_geometry` so the caller knows to change candidate or
-                # view rather than assume the model has no dimension there.
-                entry["status"] = "no_applicable_candidate"
+                # Split the reason: a circle centre is a selection problem (change
+                # candidate), while a non-length edge pair is a geometry problem (this
+                # gap cannot be dimensioned by ANY edge pair in this view).
+                _reasons = {c.get("length_check_reason") for c in _kept
+                            if c.get("length_check_reason")}
+                if _reasons and all(not c.get("defines_length", True) for c in _kept):
+                    entry["status"] = "no_length_pair"
+                    entry["reason"] = "、".join(sorted(_reasons))
+                else:
+                    entry["status"] = "no_applicable_candidate"
             results.append(entry)
 
         fillable = [r for r in results if r["status"] == "fillable"]
@@ -8685,7 +8735,9 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             note=("This is a PLAN unless apply_gaps or apply_indices was given. Each gap "
                   "carries a status: `fillable` (exactly one APPLICABLE candidate), "
                   "`ambiguous` (several), `no_applicable_candidate` (matches exist but none "
-                  "can be passed to add_distance_dimension), `no_geometry` (that value needs "
+                  "can be passed to add_distance_dimension), `no_length_pair` (the matching "
+                  "edge pair is degenerate or not parallel, so AddDimension2 would create an "
+                  "ANGLE rather than a length), `no_geometry` (that value needs "
                   "a section or detail view). apply_gaps=True fills only the `fillable` "
                   "ones; apply_indices fills the gaps you name, ambiguous or not, and does "
                   "not require apply_gaps. Candidates tagged `candidate_kind: circle_centre` "

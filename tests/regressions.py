@@ -3643,8 +3643,12 @@ def assert_bilateral_lower_is_negative():
     fn = _function_node(tree, "add_dimension_tolerance")
     body = ast.get_source_segment(src, fn) or ""
 
-    assert "_lower_arg" in body, "the sign adjustment is gone"
-    assert "-abs(_lower_arg)" in body, (
+    # 0.8.200: renamed `_lower_arg` -> `_lower_m` when the arguments of
+    # `SetToleranceValues` were corrected to (TolMin, TolMax). Accept either name, but
+    # insist the negative sign is still applied to the LOWER side.
+    _var = "_lower_m" if "_lower_m" in body else "_lower_arg"
+    assert _var in body, "the sign adjustment is gone"
+    assert "-abs(%s)" % _var in body, (
         "the lower deviation is no longer forced negative for bilateral")
     assert '"bilateral"' in body, "the bilateral-only condition is gone"
     assert "GetToleranceValues" in body, (
@@ -4480,50 +4484,52 @@ def assert_the_regression_ledger_is_intact():
 
 
 def assert_tolerance_types_follow_the_real_enum():
-    """0.8.148 — "bilateral" was asking SolidWorks for LIMIT.
+    """0.8.200 — this assertion previously LOCKED IN the wrong table.
 
-    Report 2026-11-05 (P0-A): a 14.20 with +0.05/-0.05 printed as "-0.05" above "+0.05" —
-    upper deviation below lower, a negative tolerance band, illegal on a drawing.
+    History, because it is the whole point:
 
-    The table had every name shifted by one against `swTolType_e`:
+      2026-11-04  table had `bilateral: 2`. A report measured "-0.05 above +0.05" and I
+                  blamed the table, moving `bilateral` to 1 and `basic` to 8.
+      2026-11-05  I added this assertion with the message "bilateral maps to 2;
+                  swTolType_e says 1 — a shifted table silently selects the wrong
+                  tolerance style". **That sentence was wrong**, and from then on the
+                  assertion GUARDED THE BUG.
+      2026-11-07  a report showed what `bilateral: 1` actually prints: a BOX
+                  (┌ Ø14.20 ┐ = swTolBASIC, no tolerance band), and `symmetric: 3`
+                  printing 14.25/14.25 (swTolLIMIT, zero-width band).
 
-        name        was   swTolType_e
-        basic        1    swTolBILAT     1
-        bilateral    2    swTolLIMIT     2   <- prints two LIMIT VALUES, not two deviations
-        limit        3    swTolSYMMETRIC 3
-        symmetric    4    swTolMIN       4
-        min          5    swTolMAX       5
-        max          6    swTolFIT       6
-        fit          7    swTolFITTOLONLY 7
-        basic        -    swTolBASIC     8
+    The real cause was never the table — it was `SetToleranceValues(TolMin, TolMax)`
+    being called as `(upper, lower)`. The generated type library spells the parameters
+    out:
 
-    So `tolerance_type_readback: 2` was reported as success while the sheet carried limit
-    values. After the fix the same call reads back 1 and the PDF prints "±0.05" for equal
-    deviations — measured 2026-11-05 on 接槽.
+        def SetToleranceValues(self, TolMin=..., TolMax=...):
+            'Set the tolerance min and max values'
 
-    Asserted by VALUE, not by round-tripping through the table: a test that reads the table
-    to build its expectation cannot detect a wrong table.
+    So the table is back to the SolidWorks `swTolType_e` order and the ARGUMENTS are
+    swapped. This assertion now pins both, and its failure message says why rather than
+    inviting the next reader to "fix" the table again.
     """
     src = _read("tools/drawing.py")
-    tree = ast.parse(src)
-    node = None
-    for item in tree.body:
-        if isinstance(item, ast.Assign):
-            for t in item.targets:
-                if isinstance(t, ast.Name) and t.id == "TOLERANCE_TYPES":
-                    node = item
-    assert node is not None, "TOLERANCE_TYPES is gone"
-    table = ast.literal_eval(node.value)
+    block = src[src.find("TOLERANCE_TYPES = {"):]
+    block = block[:block.find("}")]
+    want = {"none": 0, "basic": 1, "bilateral": 2, "limit": 3,
+            "symmetric": 4, "min": 5, "max": 6, "fit": 7,
+            "fit_with_tolerance": 8}
+    for name, code in want.items():
+        m = re.search(r'"%s"\s*:\s*(\d+)' % name, block)
+        assert m, "TOLERANCE_TYPES lost %r" % name
+        assert int(m.group(1)) == code, (
+            "TOLERANCE_TYPES[%r] is %s but swTolType_e says %d. "
+            "Do NOT change the table to fix an inverted tolerance — check the ARGUMENT "
+            "ORDER of SetToleranceValues(TolMin, TolMax) first; that is what broke "
+            "bilateral into a BASIC box on 2026-11-05." % (name, m.group(1), code))
 
-    expected = {
-        "none": 0, "bilateral": 1, "limit": 2, "symmetric": 3,
-        "min": 4, "max": 5, "fit": 6, "fit_with_tolerance": 7, "basic": 8,
-    }
-    for name, code in expected.items():
-        assert table.get(name) == code, (
-            "%s maps to %r; swTolType_e says %d — a shifted table silently selects the "
-            "wrong tolerance style" % (name, table.get(name), code))
-    return "tolerance type codes match swTolType_e"
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_dimension_tolerance")) or ""
+    assert "SetToleranceValues(_lower_m, _upper_m)" in body, (
+        "SetToleranceValues must be called (TolMin, TolMax) — passing (upper, lower) "
+        "prints the deviations in the wrong order")
+    return "enum follows swTolType_e and the arguments are (min, max)"
 
 
 def assert_title_block_reads_before_it_writes():

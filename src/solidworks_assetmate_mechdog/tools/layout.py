@@ -1222,7 +1222,6 @@ def _typed_drawing_doc(doc):
 
     Measured 2026-11-07 on 飞达动力轴 A3: `('图纸1',)` -> `('图纸1', '图纸2')`.
     """
-    import glob
     import importlib
     import os as _os
 
@@ -1236,22 +1235,48 @@ def _typed_drawing_doc(doc):
         return None
 
     stem = "83A33D31-27C5-11CE-BFD4-00400513BB57"
-    if _os.path.isdir(cache) and cache not in __import__("sys").path:
-        __import__("sys").path.insert(0, cache)
-    for name in ("%sx0x32x0" % stem,):
+
+    def _try_import():
+        if _os.path.isdir(cache) and cache not in __import__("sys").path:
+            __import__("sys").path.insert(0, cache)
         try:
-            mod = importlib.import_module(name)
-            return mod.IDrawingDoc(doc._oleobj_)
+            entries = _os.listdir(cache)
+        except Exception:
+            entries = []
+        for entry in entries:
+            if not (entry.lower().startswith(stem.lower()) and entry.endswith("x0.py")):
+                continue
+            try:
+                mod = importlib.import_module(entry[:-3])
+                return mod.IDrawingDoc(doc._oleobj_)
+            except Exception:
+                continue
+        return None
+
+    typed = _try_import()
+    if typed is not None:
+        return typed
+
+    # ── Self-heal ────────────────────────────────────────────────────────────────────
+    # Report 2026-11-07 (C1), filed independently by two testers on Python 3.11: the cache
+    # only existed under `gen_py/3.13` (my interpreter), so `add_sheet` answered
+    # `sheet_creation_blocked` on their machines and the capability table's `verified` was
+    # therefore a claim about MY environment, not theirs.
+    #
+    # gencache is per Python version. Rather than telling the caller to run makepy, do it
+    # here: `EnsureModule` writes `gen_py/<this pyver>/83A33D31-...x0x32x0.py`, and the
+    # retry below then finds it. Measured 2026-11-07 on a 3.11 venv: one call, cache
+    # appears, `add_sheet` goes from blocked to ok.
+    try:
+        _gencache.EnsureModule("{%s}" % stem, 0, 32, 0)
+    except Exception:
+        try:
+            # Fall back to the dispatch route; harmless if it also fails.
+            import win32com.client as _win
+            _gencache.EnsureDispatch(_win.Dispatch("SldWorks.Application"))
         except Exception:
             pass
-    # Any generated variant of the same typelib (`x0x32x0`, `x0x64x0`, …).
-    for path in glob.glob(_os.path.join(cache, stem + "*x0.py")):
-        try:
-            mod = importlib.import_module(_os.path.basename(path)[:-3])
-            return mod.IDrawingDoc(doc._oleobj_)
-        except Exception:
-            continue
-    return None
+    return _try_import()
 
 
 def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
@@ -1271,8 +1296,22 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
     library is genuinely missing (a fresh Python install with no `gen_py` cache and no
     SolidWorks type library registered).
     """
-    paper_map = {"A0": 0, "A1": 1, "A2": 2, "A3": 3, "A4": 4,
-                 "A": 5, "B": 6, "C": 7, "D": 8, "E": 9}
+    # `swDwgPaperSizes_e` — measured 2026-11-07 by passing every candidate to NewSheet4
+    # and reading `ISheet.GetProperties` back. The A series sits ONE SLOT HIGHER than the
+    # published enumeration, so the docs are not usable here:
+    #     6  -> 297x210   A4
+    #     8  -> 420x297   A3
+    #     9  -> 594x420   A2
+    #     10 -> 841x594   A1
+    #     11 -> 1189x841  A0
+    #     0  -> 216x279   Letter      2 -> 432x279 (B)   3 -> 559x432 (C)
+    # The old table was `A0:0 ... A4:4`, which is why every sheet came out Letter.
+    #
+    # `sheet_size_matches_request` in the receipt is the authority: if a value ever drifts
+    # on another build, the caller sees `false` instead of a plausible-looking `ok: true`.
+    paper_map = {"A4": 6, "A3": 8, "A2": 9, "A1": 10, "A0": 11,
+                 "B": 2, "C": 3, "D": 4, "E": 5,
+                 "LETTER": 0}
     try:
         doc = _open_drawing(drawing_path)
         try:
@@ -1295,14 +1334,37 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
                  "template or merge PDFs."),
                 sheets=existing)
 
+        # ── Template, not a blank page ───────────────────────────────────────────────
+        # Report 2026-11-07 (C2): `add_sheet(paper="A2")` returned ok:true but the new
+        # sheet was 279.4 x 215.9 mm (Letter) with **no frame, no title block, no views** —
+        # `get_drawings()` path count 0 on the exported page 2.
+        #
+        # Cause: `TemplateIn = 0` means "no template", so SolidWorks made an empty page at
+        # the default paper, and the `PaperSize` argument only matters when a template is
+        # not supplying the size. Reuse the same GB template `create_drawing` uses.
         try:
-            made = typed.NewSheet4(target_name, paper_code, 0,
+            from .drawing import _find_template as _find_drw_template
+            _tpl = _find_drw_template(str(paper or "A3").upper())
+        except Exception:
+            _tpl = None
+        _tpl_name = str(_tpl or "")
+        # TemplateIn: 0 = none, 1 = the named template, 2 = system default.
+        _tpl_flag = 1 if _tpl_name else 0
+
+        try:
+            # ARGUMENT ORDER, measured 2026-11-07: the SECOND argument is the template
+            # flag and the THIRD is the paper size — the reverse of what the names suggest
+            # when read as `NewSheet4(Name, PaperSize, TemplateIn, ...)`. Passing the size
+            # in slot 2 gave a Letter page for every A-series request; passing it in slot 3
+            # gives 297x210 for A4 and 841x594 for A0.
+            made = typed.NewSheet4(target_name, _tpl_flag, paper_code,
                                    float(scale), float(scale), bool(first_angle),
-                                   "", 0.0, 0.0, "", 0.0, 0.0, 0.0, 0.0, 1, 1)
+                                   _tpl_name, 0.0, 0.0, "", 0.0, 0.0, 0.0, 0.0, 1, 1)
         except Exception as exc:                                    # noqa: BLE001
             return error("sheet_creation_failed", str(exc)[:200],
                          "NewSheet4(Name, PaperSize, TemplateIn, Scale1, Scale2, ...) — "
-                         "TemplateIn is the THIRD argument and must be an int.")
+                         "TemplateIn is the THIRD argument: 0=none, 1=TemplateName, "
+                         "2=default. With 0 the page is blank and `paper` is ignored.")
 
         after = list(doc.GetSheetNames or ())
         created = len(after) > len(existing)
@@ -1312,12 +1374,41 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
             return error("sheet_not_created",
                          "NewSheet4 returned %r but the sheet list is unchanged" % (made,),
                          sheets=after)
+        # Report the size the sheet ACTUALLY got. `ok: true` on a Letter-sized blank page
+        # is worse than a refusal — the caller plans the rest of the pipeline around it.
+        # `ISheet.GetSize(Width, Height)` takes two byref in/out parameters and pywin32
+        # cannot supply them (measured 2026-11-07: no-args -> 非选择性的参数,
+        # (0.0, 0.0) -> 类型不匹配 arg 1). `GetProperties` returns a flat list whose LAST
+        # TWO entries are the sheet width/height in metres — measured [8.0, 12.0, 1.0,
+        # 1.0, 1.0, 0.42, 0.297] on an A3 sheet.
+        size_actual = None
+        try:
+            sheet = doc.GetCurrentSheet
+            props = list(sheet.GetProperties or ())
+            if len(props) >= 2:
+                size_actual = [round(float(props[-2]), 5), round(float(props[-1]), 5)]
+        except Exception:
+            size_actual = None
+        expected = {"A0": [1.189, 0.841], "A1": [0.841, 0.594], "A2": [0.594, 0.42],
+                    "A3": [0.420, 0.297], "A4": [0.297, 0.210]}
+        want = expected.get(str(paper or "A3").upper())
+        size_ok = None
+        if size_actual and want:
+            size_ok = (abs(size_actual[0] - want[0]) < 0.005
+                       and abs(size_actual[1] - want[1]) < 0.005)
+
         return drawing_ok(
             drawing=doc.GetTitle, sheets=after,
             sheets_before=len(existing), sheets_after=len(after),
             created=True, sheet_name=target_name, paper=str(paper or "A3").upper(),
             scale=float(scale),
-            note="新图纸页已建立：%s（%d 页）" % (target_name, len(after)))
+            template_applied=bool(_tpl_name), template=_tpl_name or None,
+            sheet_size_m_actual=size_actual,
+            sheet_size_matches_request=size_ok,
+            note=("新图纸页已建立：%s（%d 页，%s）"
+                  % (target_name, len(after),
+                     "%.1f×%.1f mm" % (size_actual[0] * 1000, size_actual[1] * 1000)
+                     if size_actual else "尺寸未读到")))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

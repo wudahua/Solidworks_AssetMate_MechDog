@@ -847,6 +847,10 @@ def plan_dimension_gaps(
       * `ambiguous`           — two or more applicable candidates; nothing is chosen
       * `no_applicable_candidate` — matches exist but none can be passed to
                                 `add_distance_dimension` (see below)
+      * `no_length_pair`      — the matching edge pair is degenerate (start == end) or not
+                                parallel, so `AddDimension2` would build an ANGLE whose
+                                radians read as millimetres (the 1570.796 phantom). Nothing
+                                is inserted, and no other edge pair in this view fits either.
       * `no_geometry`         — no edge pair matches; that value needs a section or detail view
       * `no_value`            — the ledger entry carries no numeric value at all, so there
                                 is nothing to search for

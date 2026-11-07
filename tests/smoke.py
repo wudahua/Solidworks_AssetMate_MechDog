@@ -1254,8 +1254,12 @@ def main():
                 # 0.8.156: `no_applicable_candidate` was added in 0.8.155 and this tuple
                 # was not updated — a real run on any part with circular geometry would
                 # fail here with "gap has no status", which says the opposite of the truth.
+                # 0.8.200: `no_length_pair` joined the set when the geometry check moved
+                # from the apply loop into candidate generation — a gap whose only
+                # candidates are non-parallel/degenerate edge pairs.
                 assert item.get("status") in ("fillable", "ambiguous", "no_geometry",
-                                               "no_applicable_candidate", "no_value"), (
+                                               "no_applicable_candidate", "no_length_pair",
+                                               "no_value"), (
                     "gap status is not one this smoke knows: %r" % (item.get("status"),))
             assert gaps.get("applied_count", 0) == 0 or gaps.get("applied"), (
                 "apply without a record of what was applied")
