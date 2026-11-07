@@ -5262,7 +5262,14 @@ def _section_sanity(source_view, section, orientation, depth,
     info["source_kept_mm"] = round(keep_src * 1000, 2)
     info["section_kept_mm"] = round(keep_sec * 1000, 2)
     info["ratio"] = round(ratio, 3)
-    info["verdict"] = "ok" if abs(ratio - 1.0) <= SECTION_KEEP_TOLERANCE else "suspicious"
+    # Only when nothing more specific was found above. This line runs AFTER the hatch and
+    # edge-count checks, and used to overwrite them unconditionally — `no_hatch` came out
+    # of the function as `ok`, which is exactly the failure the check was added to name.
+    # Measured 2026-11-07 on 小车底部滚轮: hatch_count 0, edge_count 4 (parent 4), and the
+    # receipt still said verdict "ok" until this guard was added.
+    if "verdict" not in info:
+        info["verdict"] = ("ok" if abs(ratio - 1.0) <= SECTION_KEEP_TOLERANCE
+                           else "suspicious")
     return info
 
 

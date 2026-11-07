@@ -6602,6 +6602,12 @@ def assert_a_section_that_did_not_cut_is_not_ok():
         "never fire")
     assert "hatch_count=hatch_count" in call, "the hatch count is not passed in"
 
+    # The verdict must not be assigned unconditionally after the specific checks. The first
+    # version of this fix put `no_hatch` in and then a later line overwrote it with "ok" —
+    # measured 2026-11-07 on 小车底部滚轮: hatch 0, edges 4 vs parent 4, verdict still "ok".
+    assert 'if "verdict" not in info:' in body, (
+        "the default verdict overwrites the specific one again — `no_hatch` will come out "
+        "as `ok` exactly as before")
     caps = _read("tools/capabilities.py")
     assert "orientation='vertical'" in caps, (
         "the working recipe for an axial section of a revolved part is not documented; "
