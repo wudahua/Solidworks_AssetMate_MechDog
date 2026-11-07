@@ -2107,6 +2107,34 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                     before_names.add(str(_win_auto.Dispatch(_raw).GetName))
                 except Exception:
                     continue
+        # Report 2026-11-07 (C3): after `add_sheet` the new page becomes active, and it has
+        # NO views on it. `auto_dimension(all_views=True, include_unmarked=True)` then
+        # returned `inserted: 0 / total_dimensions: 0 / ok: true` — a silent no-op that the
+        # caller cannot distinguish from "this part has no dimensions". The same arguments
+        # on the single-sheet control returned `inserted: 28`.
+        #
+        # An empty active sheet is a caller error (dimension a sheet that has views), so say
+        # it instead of reporting success. Count only MODEL views: the sheet view (Type 1)
+        # is always present and would make every page look non-empty.
+        _active_views = []
+        try:
+            _sheet_name = str(doc.GetCurrentSheet.GetName)
+        except Exception:
+            _sheet_name = None
+        for _v in _iter_views(doc):
+            if getattr(_v, "Type", None) == 1:
+                continue
+            _active_views.append(str(_v.Name))
+        if not _active_views:
+            return error(
+                "active_sheet_has_no_views",
+                ("当前活动图纸页（%s）上没有任何模型视图，无法插入尺寸"
+                 % (_sheet_name or "unknown")),
+                ("`add_sheet` 之后新页会成为活动页且它是空的。先在该页建视图"
+                 "（`create_drawing` 的 views 参数，或后续的视图工具），"
+                 "或用 `ActivateSheet` 切回有视图的那一页。"
+                 "这条以前返回 `ok:true` + `inserted:0`，和「零件本来就没尺寸」无法区分。"))
+
         if not all_views:
             # `all_views=False` inserts into the ACTIVE view. With none activated it inserts
             # into nothing and STILL returns success — a report saw inserted: 0 / ok: true on
@@ -2355,9 +2383,29 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         try:
             frame = list(doc.GetFirstView.GetOutline or ())
             if len(frame) >= 4 and (frame[2] - frame[0]) > 0.05:
+                # Report 2026-11-07 (C5): `clamped_into_safe_area` moved a 45° dimension
+                # from [0.1129, 0.4104] to **[0.1129, 0.01]** and called that "into the
+                # safe area". 0.01 is the paper edge minus 10 mm, while the template's real
+                # safe area starts at y = 0.0924 — the clamp pushed the annotation OUTSIDE
+                # the frame it was supposed to pull back in.
+                #
+                # Same defect as `clamp_dimensions_into_safe_area` had before 0.8.183: the
+                # name says safe area, the code used the sheet. Use the template.
                 inset = 0.010
                 lo_x, lo_y = frame[0] + inset, frame[1] + inset
                 hi_x, hi_y = frame[2] - inset, frame[3] - inset
+                _safe_source = "sheet_inset"
+                try:
+                    _m = template_safe_area(doc.GetFirstView,
+                                            frame[2] - frame[0], frame[3] - frame[1])
+                    if _m:
+                        lo_x = frame[0] + _m.get("left", inset)
+                        lo_y = frame[1] + _m.get("bottom", inset)
+                        hi_x = frame[2] - _m.get("right", inset)
+                        hi_y = frame[3] - _m.get("top", inset)
+                        _safe_source = _m.get("source") or "template"
+                except Exception:
+                    pass
                 off_sheet = []
                 for view in _iter_views(doc):
                     if getattr(view, "Type", None) == 1:
@@ -2384,12 +2432,26 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 # line — nine dimensions snapped to a single y overlap into an unreadable
                 # pile, which is only marginally better than being off-sheet.
                 off_sheet.sort(key=lambda entry: entry[2][0])
+                # Lay them along the bottom of the SAFE AREA, inside it on both ends.
+                # `lo_y` is the safe-area floor (0.0924 on A3), so y can never come out
+                # below the frame; when the band fills up, wrap into a second column
+                # instead of saturating everything onto `hi_y` (which stacks the overflow
+                # into one unreadable point).
                 step = 0.014
+                _col = max(1, int((hi_y - lo_y) / step) + 1)
                 for i, (ann, name, pos) in enumerate(off_sheet):
-                    nx = min(max(pos[0], lo_x), hi_x)
-                    ny = lo_y + i * step
-                    if ny > hi_y:
-                        ny = hi_y
+                    _band = i % _col
+                    _column = i // _col
+                    nx = min(lo_x + _column * 0.045, hi_x)
+                    ny = min(lo_y + _band * step, hi_y)
+                    if not (lo_x <= nx <= hi_x and lo_y <= ny <= hi_y):
+                        clamped.append({"name": name,
+                                        "from_m": [round(pos[0], 4), round(pos[1], 4)],
+                                        "error": "no_room_in_safe_area",
+                                        "safe_area_m": [round(lo_x, 4), round(lo_y, 4),
+                                                        round(hi_x, 4), round(hi_y, 4),
+                                                        _safe_source]})
+                        continue
                     try:
                         ann.SetPosition(nx, ny, 0.0)
                         clamped.append({"name": name,
@@ -6490,11 +6552,24 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             _how = ("仅靠 %d 处 Ø 尺寸覆盖（**没有孔标注对象**）" % diameter_dims
                     if holes_in_drawing == 0 and diameter_dims else
                     "%d 处孔标注 + %d 处 Ø 尺寸" % (holes_in_drawing, diameter_dims))
-            record("hole_callouts", covered > 0,
+            # Report 2026-11-07 (P2): `ok: true` next to `hole_callout_objects: 0` still
+            # read as "hole callouts are fine". Coverage from plain Ø dimensions is a
+            # DIFFERENT thing from a native hole callout (which carries depth, countersink,
+            # thread) — calling both "ok" hides that the caller got the weaker one.
+            #
+            # `ok` now means "a native hole callout exists"; a sheet covered only by Ø
+            # dimensions reports `ok: false` with `covered: true`, so the two facts can no
+            # longer contradict each other.
+            record("hole_callouts", holes_in_drawing > 0,
                    "%s / 模型 %d 个圆柱面候选" % (_how, hole_candidates),
-                   "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图",
+                   ("没有任何原生孔标注对象；只有 Ø 尺寸，沉孔/深度/螺纹信息缺失，"
+                    "需人工补或换视图"
+                    if holes_in_drawing == 0 else
+                    "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图"),
                    hole_callout_objects=holes_in_drawing,
-                   diameter_dimensions=diameter_dims)
+                   diameter_dimensions=diameter_dims,
+                   covered_by_diameter_only=(holes_in_drawing == 0 and diameter_dims > 0),
+                   covered=covered > 0)
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
 
@@ -6680,9 +6755,17 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                 "features": model_stats.get("features"),
                 "model_doubts": [d.get("kind") for d in doubts],
             },
-            note="verdict 依据流程 §7；blockers 非空即不可宣称可制造，"
-                 "ai_supplied 非空则只能算待设计审核。无关联实体的尺寸计入 blockers"
-                 "（§6.1：无关联视为未完成）。",
+            # Report 2026-11-07 (P2): the note said orphan dimensions "count as blockers"
+            # while `dimension_attachments` actually lands in `pending` — so a reader who
+            # trusted the note read `blockers: []` as "no orphans" when the same receipt
+            # listed them under `pending`. The note is now generated from where the items
+            # really go.
+            note=("verdict 依据流程 §7；blockers 非空即不可宣称可制造，"
+                  "ai_supplied 非空则只能算待设计审核。"
+                  "无关联实体的尺寸计入 **pending**（不是 blockers）——"
+                  "它表示「图纸还不能交付审核」，与「不可制造」是两个等级。"
+                  "当前：blockers %d 项、pending %d 项、ai_supplied %d 项。"
+                  % (len(blockers), len(pending), len(ai_supplied))),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

@@ -81,9 +81,13 @@ CAPABILITIES = [
                 "`InsertBOMBalloon` 参数数目无效；`InsertBalloon` **名字解析不到**"
                 "（DISP_E_UNKNOWNNAME，GetIDsOfNames 直接 False）。"
                 "用户反馈在 SW2026 上 `InsertBalloon` 同样是 UNKNOWNNAME，与本地一致。"),
-        "workaround": ("件号用 add_note 写数字——**不要配 add_sheet_line 画引线**："
-                       "该工具在本环境 0 像素渲染（同文件 45 行外的 sheet_sketch_space "
-                       "条目已写明）；或界面手工插（明细栏行号本身已经正确）"),
+        # Report 2026-11-07 (C7): this said "do not pair it with add_sheet_line, that tool
+        # renders 0 pixels" — while `sheet_sketch_space` in the SAME table says `verified`
+        # with 571 changed pixels. The capability table must not contradict itself; the
+        # leader can be drawn, only the balloon object itself is unavailable.
+        "workaround": ("件号用 add_note 写数字 + `add_sheet_line` 画引线"
+                       "（`AddToDB` 已修，实测 571 像素可见）；"
+                       "或界面手工插（明细栏行号本身已经正确）"),
         "evidence": ("2026-10-29 实测 SW2024 SP4：InsertBOMBalloon2 → 非选择性的参数；"
                      "InsertBOMBalloon → 无效的参数数目；InsertBalloon → 未知名称。"
                      "用户反馈 SW2026 同款失败。"),
@@ -127,7 +131,9 @@ CAPABILITIES = [
         "id": "annotation_write",
         "status": "partial",
         "summary": "注记 / 图纸直线（件号见 balloon 条目）",
-        "why": ("`add_note` 可用；`add_sheet_line` **不可用**（图纸草图不渲染，返回 `line_not_rendered`）；图纸草图单位是**米**不是毫米。"
+        "why": ("`add_note` 可用；`add_sheet_line` 也**可用**（0.8.173 起：先设 "
+                "`AddToDB = True` 再 `CreateLine`，草图线就会渲染——实测 571 像素可见）；"
+                "图纸草图单位是**米**不是毫米。"
                 "件号请单独看 `balloon` 条目——它是 unsupported，不要在这里当成可用"),
         "workaround": "传毫米会得到满屏放射斜线（坐标被当模型空间并乘视图比例）",
         "evidence": "2026-10-28 实测 add_note / add_sheet_line 均 ok；add_balloon 见 balloon 条目",
@@ -280,11 +286,11 @@ CAPABILITIES = [
                 "线默认落在 `Layer = '10'`，而文档 12 个图层**一个都读不到**："
                 "`GetLayerManager`/`GetCount` 是属性（加括号报错），"
                 "`GetLayerAtIndex` 不存在。`PrintSetup` 是方法且要参数，猜不出形态。"),
-        "workaround": ("**不要用 `add_sheet_line` 画图框或中心线**——它已改为像素验证，"
-                       "线画不上会返回 `line_not_rendered`。"
-                       "需要中心线时请在界面手工添加。"
-                       "继续查的方向：宏录制（界面画一条草图线并导出 PDF，看它调了什么）、"
-                       "`PrintSetup` 的正确参数形态、换无图层模板对照。"),
+        "workaround": ("中心线可以自己画：`add_sheet_line` 已可用"
+                       "（`AddToDB` 先设，实测 571 像素可见），"
+                       "传图纸米坐标画虚线/实线；`add_center_marks` 的原生孔中心符号"
+                       "仍受 `PrintSetup` / 图层限制，那部分才需要手工。"
+                       "继续查的方向：宏录制、`PrintSetup` 的正确参数形态、换无图层模板对照。"),
     },
     {
         "id": "weld_symbol",

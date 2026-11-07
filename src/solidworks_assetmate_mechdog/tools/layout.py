@@ -398,6 +398,39 @@ def place_views(drawing_path, placements, save=True):
     return drawing_ok(placed=ok_count, total=len(results), results=results)
 
 
+def _dimension_measure(display):
+    """(value, unit, dimension_type) for a display dimension, in its OWN unit.
+
+    Report 2026-11-07 (C5/C6), two defects in one line each:
+
+      * `delete_dimensions` compared `SystemValue * 1000` — for an ANGULAR dimension
+        `SystemValue` is RADIANS, so a 45° dimension scored 785.398 and could never match
+        the `keep_values` list, yet it stayed on the sheet because the delete path skipped
+        it. The report found three such leftovers with negative-x paths in the PDF.
+      * the post-delete `remaining` scan used `IDimension.Value * 1000`, but `Value` is
+        already in document units (millimetres), so every survivor was reported 1000x too
+        large — `60000.0` for a 60 mm dimension. The receipt then accused 23 legitimate
+        dimensions of being leftovers.
+
+    One reader, one unit convention: LENGTH -> (mm, "mm"), ANGLE -> (deg, "deg").
+    Callers must only compare values that share a unit.
+    """
+    dim = display.GetDimension2(0)
+    if dim is None:
+        return None, None, None
+    dim_type = None
+    for getter in (lambda: int(dim.GetType), lambda: int(dim.Type)):
+        try:
+            dim_type = getter()
+            break
+        except Exception:
+            continue
+    raw = float(dim.SystemValue)          # metres for length, radians for angle
+    if dim_type in (1, 3):
+        return round(raw * 180.0 / 3.141592653589793, 4), "deg", dim_type
+    return round(raw * 1000.0, 3), "mm", dim_type
+
+
 def delete_dimensions(drawing_path, keep_values=None, view_name=None,
                       keep_tolerance_mm=0.05, save=True):
     """Delete dimensions whose value is not in keep_values.
@@ -429,18 +462,20 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
                     ann = win.Dispatch(item)
                     if int(ann.GetType) != 4:
                         continue
-                    specific = ann.GetSpecificAnnotation
-                    dim = specific.GetDimension2(0)
-                    if dim is None:
+                    _val, _unit, _type = _dimension_measure(ann)
+                    if _val is None:
                         continue
-                    value = round(float(dim.SystemValue) * 1000, 3)
-                    rows.append((view, ann, value))
+                    rows.append((view, ann, _val, _unit, _type))
                 except Exception:
                     continue
 
-        for view, ann, value in rows:
-            if keep and any(abs(value - target) <= keep_tolerance_mm for target in keep):
-                kept.append({"value_mm": value, "name": str(ann.GetName)})
+        for view, ann, value, unit, _type in rows:
+            # Only LENGTHS are ever in `keep_values` (a mm list). An angular dimension is
+            # never "kept" by that list — it is a leftover by definition and must go, or
+            # the caller is told it survived when it did not.
+            if unit == "mm" and keep and any(abs(value - target) <= keep_tolerance_mm
+                                             for target in keep):
+                kept.append({"value_mm": value, "unit": unit, "name": str(ann.GetName)})
                 continue
             try:
                 position = list(ann.GetPosition)
@@ -511,10 +546,12 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
                         if int(ann.GetType) != 4:
                             continue
                         display = win.Dispatch(ann.GetSpecificAnnotation)
-                        value = float(display.GetDimension2(0).Value * 1000.0)
+                        value, unit, _t = _dimension_measure(display)
+                        if value is None:
+                            continue
                     except Exception:
                         continue
-                    if any(abs(value - k) <= keep_tolerance_mm for k in keep):
+                    if unit == "mm" and any(abs(value - k) <= keep_tolerance_mm for k in keep):
                         continue
                     remaining.append({"value_mm": round(value, 3),
                                       "view": str(getattr(view, "Name", ""))})

@@ -953,8 +953,11 @@ def add_dimension_tolerance(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     value_mm: Annotated[float, Field(description="Driving dimension value in millimetres to match against.")],
     tolerance_type: Annotated[str, Field(description="SolidWorks tolerance type code (e.g. 4 = symmetric/bilateral).")] = "bilateral",
-    upper: Annotated[float, Field(description="Upper deviation, in metres.")] = 0.1,
-    lower: Annotated[float, Field(description="Lower deviation, in metres.")] = 0.1,
+    # Report 2026-11-07 (P2): these said "in metres" while the top-level docstring says
+    # millimetres. The implementation divides by 1000, so MILLIMETRES is correct — the
+    # parameter text was the stale one. A caller who believed it would pass 0.05 for 50 µm.
+    upper: Annotated[float, Field(description="Upper deviation, in MILLIMETRES (e.g. 0.05 for +0.05).")] = 0.1,
+    lower: Annotated[float, Field(description="Lower deviation, in MILLIMETRES (e.g. 0.05 for -0.05).")] = 0.1,
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
     apply: Annotated[bool, Field(description="False (default) is a dry run that reports what WOULD change; True actually writes.")] = False,
 ) -> str:
