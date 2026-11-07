@@ -6332,6 +6332,37 @@ def assert_too_many_matches_means_no_answer():
         "the smoke whitelist does not know the new status, so a real run would fail there")
     return "too many matches is graded low and cannot auto-apply"
 
+def assert_a_conditional_receipt_field_is_pre_bound():
+    """0.8.210 — a variable assigned inside `if` and read outside it.
+
+    `create_drawing` syncs the title-block scale only when the final scale is not 1:1, and
+    `_title_scale_synced` was only assigned in that branch — then unconditionally put into
+    the receipt. A drawing that stayed 1:1 raised:
+
+        create_drawing_failed: cannot access local variable '_title_scale_synced'
+                               where it is not associated with a value
+
+    Every existing fixture auto-fit a front view down to 0.5, so the branch always ran. The
+    case that found it builds right+left on a 10 mm door, which fits at 1:1 — measured
+    2026-11-07, first time that combination was ever drawn.
+
+    This is the fifth instance today of the same shape: a name that is valid on one path and
+    unbound on another. The static check catches undefined MODULE references; nothing
+    catches an unbound LOCAL, so this pins the one that bit.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "create_drawing")) or ""
+    pre = body.find("_title_scale_synced = None")
+    guard = body.find('if result.get("saved"):')
+    use = body.find("result.update(title_scale_synced=_title_scale_synced)")
+    assert pre > 0, "`_title_scale_synced` is no longer pre-initialised"
+    assert 0 < pre < guard, (
+        "the initialisation must come BEFORE the conditional branch, or the 1:1 path "
+        "raises NameError again")
+    assert use > guard, "the receipt field is gone"
+    return "the conditional receipt field is bound on every path"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6507,6 +6538,7 @@ STATIC_REGRESSIONS = [
     ("0.8.206 delivery checks every sheet", assert_delivery_checks_every_sheet),
     ("0.8.207 direction from view name", assert_sheet_direction_comes_from_the_view_name),
     ("0.8.209 too many matches is no answer", assert_too_many_matches_means_no_answer),
+    ("0.8.210 pre-bind conditional field", assert_a_conditional_receipt_field_is_pre_bound),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

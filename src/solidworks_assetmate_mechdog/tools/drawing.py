@@ -1011,6 +1011,12 @@ def create_drawing(
         # Now: run AFTER the save, check `ok` and every `written[].ok`, and trigger whenever
         # the final scale is not 1:1 — not only when auto_fit changed it. Manually passing
         # `scale=0.5` produced no sync at all before.
+        # MUST be bound before the branch: the sync only runs when the final scale is not
+        # 1:1, so a drawing that stays 1:1 reached `result.update(...)` with this name
+        # unbound and raised NameError — reported as `create_drawing_failed`, with no hint
+        # that the scale was fine. Measured 2026-11-07 on a right+left pair that auto-fit
+        # kept at 1:1; the front-view fixtures always stepped to 0.5 and never hit it.
+        _title_scale_synced = None
         if result.get("saved"):
             try:
                 _final_scale = None
@@ -1048,7 +1054,7 @@ def create_drawing(
                             "written": _written}
             except Exception as _exc:                               # noqa: BLE001
                 _title_scale_synced = {"error": str(_exc)[:100]}
-        result.update(title_scale_synced=_title_scale_synced)
+        result.update(title_scale_synced=_title_scale_synced)   # None = not 1:1, nothing to sync
         result.update(
             safe_area_used={
                 "x": [round(safe_x0, 4), round(safe_x1, 4)],
