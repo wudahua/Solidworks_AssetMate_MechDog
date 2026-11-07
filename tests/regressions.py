@@ -6823,6 +6823,40 @@ def assert_a_covered_hole_is_not_a_blocker():
         "the receipt no longer distinguishes Ø coverage from a native callout")
     return "a hole covered by Ø dimensions is pending, not blocking"
 
+def assert_a_dimension_can_be_radial():
+    """0.8.226 — a semicircular groove could only be dimensioned as a diameter.
+
+    Report 2026-11-07 (P1-2): `add_drawing_dimension(edge_index=10)` on the R10 groove of a
+    turned part produced **Ø20**, and `skip_duplicates` then rejected it because the groove
+    WIDTH was also 20 — "Ø20 is a meaningless callout for a semicircular groove, and it gets
+    deduplicated against an unrelated 20".
+
+    `AddRadialDimension2` existed the whole time and was never wrapped. Measured 2026-11-07
+    on 飞达动力轴 (Ø35 shaft, edge 4):
+
+        style="auto"      -> value 0.035   style_used "linear"
+        style="radius"    -> value 0.0175  style_used "radius"     <- R17.5
+        style="diameter"  -> value 0.035   style_used "diameter"   <- Ø35
+
+    The receipt must say which form was actually created: SolidWorks can refuse the radial
+    call and the code falls back to a linear dimension, and a caller that assumes the R
+    landed would ship a wrong callout.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_drawing_dimension")) or ""
+    assert "AddRadialDimension2" in body, (
+        "the radial call is gone — an arc can only be dimensioned as a diameter again")
+    assert "AddDiameterDimension2" in body, "the explicit diameter call is gone"
+    assert 'style_used' in body and 'style_requested' in body, (
+        "the receipt does not say which callout form was created, so a silent fallback to "
+        "linear looks like an R that landed")
+    assert '"radius", "diameter", "linear"' in body, (
+        "the accepted style values are not validated")
+    server = _read("server.py")
+    assert "style: Annotated[str" in server, "the MCP tool does not expose `style`"
+    return "an arc can be dimensioned as R, and the receipt names the form used"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7010,6 +7044,7 @@ STATIC_REGRESSIONS = [
     ("0.8.221 note reader used everywhere", assert_the_note_reader_is_used_everywhere),
     ("0.8.222 limits readback order", assert_the_limits_readback_is_lower_then_upper),
     ("0.8.222 covered hole is not a blocker", assert_a_covered_hole_is_not_a_blocker),
+    ("0.8.226 dimension can be radial", assert_a_dimension_can_be_radial),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

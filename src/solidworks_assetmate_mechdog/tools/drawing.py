@@ -4496,7 +4496,8 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
 
 def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0,
                           offset_y=-0.015, view_name=None, tolerance=0.01,
-                          edge_index=None, skip_duplicates=False, known_values=None, save=True):
+                          edge_index=None, skip_duplicates=False, known_values=None,
+                          save=True, style="auto"):
     """Add ONE dimension on the visible edge nearest sheet point (x, y), meters.
 
     This is the manual dimensioning path (process §4.4): InsertModelItems only carries
@@ -4664,7 +4665,43 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
                 base_x, base_y = 0.2, 0.2
         else:
             base_x, base_y = float(x), float(y)
-        display_dim = doc.AddDimension2(base_x + float(offset_x), base_y + float(offset_y), 0)
+        # ── R / Ø (report 2026-11-07, P1-2) ─────────────────────────────────────────
+        # A semicircular groove projects as an ARC, and `AddDimension2` measures it as a
+        # diameter — `Ø20` for an R10 groove, which is a meaningless callout on a turned
+        # part (the report's exact case). `AddRadialDimension2` exists and works; it was
+        # simply not wrapped.
+        #
+        # Measured 2026-11-07 on 飞达动力轴 (Ø35 shaft): selecting the outline and calling
+        # `AddRadialDimension2` returned 17.50 mm — the radius, not the diameter.
+        #
+        # Falls back to `AddDimension2` when `style` is "auto" (previous behaviour) or when
+        # the radial call returns null, and the receipt says which one happened so a caller
+        # never has to guess whether the R prefix is real.
+        _style = str(style or "auto").lower()
+        if _style not in ("auto", "radius", "diameter", "linear"):
+            return error("bad_style", "style must be auto / radius / diameter / linear",
+                         "Got %r" % (style,))
+        _dim_x = base_x + float(offset_x)
+        _dim_y = base_y + float(offset_y)
+        display_dim = None
+        _style_used = "linear"
+        if _style == "radius":
+            try:
+                display_dim = doc.AddRadialDimension2(_dim_x, _dim_y, 0)
+                if display_dim is not None:
+                    _style_used = "radius"
+            except Exception:
+                display_dim = None
+        elif _style == "diameter":
+            try:
+                display_dim = doc.AddDiameterDimension2(_dim_x, _dim_y, 0)
+                if display_dim is not None:
+                    _style_used = "diameter"
+            except Exception:
+                display_dim = None
+        if display_dim is None:
+            display_dim = doc.AddDimension2(_dim_x, _dim_y, 0)
+            _style_used = "linear"
         if display_dim is None:
             doc.ClearSelection2(True)
             return error(
@@ -4737,7 +4774,16 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
             view=view.Name if view is not None else None,
             distance_m=round(distance, 6) if distance is not None else None,
             value_m=applied,
-            note="Verify the dimension text and its attachment, then export a PDF.",
+            # Which callout form was actually created. `style="radius"` can fall back to a
+            # linear dimension when SolidWorks refuses the radial call, and a caller that
+            # assumes the R prefix landed would ship a wrong callout.
+            style_requested=_style,
+            style_used=_style_used,
+            note=("Verify the dimension text and its attachment, then export a PDF."
+                  + (" SolidWorks refused the radial call and a linear dimension was "
+                     "created instead — check the figure before shipping."
+                     if _style in ("radius", "diameter") and _style_used == "linear"
+                     else "")),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

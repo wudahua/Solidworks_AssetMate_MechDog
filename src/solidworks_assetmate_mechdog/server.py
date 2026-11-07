@@ -1350,6 +1350,7 @@ def add_drawing_dimension(
     tolerance: Annotated[float, Field(description="Tolerance value. For add_drawing_dimension it is a length in metres; for add_geometric_tolerance it is the frame value as text.")] = 0.01,
     edge_index: Annotated[int | None, Field(description="Index into list_drawing_edges for this view; lets you attach to an edge without sheet coordinates.")] = None,
     skip_duplicates: Annotated[bool, Field(description="Refuse to add a dimension that duplicates an existing one on the sheet (same value, same view). Default True — a second identical dimension reads as a drafting error.")] = True,
+    style: Annotated[str, Field(description="Callout form for an arc or circle: 'radius' (R), 'diameter' (Ø), 'linear' (plain), or 'auto' to let SolidWorks decide. A semicircular groove projects as an ARC and 'auto' measures it as a DIAMETER, which is a meaningless callout on a turned part — pass 'radius' for R. The receipt's `style_used` says which one was actually created; if SolidWorks refuses the radial call it falls back to linear and says so.")] = "auto",
 ) -> str:
     """Add ONE dimension on a projected edge at sheet point (x, y) in meters.
 
@@ -1360,7 +1361,7 @@ def add_drawing_dimension(
     return _json(drawing.add_drawing_dimension(
         drawing_path, x, y, value=value, offset_x=offset_x, offset_y=offset_y,
         view_name=view_name, tolerance=tolerance, edge_index=edge_index,
-        skip_duplicates=skip_duplicates,
+        skip_duplicates=skip_duplicates, style=style,
     ))
 
 
