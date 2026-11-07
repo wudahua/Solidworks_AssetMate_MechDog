@@ -789,9 +789,12 @@ def main():
         # SolidWorks refuses to open a second document with an identical name, and the
         # error text blames a lock or a doc-type mismatch, not the real cause.
         _tag = uuid.uuid4().hex[:6]
-        for label, kwargs in (("scale1:1", dict(scale=1.0, auto_fit=False)),
-                              ("save=False", dict(save=False))):
-            _stem = "smoke_path_%s_%s" % (label.replace("=", ""), _tag)
+        for label, kwargs in (("scale1to1", dict(scale=1.0, auto_fit=False)),
+                              ("saveFalse", dict(save=False))):
+            # No `:` or `=` in the stem: Windows rejects `:` in a filename, and a title with
+            # one made `CloseDoc` report success while the document stayed open — two
+            # documents from earlier runs were still listed afterwards.
+            _stem = "smoke_path_%s_%s" % (label, _tag)
             part = os.path.join(workdir, _stem + ".SLDPRT")
             drw = os.path.join(workdir, _stem + ".SLDDRW")
             shutil.copy2(src, part)
