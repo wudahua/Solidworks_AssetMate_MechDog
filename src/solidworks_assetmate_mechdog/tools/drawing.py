@@ -4607,6 +4607,12 @@ def _view_axis_map(view):
     from ..sw_session import call_method
 
     # Fast path: standard views name their own projection.
+    #
+    # `axes` are MODEL INDEXES (0=X, 1=Y, 2=Z), matching the `pairs` table below — not
+    # letters. Front looks down -Z so the sheet shows X-Y; top looks down -Y so it shows
+    # X-Z; right looks down -X so it shows Z-Y (that is why the third pair is (2,1) and not
+    # (1,2): the model's Z runs across the sheet).
+    _std_axes = None
     try:
         _name = str(call_method(view, "GetOrientationName") or "")
     except Exception:
@@ -4615,22 +4621,10 @@ def _view_axis_map(view):
         except Exception:
             _name = ""
     if _name:
-        _std = {"*前视": ("z", "y"), "*后视": ("z", "y"),
-                "*上视": ("x", "z"), "*下视": ("x", "z"),
-                "*右视": ("z", "y"), "*左视": ("z", "y"),
-                "*等轴测": ("x", "y"), "*上下二等角轴测": ("x", "y"),
-                "*左右二等角轴测": ("x", "y")}
-        if _name in _std:
-            try:
-                outline = precise_outline(view)
-            except Exception:
-                outline = None
-            if outline and len(outline) >= 4:
-                return ({"axes": _std[_name], "orientation": _name,
-                         "outline": [round(float(v), 5) for v in outline],
-                         "centre": [round((outline[0] + outline[2]) / 2.0, 5),
-                                    round((outline[1] + outline[3]) / 2.0, 5)],
-                         "source": "orientation_name"}, None)
+        _std = {"*前视": (0, 1), "*后视": (0, 1),
+                "*上视": (0, 2), "*下视": (0, 2),
+                "*右视": (2, 1), "*左视": (2, 1)}
+        _std_axes = _std.get(_name)
 
     try:
         model_path = str(call_method(view, "GetReferencedModelName") or "")
@@ -4673,6 +4667,20 @@ def _view_axis_map(view):
     if min(extent) <= 1e-6:
         return None, "model_box_degenerate"
     centre = [(lo[i] + hi[i]) / 2 for i in range(3)]
+
+    if _std_axes is not None:
+        # The view named its own projection, so the size match below is unnecessary — but
+        # the receipt must still carry the model box, because `_circular_edge_in_view`
+        # subtracts `centre_m` to place a circle centre on the sheet.
+        return {
+            "axes": [int(_std_axes[0]), int(_std_axes[1])],
+            "centre_m": centre,
+            "extent_m": extent,
+            "model_path": model_path,
+            "outline_m": [width, height],
+            "orientation": _name,
+            "source": "orientation_name",
+        }, None
 
     pairs = ((0, 1), (0, 2), (2, 1), (1, 0), (2, 0), (1, 2))
     scored = []
