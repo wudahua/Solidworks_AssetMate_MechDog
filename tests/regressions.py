@@ -6134,6 +6134,54 @@ def assert_a_tolerance_is_checked_on_the_figure():
     assert "verify_render" in server, "the MCP tool does not expose verify_render"
     return "the printed tolerance is classified and compared against the request"
 
+def assert_a_write_can_name_its_sheet():
+    """0.8.204 — "which page did you edit" must be an argument, not hidden state.
+
+    Report 2026-11-07 (C3): every write tool edited whatever page happened to be active.
+    After `add_sheet` that was the new, EMPTY page, so dimensioning page 2 silently
+    dimensioned nothing. The tools now take `sheet=` (name or 1-based index) and switch
+    before writing.
+
+    Underneath sat the same mistake THREE times in one session, all of the form
+    "`_iter_views(doc)` is not a per-sheet reader":
+
+      1. `list_sheets` reported both pages with the same view list;
+      2. `add_view_to_sheet` counted a total that never moved, so it "succeeded";
+      3. the empty-sheet guard passed on an empty page, because the OTHER page's view was
+         still in the document-level list.
+
+    `ISheet.GetViews` is the per-sheet reader. `IView` has no `Sheet` property and
+    `ISheet.GetSize` takes byref parameters pywin32 cannot supply.
+
+    Measured 2026-11-07 on 飞达动力轴:
+        empty page       -> ok:false  active_sheet_has_no_views
+        sheet='图纸2'     -> ok:true   inserted 4  sheet 图纸2
+        sheet=1          -> ok:true   inserted 4  sheet 图纸1
+    """
+    src = _read("tools/drawing.py")
+    assert "_activate_sheet_if_given" in src, (
+        "a write can no longer be told which sheet to edit — it edits hidden state again")
+    assert "_active_sheet_views" in src, (
+        "the active-sheet reader is gone; document-level `_iter_views` is not per-sheet")
+    assert "active_sheet_has_no_views" in src, "the empty-sheet refusal is gone"
+
+    for fn in ("auto_dimension", "set_title_block"):
+        body = ast.get_source_segment(src, _function_node(ast.parse(src), fn)) or ""
+        assert "_activate_sheet_if_given(doc, sheet)" in body, (
+            "%s takes `sheet` but never switches to it" % fn)
+
+    layout = _read("tools/layout.py")
+    assert "_sheet_model_views" in layout, (
+        "list_sheets/add_view_to_sheet went back to document-level view counting")
+
+    server = _read("server.py")
+    for fn in ("auto_dimension", "set_title_block"):
+        i = server.find("def %s(" % fn)
+        j = server.find("def ", i + 10)
+        assert "sheet: Annotated" in server[i:j], (
+            "the MCP tool %s does not expose `sheet`" % fn)
+    return "writes name their sheet, and views are counted per sheet"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6304,6 +6352,7 @@ STATIC_REGRESSIONS = [
     ("0.8.197 a view names its projection", assert_a_view_names_its_own_projection),
     ("0.8.198 rollback uses sheet names", assert_the_rollback_uses_the_sheet_name_space),
     ("0.8.202 tolerance checked on the figure", assert_a_tolerance_is_checked_on_the_figure),
+    ("0.8.204 writes name their sheet", assert_a_write_can_name_its_sheet),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

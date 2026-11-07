@@ -1120,6 +1120,75 @@ def _save_drawing(doc):
         return False
 
 
+def _active_sheet_views(doc):
+    """Model views on the ACTIVE sheet only.
+
+    Third occurrence of the same mistake (2026-11-07): `_iter_views(doc)` walks every view
+    in the DOCUMENT, so a two-sheet drawing reported the same view list for both pages.
+    That made the empty-sheet guard pass on a page that had nothing on it, because the
+    other page's view was still in the list.
+
+    `IView` has no `Sheet` property; `ISheet.GetViews` is the per-sheet reader.
+    """
+    try:
+        sheet = doc.GetCurrentSheet
+        raw = list(sheet.GetViews or ())
+    except Exception:
+        return []
+    views = []
+    for item in raw:
+        try:
+            import win32com.client as _win
+            view = _win.Dispatch(item)
+            if getattr(view, "Type", None) == 1:
+                continue
+            views.append(view)
+        except Exception:
+            continue
+    return views
+
+
+def _activate_sheet_if_given(doc, sheet):
+    """Switch to `sheet` (name or 1-based index) before a write. Returns (name, error).
+
+    Report 2026-11-07 (C3): every write tool edits whatever page is current, so
+    "dimension page 2" only worked if the caller remembered to `activate_sheet` first.
+    Passing `sheet=` makes the intent part of the call instead of a state the caller has to
+    maintain.
+
+    `sheet=None` means "do not touch the active page" — the old behaviour, still the
+    default so nothing that worked before changes meaning.
+    """
+    if sheet is None:
+        return None, None
+    try:
+        names = [str(n) for n in (doc.GetSheetNames or ())]
+    except Exception as exc:                                        # noqa: BLE001
+        return None, error("sheet_lookup_failed", str(exc)[:120])
+    if not names:
+        return None, error("no_sheets", "the drawing reports zero sheets")
+    target = None
+    if isinstance(sheet, int):
+        try:
+            target = names[sheet - 1]
+        except Exception:
+            return None, error("sheet_not_found",
+                               "index %r is outside 1..%d" % (sheet, len(names)),
+                               sheets=names)
+    else:
+        if str(sheet) not in names:
+            return None, error("sheet_not_found", "no sheet named %r" % sheet,
+                               "existing: %s" % ", ".join(names), sheets=names)
+        target = str(sheet)
+    try:
+        if not doc.ActivateSheet(target):
+            return None, error("activate_sheet_failed",
+                               "could not activate sheet %r" % target, sheets=names)
+    except Exception as exc:                                        # noqa: BLE001
+        return None, error("activate_sheet_failed", str(exc)[:120], sheets=names)
+    return target, None
+
+
 def _open_drawing(path):
     from ..sw_session import get_sw
 
@@ -2048,7 +2117,8 @@ def clamp_dimensions_into_safe_area(drawing_path, inset_m=0.010, step_m=0.014):
 def auto_dimension(drawing_path, all_views=True, include_unmarked=False, eliminate_duplicates=True,
                    dimension_filter=None, place_outside=True, detect_same_value=False,
                    save=True, audit=True,
-                   outside_gap_m=0.012, outside_step_m=0.008, prefer_view=None):
+                   outside_gap_m=0.012, outside_step_m=0.008, prefer_view=None,
+                   sheet=None):
     """Insert the model's driving dimensions into the drawing views.
 
     Equivalent to SolidWorks "Insert Model Items > Dimensions". Marked-for-drawing
@@ -2089,6 +2159,9 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
     """
     try:
         doc = _open_drawing(drawing_path)
+        _sheet_target, _sheet_err = _activate_sheet_if_given(doc, sheet)
+        if _sheet_err is not None:
+            return _sheet_err
         # swImportModelItemsSource_e.FromEntireModel = 0
         # swInsertAnnotation_e: MarkedForDrawing = 32768, NotMarked = 524288
         types = 32768 | (524288 if include_unmarked else 0)
@@ -2121,9 +2194,9 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             _sheet_name = str(doc.GetCurrentSheet.GetName)
         except Exception:
             _sheet_name = None
-        for _v in _iter_views(doc):
-            if getattr(_v, "Type", None) == 1:
-                continue
+        # Per-SHEET, not per-document: `_iter_views(doc)` includes the other pages, which
+        # made this guard pass on an empty page (measured 2026-11-07).
+        for _v in _active_sheet_views(doc):
             _active_views.append(str(_v.Name))
         if not _active_views:
             return error(
@@ -2473,6 +2546,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         return ok(
             drawing=doc.GetTitle,
             inserted=count,
+            sheet=_sheet_target,
             layout=layout,
             include_unmarked=bool(include_unmarked),
             # None means "not measured" (audit=False), not "zero". A receipt that says
@@ -3318,7 +3392,7 @@ def _note_name(note):
 
 
 def set_title_block(drawing_path, name=None, code=None, material=None, apply=False,
-                   include_reversed=True, scale=None):
+                   include_reversed=True, scale=None, sheet=None):
     """Fill title-block placeholders such as the literal text “图样名称” / “图样代号”.
 
     GB templates ship these as plain note text with quotes, so nothing is linked to
@@ -3332,7 +3406,10 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
     """
     try:
         doc = _open_drawing(drawing_path)
-        sheet = doc.GetFirstView
+        _sheet_target, _sheet_err = _activate_sheet_if_given(doc, sheet)
+        if _sheet_err is not None:
+            return _sheet_err
+        _sheet_obj = doc.GetFirstView
         notes = _sheet_notes(sheet)
         planned, unmatched, skipped_reversed, skipped_extra = [], [], [], []
 
@@ -3353,7 +3430,7 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
 
             scale_pattern = _re.compile(r"^\s*\d+(?:\.\d+)?\s*:\s*\d+(?:\.\d+)?\s*$")
             try:
-                sheet_box = list(sheet.GetOutline or [])
+                sheet_box = list(_sheet_obj.GetOutline or [])
                 sheet_h = (sheet_box[3] - sheet_box[1]) if len(sheet_box) >= 4 else 0.297
             except Exception:
                 sheet_h = 0.297

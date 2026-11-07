@@ -1266,6 +1266,7 @@ def auto_dimension(
     prefer_view: Annotated[str, Field(description="Which view KEEPS a dimension that appears in several views. Default keeps the first inserted (usually the main view), which strips a section view — the only place a depth dimension can live — of its copies. Pass the section view's name to keep them there.")] = None,
     audit: Annotated[bool, Field(description="Run the post-insert audit (overlaps, off-sheet, unresolved text) as part of this call. Costs a second pass over every annotation.")] = True,
     detect_same_value: Annotated[bool, Field(description="Group dimensions by (value, type) to flag same-value duplicates. OFF by default: it reads every annotation on every view and measured 18.4 s of auto_dimension's 27.0 s (68%) on 旋转轴. It only reports — it never deletes. Turn on when a sheet shows two identical values and you need the candidates.")] = False,
+    sheet: Annotated[str | int | None, Field(description="Target sheet: name (e.g. '图纸2') or 1-based index. Omit to use whatever page is active. Every write edits the ACTIVE page, so pass this rather than relying on a previous activate_sheet call.")] = None,
 ) -> str:
     """Insert the model's driving dimensions into the drawing (Insert Model Items).
 
@@ -1285,7 +1286,7 @@ def auto_dimension(
         eliminate_duplicates=eliminate_duplicates, dimension_filter=dimension_filter,
         place_outside=place_outside, outside_gap_m=outside_gap_m,
         outside_step_m=outside_step_m, audit=audit,
-        detect_same_value=detect_same_value, prefer_view=prefer_view))
+        detect_same_value=detect_same_value, prefer_view=prefer_view, sheet=sheet))
 
 
 @mcp.tool()
@@ -1421,6 +1422,7 @@ def set_title_block(
     apply: Annotated[bool, Field(description="False (default) is a dry run that reports what WOULD change; True actually writes.")] = False,
     include_reversed: Annotated[bool, Field(description="Also update the 180-degree-rotated title-block copy in the sheet corner.")] = True,
     scale: Annotated[float | None, Field(description="Sheet scale to write into the 比例 cell (2.0 means 2:1). Omit to leave the cell alone; the sheet's own ScaleDecimal is the usual source.")] = None,
+    sheet: Annotated[str | int | None, Field(description="Target sheet: name or 1-based index. Omit to use the active page. A title block usually exists on every page, so be explicit when the drawing has several.")] = None,
 ) -> str:
     """Fill title-block placeholders (图样名称 / 图样代号 / 材质) in a drawing.
 
@@ -1433,7 +1435,7 @@ def set_title_block(
     """
     return _json(drawing.set_title_block(
         drawing_path, name=name, code=code, material=material, apply=apply,
-        include_reversed=include_reversed, scale=scale,
+        include_reversed=include_reversed, scale=scale, sheet=sheet,
     ))
 
 
