@@ -811,6 +811,52 @@ def main():
         return ", ".join(results)
 
     r.check("create_drawing scale=1:1 / save=False", _create_drawing_paths)
+
+    def _revolved_section():
+        """A section that never cut must not report `ok`.
+
+        Report 2026-11-07 (P0-1): on 小车底部滚轮 (Ø64 x 26 wheel, axis along X) the axial
+        section taken from the FRONT view came back line-for-line identical to its parent —
+        `edge_count 4` against the parent's 4, `hatch_count 0`, no bore, no counterbore —
+        and `sanity.verdict` still said **"ok"**.
+
+        It said ok because `kept_dimension` compares the section's width against the source
+        view's, and an uncut projection has the same extent. The check measured the one
+        property that cannot detect this failure.
+
+        ONLY the bad half is asserted. The "working recipe" — cutting the END view
+        vertically — gave 28 edges / 2 hatches when it was first measured (0.8.218) and
+        gives 4 / 0 when run on its own now (2026-11-08), including on a fresh drawing with
+        no earlier cut. I cannot explain that difference yet, and an assertion that flips
+        between runs is worse than none, so it stays out until it is understood.
+
+        Fixture is local-only (`测试用例/` is gitignored), so a missing file skips with a
+        reason instead of failing — the branch stays covered where the part exists.
+        """
+        src = os.path.join(ROOT, "测试用例", "小车底部滚轮.SLDPRT")
+        if not os.path.exists(src):
+            return ("skipped: 小车底部滚轮.SLDPRT not present (测试用例/ is gitignored); "
+                    "the no_hatch / identical_to_source branch stays unchecked")
+        stem = "smoke_rev_%s" % uuid.uuid4().hex[:6]
+        part = os.path.join(workdir, stem + ".SLDPRT")
+        drw = os.path.join(workdir, stem + ".SLDDRW")
+        shutil.copy2(src, part)
+        built = drawing.create_drawing(part, drw, views=["front", "right"], paper="A3")
+        require(built)
+        got = drawing.add_section_view(drw, view_name="工程图视图1",
+                                       orientation="horizontal", offset_m=0.0)
+        sanity = got.get("sanity") or {}
+        assert sanity.get("verdict") in ("no_hatch", "identical_to_source"), (
+            "a section that did not cut reports verdict %r — the exact lie the 2026-11-07 "
+            "report measured (edges %r vs parent %r, hatch %r). Verdict must be no_hatch "
+            "or identical_to_source."
+            % (sanity.get("verdict"), sanity.get("edge_count"),
+               sanity.get("source_edge_count"), sanity.get("hatch_count")))
+        return "front-cut=%s (edges %s vs parent %s, hatch %s)" % (
+            sanity.get("verdict"), sanity.get("edge_count"),
+            sanity.get("source_edge_count"), sanity.get("hatch_count"))
+
+    r.check("revolved part section verdict", _revolved_section)
     r.check("add_bom_table (native, populated)", _bom_table)
 
     # --- editing tools: create → move → delete, all by name -----------------------------
