@@ -487,6 +487,11 @@ def create_drawing(
     When given, the automatic packer is skipped entirely — a 4-view sheet previously
     fell back to a single vertical column and pushed the last views outside the frame.
     """
+    # Report 2026-11-07 (P0-3): the outermost `except` returned an error without closing
+    # the drawing this call had just created. A probe measured "docs after: 17 (leaked 5)",
+    # including a blank drawing at path '' that no path-based cleanup can ever find.
+    # Bound before the `try` so the handler can reach it.
+    _created_drawing = None
     try:
         from ..sw_session import get_sw
 
@@ -571,6 +576,7 @@ def create_drawing(
                 pass
 
         drw = _new_document(sw, template)
+        _created_drawing = drw
         if drw is None:
             return error("drawing_create_failed",
                          "SolidWorks NewDocument returned null for %s" % template,
@@ -1133,7 +1139,23 @@ def create_drawing(
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:
-        return error("create_drawing_failed", str(exc))
+        # Close only what THIS call opened. A blank drawing carries an empty path, so
+        # matching by path is useless — hold the object and close it by title.
+        _cleaned, _cleanup_failed = [], []
+        if _created_drawing is not None:
+            try:
+                from ..sw_session import get_sw as _get_sw
+                _title = str(_created_drawing.GetTitle)
+                _get_sw().CloseDoc(_title)
+                _cleaned.append(_title)
+            except Exception as _close_exc:                         # noqa: BLE001
+                _cleanup_failed.append(str(_close_exc)[:80])
+        return error("create_drawing_failed", str(exc),
+                     ("本次调用创建的图纸已关闭：%s" % ", ".join(_cleaned)) if _cleaned
+                     else ("图纸未能关闭：%s" % ", ".join(_cleanup_failed)) if _cleanup_failed
+                     else "本次调用没有创建图纸，无需清理",
+                     closed_on_failure=_cleaned,
+                     cleanup_failed=_cleanup_failed or None)
 
 
 @perf_hooks.timed("save")

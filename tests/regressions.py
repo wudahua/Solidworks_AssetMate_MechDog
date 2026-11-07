@@ -6405,6 +6405,44 @@ def assert_a_conditional_receipt_field_is_pre_bound():
         "the receipt field is written twice again — one of them will drift")
     return "the conditional receipt field is bound on every path"
 
+def assert_a_failed_create_closes_what_it_opened():
+    """0.8.212 — an error path that leaves a document behind is still a leak.
+
+    Report 2026-11-07 (P0-3): `create_drawing`'s outermost `except` returned an error
+    without closing the drawing it had just created. The probe recorded
+    "docs after: 17 (leaked 5)", including:
+
+        LEAK 工程图87 - 图纸1 | path=''
+
+    A blank drawing has an EMPTY path, so every cleanup pass that matches by path — which
+    is all of them — is blind to it. That is the same shape as the 0.8.89 blank-drawing
+    leak.
+
+    The handler now holds the object and closes it by TITLE, and the receipt says which
+    document was closed (or that the close itself failed). Both matter: a silent cleanup is
+    indistinguishable from no cleanup.
+
+    String-pinned because a real error path needs a real COM failure to trigger; the behaviour
+    was exercised by the probe described above, not by this assertion.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "create_drawing")) or ""
+    assert "_created_drawing = None" in body, (
+        "the cleanup handle is gone — a failed create leaks its drawing again")
+    assert "_created_drawing = drw" in body, (
+        "the drawing is not remembered, so the handler has nothing to close")
+    assert "CloseDoc(_title)" in body, (
+        "the handler does not close by title — a blank drawing has no path to match")
+    assert "closed_on_failure" in body, (
+        "the receipt does not say whether anything was cleaned up")
+    # the handle must be bound before the try, or the handler cannot see it
+    pre = body.find("_created_drawing = None")
+    try_at = body.find("    try:")
+    assert 0 < pre < try_at, (
+        "the cleanup handle is bound inside the try, so the except block cannot reach it")
+    return "a failed create_drawing closes what it opened and says so"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6581,6 +6619,7 @@ STATIC_REGRESSIONS = [
     ("0.8.207 direction from view name", assert_sheet_direction_comes_from_the_view_name),
     ("0.8.209 too many matches is no answer", assert_too_many_matches_means_no_answer),
     ("0.8.210 pre-bind conditional field", assert_a_conditional_receipt_field_is_pre_bound),
+    ("0.8.212 failed create closes its drawing", assert_a_failed_create_closes_what_it_opened),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
