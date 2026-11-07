@@ -6681,6 +6681,44 @@ def assert_a_tolerance_can_print_three_decimals():
     assert "tolerance_precision" in server, "the MCP tool does not expose the parameter"
     return "tolerance decimals are settable, read back, and proven on the PDF"
 
+def assert_the_tolerance_probe_reads_a_window_not_the_page():
+    """0.8.220 — a flat text dump lost the deviation stack, and the check cried wolf.
+
+    Report 2026-11-07 (P1-1): `verify_render=true` reported
+
+        "shape": "basic_no_deviation", "deviation_count": 0,
+        "lines": ["0 18", "3. 18 孔为基准孔 H7， 30 沉孔 H8，..."]
+
+    while `+0.03 / 0` was plainly printed under the Ø30. So a CORRECT tolerance was
+    reported as missing — worse than the original blind spot, because a check that cries
+    wolf stops being trusted.
+
+    Two objects were involved and `get_text_range()` flattened them apart: the `<MOD-DIAM>`
+    glyph and the tolerance stack are separate text items, and the flat dump also drags in
+    the technical-requirements prose, which mentions "H7"/"H8" and can answer for the
+    dimension by accident.
+
+    So the probe now reads per rect and keeps only a WINDOW around the nominal — ±3 text
+    heights in both axes. Measured 2026-11-07 on 飞达动力轴 with tolerance_precision=3:
+
+        bilateral  bilateral_two_deviations  windowed  ['35', '0.050', '0.050']
+        symmetric  symmetric_plus_minus      windowed  ['35 ±0.050']
+        basic      basic_no_deviation        windowed  ['35']
+
+    The window must REPLACE the page text, not be appended to it: appending double-counts
+    every deviation (a bilateral would report `deviation_count: 4`).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "_tolerance_text_on_pdf")) or ""
+    assert "count_rects()" in body, (
+        "the probe reads the page as one string again — the stack disappears from it")
+    assert "get_text_bounded" in body, "per-rect text extraction is gone"
+    assert "windowed" in body, "the receipt no longer says whether a window was used"
+    assert 'raw = "\\n".join(window_text)' in body, (
+        "the window is appended to the page text again — deviations will be double-counted")
+    return "the tolerance probe reads a local window around the nominal"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6864,6 +6902,7 @@ STATIC_REGRESSIONS = [
     ("0.8.217 a section that did not cut", assert_a_section_that_did_not_cut_is_not_ok),
     ("0.8.217 title block scale cell", assert_a_title_block_scale_can_be_written),
     ("0.8.219 tolerance prints three decimals", assert_a_tolerance_can_print_three_decimals),
+    ("0.8.220 probe reads a window", assert_the_tolerance_probe_reads_a_window_not_the_page),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

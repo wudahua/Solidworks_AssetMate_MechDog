@@ -6133,6 +6133,67 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     except Exception as exc:                                        # noqa: BLE001
         return {"checked": False, "reason": "pdf_unreadable: %s" % str(exc)[:60]}
 
+    # Report 2026-11-07 (P1-1): `get_text_range()` flattened the page into one string and
+    # the deviation stack was simply missing from it — the report measured
+    # `"lines": ["0 18", ...]` with `deviation_count: 0` while `+0.03 / 0` was plainly
+    # printed under the Ø30. Both the `<MOD-DIAM>` glyph and the tolerance stack are
+    # SEPARATE text objects, and a flat dump does not keep them next to their nominal.
+    #
+    # So read per rect and keep only a WINDOW around the nominal: the tolerance lives
+    # underneath (or beside) its dimension, and pulling the whole page in lets the
+    # technical-requirements block — which mentions "H7" and "H8" in prose — answer for
+    # the dimension.
+    window_text = []
+    try:
+        n_rects = textpage.count_rects()
+        boxes = []
+        for _i in range(n_rects):
+            try:
+                _r = textpage.get_rect(_i)
+                _t = textpage.get_text_bounded(left=_r[0], bottom=_r[1],
+                                               right=_r[2], top=_r[3])
+            except Exception:
+                continue
+            _t = ( _t or "" ).strip()
+            if _t:
+                boxes.append((float(_r[0]), float(_r[1]), float(_r[2]), float(_r[3]), _t))
+        # locate the nominal's own box
+        nominal_precise = None
+        try:
+            nominal_precise = float(nominal_mm)
+        except Exception:
+            nominal_precise = None
+        anchor = None
+        for _b in boxes:
+            try:
+                if abs(float(_b[4].replace("Ø", "").replace("φ", "")) - nominal_precise) < 1e-6:
+                    anchor = _b
+                    break
+            except Exception:
+                continue
+        if anchor is not None:
+            # Text height gives the scale: a tolerance stack sits within ~3 line heights.
+            _h = max(1.0, anchor[3] - anchor[1])
+            _cx = (anchor[0] + anchor[2]) / 2.0
+            _cy = (anchor[1] + anchor[3]) / 2.0
+            for _b in boxes:
+                _bx = (_b[0] + _b[2]) / 2.0
+                _by = (_b[1] + _b[3]) / 2.0
+                if abs(_bx - _cx) <= 3.0 * _h and abs(_by - _cy) <= 3.0 * _h:
+                    window_text.append(_b[4])
+        elif boxes:
+            # No exact nominal found: fall back to everything, which is what the old code
+            # did. Better a false positive than a silent "no deviation" when the parser
+            # simply did not recognise the nominal.
+            window_text = [b[4] for b in boxes]
+    except Exception:
+        window_text = []
+    # REPLACE, do not append. Appending the window to the full-page text double-counts
+    # every deviation it contains, so a bilateral tolerance would report `deviation_count: 4`.
+    _window_used = bool(window_text)
+    if _window_used:
+        raw = "\n".join(window_text)
+
     nominal = ("%g" % round(float(nominal_mm), 3))
     dev = ("%g" % round(float(upper_mm), 3)) if upper_mm is not None else None
     hi = ("%g" % round(float(nominal_mm) + float(upper_mm), 3)) if upper_mm is not None else None
@@ -6157,6 +6218,7 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
         shape = "unrecognised"
 
     return {"checked": True, "shape": shape, "lines": hits[:8],
+            "windowed": _window_used,
             "deviation_count": dev_count, "limit_count": hi_count,
             "expected": tol}
 
