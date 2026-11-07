@@ -6215,6 +6215,40 @@ def assert_the_audit_judges_each_sheet_by_its_own_frame():
         "the out-of-frame warning does not say which sheet it belongs to")
     return "each sheet is audited against its own frame"
 
+def assert_delivery_checks_every_sheet():
+    """0.8.206 — a drawing can pass delivery with an entirely blank page.
+
+    Report 2026-11-07 (C4, second half): `delivery_check` aggregated the DOCUMENT, so
+    `views_present` was satisfied by page 1 and said nothing about page 2. Add a sheet, put
+    nothing on it, and the verdict was unchanged — even though the exported PDF has a blank
+    page in the middle of the deliverable.
+
+    It now consumes `drawing_audit`'s per-sheet rows and reports:
+      * `sheets: [{index, name, size_m, view_count, dimensions, issues}]`
+      * a `every_sheet_has_views` check that BLOCKS on any page with no view
+      * out-of-frame detail naming both the view and its sheet
+
+    Measured 2026-11-07 (page 1 with a front view + one empty page):
+        verdict  仅供参考/未完成
+        blockers [every_sheet_has_views, dimensions_present, hole_callouts]
+        sheets   [('图纸1', 1), ('空页', 0)]
+
+    Also fixed here: `len(ai_supplied)` in the verdict note, where `ai_supplied` defaults
+    to None. That raised `object of type 'NoneType' has no len()` on every call that did
+    not pass the argument — introduced in 0.8.201 and invisible to smoke, whose case
+    always passes it.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "delivery_check")) or ""
+    assert "every_sheet_has_views" in body, (
+        "delivery no longer blocks on an empty page — a blank sheet passes")
+    assert "sheet_summary" in body, "the per-sheet summary is gone"
+    assert "sheets=sheet_summary" in body, "the receipt does not expose per-sheet rows"
+    assert "len(ai_supplied or [])" in body, (
+        "len(ai_supplied) is back — it raises TypeError whenever the argument is omitted")
+    return "delivery reports and blocks on per-sheet state"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6387,6 +6421,7 @@ STATIC_REGRESSIONS = [
     ("0.8.202 tolerance checked on the figure", assert_a_tolerance_is_checked_on_the_figure),
     ("0.8.204 writes name their sheet", assert_a_write_can_name_its_sheet),
     ("0.8.205 audit per sheet frame", assert_the_audit_judges_each_sheet_by_its_own_frame),
+    ("0.8.206 delivery checks every sheet", assert_delivery_checks_every_sheet),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

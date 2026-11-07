@@ -6766,14 +6766,43 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         view_count = audit.get("view_count") or 0
         dim_total = audit.get("total_dimensions") or 0
 
-        record("views_present", view_count > 0, "%d 个视图" % view_count)
+        # ---- per-sheet (report C4) -------------------------------------------
+        # `drawing_audit` walks every page, so the detail is already there; the previous
+        # version threw it away and only counted document-wide, which meant a two-page
+        # drawing could pass with an entirely EMPTY second page — `views_present` saw page
+        # 1's views and said yes.
+        audit_sheets = audit.get("sheets") or []
+        sheet_summary = [{
+            "index": sh.get("index"),
+            "name": sh.get("name"),
+            "size_m": sh.get("size_m"),
+            "view_count": sh.get("view_count"),
+            "dimensions": sh.get("dimensions"),
+            "issues": [w.get("issue") for w in (sh.get("warnings") or [])],
+        } for sh in audit_sheets]
+        empty_sheets = [sh["name"] for sh in sheet_summary if not sh.get("view_count")]
+        sheet_issues = {sh["name"]: sh["issues"] for sh in sheet_summary if sh.get("issues")}
+
+        record("views_present", view_count > 0, "%d 个视图 / %d 页"
+               % (view_count, len(sheet_summary) or 1))
+        # A page with no view is not a "drawing page" — it will export blank. Blocking,
+        # because the whole point of adding a sheet is to put something on it.
+        record("every_sheet_has_views", not empty_sheets,
+               ("空页：%s" % "、".join(empty_sheets)) if empty_sheets else None,
+               sheets=sheet_summary)
         record("no_view_outside_sheet", "view_outside_sheet" not in warnings,
-               "有视图超出图纸" if "view_outside_sheet" in warnings else None)
+               ("超出图纸：%s" % "；".join(
+                   "%s（%s）" % (w.get("view"), w.get("sheet"))
+                   for w in (audit.get("warnings") or [])
+                   if w.get("issue") == "view_outside_sheet") or None)
+               if "view_outside_sheet" in warnings else None)
         record("no_view_overlap", "views_overlap" not in warnings,
                "有视图互相重叠" if "views_overlap" in warnings else None)
         record("no_blank_view", "blank_view" not in warnings,
                "存在空白视图" if "blank_view" in warnings else None)
-        record("dimensions_present", dim_total > 0, "%d 个尺寸" % dim_total)
+        record("dimensions_present", dim_total > 0, "%d 个尺寸" % dim_total,
+               per_sheet=[{"sheet": sh["name"], "dimensions": sh.get("dimensions")}
+                          for sh in sheet_summary])
 
         # ---- annotations -----------------------------------------------------
         anns = list_drawing_annotations(drawing_path)
@@ -7024,12 +7053,19 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             # trusted the note read `blockers: []` as "no orphans" when the same receipt
             # listed them under `pending`. The note is now generated from where the items
             # really go.
+            sheets=sheet_summary,
+            sheet_issues=sheet_issues or None,
             note=("verdict 依据流程 §7；blockers 非空即不可宣称可制造，"
                   "ai_supplied 非空则只能算待设计审核。"
                   "无关联实体的尺寸计入 **pending**（不是 blockers）——"
                   "它表示「图纸还不能交付审核」，与「不可制造」是两个等级。"
                   "当前：blockers %d 项、pending %d 项、ai_supplied %d 项。"
-                  % (len(blockers), len(pending), len(ai_supplied))),
+                  # `ai_supplied` defaults to None — `len(None)` raised TypeError on every
+                  # call that did not pass it, and the whole tool reported
+                  # `delivery_check_failed: object of type 'NoneType' has no len()`.
+                  # Introduced 0.8.201 when this note started counting items; smoke did not
+                  # catch it because that case passes ai_supplied explicitly.
+                  % (len(blockers), len(pending), len(ai_supplied or []))),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
