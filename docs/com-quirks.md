@@ -2462,9 +2462,14 @@ lm.GetLayerAtIndex(i)     # 不存在（<unknown>.GetLayerAtIndex）
 
 ## 五十六、一个尺寸有三套身份，而且互不认账（0.8.186 实测）
 
-> **结论先行**：想「删掉我刚插入的那一条尺寸」，在当前绑定上**做不到**。
-> `FullName`、`IAnnotation.GetName`、图纸坐标三套标识，在 `add_distance_dimension`
-> 插入之后互相对不上。**这不是没试过，是四层都试过了。**
+> **结论先行（2026-11-07 更正）**：**做得到。** 我原来写「做不到」，
+> 因为第四层判断错了 —— 不是三套标识互不认账，而是**我一直在跨两套命名空间做差集**。
+>
+> 正确做法：快照用 `IDisplayDimension.GetNameForSelection()`，差集用这个名，
+> 删除时遍历注解比对同名后 `Select(False)` + `EditDelete`。
+> 实测 `dims 8 -> 7`，回到插入前的数量。
+>
+> 下面保留四层的排查过程，但**第四层的结论已作废**。
 
 ### 场景
 
@@ -2514,12 +2519,69 @@ new    = ['RD6@工程图视图1@d.Drawing']
 **修法**：改用插入位置删——插入位置就是当初请求 `add_distance_dimension` 的那个 `pt`，
 精确到 `[0.2512, 0.2269]`。
 
-**④ 按位置也删不掉**
+**④ 按位置删不掉 —— 这一层的结论是错的**
 
-`rolled_back` 仍然 `false`，`rolled_back_names` 仍然 `[]`。
+当时 `rolled_back` 仍然 `false`，我据此判定「这条路也不通」。
 
-**这一层没解决。** 与 0.8.155 那轮「按位置删有误删风险」是同一块地——
-只是这次连精确位置都删不动。
+**真相是位置本来就对不上**：`add_distance_dimension(x_m=0.20, y_m=0.15)` 之后，
+注解的实际位置不是 `(0.20, 0.135)`，而 `delete_annotation(position_m=...)` 又是
+按「离给定点最近且在容差内」匹配的，于是 `annotation_not_found`。
+
+**真正的问题从一开始就不是「删不掉」，是「找不到」。**
+
+### ⑤ 正解：有两套命名空间，别跨着用
+
+```
+IDimension.FullName               D1@Sketch1@AM_50ef1f.Part          ← 模型侧
+IDisplayDimension.GetNameForSelection
+                                  D1@Sketch1@AM_50ef1f-1@工程图视图1  ← 图纸侧
+```
+
+**`FullName` 命名的是模型里的那个尺寸，图纸包装加了视图后缀。**
+用 `FullName` 做出来的差集，永远不可能匹配上 `Select` 认的名字。
+
+正确流程：
+
+```python
+def _dimension_selection_names(doc):
+    # 遍历每个视图的注解，取 GetNameForSelection()
+    ...
+
+before = _dimension_selection_names(doc)          # [(name, annotation)]
+insert(...)
+after  = _dimension_selection_names(doc)
+new    = [n for n in after_names if n not in before_names]
+
+for name, ann in after:
+    if name not in new:
+        continue
+    doc.ClearSelection2(True)
+    if ann.Select(False):
+        doc.EditDelete()
+```
+
+实测（door 夹具）：`before=12 after=13 new=1`，删除后 `dims 8 -> 7` —— 回到插入前。
+
+### `SelectByID2` 为什么用不了
+
+它的签名是 `SelectByID2(Name, Type, X, Y, Z, Append, Mark, Callout, SelectOption)`，
+`Callout` 是**必填 IDispatch**：
+
+```
+None     → 类型不匹配 arg 8
+0        → 类型不匹配 arg 8
+Missing  → PyOleMissing 无法转换
+Empty    → 类型不匹配 arg 8
+```
+
+**所以只能走「遍历 + 比对 + Select(False)」这条路，不能按名字直选。**
+
+### 补充：`Select(False)` + `EditDelete` 一直有效
+
+单独测过：随便挑一条尺寸 `Select(False)` 再 `EditDelete`，`dims 7 -> 6`。
+`DeleteSelection(False)` 同样有效。
+
+**两条路都能删 —— 前提是你手上拿着那个注解对象。**
 
 ### 为什么 `delete_annotation` 在这个场景失效（推测，未证实）
 

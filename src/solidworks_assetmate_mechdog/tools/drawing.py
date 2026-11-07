@@ -7979,6 +7979,73 @@ def _edges_define_a_length(rows, edge_a, edge_b, parallel_tol=0.02):
     return True, None
 
 
+def _dimension_selection_names(doc):
+    """Full names that `IAnnotation.Select` actually matches on, with the annotation.
+
+    CORRECTION 2026-11-07 — this closes the last "impossible" item from the v0.8.173
+    reports. `com-quirks` 56 recorded that deleting a just-inserted dimension failed at
+    four levels and could not be made to work. The fourth level was wrong: there are simply
+    TWO name spaces, and I was comparing across them.
+
+        IDimension.FullName            D1@Sketch1@AM_50ef1f.Part          <- model side
+        IDisplayDimension.GetNameForSelection
+                                       D1@Sketch1@AM_50ef1f-1@工程图视图1  <- sheet side
+
+    `FullName` names the MODEL dimension; the sheet wrapper adds the view. A difference
+    computed on `FullName` can never match anything `Select` accepts, so the rollback
+    reported `rolled_back: false` with an empty list.
+
+    Measured 2026-11-07 on the door fixture: snapshot 12 model names vs 12 selection names,
+    `same set: False`; comparing on the selection name and then `Select(False)` +
+    `EditDelete` took the sheet from 7 dimensions to 6.
+
+    So: snapshot with THIS, diff with THIS, and delete by walking the annotations and
+    comparing this name — `ModelDocExtension.SelectByID2` cannot be used here at all
+    (it demands a non-null Callout, measured: None / 0 / Missing / Empty all raise
+    类型不匹配 at arg 8).
+    """
+    import win32com.client as win
+
+    try:
+        import win32com.client.gencache as _gencache
+        import importlib
+        import sys as _sys
+        cache = _gencache.GetGeneratePath()
+        if cache and cache not in _sys.path:
+            _sys.path.insert(0, cache)
+        _mod = importlib.import_module(
+            "83A33D31-27C5-11CE-BFD4-00400513BB57x0x32x0")
+    except Exception:
+        _mod = None
+
+    found = []
+    for view in _iter_views(doc):
+        if getattr(view, "Type", None) == 1:
+            continue
+        for raw in (view.GetAnnotations or ()):
+            try:
+                annotation = win.Dispatch(raw)
+                if int(annotation.GetType) != 4:
+                    continue
+            except Exception:
+                continue
+            name = None
+            if _mod is not None:
+                try:
+                    specific = annotation.GetSpecificAnnotation
+                    name = _mod.IDisplayDimension(
+                        specific._oleobj_).GetNameForSelection()
+                except Exception:
+                    name = None
+            if not name:
+                # Fall back to the model full name; it will not match a fresh selection,
+                # but it lets the caller see something instead of an empty string.
+                name = _annotation_dimension_full_name(annotation, win)
+            if name:
+                found.append((name, annotation))
+    return found
+
+
 def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                         max_candidates_per_gap=3, apply_gaps=False,
                         apply_indices=None, apply_candidate=0):
@@ -8396,7 +8463,8 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                                 "「1570.796 mm」这类假长度 —— 所以不插入，"
                                                 "请换候选。" % _why_not)})
                     continue
-                _names_before = _dimension_full_names(drawing_path, _doc_live)
+                _snap_before = _dimension_selection_names(_doc_live) if _doc_live else []
+                _names_before = [n for n, _ in _snap_before]
                 added = add_distance_dimension(
                     drawing_path, cand["edge_a"], cand["edge_b"],
                     x_m=pt[0], y_m=pt[1] - 0.015)
@@ -8471,7 +8539,8 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                     # whole drawing. Measured 2026-11-06: the reader returns [] on a sheet
                     # that visibly carries 10 dimensions, so this guard is load-bearing,
                     # not defensive decoration.
-                    _names_after = _dimension_full_names(drawing_path, _doc_live)
+                    _snap_after = _dimension_selection_names(_doc_live) if _doc_live else []
+                    _names_after = [n for n, _ in _snap_after]
                     _new_names = [n for n in _names_after if n not in _names_before]
                     _rollback_possible = bool(_names_before) and bool(_names_after)
                     if not _rollback_possible:
@@ -8481,39 +8550,38 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                         _rb_reason = None      # filled in below if the delete fails
                     _deleted = []
                     if _rollback_possible:
-                        from . import layout as _layout_mod
-                        # `_new_names` holds FullName (RD6@工程图视图1@d.Drawing) while
-                        # `delete_annotation` matches on `IAnnotation.GetName` (细节项目34),
-                        # so name lookups found nothing and `rolled_back` stayed false.
-                        # The insert position is known exactly — it is the point we asked
-                        # `add_distance_dimension` to place at — so delete by position.
-                        _px, _py = float(pt[0]), float(pt[1]) - 0.015
-                        try:
-                            _res = _layout_mod.delete_annotation(
-                                drawing_path, _name or "_", save=False,
-                                position_m=[_px, _py])
-                            if _res.get("ok"):
-                                _deleted.extend(_new_names)
-                        except Exception:
-                            pass
+                        # Walk the annotations and delete by SELECTION name.
+                        #
+                        # `SelectByID2` cannot be used: its `Callout` parameter is a
+                        # required IDispatch and every null variant (`None`, `0`,
+                        # `python3com.Missing`, `python3com.Empty`) raises
+                        # 类型不匹配 at arg 8 — measured 2026-11-07.
+                        #
+                        # But `IAnnotation.Select(False)` + `EditDelete` works, and the
+                        # name that matches is `GetNameForSelection`, NOT
+                        # `IDimension.FullName`. See `_dimension_selection_names`.
+                        for _nm, _ann in _snap_after:
+                            if _nm not in _new_names:
+                                continue
+                            try:
+                                _doc_live.ClearSelection2(True)
+                                if not _ann.Select(False):
+                                    continue
+                                _doc_live.EditDelete()
+                                _deleted.append(_nm)
+                            except Exception:
+                                continue
                         if _deleted:
+                            try:
+                                _doc_live.EditRebuild3()
+                                perf_hooks.bump("rebuild_calls")
+                            except Exception:
+                                pass
                             _rb_reason = None
                         else:
-                            _rb_reason = ("scoped to %d new name(s) but delete_annotation "
-                                          "could not remove them (tried position %s) — the "
-                                          "wrong dimension is still on the sheet"
-                                          % (len(_new_names), [round(_px, 4), round(_py, 4)]))
-                        if not _deleted:
-                            # Fall back to the FullName one at a time; it may match on
-                            # builds where GetName and FullName agree.
-                            for _name in _new_names:
-                                try:
-                                    _res = _layout_mod.delete_annotation(
-                                        drawing_path, _name, save=False)
-                                    if _res.get("ok"):
-                                        _deleted.append(_name)
-                                except Exception:
-                                    continue
+                            _rb_reason = ("scoped to %d new selection name(s) but Select(False)"
+                                          " + EditDelete removed none"
+                                          % len(_new_names))
                     applied.append({"value_mm": _expected,
                                     "gap_index": _idx,
                                     "candidate_index": _pick,

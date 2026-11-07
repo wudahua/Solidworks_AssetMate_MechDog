@@ -6039,6 +6039,55 @@ def assert_a_view_names_its_own_projection():
         "the standard-view table is gone")
     return "a standard view reports its own projection; size match is fallback only"
 
+def assert_the_rollback_uses_the_sheet_name_space():
+    """0.8.198 — the last "impossible" item was two name spaces, not a missing API.
+
+    com-quirks 56 recorded four failed attempts to delete a dimension that had just been
+    inserted, and concluded "cannot be done". The fourth attempt failed because positions
+    do not match; the real defect was upstream of all four:
+
+        IDimension.FullName               D1@Sketch1@AM_50ef1f.Part          <- model
+        IDisplayDimension.GetNameForSelection
+                                          D1@Sketch1@AM_50ef1f-1@工程图视图1  <- sheet
+
+    A difference computed on `FullName` can never intersect what `Select` accepts, so
+    `_new_names` was always correct and always useless.
+
+    Measured after the fix (door fixture): `before=12 after=13 new=1`, and
+    `Select(False)` + `EditDelete` on the matching annotation took the sheet from 8
+    dimensions back to 7 — the pre-insert count.
+
+    Also asserted: `SelectByID2` is NOT the mechanism. Its `Callout` argument is a required
+    IDispatch and every null variant raises 类型不匹配 at arg 8, so the code must walk the
+    annotations instead of selecting by name.
+    """
+    src = _read("tools/drawing.py")
+    assert "_dimension_selection_names" in src, (
+        "the snapshot went back to IDimension.FullName — a difference computed on it can "
+        "never match a selection, so the rollback silently deletes nothing")
+    assert "GetNameForSelection" in src, (
+        "the sheet-side name is not read")
+    assert '"rolled_back"' in src, "the receipt no longer reports the rollback"
+
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+    assert "_dimension_selection_names(_doc_live)" in body, (
+        "plan_dimension_gaps does not snapshot with the selection-name reader")
+    assert "_ann.Select(False)" in body, (
+        "the rollback does not select the annotation it found")
+    assert ".EditDelete()" in body, (
+        "the rollback does not delete the selected annotation")
+    # Check for a CALL, not a mention: the comment above the loop explains why
+    # SelectByID2 cannot be used, and that sentence must not trip this assertion.
+    assert "SelectByID2(" not in body, (
+        "SelectByID2 cannot be used here — its Callout argument is required and every null "
+        "variant raises 类型不匹配 at arg 8")
+
+    quirks = open(os.path.join(ROOT, "docs", "com-quirks.md"), encoding="utf-8").read()
+    assert "做得到" in quirks and "两套命名空间" in quirks, (
+        "com-quirks still says deleting a just-inserted dimension is impossible")
+    return "the rollback diffs on the sheet name space and deletes what it found"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6207,6 +6256,7 @@ STATIC_REGRESSIONS = [
     ("0.8.192 judge before drawing", assert_a_length_is_judged_before_it_is_drawn),
     ("0.8.194 guard a missing measurement", assert_a_missing_measurement_is_not_compared),
     ("0.8.197 a view names its projection", assert_a_view_names_its_own_projection),
+    ("0.8.198 rollback uses sheet names", assert_the_rollback_uses_the_sheet_name_space),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
