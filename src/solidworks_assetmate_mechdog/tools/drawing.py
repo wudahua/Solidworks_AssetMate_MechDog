@@ -1268,133 +1268,210 @@ def render_drawing(pdf_path, output_dir=None, scale=2.0):
 
 @perf_hooks.timed("audit")
 def drawing_audit(drawing_path):
-    """Structural audit: views, scales, blank views, dimension and annotation counts.
+    """Structural audit, PER SHEET: views, scales, blank views, counts, out-of-frame.
 
     Evidence only — it does not judge whether the chosen views or tolerances are
     manufacturable. Blank views and missing dimensions are the checks that catch
     silent failures.
+
+    Report 2026-11-07 (C4): a two-sheet drawing reported `sheet_count: 2` but a single
+    `sheet_size_m` (the first sheet's), and judged EVERY view against that one frame. On a
+    document whose page 2 is Letter while page 1 is A2, page 1's perfectly placed view was
+    flagged `view_outside_sheet`, because Letter is smaller than where the view sits.
+
+    So the audit now walks each sheet, uses THAT sheet's outline, and returns
+    `sheets: [{name, size_m, view_count, dimensions, annotations, views[], warnings[]}]`.
+    Overlap is only checked WITHIN a sheet — two views on different pages cannot overlap,
+    and the old document-wide loop would have compared their coordinates blindly.
     """
     try:
         doc = _open_drawing(drawing_path)
-        views = _iter_views(doc)
-        sheets = [v for v in views if getattr(v, "Type", None) == 1]
-        model_views = [v for v in views if getattr(v, "Type", None) != 1]
+        names = [str(n) for n in (doc.GetSheetNames or ())]
+        try:
+            original_active = str(doc.GetCurrentSheet.GetName)
+        except Exception:
+            original_active = None
 
-        rows, warnings = [], []
+        sheet_rows, all_views, warnings, boxes_by_sheet = [], [], [], []
         total_dims = 0
-        boxes = []
-        sheet_box = list(sheets[0].GetOutline) if sheets else None
-        # IView.GetAnnotationCount on a model view also reports sheet-level notes (技术要求),
-        # so "view 3: annotations 11" read as "this view has 11 annotations" when most were
-        # sheet notes. Report the sheet's own count separately and say so, rather than
-        # subtracting — the split between the two is not reliably attributable.
         sheet_annotations = None
-        if sheets:
-            try:
-                sheet_annotations = int(sheets[0].GetAnnotationCount)
-            except Exception:
-                sheet_annotations = None
-        for view in model_views:
-            try:
-                name = view.Name
-            except Exception:
-                name = None
-            try:
-                scale = view.ScaleDecimal
-            except Exception:
-                scale = None
-            try:
-                o = list(view.GetOutline or [])
-                width, height = o[2] - o[0], o[3] - o[1]
-            except Exception:
-                width = height = None
-            try:
-                dims = int(view.GetDimensionCount)
-            except Exception:
-                dims = None
-            try:
-                notes = int(view.GetAnnotationCount)
-            except Exception:
-                notes = None
-            if dims:
-                total_dims += dims
-            # P2-13: GetOutline is inflated by a constant 11.9 mm on every view. Overlap
-            # and out-of-sheet checks must use the deflated ink box, otherwise two views
-            # whose phantom margins merely touch raise a views_overlap that is not real.
-            # Keep the raw width/height in the row for backwards compatibility.
-            pbox = precise_outline(view)
-            row = {
-                "name": name,
-                "scale": scale,
-                "width_m": round(width, 4) if width is not None else None,
-                "height_m": round(height, 4) if height is not None else None,
-                "precise_width_m": round(pbox[2] - pbox[0], 4) if pbox else None,
-                "precise_height_m": round(pbox[3] - pbox[1], 4) if pbox else None,
-                "dimensions": dims,
-                "annotations": notes,
-            }
-            rows.append(row)
-            if width is not None and (width < 0.001 or height < 0.001):
-                warnings.append({"view": name, "issue": "blank_view"})
-            # A view without dimensions is normal: axonometric and detail views often
-            # carry none. Measured on 100 real drawings, 79 of them would have tripped
-            # this warning, so it now only fires when the SHEET has no dimensions at all.
 
-            if width is not None and height is not None:
-                try:
-                    boxes.append((name, pbox or list(view.GetOutline)))
-                except Exception:
-                    pass
-            check_box = pbox
-            if check_box is None and sheet_box:
-                try:
-                    check_box = list(view.GetOutline)
-                except Exception:
-                    check_box = None
-            if sheet_box and check_box:
-                if (check_box[0] < sheet_box[0] or check_box[1] < sheet_box[1]
-                        or check_box[2] > sheet_box[2] or check_box[3] > sheet_box[3]):
-                    warnings.append({
-                        "view": name, "issue": "view_outside_sheet",
-                        "hint": "reduce scale or move the view",
-                    })
+        for sheet_index, sheet_name in enumerate(names, start=1):
+            try:
+                if not doc.ActivateSheet(sheet_name):
+                    continue
+            except Exception:
+                continue
+            try:
+                sheet_obj = doc.GetCurrentSheet
+            except Exception:
+                continue
+            # `ISheet.GetOutline` does NOT exist (measured 2026-11-07:
+            # "<unknown>.GetOutline"). The sheet's frame comes from its SHEET VIEW
+            # (`IView` with Type == 1), which is one of `sheet.GetViews`. The size comes
+            # from `ISheet.GetProperties`, whose last two entries are width/height in
+            # metres — `GetSize` is unusable because it wants two byref parameters.
+            size_m, frame = None, None
+            try:
+                props = list(sheet_obj.GetProperties or ())
+                if len(props) >= 2:
+                    size_m = [round(float(props[-2]), 5), round(float(props[-1]), 5)]
+            except Exception:
+                pass
 
-        if not model_views:
-            warnings.append({"view": None, "issue": "no_model_views"})
-        if model_views and total_dims == 0:
-            warnings.append({
-                "view": None, "issue": "no_dimensions_anywhere",
-                "hint": "the sheet carries no dimensions at all",
+            views_here = []
+            try:
+                raw = list(sheet_obj.GetViews or ())
+            except Exception:
+                raw = []
+            for item in raw:
+                try:
+                    import win32com.client as _win0
+                    _v0 = _win0.Dispatch(item)
+                    if getattr(_v0, "Type", None) != 1:
+                        continue
+                    _o = list(_v0.GetOutline or ())
+                    if len(_o) >= 4:
+                        frame = _o
+                    break
+                except Exception:
+                    continue
+            sheet_warnings = []
+            local_boxes = []
+            dims_here = 0
+            for item in raw:
+                try:
+                    import win32com.client as _win
+                    view = _win.Dispatch(item)
+                except Exception:
+                    continue
+                if getattr(view, "Type", None) == 1:
+                    # The sheet view carries the sheet-level annotation count.
+                    try:
+                        sheet_annotations = int(view.GetAnnotationCount)
+                    except Exception:
+                        pass
+                    continue
+                try:
+                    name = str(view.Name)
+                except Exception:
+                    continue
+                try:
+                    scale = view.ScaleDecimal
+                except Exception:
+                    scale = None
+                try:
+                    o = list(view.GetOutline or [])
+                    width, height = o[2] - o[0], o[3] - o[1]
+                except Exception:
+                    width = height = None
+                try:
+                    dims = int(view.GetDimensionCount)
+                except Exception:
+                    dims = None
+                try:
+                    notes = int(view.GetAnnotationCount)
+                except Exception:
+                    notes = None
+                if dims:
+                    dims_here += dims
+                pbox = precise_outline(view)
+                row = {
+                    "name": name,
+                    "sheet": sheet_name,
+                    "sheet_index": sheet_index,
+                    "scale": scale,
+                    "width_m": round(width, 4) if width is not None else None,
+                    "height_m": round(height, 4) if height is not None else None,
+                    "precise_width_m": round(pbox[2] - pbox[0], 4) if pbox else None,
+                    "precise_height_m": round(pbox[3] - pbox[1], 4) if pbox else None,
+                    "dimensions": dims,
+                    "annotations": notes,
+                }
+                views_here.append(row)
+                all_views.append(row)
+                if width is not None and (width < 0.001 or height < 0.001):
+                    sheet_warnings.append({"view": name, "issue": "blank_view",
+                                           "sheet": sheet_name})
+
+                check_box = pbox
+                if check_box is None:
+                    try:
+                        check_box = list(view.GetOutline)
+                    except Exception:
+                        check_box = None
+                if check_box:
+                    local_boxes.append((name, check_box))
+                # Out-of-frame uses THIS sheet's outline. Comparing a page-2 view against
+                # page 1's frame is what produced the false `view_outside_sheet`.
+                if frame and check_box:
+                    if (check_box[0] < frame[0] or check_box[1] < frame[1]
+                            or check_box[2] > frame[2] or check_box[3] > frame[3]):
+                        sheet_warnings.append({
+                            "view": name, "issue": "view_outside_sheet",
+                            "sheet": sheet_name,
+                            "hint": "reduce scale or move the view",
+                        })
+
+            # Overlap is meaningful only within one sheet.
+            for i in range(len(local_boxes)):
+                for j in range(i + 1, len(local_boxes)):
+                    a, b = local_boxes[i][1], local_boxes[j][1]
+                    if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
+                        sheet_warnings.append({
+                            "view": "%s <-> %s" % (local_boxes[i][0], local_boxes[j][0]),
+                            "issue": "views_overlap",
+                            "sheet": sheet_name,
+                            "hint": "reduce scale or use fewer views per sheet",
+                        })
+
+            if not views_here:
+                sheet_warnings.append({"view": None, "issue": "no_model_views",
+                                       "sheet": sheet_name})
+            elif dims_here == 0:
+                sheet_warnings.append({
+                    "view": None, "issue": "no_dimensions_anywhere",
+                    "sheet": sheet_name,
+                    "hint": "this sheet carries no dimensions at all",
+                })
+
+            total_dims += dims_here
+            warnings.extend(sheet_warnings)
+            sheet_rows.append({
+                "index": sheet_index,
+                "name": sheet_name,
+                "size_m": size_m,
+                "view_count": len(views_here),
+                "dimensions": dims_here,
+                "views": views_here,
+                "warnings": sheet_warnings,
+                "active": sheet_name == original_active,
             })
 
-        # Overlapping views are the failure mode a human notices first but code often
-        # misses: two outlines intersect and neither is blank nor out of bounds.
-        for i in range(len(boxes)):
-            for j in range(i + 1, len(boxes)):
-                a, b = boxes[i][1], boxes[j][1]
-                if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
-                    warnings.append({
-                        "view": "%s <-> %s" % (boxes[i][0], boxes[j][0]),
-                        "issue": "views_overlap",
-                        "hint": "reduce scale or use fewer views per sheet",
-                    })
+        if original_active:
+            try:
+                doc.ActivateSheet(original_active)
+            except Exception:
+                pass
 
         return ok(
             drawing=doc.GetTitle,
             path=doc.GetPathName,
-            sheet_count=len(sheets),
-            sheet_size_m=[
-                round(list(sheets[0].GetOutline)[2] - list(sheets[0].GetOutline)[0], 4),
-                round(list(sheets[0].GetOutline)[3] - list(sheets[0].GetOutline)[1], 4),
-            ] if sheets else None,
-            view_count=len(model_views),
+            sheet_count=len(names),
+            # Kept for callers that only read the flat field; it is the FIRST sheet's size,
+            # and `sheets[].size_m` is the authoritative per-page value.
+            sheet_size_m=(sheet_rows[0]["size_m"] if sheet_rows else None),
+            view_count=len(all_views),
             total_dimensions=total_dims,
-            views=rows,
+            views=all_views,
+            sheets=sheet_rows,
             sheet_annotations=sheet_annotations,
             warnings=warnings,
-            note=("Evidence only: view choice, tolerances and manufacturability are not judged here. "
-                  "A view's `annotations` count may include sheet-level notes (技术要求) — "
-                  "sheet_annotations reports the sheet's own count separately."),
+            note=("Evidence only: view choice, tolerances and manufacturability are not "
+                  "judged here. Per-sheet results are in `sheets`; `sheet_size_m` at the "
+                  "top level is the FIRST sheet only. A view's `annotations` count may "
+                  "include sheet-level notes (技术要求) — `sheet_annotations` reports the "
+                  "sheet's own count separately."),
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

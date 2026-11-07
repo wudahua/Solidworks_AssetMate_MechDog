@@ -6182,6 +6182,39 @@ def assert_a_write_can_name_its_sheet():
             "the MCP tool %s does not expose `sheet`" % fn)
     return "writes name their sheet, and views are counted per sheet"
 
+def assert_the_audit_judges_each_sheet_by_its_own_frame():
+    """0.8.205 — one frame for every page flags correct views as out of bounds.
+
+    Report 2026-11-07 (C4): a two-sheet drawing reported `sheet_count: 2` but ONE
+    `sheet_size_m` (the first page's) and judged every view against it. On page 2 the view
+    sits where page 2 puts it; page 1's larger frame does not contain it, so a perfectly
+    placed view came back as `view_outside_sheet`.
+
+    The audit now walks each sheet and uses THAT sheet's frame. Two things had to be
+    measured rather than assumed:
+
+      * `ISheet.GetOutline` does not exist — "<unknown>.GetOutline";
+      * the frame lives on the sheet VIEW (`IView` with Type == 1), one of `GetViews`;
+      * the size comes from `ISheet.GetProperties` last two entries.
+
+    Measured 2026-11-07, page 1 A2 + page 2 A4:
+        sheets[0] size [0.594, 0.42] views 2
+        sheets[1] size [0.297, 0.21] views 1
+        no spurious view_outside_sheet
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "drawing_audit")) or ""
+    assert "sheets=" in body, "drawing_audit does not return per-sheet rows"
+    assert "sheet.GetViews" in body or "sheet_obj.GetViews" in body, (
+        "the audit counts document-level views again, so pages share one list")
+    assert "GetProperties" in body, (
+        "sheet size is read from something that does not exist (ISheet.GetOutline)")
+    assert "ActivateSheet" in body, (
+        "the audit no longer walks each sheet, so one frame still judges every page")
+    assert "view_outside_sheet" in body and '"sheet": sheet_name' in body, (
+        "the out-of-frame warning does not say which sheet it belongs to")
+    return "each sheet is audited against its own frame"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6353,6 +6386,7 @@ STATIC_REGRESSIONS = [
     ("0.8.198 rollback uses sheet names", assert_the_rollback_uses_the_sheet_name_space),
     ("0.8.202 tolerance checked on the figure", assert_a_tolerance_is_checked_on_the_figure),
     ("0.8.204 writes name their sheet", assert_a_write_can_name_its_sheet),
+    ("0.8.205 audit per sheet frame", assert_the_audit_judges_each_sheet_by_its_own_frame),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
