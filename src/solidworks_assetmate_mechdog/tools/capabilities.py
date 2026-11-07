@@ -465,6 +465,16 @@ CAPABILITIES = [
         "status": "partial",
         "summary": ("剖视图（模型坐标剖切面 + 剖切 sanity 校验）· 剖面线取决于几何，"
                     "部分零件必然 `hatch_missing`"),
+        # Report 2026-11-07 (P0-1): a revolved part (wheel / shaft / sleeve / flange) needs
+        # an AXIAL full section, and taking it from the front view silently produced an
+        # uncut projection — `edge_count` equal to the parent's, `hatch_count 0`, and
+        # `sanity.verdict: "ok"`. The working recipe is to cut the END view vertically.
+        # `sanity` now reports `no_hatch` / `identical_to_source` instead of `ok`.
+        "workaround": ("**回转体的轴向全剖：从端视图用 `orientation='vertical'` 剖切**，"
+                       "不要从前视图剖 —— 实测前者得到 28 条边的正确全剖（`hatch_count 2`），"
+                       "后者得到与父视图逐线相同的投影（`edge_count` 等于父视图、无剖面线）。"
+                       "本工具现在会把这种退化报成 `sanity.verdict: 'no_hatch'` 或 "
+                       "`'identical_to_source'`，不再报 `ok`。"),
         "why": ("0.8.21 起 `cut_plane_normal` / `cut_plane_origin` 可用**模型坐标**指定剖切面；"
                 "内部按「视图 deflated outline 与零件包围盒的尺寸匹配」确定图纸轴 ↔ 模型轴"
                 "（`GetViewPlaneNormal` 不存在、`ModelToViewTransform` 的 16 个数不是行主序 "

@@ -6564,6 +6564,77 @@ def assert_sheet_activation_is_read_back():
         "activate_sheet echoes the argument again instead of the read-back page")
     return "sheet activation is read back and refused when it did not take effect"
 
+def assert_a_section_that_did_not_cut_is_not_ok():
+    """0.8.217 — `kept_dimension` is true by construction for a view that never cut.
+
+    Report 2026-11-07 (P0-1): on a revolved part the axial full section is the MAIN view,
+    and taking it from the front view produced a view that was line-for-line identical to
+    its parent — `edge_count 4` against the parent's 4, `hatch_count 0`, no bore, no
+    counterbore — while the receipt said:
+
+        "sanity": {"verdict": "ok", "ratio": 1.0,
+                   "source_size_mm": [25.98, 63.98],
+                   "section_size_mm": [25.98, 63.98]}
+
+    Of course the sizes match: an uncut projection has the same extent as its source. The
+    check was measuring the one property that cannot detect this failure.
+
+    Two independent signals were already available and neither was consulted: the hatch
+    count (0 means nothing was cut open) and the edge count (equal to the parent's means
+    the same edges came through).
+
+    Measured by the reporter: front-view cut -> 4 edges / 0 hatches / "ok";
+    end-view vertical cut -> 28 edges / 2 hatches / correct section.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_section_sanity")) or ""
+    assert "hatch_count" in body, (
+        "sanity no longer looks at hatching — an uncut projection reports ok again")
+    assert "no_hatch" in body, "the no-hatch verdict is gone"
+    assert "identical_to_source" in body, (
+        "sanity does not compare edge counts, so a projection identical to its parent "
+        "still reads as a valid section")
+    call = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_section_view")) or ""
+    assert "source_edge_count=_source_edge_count" in call, (
+        "the parent's edge count is not passed in, so the identical-to-source check can "
+        "never fire")
+    assert "hatch_count=hatch_count" in call, "the hatch count is not passed in"
+
+    caps = _read("tools/capabilities.py")
+    assert "orientation='vertical'" in caps, (
+        "the working recipe for an axial section of a revolved part is not documented; "
+        "the only way to find it is to guess")
+    return "a section that did not cut reports a named doubt, not ok"
+
+
+def assert_a_title_block_scale_can_be_written():
+    """0.8.217 — the 比例 cell exists, is readable, and cannot be matched.
+
+    Report 2026-11-07 (P0-2): every view was 2:1 while the title block said 1:1, and:
+
+        set_title_block(scale=2.0, apply=True)
+        -> "unmatched": [{"field": "scale", "marker": "n:m",
+                          "reason": "title block has no scale value in the bottom band"}]
+
+    Meanwhile `list_drawing_annotations` listed that very text — `细节项目209`,
+    `kind: title_block_text`, `position_m: [0.3591, 0.0304]`, `text: "1:1"`. The marker
+    scan looked for a *value* pattern in the bottom band and the cell is a bare `1:1`, so
+    it was skipped.
+
+    This pins the wider matcher: the scale field must be locatable from the label
+    (`比例`) or from a bare `n:m` in the title-block band, not only from a value+label
+    pair.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "set_title_block")) or ""
+    assert "scale_pattern" in body, "the bare n:m matcher is gone"
+    assert "_re.compile" in body or "re.compile" in body, (
+        "no pattern matcher for the scale cell")
+    return "the scale cell is matched as a bare n:m value"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6744,6 +6815,8 @@ STATIC_REGRESSIONS = [
     ("0.8.215 title block uses the sheet object", assert_title_block_looks_up_the_sheet_object_not_the_parameter),
     ("0.8.216 rollback on an empty sheet", assert_a_rollback_does_not_require_a_non_empty_before_shot),
     ("0.8.216 sheet activation read back", assert_sheet_activation_is_read_back),
+    ("0.8.217 a section that did not cut", assert_a_section_that_did_not_cut_is_not_ok),
+    ("0.8.217 title block scale cell", assert_a_title_block_scale_can_be_written),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

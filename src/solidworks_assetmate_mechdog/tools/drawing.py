@@ -5165,7 +5165,8 @@ LOW_CONFIDENCE_MATCH_LIMIT = 50
 SECTION_KEEP_TOLERANCE = 0.10
 
 
-def _section_sanity(source_view, section, orientation, depth):
+def _section_sanity(source_view, section, orientation, depth,
+                    hatch_count=None, edge_count=None, source_edge_count=None):
     """Did the cut land on a real cross-section? (P1-4)
 
     A section plane perpendicular to the view's horizontal axis cannot change the extent
@@ -5193,7 +5194,33 @@ def _section_sanity(source_view, section, orientation, depth):
         "source_size_mm": [round(src_w * 1000, 2), round(src_h * 1000, 2)],
         "section_size_mm": [round(sec_w * 1000, 2), round(sec_h * 1000, 2)],
         "tolerance": SECTION_KEEP_TOLERANCE,
+        "hatch_count": hatch_count,
+        "edge_count": edge_count,
+        "source_edge_count": source_edge_count,
     }
+    # Report 2026-11-07 (P0-1): `kept_dimension` is TRUE BY CONSTRUCTION for a view that
+    # never cut anything. An uncut projection has the source view's exact extent, so the
+    # width test passes trivially and the receipt said `verdict: "ok"` on a section that
+    # was visually identical to its parent (`edge_count 4` vs the parent's 4, no hatching
+    # at all). Two independent signals were available and neither was consulted:
+    #
+    #   hatch_count == 0        the cut region produced no hatching
+    #   edge_count == source's  nothing was cut open — the same edges came through
+    #
+    # Both now downgrade the verdict. They are reported, not refused: a section can
+    # legitimately look like its parent in degenerate cases, and the caller is better
+    # served by a named doubt than by a hard error.
+    if hatch_count == 0:
+        info["verdict"] = "no_hatch"
+        info["verdict_reason"] = (
+            "剖面线数量为 0：剖切区域没有产生剖面线。未真正剖开的投影视图也满足"
+            "上面的宽度判据，所以这一项必须单独报告。")
+    elif (edge_count is not None and source_edge_count is not None
+          and edge_count > 0 and edge_count == source_edge_count):
+        info["verdict"] = "identical_to_source"
+        info["verdict_reason"] = (
+            "剖视图的边数（%d）与父视图相同：内腔/孔没有剖出来，多半是一个未剖切的"
+            "投影。回转体请改从端视图用 orientation='vertical' 剖切。" % edge_count)
     if depth and float(depth) > 0:
         info["checked"] = False
         info["reason"] = ("partial section (depth>0) shrinks the view by design, so the "
@@ -5570,7 +5597,17 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             except Exception as exc:
                 hatch_diag["per_face_hatch"] = "unavailable: %s" % str(exc)[:40]
 
-        sanity = (_section_sanity(target, section, orientation, depth)
+        # `_section_sanity` needs the hatch and edge counts now: an uncut projection
+        # reproduces the parent's edge count exactly and produces no hatching, and neither
+        # signal was consulted before (report 2026-11-07, P0-1).
+        try:
+            _source_edge_count = _view_edge_count(target)
+        except Exception:
+            _source_edge_count = None
+        sanity = (_section_sanity(target, section, orientation, depth,
+                                  hatch_count=hatch_count,
+                                  edge_count=edge_count,
+                                  source_edge_count=_source_edge_count)
                   if verify_cut else
                   {"checked": False, "reason": "verify_cut=False"})
         # P1-5 of a 2026-11-03 report: a section view is held in horizontal projection
