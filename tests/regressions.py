@@ -5527,7 +5527,11 @@ def assert_auto_fit_updates_the_title_block():
     # These three are now asserted in shape, because each one independently turned the
     # receipt into a claim the code could not back.
     save_at = body.find("SaveAsSilent")
-    sync_at = body.find("_title_scale_synced")
+    # Measure the actual sync CALL, not the first mention of the name: 0.8.211 pre-binds
+    # `_title_scale_synced` before the save (it must, or 1:1 / save=False crash), so
+    # `find("_title_scale_synced")` now lands above `SaveAsSilent` and this assertion
+    # started failing on correct code.
+    sync_at = body.find("set_title_block(out, scale=")
     assert save_at > 0 and sync_at > save_at, (
         "the title-block sync runs before the save again — SaveAsSilent will overwrite it, "
         "and the receipt will claim a sync that got thrown away")
@@ -5674,9 +5678,19 @@ def assert_a_reversed_capability_does_not_linger_in_the_docs():
         "图纸草图本身不渲染",
         "always returns `line_not_rendered`",
         "is precisely the lie",
+        # Phrasings that survived because the blacklist only had exact sentences.
+        "STILL 0",
+        "has never appeared",
+        "从来没出现过",
+        "线画不上",
+        "画不上会返回",
     ]
+    # 0.8.211 (report P1): `layout.py` was missing, and it is where the ACTIVITY comment
+    # "with AddToDB = True the diff is STILL 0 / the weld triangle has never appeared"
+    # survived two days after the code was fixed. Comments in code are documentation too.
     sources = {
         "server.py": _read("server.py"),
+        "tools/layout.py": _read("tools/layout.py"),
         "README.md": open(os.path.join(ROOT, "README.md"), encoding="utf-8").read(),
         "docs/com-quirks.md": open(os.path.join(ROOT, "docs", "com-quirks.md"),
                                    encoding="utf-8").read(),
@@ -5686,11 +5700,32 @@ def assert_a_reversed_capability_does_not_linger_in_the_docs():
         "tests/smoke.py": open(os.path.join(ROOT, "tests", "smoke.py"),
                                encoding="utf-8").read(),
     }
+    # Scan LINE BY LINE and skip any line that marks itself as a correction.
+    #
+    # Both `capabilities.py` and `layout.py` deliberately QUOTE the old wrong sentences
+    # ("早先这里写…2026-11-06 更正", "It used to say … STILL 0") so the next reader knows what
+    # was wrong and why. A blind substring scan reports those quotations as the bug — the
+    # first version of this fix did exactly that and failed on correct code.
+    _correction_markers = ("早先", "更正", "推翻", "used to say", "CORRECTED", "lagged",
+                           "This used to", "was wrong", "previously", "旧注释")
     offenders = []
     for name, text in sources.items():
+        for line in text.splitlines():
+            if any(mark in line for mark in _correction_markers):
+                continue
+            for phrase in banned:
+                if phrase in line:
+                    offenders.append("%s: %r" % (name, phrase[:34]))
+                    break
+
+    cap = _read("tools/capabilities.py")
+    for line in cap.splitlines():
+        if any(mark in line for mark in _correction_markers):
+            continue
         for phrase in banned:
-            if phrase in text:
-                offenders.append("%s: %r" % (name, phrase[:34]))
+            if phrase in line:
+                offenders.append("tools/capabilities.py: %r" % (phrase[:34],))
+                break
 
     assert not offenders, (
         "these still tell the caller the tool cannot render, while the capability contract "
@@ -6353,14 +6388,21 @@ def assert_a_conditional_receipt_field_is_pre_bound():
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                       "create_drawing")) or ""
-    pre = body.find("_title_scale_synced = None")
+    # 0.8.211: pre-bound to a REASON dict, not to None — "nothing to do" and "could not
+    # find out" must be distinguishable in the receipt.
+    pre = body.find("_title_scale_synced = {")
     guard = body.find('if result.get("saved"):')
-    use = body.find("result.update(title_scale_synced=_title_scale_synced)")
+    # 0.8.211 also removed a DUPLICATE `result.update(title_scale_synced=...)`; the field
+    # now appears once, as a keyword of the final `result.update(...)`. Match the keyword,
+    # not the old wrapper.
+    use = body.find("title_scale_synced=_title_scale_synced")
     assert pre > 0, "`_title_scale_synced` is no longer pre-initialised"
     assert 0 < pre < guard, (
         "the initialisation must come BEFORE the conditional branch, or the 1:1 path "
         "raises NameError again")
     assert use > guard, "the receipt field is gone"
+    assert body.count("title_scale_synced=_title_scale_synced") == 1, (
+        "the receipt field is written twice again — one of them will drift")
     return "the conditional receipt field is bound on every path"
 
 STATIC_REGRESSIONS = [

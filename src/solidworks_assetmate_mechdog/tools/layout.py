@@ -1071,14 +1071,18 @@ def add_weld_symbol(drawing_path, weld_type="fillet", size_mm=6.0,
 
         doc = _open_drawing(drawing_path)
         # A 2026-11-03 report caught the contradiction: this docstring says "the only valid
-        # check is the rendered sheet", and then nothing checked it. `add_sheet_line` was
-        # proven the same day to render 0 pixels, and this function uses the same primitive
-        # (InsertSketch + CreateLine) — the only differences being `AddToDB = True` and a
-        # `sheet_scale` division.
+        # check is the rendered sheet", and then nothing checked it.
         #
-        # Measured now: with AddToDB = True the diff is STILL 0. So the weld triangle has
-        # never appeared, `segments: 5` only counted CreateLine calls that did not raise, and
-        # the "looks right and prints right" claim was wrong.
+        # ⚠️ CORRECTED 2026-11-06, and this comment lagged two days behind the code (flagged
+        # again by a report on 2026-11-07). It used to claim that even with AddToDB set the
+        # pixel diff stayed zero, i.e. that the weld triangle had never been drawn. That was
+        # measured on `add_sheet_line` BEFORE `SketchManager.AddToDB = True` was actually
+        # set, and I generalised it to this function without re-measuring.
+        #
+        # `add_sheet_line` now measures 571 changed pixels with AddToDB set, and this
+        # function uses the same primitive plus the same pixel check — so the check below is
+        # a real measurement, not a formality. `segments: N` counts CreateLine calls; only
+        # `visibility.changed_pixels > 0` says anything rendered.
         _weld_before = None
         _weld_dir = None
         try:

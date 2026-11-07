@@ -765,6 +765,42 @@ def main():
                 "fixture (measured %r)" % (signs,))
 
     r.check("sheet direction from view name", _sheet_direction)
+
+    def _create_drawing_paths():
+        """The two `create_drawing` paths that used to crash.
+
+        Report 2026-11-07 (P0): `_title_scale_synced`, `_final_scale` and `blocker` were all
+        assigned only inside the "saved AND scale != 1:1" branch, then read unconditionally.
+        Three separate unbound names in one function — fixing the first one just moved the
+        error to the next line.
+
+        Fixing one of them is what a string assertion can catch; only EXECUTING the paths
+        proves all three are gone. So: 1:1 fixed scale, and save=False.
+
+        Note the shape of the assertion — `ok` must be true AND the receipt must carry a
+        reason. A receipt that reports `null` for "nothing to do" is the same lie as one
+        that reports success for something it never did.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        results = []
+        for label, kwargs in (("scale1:1", dict(scale=1.0, auto_fit=False)),
+                              ("save=False", dict(save=False))):
+            part = os.path.join(workdir, "smoke_path_%s.SLDPRT" % label.replace("=", ""))
+            drw = os.path.join(workdir, "smoke_path_%s.SLDDRW" % label.replace("=", ""))
+            shutil.copy2(src, part)
+            payload = drawing.create_drawing(part, drw, views=["front"], **kwargs)
+            assert payload.get("ok"), (
+                "%s crashed: %r" % (label, payload.get("message") or payload.get("error")))
+            synced = payload.get("title_scale_synced")
+            assert isinstance(synced, dict) and synced, (
+                "%s: title_scale_synced is %r — a null cannot be told apart from "
+                "'not checked'" % (label, synced))
+            assert synced.get("skipped") or synced.get("text"), (
+                "%s: the receipt neither synced nor said why: %r" % (label, synced))
+            results.append("%s=%s" % (label, "synced" if synced.get("text") else "skipped"))
+        return ", ".join(results)
+
+    r.check("create_drawing scale=1:1 / save=False", _create_drawing_paths)
     r.check("add_bom_table (native, populated)", _bom_table)
 
     # --- editing tools: create → move → delete, all by name -----------------------------

@@ -539,6 +539,13 @@ def create_drawing(
         # source part, so ONE leak pinned TWO documents, and it accumulated on every run.
         #
         # Checking before the document exists is the only way to not create it at all.
+        # `blocker` is read at the end of the function (`if blocker:` closes the drawing and
+        # returns an error), but it was only assigned INSIDE this branch. With `save=False`
+        # the name was never bound and the whole call raised UnboundLocalError — the third
+        # such name in `create_drawing` after `_title_scale_synced` and `_final_scale`.
+        # All three are the same defect: a receipt field that is only set on the success
+        # path, then read unconditionally.
+        blocker = None
         if save and output_path:
             _early_out = os.path.abspath(output_path)
             if os.path.splitext(_early_out)[1].lower() != ".slddrw":
@@ -961,7 +968,6 @@ def create_drawing(
             # spent three rounds on this. Two guards instead:
             #   1. refuse up front if an open document already owns the path
             #   2. after saving, require the file to be newer than before
-            blocker = None
             try:
                 from ..sw_session import get_sw
                 app = get_sw()
@@ -1016,16 +1022,32 @@ def create_drawing(
         # unbound and raised NameError — reported as `create_drawing_failed`, with no hint
         # that the scale was fine. Measured 2026-11-07 on a right+left pair that auto-fit
         # kept at 1:1; the front-view fixtures always stepped to 0.5 and never hit it.
-        _title_scale_synced = None
+        # Every branch writes a REASON, never a bare null. "Nothing to do" and "I could not
+        # find out" are different answers, and a receipt that reports null for both lets a
+        # caller assume the title block matches when it was never checked.
+        _title_scale_synced = {"skipped": "save=False：没有保存，标题栏也就没有可同步的对象"}
+        # Hoisted OUT of the `if saved` branch: `_final_scale` is also read by the receipt
+        # below (`chosen_scale` / `scale_reason`), so `save=False` crashed on IT next, after
+        # `_title_scale_synced` was fixed. Both names had the same defect; fixing one just
+        # moved the error one line down. The views exist either way, so reading the scale
+        # costs nothing here.
+        _final_scale = None
+        for _v in view_objects:
+            try:
+                _final_scale = float(_v.ScaleDecimal)
+                break
+            except Exception:
+                continue
         if result.get("saved"):
             try:
-                _final_scale = None
-                for _v in view_objects:
-                    try:
-                        _final_scale = float(_v.ScaleDecimal)
-                        break
-                    except Exception:
-                        continue
+                if _final_scale is None:
+                    _title_scale_synced = {"skipped": "读不到视图比例（IView.ScaleDecimal）"}
+                elif abs(_final_scale - 1.0) <= 1e-9:
+                    # report 2026-11-07 (P0): this branch used to write NOTHING, then the
+                    # receipt read the name unconditionally. 1:1 is auto_fit's default for
+                    # small models, so every clean-install run crashed here.
+                    _title_scale_synced = {"skipped": "视图是 1:1，标题栏无需改动",
+                                           "scale": 1.0}
                 if _final_scale is not None and abs(_final_scale - 1.0) > 1e-9:
                     # Keep `views[].scale` in step with reality. It was filled when the views
                     # were created, before auto_fit stepped them down, so it said 1.0 while
@@ -1054,7 +1076,6 @@ def create_drawing(
                             "written": _written}
             except Exception as _exc:                               # noqa: BLE001
                 _title_scale_synced = {"error": str(_exc)[:100]}
-        result.update(title_scale_synced=_title_scale_synced)   # None = not 1:1, nothing to sync
         result.update(
             safe_area_used={
                 "x": [round(safe_x0, 4), round(safe_x1, 4)],
