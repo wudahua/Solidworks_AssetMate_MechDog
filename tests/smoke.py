@@ -716,6 +716,55 @@ def main():
         return "2 sheets, page2 view created, auto_dimension ok=%s" % (dims.get("inserted"),)
 
     r.check("sheet tools (list / activate / add_view)", _sheet_tools)
+
+    def _sheet_direction():
+        """Right and left views must project model +Z to OPPOSITE sides.
+
+        This is the one check that needs no pixel measurement. Before 0.8.207 the projection
+        was unsigned, so both views reported dZ/dX = +/+ — impossible, since one looks along
+        -X and the other along +X. Two assertions:
+
+          1. ALWAYS: the direction basis is the view's own orientation name (not a guess,
+             not a caller-provided flip). Any part satisfies this.
+          2. WHEN MEASURABLE: comparing model Z against sheet X on the two side views gives
+             opposite signs. Skipped (loudly, in the detail) when the part's Z span is too
+             small to tell — that is a fixture limit, not a pass.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_dir.SLDPRT")
+        drw = os.path.join(workdir, "smoke_dir.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["right", "left"], paper="A2"))
+
+        signs, bases = {}, {}
+        for view in ("工程图视图1", "工程图视图2"):
+            payload = drawing.list_drawing_edges(drw, view_name=view)
+            require(payload)
+            bases[view] = payload.get("sheet_axis_basis")
+            assert payload.get("sheet_axis_direction_verified") is True, (
+                "%s: the projection still reports the direction as unverified: %r"
+                % (view, payload.get("sheet_axis_warning")))
+            rows = [r for r in (payload.get("edges") or [])
+                    if r.get("sheet_start") and r.get("model_start")]
+            pairs = sorted((r["model_start"][2], r["sheet_start"][0]) for r in rows)
+            if len(pairs) < 2:
+                continue
+            dz = pairs[-1][0] - pairs[0][0]
+            dx = pairs[-1][1] - pairs[0][1]
+            if abs(dz) > 0.002 and abs(dx) > 0.002:
+                signs[view] = 1 if dz * dx > 0 else -1
+
+        assert set(bases.values()) == {"orientation_name"}, (
+            "the direction no longer comes from the view name: %r" % (bases,))
+        if len(signs) == 2:
+            assert signs["工程图视图1"] != signs["工程图视图2"], (
+                "right and left project model +Z to the SAME side (%r) — one of them is "
+                "mirrored, which is the 2026-11-03 defect" % (signs,))
+            return "basis=orientation_name, right/left signs %r" % (signs,)
+        return ("basis=orientation_name; sign check skipped, Z span too small on this "
+                "fixture (measured %r)" % (signs,))
+
+    r.check("sheet direction from view name", _sheet_direction)
     r.check("add_bom_table (native, populated)", _bom_table)
 
     # --- editing tools: create → move → delete, all by name -----------------------------
