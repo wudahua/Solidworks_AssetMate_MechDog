@@ -470,11 +470,15 @@ CAPABILITIES = [
         # uncut projection — `edge_count` equal to the parent's, `hatch_count 0`, and
         # `sanity.verdict: "ok"`. The working recipe is to cut the END view vertically.
         # `sanity` now reports `no_hatch` / `identical_to_source` instead of `ok`.
-        "workaround": ("**回转体的轴向全剖：从端视图用 `orientation='vertical'` 剖切**，"
-                       "不要从前视图剖 —— 实测前者得到 28 条边的正确全剖（`hatch_count 2`），"
-                       "后者得到与父视图逐线相同的投影（`edge_count` 等于父视图、无剖面线）。"
-                       "本工具现在会把这种退化报成 `sanity.verdict: 'no_hatch'` 或 "
-                       "`'identical_to_source'`，不再报 `ok`。"),
+        "workaround": ("回转体的轴向全剖：**从前视图剖切会退化成普通投影**"
+                       "（实测 8/8 次：`edge_count` 等于父视图、`hatch_count 0`）。"
+                       "报告者给出的一条可行路线是「从端视图用 `orientation='vertical'` 剖切」，"
+                       "**但这条只实测成功过一次（2026-11-07，28 边 / 2 剖面线），"
+                       "2026-11-08 复跑同样参数得到 4 边 / 0 剖面线，未复现**——"
+                       "原因不明，不要当成规律。"
+                       "无论走哪条路，本工具都会把退化结果报成 "
+                       "`sanity.verdict: 'no_hatch'` 或 `'identical_to_source'`，不再报 `ok`，"
+                       "所以按回执判断成败，不要按这个配方判断。"),
         "why": ("0.8.21 起 `cut_plane_normal` / `cut_plane_origin` 可用**模型坐标**指定剖切面；"
                 "内部按「视图 deflated outline 与零件包围盒的尺寸匹配」确定图纸轴 ↔ 模型轴"
                 "（`GetViewPlaneNormal` 不存在、`ModelToViewTransform` 的 16 个数不是行主序 "
