@@ -1014,7 +1014,7 @@ def add_dimension_tolerance(
     # millimetres. The implementation divides by 1000, so MILLIMETRES is correct — the
     # parameter text was the stale one. A caller who believed it would pass 0.05 for 50 µm.
     upper: Annotated[float, Field(description="Upper deviation, in MILLIMETRES (e.g. 0.05 for +0.05).")] = 0.1,
-    lower: Annotated[float, Field(description="Lower deviation, in MILLIMETRES (e.g. 0.05 for -0.05).")] = 0.1, verify_render: Annotated[bool, Field(description="Export the sheet to PDF and read the text layer, reporting what the tolerance ACTUALLY prints as (adds ~2 s). Use this to catch a readback that is right while the figure is wrong.")] = False,
+    lower: Annotated[float, Field(description="Lower deviation, in MILLIMETRES (e.g. 0.05 for -0.05).")] = 0.1, verify_render: Annotated[bool, Field(description="Export the sheet to PDF and read the text layer, reporting what the tolerance ACTUALLY prints as (adds ~2 s). Use this to catch a readback that is right while the figure is wrong.")] = False, tolerance_precision: Annotated[int, Field(description="Decimal places for the tolerance only (default 3). Metric fits need three: H7 +0.018 and H8 +0.033 both print as '0.02' / '0.03' at two, which is unusable. The dimension VALUE precision is left untouched.")] = 3,
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
     apply: Annotated[bool, Field(description="False (default) is a dry run that reports what WOULD change; True actually writes.")] = False,
 ) -> str:
@@ -1026,6 +1026,7 @@ def add_dimension_tolerance(
     return _json(drawing.add_dimension_tolerance(
         drawing_path, value_mm, tolerance_type=tolerance_type, upper=upper,
         lower=lower, view_name=view_name, apply=apply, verify_render=verify_render,
+        tolerance_precision=tolerance_precision,
     ))
 
 

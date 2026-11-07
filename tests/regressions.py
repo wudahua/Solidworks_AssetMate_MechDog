@@ -6641,6 +6641,46 @@ def assert_a_title_block_scale_can_be_written():
         "no pattern matcher for the scale cell")
     return "the scale cell is matched as a bare n:m value"
 
+def assert_a_tolerance_can_print_three_decimals():
+    """0.8.219 — H7 fits printed as +0.02 because the tolerance had two decimal places.
+
+    Report 2026-11-07 (P1-1): `add_dimension_tolerance(value_mm=18, upper=0.018)` printed
+    `Ø18 +0.02 / 0`. Ø30 H8 +0.033 printed `+0.03`. Metric fits live at three decimals;
+    two makes the tolerance unusable, so the fit could only go in the notes.
+
+    The precision is NOT on `IDimensionTolerance` — that interface has no precision property
+    at all (checked: only font/values). It is `IDisplayDimension.SetPrecision3(Primary,
+    Dual, PrimaryTol, DualTol)`, and the TOLERANCE digits are the third argument.
+
+    Getting to that object took a second attempt: `IDimension` has no GetAnnotation and no
+    GetDisplayDimension, so `IDisplayDimension(dim._oleobj_)` raises. The annotation has to
+    be carried out of the lookup. That failure was silent — the `except` turned it into
+    `tolerance_precision_applied: None` and the drawing kept printing two places.
+
+    Measured 2026-11-07 on 飞达动力轴, upper=0.018, PDF text layer:
+        tolerance_precision=2 -> applied 2, printed "+0.02"
+        tolerance_precision=3 -> applied 3, printed "+0.018"
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_dimension_tolerance")) or ""
+    assert "SetPrecision3(" in body, "the decimal places are no longer set"
+    assert "GetPrimaryTolPrecision()" in body, (
+        "the result is not read back, so a failed precision set looks like success")
+    assert "tolerance_precision_applied" in body, (
+        "the receipt does not say how many decimals were applied")
+    assert "_ann.GetSpecificAnnotation" in body, (
+        "the display dimension is built from IDimension again — that raises, and the "
+        "drawing silently keeps two decimals")
+
+    finder = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "_find_dimension")) or ""
+    assert "return view, dim, ann" in finder, (
+        "_find_dimension must hand back the annotation; there is no way from IDimension")
+    server = _read("server.py")
+    assert "tolerance_precision" in server, "the MCP tool does not expose the parameter"
+    return "tolerance decimals are settable, read back, and proven on the PDF"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6823,6 +6863,7 @@ STATIC_REGRESSIONS = [
     ("0.8.216 sheet activation read back", assert_sheet_activation_is_read_back),
     ("0.8.217 a section that did not cut", assert_a_section_that_did_not_cut_is_not_ok),
     ("0.8.217 title block scale cell", assert_a_title_block_scale_can_be_written),
+    ("0.8.219 tolerance prints three decimals", assert_a_tolerance_can_print_three_decimals),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

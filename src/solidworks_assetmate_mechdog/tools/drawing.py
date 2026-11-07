@@ -6087,10 +6087,16 @@ def _find_dimension(doc, value_mm, view_name=None):
                 if dim is None:
                     continue
                 if round(float(dim.SystemValue) * 1000) == target:
-                    return view, dim
+                    # Return the ANNOTATION as well: `IDisplayDimension` (which carries
+                    # `SetPrecision3`) is the annotation's specific object, and `IDimension`
+                    # has no property that leads back to it (checked: no GetAnnotation, no
+                    # GetDisplayDimension). Constructing IDisplayDimension from the
+                    # dimension's own `_oleobj_` raises, which is how the decimal-place
+                    # setting silently became a no-op.
+                    return view, dim, ann
             except Exception:
                 continue
-    return None, None
+    return None, None, None
 
 
 def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
@@ -6157,7 +6163,7 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
 
 def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
                            upper=0.1, lower=0.1, view_name=None, apply=True,
-                           verify_render=False):
+                           verify_render=False, tolerance_precision=3):
     """Apply a native tolerance to an existing drawing dimension.
 
     The dimension is located by its VALUE in millimetres (drafting tolerances are
@@ -6173,7 +6179,7 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
             return error("bad_tolerance_type",
                          "Unknown tolerance_type %r" % tolerance_type,
                          "Use one of: %s" % ", ".join(sorted(TOLERANCE_TYPES)))
-        view, dim = _find_dimension(doc, value_mm, view_name)
+        view, dim, _ann = _find_dimension(doc, value_mm, view_name)
         if dim is None:
             return error("dimension_not_found",
                          "No dimension equal to %s mm%s"
@@ -6231,6 +6237,43 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
                     dim.SetToleranceValues(_upper_m, _upper_m)
                 except Exception:
                     pass
+
+            # ── Decimal places (report 2026-11-07, P1-1) ────────────────────────────
+            # The drawing defaulted to 2 places, so an H7 bore of +0.018 printed as
+            # "+0.02" and an H8 of +0.033 printed as "+0.03". Metric fits need three;
+            # two makes the tolerance unusable. `IDimensionTolerance` has no precision
+            # property at all — it lives on `IDisplayDimension` as
+            # `SetPrecision3(Primary, Dual, PrimaryTol, DualTol)`.
+            #
+            # Measured 2026-11-07 on 飞达动力轴: before `GetPrimaryPrecision()=2`,
+            # `GetPrimaryTolPrecision()=2`, `GetUseDocPrecision()=True`; after
+            # `SetPrecision3(3,3,3,3)` both read 3.
+            #
+            # The value precision is passed through unchanged — only the TOLERANCE
+            # digits are forced, because "35" in a 35 mm dimension is correct and
+            # "35.000" is not what GB drawings show.
+            precision_applied = None
+            try:
+                import importlib
+                import sys as _sys
+                try:
+                    import win32com.client.gencache as _gc2
+                    _p2 = _gc2.GetGeneratePath()
+                    if _p2 and _p2 not in _sys.path:
+                        _sys.path.insert(0, _p2)
+                except Exception:
+                    pass
+                _m2 = importlib.import_module(
+                    "83A33D31-27C5-11CE-BFD4-00400513BB57x0x32x0")
+                _dd = _m2.IDisplayDimension(_ann.GetSpecificAnnotation._oleobj_)
+                _want = int(tolerance_precision)
+                _val_prec = int(_dd.GetPrimaryPrecision() or 2)
+                _dual_prec = int(_dd.GetAlternatePrecision() or 2)
+                _dd.SetPrecision3(_val_prec, _dual_prec, _want, _want)
+                precision_applied = int(_dd.GetPrimaryTolPrecision())
+            except Exception as _prec_exc:                          # noqa: BLE001
+                warnings.append("公差小数位数未设置成功：%s" % str(_prec_exc)[:80])
+                precision_applied = None
         try:
             doc.GraphicsRedraw2()
             perf_hooks.bump("redraw_calls")
@@ -6407,6 +6450,8 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
                           lower_sign_wrong=lower_sign_wrong,
                           rendered_verified=bool(rendered_text),
                           unit_suspect=unit_suspect,
+                          tolerance_precision_requested=int(tolerance_precision),
+                          tolerance_precision_applied=precision_applied,
                           pdf_render=pdf_probe,
                           pdf_render_expected=_want,
                           pdf_render_matches=render_matches,
