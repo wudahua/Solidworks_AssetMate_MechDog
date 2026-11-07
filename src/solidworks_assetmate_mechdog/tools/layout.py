@@ -1456,7 +1456,25 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
         return error("sheet_creation_failed", str(exc))
 
 
-def _sheet_model_views(doc):
+def _sw_version():
+    """SolidWorks build string, so a receipt can say which build behaved this way.
+
+    Report 2026-11-07: one of the two P0s was purely an environment difference
+    (`ActivateSheet` returns True without switching on SW2024). Without the version in the
+    receipt, a caller cannot tell "the tool is broken" from "this build behaves differently".
+    """
+    try:
+        from ..sw_session import get_sw
+        return str(getattr(get_sw(), "RevisionNumber", "") or "") or None
+    except Exception:
+        return None
+
+
+class _SheetNotActive(Exception):
+    """The document is not on the page the caller asked for. Raised, never swallowed."""
+
+
+def _sheet_model_views(doc, expected=None):
     """Model views on the ACTIVE sheet — not the whole document.
 
     Measured 2026-11-07: `_iter_views(doc)` walks every view on every page, so a two-sheet
@@ -1465,8 +1483,19 @@ def _sheet_model_views(doc):
     `ISheet.GetSize` takes byref parameters pywin32 cannot supply, but `ISheet.GetViews`
     returns exactly the views belonging to that sheet.
     """
+    # Report 2026-11-07 (P0-2): on SW2024 `ActivateSheet` can return True without changing
+    # the current page, so this reader silently returned page 1's views no matter which page
+    # was asked for. `expected` makes that observable instead of silent: when the document
+    # says it is on a different page, the caller must not treat the result as that page's.
     try:
         sheet = doc.GetCurrentSheet
+        if expected is not None:
+            _actual = str(sheet.GetName)
+            if _actual != str(expected):
+                raise _SheetNotActive("expected %r, document is on %r"
+                                      % (expected, _actual))
+    except _SheetNotActive:
+        raise
     except Exception:
         return []
     views = []
@@ -1581,13 +1610,31 @@ def activate_sheet(drawing_path, name=None, index=None, save=True):
                               active_sheet=current,
                               note="未指定 name/index，只报告当前活动页。")
         ok = bool(doc.ActivateSheet(target))
+        # Report 2026-11-07 (P0-2): the receipt echoed the ARGUMENT. On SW2024 the call
+        # returns True and the page does not change, so `active_sheet: "图纸2"` was a
+        # straight lie. Read the page back and report that.
+        current = None
+        try:
+            current = str(doc.GetCurrentSheet.GetName)
+        except Exception:
+            current = None
+        effective = bool(ok) and (current is not None and current == target)
+        if not effective:
+            return error(
+                "sheet_activation_not_effective",
+                "请求切到 %r，但当前页仍是 %r" % (target, current),
+                ("SolidWorks 报告 ActivateSheet 成功，实际没有切过去。"
+                 "已知 SW2024 存在该行为。后续写操作会改到 %r，请勿继续。"
+                 % current),
+                requested=target, current=current, activated=bool(ok),
+                sheets=names, sw_version=_sw_version())
         if save:
             try:
                 _save_drawing(doc)
             except Exception:
                 pass
         return drawing_ok(drawing=doc.GetTitle, sheets=names,
-                          active_sheet=target, activated=ok,
+                          active_sheet=current, activated=True,
                           sheet_index=names.index(target) + 1)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -1627,9 +1674,27 @@ def add_view_to_sheet(drawing_path, sheet, model_path=None, view_name="*前视",
             except Exception:
                 return error("sheet_not_found", "no sheet specified and none is active")
 
-        if not doc.ActivateSheet(target):
-            return error("activate_sheet_failed",
-                         "could not activate sheet %r" % target, sheets=names)
+        ok = bool(doc.ActivateSheet(target))
+        _current = None
+        try:
+            _current = str(doc.GetCurrentSheet.GetName)
+        except Exception:
+            _current = None
+        if not ok or (_current is not None and _current != target):
+            return error(
+                "sheet_activation_not_effective",
+                "请求在 %r 上建视图，但当前页仍是 %r" % (target, _current),
+                "这里拒绝继续：否则视图会建在错误的图纸页上，而回执会说是 %r。" % target,
+                requested=target, current=_current, activated=bool(ok),
+                sheets=names, sw_version=_sw_version())
+        # From here the document IS on `target`; ask the reader to prove it rather than
+        # relying on the check above having been enough.
+        try:
+            _sheet_model_views(doc, expected=target)
+        except Exception as exc:                                    # noqa: BLE001
+            return error("sheet_activation_not_effective", str(exc)[:120],
+                         "the per-sheet view reader disagrees with the activation",
+                         requested=target, sheets=names)
 
         model = model_path
         if not model:

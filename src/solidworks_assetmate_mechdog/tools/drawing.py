@@ -1230,12 +1230,39 @@ def _activate_sheet_if_given(doc, sheet):
                                "existing: %s" % ", ".join(names), sheets=names)
         target = str(sheet)
     try:
-        if not doc.ActivateSheet(target):
-            return None, error("activate_sheet_failed",
-                               "could not activate sheet %r" % target, sheets=names)
+        ok = bool(doc.ActivateSheet(target))
     except Exception as exc:                                        # noqa: BLE001
         return None, error("activate_sheet_failed", str(exc)[:120], sheets=names)
+    # READ BACK. Report 2026-11-07 (P0-2): on SW2024 `ActivateSheet("图纸2")` returns True
+    # while `GetCurrentSheet` still answers 图纸1, so every write tool kept editing page 1
+    # and reported `ok: true`. The return value alone cannot be trusted; the only evidence
+    # that the page changed is what the document says afterwards.
+    current = None
+    try:
+        current = str(doc.GetCurrentSheet.GetName)
+    except Exception:
+        current = None
+    if not ok or (current is not None and current != target):
+        return None, error(
+            "sheet_activation_not_effective",
+            "请求切到 %r，但当前页仍是 %r" % (target, current),
+            ("SolidWorks 报告 ActivateSheet 成功，实际没有切过去。"
+             "继续写入会改到错误的图纸页，所以这次调用被拒绝。"
+             "已知 SW2024 存在该行为。" if ok else
+             "ActivateSheet 返回 False。"),
+            requested=target, current=current, sheets=names,
+            sw_version=_sw_version_string())
     return target, None
+
+
+def _sw_version_string():
+    """SolidWorks version as a string, for receipts that may depend on it."""
+    try:
+        from ..sw_session import get_sw
+        app = get_sw()
+        return str(getattr(app, "RevisionNumber", "") or "") or None
+    except Exception:
+        return None
 
 
 def _open_drawing(path):
@@ -8587,11 +8614,37 @@ def _dimension_selection_names(doc):
     except Exception:
         _mod = None
 
+    # TRI-STATE (report 2026-11-07, P0-1) — the third state is the point:
+    #     None   the read FAILED            -> nothing may be deleted
+    #     []     the sheet truly has none   -> safe to delete what appeared
+    #     [...]  the sheet's dimensions
+    #
+    # The caller got `[]` for BOTH "empty" and "reader failed", so its rollback guard
+    # (`bool(_names_before)`) refused to delete on a sheet that started with ZERO
+    # dimensions — exactly the first auto-dimension run. A wrong dimension (146.5 mm
+    # for a 32.5 mm gap) then stayed on the sheet forever, and the next call rolled
+    # back only its own.
+    #
+    # Same empty-collection ambiguity that `open_document_paths()` was fixed for in
+    # 0.8.161; it came back here in a different form.
     found = []
-    for view in _iter_views(doc):
-        if getattr(view, "Type", None) == 1:
+    _views_read = 0
+    _views_failed = 0
+    try:
+        _model_views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
+    except Exception:
+        return None
+    if not _model_views:
+        return []
+    for view in _model_views:
+        try:
+            _raw_annotations = list(view.GetAnnotations or ())
+            _views_read += 1
+        except Exception:
+            _views_failed += 1
             continue
-        for raw in (view.GetAnnotations or ()):
+            continue
+        for raw in _raw_annotations:
             try:
                 annotation = win.Dispatch(raw)
                 if int(annotation.GetType) != 4:
@@ -8612,6 +8665,10 @@ def _dimension_selection_names(doc):
                 name = _annotation_dimension_full_name(annotation, win)
             if name:
                 found.append((name, annotation))
+    # Every view failed to enumerate: the reader is broken, not the sheet. Saying
+    # "no dimensions" here would make the caller treat a full sheet as empty.
+    if _views_failed and not _views_read and not found:
+        return None
     return found
 
 
@@ -9164,10 +9221,23 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                     _snap_after = _dimension_selection_names(_doc_live) if _doc_live else []
                     _names_after = [n for n, _ in _snap_after]
                     _new_names = [n for n in _names_after if n not in _names_before]
-                    _rollback_possible = bool(_names_before) and bool(_names_after)
+                    # `bool(_names_before)` was the bug (report 2026-11-07, P0-1): "no
+                    # dimensions before inserting" is a LEGAL state — it is the first
+                    # auto-dimension run — but the guard treated it the same as "the reader
+                    # failed", so the wrong dimension it had just inserted was never removed.
+                    #
+                    # `_names_before` is tri-state now: None means the read failed (do not
+                    # delete anything), while an empty list means the sheet really was empty
+                    # (delete exactly `_new_names`). `_new_names` is already computed, so the
+                    # scope is precise and does not depend on the before-snapshot having
+                    # content.
+                    _rollback_possible = (_names_before is not None) and bool(_new_names)
                     if not _rollback_possible:
-                        _rb_reason = ("the dimension-identity snapshot was empty, so a delete "
-                                      "could not be scoped")
+                        _rb_reason = (
+                            "the dimension-identity read failed (not 'the sheet was empty'), "
+                            "so a delete could not be scoped"
+                            if _names_before is None else
+                            "the insert produced no new annotation to undo")
                     else:
                         _rb_reason = None      # filled in below if the delete fails
                     _deleted = []

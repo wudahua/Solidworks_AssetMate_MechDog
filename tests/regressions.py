@@ -6487,6 +6487,83 @@ def assert_title_block_looks_up_the_sheet_object_not_the_parameter():
         "`_note_at(sheet, ...)` is back; `sheet` is the parameter")
     return "the title-block lookup uses the Sheet object, not the page-name parameter"
 
+def assert_a_rollback_does_not_require_a_non_empty_before_shot():
+    """0.8.216 — "the sheet had no dimensions" is not "the reader failed".
+
+    Report 2026-11-07 (P0-1): on a drawing with ZERO dimensions (the first auto-dimension
+    run — the normal case), `apply_gaps` inserted a wrong dimension (`146.5 mm` for a
+    32.5 mm gap), reported `inserted_but_wrong: true`, and then refused to remove it:
+
+        "rolled_back": false,
+        "rollback_skipped_reason": "the dimension-identity snapshot was empty, so a delete
+                                    could not be scoped"
+
+    The guard was `bool(_names_before) and bool(_names_after)`. An empty before-snapshot is
+    a LEGAL state, but the code could not tell it apart from a failed read, so it chose not
+    to delete. The next call rolled back only its own insert; `RD1` stayed on the sheet
+    forever and `reconcile_ledger` coverage stayed at 0.0.
+
+    This is the empty-collection ambiguity `open_document_paths()` was fixed for in 0.8.161,
+    reappearing in a different form. The fix is the same shape: tri-state the reader.
+
+        None   read FAILED          -> delete nothing
+        []     the sheet is empty   -> delete exactly the names that appeared
+        [...]  the sheet's names
+
+    The scope comes from `_new_names`, which was already computed and already printed in the
+    receipt — it was never used for the decision.
+    """
+    src = _read("tools/drawing.py")
+    reader = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "_dimension_selection_names")) or ""
+    assert "return None" in reader, (
+        "the reader is not tri-state again — an empty sheet and a failed read look alike")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+    assert "_rollback_possible = (_names_before is not None) and bool(_new_names)" in body, (
+        "the rollback guard no longer requires new names — either it deleted nothing on an "
+        "empty sheet (the P0) or it can delete user dimensions")
+    assert "bool(_names_before) and bool(_names_after)" not in body, (
+        "the old guard is back: a sheet with no dimensions can never be rolled back")
+    return "a rollback scopes on the names that appeared, not on the before-snapshot"
+
+
+def assert_sheet_activation_is_read_back():
+    """0.8.216 — `ActivateSheet` returned True and the page did not change.
+
+    Report 2026-11-07 (P0-2), direct COM probe on SW2024 (32.4.0):
+
+        ActivateSheet("图纸2") -> true
+        GetCurrentSheet.GetName -> "图纸1"
+        GetViews count -> 3 (the SAME three views)
+
+    So every write tool kept editing page 1 while the receipt said `active_sheet: 图纸2`.
+    The receipt was echoing the ARGUMENT, not reading the document back.
+
+    Measured 2026-11-07 on this machine (SW2024 SP4): activation works normally —
+    `图纸1` 1 view / `图纸2` 0 views, and `add_view_to_sheet` + `auto_dimension(sheet=...)`
+    land on page 2. The readback therefore does not fire here; its value is that on a build
+    where it does not stick, the call now FAILS instead of writing to the wrong page.
+    """
+    src = _read("tools/drawing.py")
+    helper = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                        "_activate_sheet_if_given")) or ""
+    assert "sheet_activation_not_effective" in helper, (
+        "activation is no longer verified — a silent wrong-page write is possible again")
+    assert "GetCurrentSheet.GetName" in helper, (
+        "the helper does not read the page back, so it can only echo the request")
+    assert "sw_version" in helper, (
+        "the refusal does not say which SolidWorks build behaved this way")
+
+    layout = _read("tools/layout.py")
+    for fn in ("activate_sheet", "add_view_to_sheet"):
+        body = ast.get_source_segment(layout, _function_node(ast.parse(layout), fn)) or ""
+        assert "sheet_activation_not_effective" in body, (
+            "%s does not verify the page actually changed" % fn)
+    assert "active_sheet=current" in layout, (
+        "activate_sheet echoes the argument again instead of the read-back page")
+    return "sheet activation is read back and refused when it did not take effect"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6665,6 +6742,8 @@ STATIC_REGRESSIONS = [
     ("0.8.210 pre-bind conditional field", assert_a_conditional_receipt_field_is_pre_bound),
     ("0.8.212 failed create closes its drawing", assert_a_failed_create_closes_what_it_opened),
     ("0.8.215 title block uses the sheet object", assert_title_block_looks_up_the_sheet_object_not_the_parameter),
+    ("0.8.216 rollback on an empty sheet", assert_a_rollback_does_not_require_a_non_empty_before_shot),
+    ("0.8.216 sheet activation read back", assert_sheet_activation_is_read_back),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
