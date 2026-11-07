@@ -19,6 +19,7 @@ import glob
 import os
 import shutil
 import sys
+import uuid
 import tempfile
 import time
 import traceback
@@ -783,10 +784,16 @@ def main():
         """
         src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
         results = []
+        # UNIQUE names per run. Fixed names failed with `OpenDoc6 errors=65536` because a
+        # document from an interrupted earlier run was still open under the same title —
+        # SolidWorks refuses to open a second document with an identical name, and the
+        # error text blames a lock or a doc-type mismatch, not the real cause.
+        _tag = uuid.uuid4().hex[:6]
         for label, kwargs in (("scale1:1", dict(scale=1.0, auto_fit=False)),
                               ("save=False", dict(save=False))):
-            part = os.path.join(workdir, "smoke_path_%s.SLDPRT" % label.replace("=", ""))
-            drw = os.path.join(workdir, "smoke_path_%s.SLDDRW" % label.replace("=", ""))
+            _stem = "smoke_path_%s_%s" % (label.replace("=", ""), _tag)
+            part = os.path.join(workdir, _stem + ".SLDPRT")
+            drw = os.path.join(workdir, _stem + ".SLDDRW")
             shutil.copy2(src, part)
             payload = drawing.create_drawing(part, drw, views=["front"], **kwargs)
             assert payload.get("ok"), (
