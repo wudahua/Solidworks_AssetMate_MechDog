@@ -558,6 +558,56 @@ def add_bom_table(
 
 
 @mcp.tool()
+def list_sheets(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW. Absolute path.")],
+) -> str:
+    """List every sheet in a drawing: name, size, views, and which one is active.
+
+    Only the ACTIVE sheet is edited by the other tools, so read this before a write when
+    the document has more than one page. `add_sheet` makes the new page active, and that
+    page has no views — which is how "dimension page 2" used to become a silent no-op.
+    """
+    return _json(layout.list_sheets(drawing_path))
+
+
+@mcp.tool()
+def activate_sheet(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW. Absolute path.")],
+    name: Annotated[str | None, Field(description="Sheet name to activate, e.g. '图纸2'. Give this or index.")] = None,
+    index: Annotated[int | None, Field(description="1-based sheet index. Give this or name.")] = None,
+    save: Annotated[bool, Field(description="Save the document after switching (default True).")] = True,
+) -> str:
+    """Make one sheet current. Every other tool edits the active sheet.
+
+    `add_sheet` leaves the NEW page active; call this to go back to a page that has views
+    before dimensioning, or to pick the page a view should be created on.
+    """
+    return _json(layout.activate_sheet(drawing_path, name=name, index=index, save=save))
+
+
+@mcp.tool()
+def add_view_to_sheet(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW. Absolute path.")],
+    sheet: Annotated[str | int | None, Field(description="Target sheet name or 1-based index. Omit to use the active sheet.")] = None,
+    model_path: Annotated[str | None, Field(description="Model to derive the view from. Omit to reuse the model the drawing already references.")] = None,
+    view_name: Annotated[str, Field(description="Standard view: '*前视' / '*上视' / '*右视' / '*左视' / '*后视' / '*等轴测'.")] = "*前视",
+    x_m: Annotated[float, Field(description="Sheet X for the view centre, in metres.")] = 0.15,
+    y_m: Annotated[float, Field(description="Sheet Y for the view centre, in metres.")] = 0.15,
+    scale: Annotated[float | None, Field(description="View scale, e.g. 2.0 for 2:1. Omit to inherit the sheet scale.")] = None,
+    save: Annotated[bool, Field(description="Save after creating the view (default True).")] = True,
+) -> str:
+    """Put a model view ON A NAMED SHEET (activating that sheet first).
+
+    This is the missing half of multi-page output: `add_sheet` creates the page, this puts
+    something on it. `CreateDrawViewFromModelView3` always draws on the active sheet, so
+    without sheet activation a new page could never receive a view.
+    """
+    return _json(layout.add_view_to_sheet(drawing_path, sheet=sheet, model_path=model_path,
+                                          view_name=view_name, x_m=x_m, y_m=y_m,
+                                          scale=scale, save=save))
+
+
+@mcp.tool()
 def add_sheet(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to add a sheet to. Absolute path.")], name: Annotated[str, Field(description="Name for the new sheet, e.g. '图纸2'. Omit to auto-name from the current sheet count.")] = None, paper: Annotated[str, Field(description="Paper size: A0/A1/A2/A3/A4 (default A3).")] = None, scale: Annotated[float, Field(description="Sheet scale, e.g. 1.0 for 1:1, 0.5 for 1:2.")] = 1.0, save: Annotated[bool, Field(description="Save the document after adding the sheet (default True).")] = True, first_angle: Annotated[bool, Field(description="First-angle projection for the new sheet (default True, matching GB).")] = True,
 ) -> str:

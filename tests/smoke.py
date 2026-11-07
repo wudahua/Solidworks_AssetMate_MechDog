@@ -640,12 +640,12 @@ def main():
     r.check("hole callout leader anchor (P1-7)", _hole_callout_leader_anchor)
     r.check("verify_dimension_attachments dedupe", _dimension_dedupe)
     def _add_sheet():
-        """`add_sheet` must fail LOUDLY, not silently or by leaving a half-built sheet.
+        """`add_sheet` must ADD A PAGE, or fail loudly — never `ok:true` with no new sheet.
 
-        The COM call is late-bound here (pywin32 cannot infer NewSheet4's 11-13 argument
-        signature), so the expected outcome is `sheet_creation_blocked` with the blocker
-        named. What must NOT happen: `ok: true` with no new sheet, or an exception.
-        If a future binding makes the call work, this accepts that too.
+        The "late-bound cannot infer NewSheet4" note that used to sit here was wrong
+        (0.8.196): the typelib was already generated and I had the argument order backwards,
+        so this now expects a real page. The safety property is unchanged: success must be
+        visible in the sheet list.
         """
         src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
         part = os.path.join(workdir, "smoke_sheet.SLDPRT")
@@ -666,6 +666,56 @@ def main():
         return "blocked as documented (late-bound NewSheet4)"
 
     r.check("add_sheet (blocked or created)", _add_sheet)
+
+    def _sheet_tools():
+        """The three tools that make multi-page output reachable (report C3).
+
+        `add_sheet` only creates an EMPTY page. Nothing could put a view on it, and every
+        other tool edits whatever page is active — so "dimension page 2" dimensioned a page
+        with no views and returned `inserted: 0 / ok: true`.
+
+        Asserts the whole loop: create a page, see it in `list_sheets`, switch back by
+        index, then create a view ON page 2 and see its view count go to 1.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_ms_sheet.SLDPRT")
+        drw = os.path.join(workdir, "smoke_ms_sheet.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+
+        made = layout.add_sheet(drw, name="图纸2", paper="A4")
+        if not made.get("ok"):
+            return "add_sheet blocked here: %s" % (made.get("error"),)
+
+        listed = layout.list_sheets(drw)
+        require(listed)
+        assert listed.get("sheet_count") == 2, "list_sheets sees %r sheets" % (listed.get("sheet_count"),)
+        assert [sh.get("name") for sh in listed["sheets"]] == ["图纸1", "图纸2"], (
+            "unexpected sheet names: %r" % ([sh.get("name") for sh in listed["sheets"]],))
+        assert listed["sheets"][0].get("view_count") == 1, (
+            "sheet 1 should carry the front view: %r" % (listed["sheets"][0],))
+        assert listed["sheets"][1].get("view_count") == 0, (
+            "the new sheet should start empty: %r" % (listed["sheets"][1],))
+
+        switched = layout.activate_sheet(drw, index=1)
+        require(switched)
+        assert switched.get("active_sheet") == "图纸1", (
+            "activate_sheet(index=1) left %r active" % (switched.get("active_sheet"),))
+
+        added = layout.add_view_to_sheet(drw, sheet=2, view_name="*前视",
+                                         x_m=0.15, y_m=0.15)
+        require(added)
+        assert added.get("sheet") == "图纸2", "view went to %r" % (added.get("sheet"),)
+        assert added.get("view_count") == 1, (
+            "page 2 still has no view after add_view_to_sheet: %r" % (added,))
+
+        # And now the thing that used to fail silently: dimensioning page 2 works, because
+        # page 2 finally HAS a view.
+        dims = drawing.auto_dimension(drw, all_views=True, save=False)
+        assert dims.get("ok"), "auto_dimension failed on the page that now has a view: %r" % (dims,)
+        return "2 sheets, page2 view created, auto_dimension ok=%s" % (dims.get("inserted"),)
+
+    r.check("sheet tools (list / activate / add_view)", _sheet_tools)
     r.check("add_bom_table (native, populated)", _bom_table)
 
     # --- editing tools: create → move → delete, all by name -----------------------------

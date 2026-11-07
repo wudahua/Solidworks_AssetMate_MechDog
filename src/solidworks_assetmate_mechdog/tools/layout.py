@@ -1452,6 +1452,253 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
         return error("sheet_creation_failed", str(exc))
 
 
+def _sheet_model_views(doc):
+    """Model views on the ACTIVE sheet — not the whole document.
+
+    Measured 2026-11-07: `_iter_views(doc)` walks every view on every page, so a two-sheet
+    drawing reported the SAME view list for both pages, and `add_view_to_sheet` "succeeded"
+    by looking at a count that had not moved. `IView` has no `Sheet` property and
+    `ISheet.GetSize` takes byref parameters pywin32 cannot supply, but `ISheet.GetViews`
+    returns exactly the views belonging to that sheet.
+    """
+    try:
+        sheet = doc.GetCurrentSheet
+    except Exception:
+        return []
+    views = []
+    try:
+        raw = list(sheet.GetViews or ())
+    except Exception:
+        return []
+    for item in raw:
+        try:
+            import win32com.client as _win
+            view = _win.Dispatch(item)
+            if getattr(view, "Type", None) == 1:      # the sheet view itself
+                continue
+            views.append(view)
+        except Exception:
+            continue
+    return views
+
+
+def list_sheets(drawing_path):
+    """Every sheet in the drawing, with its size, view count and whether it is active.
+
+    Report 2026-11-07 (C3): after `add_sheet` there was **no way to ask which sheets exist
+    or which one is active**. The caller had to infer it from `add_sheet`'s own reply, and
+    every other tool silently operated on whatever page happened to be current — which is
+    how "dimension page 2" became "dimension an empty page and report ok:true".
+
+    `ISheet.GetProperties` returns a flat list whose LAST TWO entries are width/height in
+    metres (measured [8.0, 12.0, 1.0, 1.0, 1.0, 0.42, 0.297] on A3). `GetSize` cannot be
+    used: it takes two byref in/out parameters that pywin32 cannot supply.
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        names = list(doc.GetSheetNames or ())
+        try:
+            active = str(doc.GetCurrentSheet.GetName)
+        except Exception:
+            active = None
+        sheets = []
+        for index, name in enumerate(names, start=1):
+            entry = {"index": index, "name": str(name), "active": str(name) == active}
+            try:
+                # Activate EVERY page, including the one that is already active.
+                #
+                # The previous version skipped the switch when `entry["active"]` was true,
+                # assuming the current page was that page — but the loop had already moved
+                # it on the previous iteration, so the "active" sheet was read while a
+                # DIFFERENT page was current. Measured 2026-11-07: page 2 reported page 1's
+                # view, and `add_view_to_sheet` then "succeeded" by comparing a count that
+                # never moved.
+                doc.ActivateSheet(str(name))
+                props = list(doc.GetCurrentSheet.GetProperties or ())
+                if len(props) >= 2:
+                    entry["size_m"] = [round(float(props[-2]), 5),
+                                       round(float(props[-1]), 5)]
+            except Exception:
+                pass
+            # `ISheet.GetViews` — NOT `_iter_views(doc)`, which returns every view in the
+            # document and made both pages report the same list (measured 2026-11-07).
+            views = [str(v.Name) for v in _sheet_model_views(doc)]
+            entry["views"] = views
+            entry["view_count"] = len(views)
+            sheets.append(entry)
+        if active:
+            try:
+                doc.ActivateSheet(active)
+            except Exception:
+                pass
+        return drawing_ok(
+            drawing=doc.GetTitle, sheet_count=len(sheets), sheets=sheets,
+            active_sheet=active,
+            note=("按 `index`（1 起）或 `name` 切页：`activate_sheet`。"
+                  "只有 `active: true` 的那一页会被其它工具修改。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("list_sheets_failed", str(exc))
+
+
+def activate_sheet(drawing_path, name=None, index=None, save=True):
+    """Make one sheet current. Every other tool edits the ACTIVE sheet.
+
+    Report 2026-11-07 (C3): this did not exist, so after `add_sheet` the new page stayed
+    active and `auto_dimension` dutifully dimensioned a page with no views on it.
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        names = [str(n) for n in (doc.GetSheetNames or ())]
+        if not names:
+            return error("no_sheets", "the drawing reports zero sheets")
+        target = None
+        if name:
+            if name not in names:
+                return error("sheet_not_found",
+                             "no sheet named %r" % name,
+                             "existing: %s" % ", ".join(names),
+                             sheets=names)
+            target = name
+        elif index is not None:
+            try:
+                target = names[int(index) - 1]
+            except Exception:
+                return error("sheet_not_found",
+                             "index %r is outside 1..%d" % (index, len(names)),
+                             sheets=names)
+        else:
+            try:
+                current = str(doc.GetCurrentSheet.GetName)
+            except Exception:
+                current = None
+            return drawing_ok(drawing=doc.GetTitle, sheets=names,
+                              active_sheet=current,
+                              note="未指定 name/index，只报告当前活动页。")
+        ok = bool(doc.ActivateSheet(target))
+        if save:
+            try:
+                _save_drawing(doc)
+            except Exception:
+                pass
+        return drawing_ok(drawing=doc.GetTitle, sheets=names,
+                          active_sheet=target, activated=ok,
+                          sheet_index=names.index(target) + 1)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("activate_sheet_failed", str(exc))
+
+
+def add_view_to_sheet(drawing_path, sheet, model_path=None, view_name="*前视",
+                      x_m=0.15, y_m=0.15, scale=None, save=True):
+    """Create a model view ON A NAMED SHEET, activating that sheet first.
+
+    Report 2026-11-07 (C3): `add_sheet` produced a blank page and nothing could put a view
+    on it, so "multi-page in one .SLDDRW" stayed unreachable and callers kept merging
+    separate files. `CreateDrawViewFromModelView3` always draws on the ACTIVE sheet, so the
+    missing piece was never the view API — it was sheet activation.
+
+    `model_path` defaults to the model the drawing already references.
+    """
+    try:
+        doc = _open_drawing(drawing_path)
+        names = [str(n) for n in (doc.GetSheetNames or ())]
+        target = None
+        if isinstance(sheet, int):
+            try:
+                target = names[sheet - 1]
+            except Exception:
+                return error("sheet_not_found", "index %r outside 1..%d"
+                             % (sheet, len(names)), sheets=names)
+        elif sheet:
+            if str(sheet) not in names:
+                return error("sheet_not_found", "no sheet named %r" % sheet,
+                             "existing: %s" % ", ".join(names), sheets=names)
+            target = str(sheet)
+        else:
+            try:
+                target = str(doc.GetCurrentSheet.GetName)
+            except Exception:
+                return error("sheet_not_found", "no sheet specified and none is active")
+
+        if not doc.ActivateSheet(target):
+            return error("activate_sheet_failed",
+                         "could not activate sheet %r" % target, sheets=names)
+
+        model = model_path
+        if not model:
+            for view in _iter_views(doc):
+                if getattr(view, "Type", None) == 1:
+                    continue
+                try:
+                    model = str(view.GetReferencedModelName or "")
+                except Exception:
+                    model = ""
+                if model:
+                    break
+        if not model or not os.path.exists(str(model)):
+            return error("no_model_reference",
+                         "the drawing has no model to derive a view from, and "
+                         "`model_path` was not given",
+                         "pass model_path explicitly for a drawing that has no views yet")
+
+        before = len(_sheet_model_views(doc))
+        try:
+            view = doc.CreateDrawViewFromModelView3(str(model), str(view_name),
+                                                    float(x_m), float(y_m), 0)
+        except Exception as exc:                                    # noqa: BLE001
+            return error("view_creation_failed", str(exc)[:200])
+        if view is None:
+            return error("view_creation_failed",
+                         "CreateDrawViewFromModelView3 returned null",
+                         "check that view_name is a standard view of %s"
+                         % os.path.basename(str(model)))
+
+        # The call ignores x/y on SW2024 (measured) — write the position explicitly.
+        try:
+            view.Position = (float(x_m), float(y_m), 0.0)
+        except Exception:
+            pass
+
+        applied_scale = None
+        if scale is not None:
+            try:
+                view.ScaleDecimal = float(scale)
+                applied_scale = round(float(view.ScaleDecimal), 5)
+            except Exception:
+                applied_scale = None
+        try:
+            doc.EditRebuild3()
+            perf_hooks.bump("rebuild_calls")
+        except Exception:
+            pass
+        if save:
+            try:
+                _save_drawing(doc)
+            except Exception:
+                pass
+
+        after_views = [str(v.Name) for v in _sheet_model_views(doc)]
+        created = len(after_views) > before
+        if not created:
+            return error("view_not_created",
+                         "CreateDrawViewFromModelView3 returned an object but the sheet's "
+                         "view list did not grow",
+                         sheets=names, views=after_views)
+        return drawing_ok(drawing=doc.GetTitle, sheet=target, sheet_index=names.index(target) + 1,
+                          view_name=str(view_name), model=os.path.basename(str(model)),
+                          position_m=[round(float(x_m), 4), round(float(y_m), 4)],
+                          scale=applied_scale, views=after_views,
+                          view_count=len(after_views),
+                          note="视图已建在「%s」上（该页现在是活动页）。" % target)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("add_view_to_sheet_failed", str(exc))
+
+
 def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
                    verify_render=True):
     """Draw a line in TRUE sheet space.
