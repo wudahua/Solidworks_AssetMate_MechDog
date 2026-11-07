@@ -286,11 +286,16 @@ CAPABILITIES = [
                 "线默认落在 `Layer = '10'`，而文档 12 个图层**一个都读不到**："
                 "`GetLayerManager`/`GetCount` 是属性（加括号报错），"
                 "`GetLayerAtIndex` 不存在。`PrintSetup` 是方法且要参数，猜不出形态。"),
-        "workaround": ("中心线可以自己画：`add_sheet_line` 已可用"
-                       "（`AddToDB` 先设，实测 571 像素可见），"
-                       "传图纸米坐标画虚线/实线；`add_center_marks` 的原生孔中心符号"
-                       "仍受 `PrintSetup` / 图层限制，那部分才需要手工。"
-                       "继续查的方向：宏录制、`PrintSetup` 的正确参数形态、换无图层模板对照。"),
+        "workaround": ("**`add_sheet_line` 只能画单一线型，画不出点划线** —— 这条替代路径"
+                       "对「回转轴线」不成立（2026-11-07 报告实测，2026-11-08 复核："
+                       "`ISketchSegment` 32 个属性里没有 Style / Width / Color，"
+                       "也没有 `SetLineStyle`，只有 GTOL 框架与引线的 `FrameLineStyle` / "
+                       "`LeaderLineStyle`；图纸视图上 `GetSketchSegments` 也访问不到）。"
+                       "所以：孔中心符号用 `add_center_marks`（这些视图它能插），"
+                       "**点划线样的回转轴线目前没有可靠入口，需要手工画**。"
+                       "`views_marked` 从 0.8.228 起只在 `center_mark_count > 0` 时计数，"
+                       "不会再对「返回 True 但插入 0 个」的视图报成功。"
+                       "继续查的方向：宏录制取线型 API 的真实调用、`PrintSetup` 参数形态。"),
     },
     {
         "id": "weld_symbol",

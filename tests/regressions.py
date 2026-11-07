@@ -6889,6 +6889,40 @@ def assert_the_title_block_is_not_blocked_by_the_safe_area():
         "the exemption does not clear the violations list")
     return "the title-block corner is writable; the drawing margin still is not"
 
+def assert_center_marks_count_what_was_inserted():
+    """0.8.228 — `views_marked` counted API return values, not marks.
+
+    Report 2026-11-07 (P1-3):
+
+        add_center_marks(view_name="剖面视图 A-A")
+        -> {"views_processed": 1, "views_marked": 1,
+            "views": [{"view": "剖面视图 A-A", "ok": true,
+                       "orientation": "", "center_mark_count": 0}]}
+
+    and the sheet showed no axis line at all. `AutoInsertCenterMarks2` returns True on a
+    view with no hole/slot geometry and inserts nothing.
+
+    The docstring here used to say the opposite — "GetCenterMarkCount under-reports on this
+    binding, so `views_marked` (the API's own success count) is the reliable signal, not the
+    count". Both were unreliable; only the count moving is evidence.
+
+    Measured 2026-11-08 on 飞达动力轴 front view:
+        views_marked 0, views[0].api_returned_true true, center_mark_count 0
+
+    Same shape as the `_title_scale_synced` / `verdict` bugs: a receipt that reports an API
+    RETURN as if it were an OUTCOME.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_center_marks")) or ""
+    assert "_inserted = bool(per_view and per_view > 0)" in body, (
+        "a view counts as marked without the count moving — the false success is back")
+    assert "api_returned_true" in body, (
+        "the receipt no longer separates the API return from the outcome")
+    assert "if ok_view://n                marked += 1" not in body, (
+        "`marked` is incremented on the API return again")
+    return "center marks are counted by what appeared, not by what the API returned"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7078,6 +7112,7 @@ STATIC_REGRESSIONS = [
     ("0.8.222 covered hole is not a blocker", assert_a_covered_hole_is_not_a_blocker),
     ("0.8.226 dimension can be radial", assert_a_dimension_can_be_radial),
     ("0.8.227 title block is writable", assert_the_title_block_is_not_blocked_by_the_safe_area),
+    ("0.8.228 center marks count inserts", assert_center_marks_count_what_was_inserted),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

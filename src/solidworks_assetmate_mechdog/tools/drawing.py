@@ -3024,17 +3024,34 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             except Exception as exc:
                 results.append({"view": view.Name, "ok": False, "error": str(exc)})
                 continue
-            if ok_view:
-                marked += 1
-            # Per-view count: `views_marked` alone could not tell "4 views each got 2" from
-            # "one view got 8", and the report could not prove the isometric was excluded.
+            # Per-view count FIRST, then decide whether anything was marked.
+            #
+            # Report 2026-11-07 (P1-3): on a section view `AutoInsertCenterMarks2` returned
+            # True while `GetCenterMarkCount` stayed 0 and NOTHING appeared on the sheet —
+            # `views_marked: 1` with `center_mark_count: 0`. The docstring here claimed the
+            # API's return value was "the reliable signal, not the count"; the report shows
+            # the return value is just as unreliable. A view with no hole/slot geometry
+            # returns True and inserts nothing.
+            #
+            # So a view counts as marked only when the count moved. `ok_view` alone is
+            # reported separately as `api_returned_true` so the difference stays visible.
             per_view = None
             try:
                 per_view = int(view.GetCenterMarkCount)
             except Exception:
                 per_view = None
-            results.append({"view": view.Name, "ok": bool(ok_view),
-                            "orientation": orientation, "center_mark_count": per_view})
+            _inserted = bool(per_view and per_view > 0)
+            if _inserted:
+                marked += 1
+            results.append({"view": view.Name, "ok": bool(_inserted),
+                            "api_returned_true": bool(ok_view),
+                            "orientation": orientation,
+                            "center_mark_count": per_view,
+                            "note": (None if _inserted else
+                                     "AutoInsertCenterMarks2 returned %r but the view still "
+                                     "has 0 center marks — no hole/slot geometry to mark, "
+                                     "or the call is a no-op on this view type"
+                                     % (bool(ok_view),))})
         try:
             doc.EditRebuild3
         except Exception:
