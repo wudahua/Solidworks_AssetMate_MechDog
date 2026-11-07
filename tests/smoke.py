@@ -1358,7 +1358,7 @@ def main():
                 # candidates are non-parallel/degenerate edge pairs.
                 assert item.get("status") in ("fillable", "ambiguous", "no_geometry",
                                                "no_applicable_candidate", "no_length_pair",
-                                               "no_value"), (
+                                               "low_confidence", "no_value"), (
                     "gap status is not one this smoke knows: %r" % (item.get("status"),))
             assert gaps.get("applied_count", 0) == 0 or gaps.get("applied"), (
                 "apply without a record of what was applied")

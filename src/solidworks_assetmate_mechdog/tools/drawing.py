@@ -5026,6 +5026,11 @@ def _view_axis_map(view):
     }, None
 
 
+# Above this many edge pairs matching one gap value, a distance-only match has no
+# discriminating power — see the `low_confidence` branch in `plan_dimension_gaps`
+# (report 2026-11-07, C8: a 50 mm gap on 接槽 matched 696 pairs).
+LOW_CONFIDENCE_MATCH_LIMIT = 50
+
 SECTION_KEEP_TOLERANCE = 0.10
 
 
@@ -8772,7 +8777,35 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             entry["applicable_candidates"] = _usable
             entry["candidates_matched_before_truncation"] = len(matches)
             entry["candidates_truncated"] = len(matches) > len(_kept)
-            if len(_usable) == 1:
+            # ── Confidence, from the match count (report 2026-11-07, C8) ────────────────
+            # On 接槽 a 50 mm gap matched **696** edge pairs. Keeping three of them and
+            # calling one "the" dimension is not a plan, it is a coincidence: with that many
+            # pairs satisfying a pure distance test, at least one will look right by luck.
+            #
+            # The count itself is the signal. A real dimension lines up with a handful of
+            # pairs; hundreds means the test has no discriminating power on this geometry.
+            # LOW CONFIDENCE GAPS ARE NEVER `fillable`, so `apply_gaps` cannot land one by
+            # accident — the caller has to name it with `apply_indices` on purpose.
+            _n_matches = len(matches)
+            if _n_matches > LOW_CONFIDENCE_MATCH_LIMIT:
+                entry["confidence"] = "low"
+                entry["confidence_reason"] = (
+                    "%d 条边对都满足这个距离 —— 纯距离匹配在这份几何上没有区分度，"
+                    "命中的多半是坐标巧合（实测接槽 50 mm 匹配 696 条）。"
+                    "要落地请用 apply_indices 明确指定，并先核对候选。" % _n_matches)
+            elif _n_matches > 1:
+                entry["confidence"] = "medium"
+                entry["confidence_reason"] = "%d 条边对匹配" % _n_matches
+            else:
+                entry["confidence"] = "high"
+                entry["confidence_reason"] = "唯一匹配"
+
+            _low = entry.get("confidence") == "low"
+            if _low:
+                # Deliberately NOT fillable and NOT ambiguous: it is a different failure —
+                # "too many answers" rather than "one/some answers".
+                entry["status"] = "low_confidence"
+            elif len(_usable) == 1:
                 entry["status"] = "fillable"
             elif len(_usable) > 1:
                 entry["status"] = "ambiguous"
@@ -9161,8 +9194,12 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             coverage=rec.get("coverage"),
             note=("This is a PLAN unless apply_gaps or apply_indices was given. Each gap "
                   "carries a status: `fillable` (exactly one APPLICABLE candidate), "
-                  "`ambiguous` (several), `no_applicable_candidate` (matches exist but none "
+                  "`ambiguous` (several), `low_confidence` (more than %d edge pairs match "
+                  "this value, so a distance-only test has no discriminating power — never "
+                  "auto-applied; name it with apply_indices after checking), "
+                  "`no_applicable_candidate` (matches exist but none "
                   "can be passed to add_distance_dimension), `no_length_pair` (the matching "
+                  % LOW_CONFIDENCE_MATCH_LIMIT +
                   "edge pair is degenerate or not parallel, so AddDimension2 would create an "
                   "ANGLE rather than a length), `no_geometry` (that value needs "
                   "a section or detail view). apply_gaps=True fills only the `fillable` "

@@ -6287,6 +6287,51 @@ def assert_sheet_direction_comes_from_the_view_name():
         "the receipt does not say WHAT the direction was based on")
     return "side-view direction is derived from the view name, not guessed"
 
+def assert_too_many_matches_means_no_answer():
+    """0.8.209 — hundreds of matches is not a plan, it is a coincidence.
+
+    Report 2026-11-07 (C8): on 接槽 a 50 mm gap matched **696** edge pairs, and the planner
+    still offered three of them as "candidates", one of which was `edge_a:3` (the frame
+    edge) paired with `edge_b:69` (a small circle). The distance was right; the semantics
+    were nonsense.
+
+    A distance-only test has no discriminating power once everything matches. The count is
+    the signal, so `plan_dimension_gaps` now grades it:
+
+        <= 1 match        high    "唯一匹配"
+        2..50             medium  "N 条边对匹配"
+        > 50              low     never `fillable`, never filled by `apply_gaps`
+
+    `low_confidence` is deliberately a separate STATUS, not a flag on `fillable`: "too many
+    answers" is a different failure from "one answer" or "several answers", and auto-apply
+    must not resolve it. The caller has to name the gap with `apply_indices`.
+
+    Measured 2026-11-07 on door (front + right):
+        statuses   {no_geometry: 7, no_length_pair: 5, low_confidence: 1}
+        confidence {high: 7, medium: 5, low: 1}
+        the low one: 3.05 mm matched 112 pairs
+        apply_gaps -> applied_count 0, applied_failed 0, sheet_modified false
+    """
+    src = _read("tools/drawing.py")
+    assert "LOW_CONFIDENCE_MATCH_LIMIT" in src, (
+        "the match-count threshold is gone — hundreds of coincidences look like a plan again")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "plan_dimension_gaps")) or ""
+    assert '"low_confidence"' in body, "the status is gone"
+    assert '"confidence"' in body and '"confidence_reason"' in body, (
+        "the receipt does not carry the grade or the reason")
+    # low confidence must short-circuit BEFORE the fillable branch
+    low_at = body.find('_low = entry.get("confidence") == "low"')
+    fillable_at = body.find('entry["status"] = "fillable"', low_at if low_at > 0 else 0)
+    assert low_at > 0 and 0 < low_at < fillable_at, (
+        "a low-confidence gap can still become `fillable`, so apply_gaps would fill a "
+        "coincidence")
+
+    smoke = open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8").read()
+    assert "low_confidence" in smoke.split("gap status is not one this smoke knows")[0], (
+        "the smoke whitelist does not know the new status, so a real run would fail there")
+    return "too many matches is graded low and cannot auto-apply"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6461,6 +6506,7 @@ STATIC_REGRESSIONS = [
     ("0.8.205 audit per sheet frame", assert_the_audit_judges_each_sheet_by_its_own_frame),
     ("0.8.206 delivery checks every sheet", assert_delivery_checks_every_sheet),
     ("0.8.207 direction from view name", assert_sheet_direction_comes_from_the_view_name),
+    ("0.8.209 too many matches is no answer", assert_too_many_matches_means_no_answer),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

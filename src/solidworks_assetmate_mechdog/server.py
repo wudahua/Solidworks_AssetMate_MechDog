@@ -895,6 +895,10 @@ def plan_dimension_gaps(
     Each gap lists its matching edge pairs and a status:
       * `fillable`            — exactly ONE applicable candidate; `apply_gaps=True` fills it
       * `ambiguous`           — two or more applicable candidates; nothing is chosen
+      * `low_confidence`      — more than 50 edge pairs match this value, so a distance
+                                test alone cannot tell the real one from a coincidence
+                                (measured: a 50 mm gap matched 696 pairs). Never filled by
+                                `apply_gaps`; use `apply_indices` after checking.
       * `no_applicable_candidate` — matches exist but none can be passed to
                                 `add_distance_dimension` (see below)
       * `no_length_pair`      — the matching edge pair is degenerate (start == end) or not
