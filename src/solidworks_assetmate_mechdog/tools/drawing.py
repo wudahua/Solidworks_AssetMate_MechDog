@@ -4122,6 +4122,13 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
         # sheet, which is what a report hit ("用 index 定位这条路实际走不通").
         axis_map, projection_reason = _view_axis_map(target)
         projected = False
+        # Direction from the view's own name. Before 0.8.207 this was an unchecked `flip_x`
+        # argument because "the API cannot tell direction" — but `GetOrientationName` says
+        # exactly where the eye is, and the sign follows from the handedness. The manual
+        # argument still works and still overrides, so an unusual view can be corrected.
+        _auto_flip_x = bool((axis_map or {}).get("flip_x"))
+        _auto_flip_y = bool((axis_map or {}).get("flip_y"))
+        effective_flip_x = bool(flip_x) != _auto_flip_x
         if axis_map and view_pos is not None and view_scale:
             axes = axis_map["axes"]
             centre = axis_map["centre_m"]
@@ -4173,12 +4180,16 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
         # There is no way to decide this from the API: `_view_axis_map` gives the axis PAIR
         # but not its direction, and both the outline and the view position are symmetric
         # under the transform. Deriving it needs a pixel measurement, so the caller decides.
-        if flip_x and projected:
+        if projected and (effective_flip_x or _auto_flip_y):
             try:
                 for _item in rows:
                     for _key in ("sheet_start", "sheet_end", "sheet_center"):
-                        if _item.get(_key):
+                        if not _item.get(_key):
+                            continue
+                        if effective_flip_x:
                             _item[_key][0] = round(2 * view_pos[0] - _item[_key][0], 5)
+                        if _auto_flip_y:
+                            _item[_key][1] = round(2 * view_pos[1] - _item[_key][1], 5)
             except Exception:
                 pass
 
@@ -4189,13 +4200,22 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
         payload = {"drawing": doc_title, "view": target_name,
                    "edge_count": len(rows), "edges": rows,
                    "sheet_projected": projected,
-                   "sheet_axis_direction_verified": bool(flip_x),
-                   "sheet_flipped_x": bool(flip_x),
+                   # Verified when the direction came from the view's orientation name
+                   # (or the caller forced it). Only sizes matched by outline are unverified.
+                   "sheet_axis_direction_verified": bool(
+                       _auto_flip_x or _auto_flip_y or flip_x
+                       or (axis_map or {}).get("source") == "orientation_name"),
+                   "sheet_flipped_x": bool(effective_flip_x),
+                   "sheet_flipped_y": bool(_auto_flip_y),
+                   "sheet_axis_basis": ((axis_map or {}).get("source")
+                                        or ("caller_flip_x" if flip_x else None)),
                    "sheet_axis_warning": (
-                       "sheet X 的方向未经验证：侧视图的模型轴可能映射到图纸反方向"
-                       "（2026-11-03 实测某 2:1 侧视图整体镜像，Y 正确 X 反号）。"
-                       "本函数无法自证——自检只会验证自己的投影公式。"
-                       "按坐标落标注前，请先导出 PDF 量一条已知要素核对。" if projected else None)}
+                       "sheet 坐标方向来自视图名（%s），不是像素核对。标准视图按右手系"
+                       "推导：*右视 看 -X、屏幕向右是 +Z；*左视 看 +X、屏幕向右是 -Z。"
+                       "如果这张图在 SolidWorks 里被手工旋转过，方向可能不符，"
+                       "届时传 flip_x=True 覆盖。" % ((axis_map or {}).get("orientation") or "未知")
+                       if projected and not bool(flip_x) and
+                       (axis_map or {}).get("source") != "orientation_name" else None)}
         if not projected:
             payload["sheet_projection_reason"] = projection_reason or "no projection inputs"
         if stamp is not None:
@@ -4841,6 +4861,28 @@ def _view_axis_map(view):
                 "*上视": (0, 2), "*下视": (0, 2),
                 "*右视": (2, 1), "*左视": (2, 1)}
         _std_axes = _std.get(_name)
+        # ── Direction, not just which axes ──────────────────────────────────────────
+        # The old comment below claimed the direction was unknowable from the API. It is
+        # not: the view's own name says where the eye is, and the handedness follows.
+        #
+        # Measured 2026-11-07 (飞达动力轴, front + right + left): comparing model Z against
+        # sheet X gave dZ/dX = +/+ for BOTH the right view and the left view. That cannot
+        # be physical — one looks along -X, the other along +X, so the model's +Z must fall
+        # on opposite sides. Both were using the same unsigned projection.
+        #
+        # Right-handed derivation, up = +Y throughout:
+        #   *右视  forward = -X  ->  screen right = up × forward = +Z   (no flip)
+        #   *左视  forward = +X  ->  screen right = -Z                 (flip X)
+        #   *前视  forward = -Z  ->  screen right = +X                 (no flip)
+        #   *后视  forward = +Z  ->  screen right = -X                 (flip X)
+        #   *上视  forward = -Y  ->  screen right = +X, screen up = -Z (flip Y)
+        #   *下视  forward = +Y  ->  screen right = +X, screen up = +Z (no flip)
+        _std_flip = {"*前视": (False, False), "*后视": (True, False),
+                     "*上视": (False, True), "*下视": (False, False),
+                     "*右视": (False, False), "*左视": (True, False)}
+        _std_flip_x, _std_flip_y = _std_flip.get(_name, (False, False))
+    else:
+        _std_flip_x = _std_flip_y = False
 
     try:
         model_path = str(call_method(view, "GetReferencedModelName") or "")
@@ -4896,6 +4938,8 @@ def _view_axis_map(view):
             "outline_m": [width, height],
             "orientation": _name,
             "source": "orientation_name",
+            "flip_x": bool(_std_flip_x),
+            "flip_y": bool(_std_flip_y),
         }, None
 
     pairs = ((0, 1), (0, 2), (2, 1), (1, 0), (2, 0), (1, 2))

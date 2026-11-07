@@ -6249,6 +6249,44 @@ def assert_delivery_checks_every_sheet():
         "len(ai_supplied) is back — it raises TypeError whenever the argument is omitted")
     return "delivery reports and blocks on per-sheet state"
 
+def assert_sheet_direction_comes_from_the_view_name():
+    """0.8.207 — "the API cannot tell direction" was wrong for the fifth time.
+
+    `list_drawing_edges` carried: "There is no way to decide this from the API:
+    `_view_axis_map` gives the axis PAIR but not its direction, and both the outline and the
+    view position are symmetric under the transform." It shipped a manual `flip_x` and a
+    warning telling the caller to measure pixels.
+
+    `IView.GetOrientationName` says where the eye is, and the sign follows from handedness.
+    The proof that the old projection was wrong needs no pixels: on 飞达动力轴 with front +
+    right + left, model Z against sheet X gave dZ/dX = +/+ for BOTH the right view and the
+    left view. One looks along -X, the other along +X — the model's +Z cannot fall on the
+    same side twice.
+
+    After deriving the sign from the name (up = +Y throughout):
+        *右视  forward -X  -> screen right = +Z   (no flip)
+        *左视  forward +X  -> screen right = -Z   (flip X)
+        *上视  forward -Y  -> screen up    = -Z   (flip Y)
+
+    Measured 2026-11-07 after the fix:
+        view1 (front) dZ +0.0775 dX +0.0000  same
+        view2 (right) dZ +0.1070 dX +0.1070  same
+        view3 (left)  dZ +0.1070 dX -0.1070  MIRRORED
+        based_on = orientation_name, verified = True
+    """
+    src = _read("tools/drawing.py")
+    assert "_std_flip" in src, (
+        "the orientation-derived direction table is gone — side views mirror again")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "list_drawing_edges")) or ""
+    assert "flip_x" in body and "effective_flip_x" in body, (
+        "the projection no longer applies a direction")
+    assert "sheet_axis_direction_verified" in body, (
+        "the receipt stopped reporting whether the direction is established")
+    assert '"sheet_axis_basis"' in body, (
+        "the receipt does not say WHAT the direction was based on")
+    return "side-view direction is derived from the view name, not guessed"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6422,6 +6460,7 @@ STATIC_REGRESSIONS = [
     ("0.8.204 writes name their sheet", assert_a_write_can_name_its_sheet),
     ("0.8.205 audit per sheet frame", assert_the_audit_judges_each_sheet_by_its_own_frame),
     ("0.8.206 delivery checks every sheet", assert_delivery_checks_every_sheet),
+    ("0.8.207 direction from view name", assert_sheet_direction_comes_from_the_view_name),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
