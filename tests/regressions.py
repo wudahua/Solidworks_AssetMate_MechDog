@@ -6857,6 +6857,38 @@ def assert_a_dimension_can_be_radial():
     assert "style: Annotated[str" in server, "the MCP tool does not expose `style`"
     return "an arc can be dimensioned as R, and the receipt names the form used"
 
+def assert_the_title_block_is_not_blocked_by_the_safe_area():
+    """0.8.227 — the safe area and the title block were mutually exclusive.
+
+    Report 2026-11-07 (P0-2): `add_note(text="2:1", x=0.3565, y=0.0285)` was refused with
+    `block_out_of_safe_area` — `safe_area.bottom` is 0.065 and the whole title block sits
+    below 0.061. So every form field except the three hard-coded slots (`name` / `code` /
+    `material`) had no way in: 重量, 版本, 共/第几张, 日期.
+
+    The safe area exists to keep the DRAWING area clear of the frame. The title block is a
+    printed form in the bottom-right corner; filling it is the normal case, not a layout
+    violation.
+
+    Measured 2026-11-08 on 飞达动力轴 A3:
+        add_note("V1.0", 0.3565, 0.0285) -> ok, title_block_zone_used true
+                                            bbox [0.3565, 0.0229, 0.367, 0.0285]
+        add_note("X", 0.10, 0.02)        -> block_out_of_safe_area (still refused)
+
+    Both directions are asserted: a waiver that also lets blocks into the drawing margin
+    would be worse than the bug.
+    """
+    src = _read("tools/layout.py")
+    assert "_title_block_zone(" in src, "the title-block corner is no longer recognised"
+    assert "title_block_zone_used" in src, (
+        "the receipt does not say the safe-area check was waived — a caller cannot tell a "
+        "real layout pass from an exemption")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "add_note")) or ""
+    assert "_title_block_zone(" in body, (
+        "add_note does not consult the title-block zone, so form fields are refused again")
+    assert "violations = []" in body, (
+        "the exemption does not clear the violations list")
+    return "the title-block corner is writable; the drawing margin still is not"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7045,6 +7077,7 @@ STATIC_REGRESSIONS = [
     ("0.8.222 limits readback order", assert_the_limits_readback_is_lower_then_upper),
     ("0.8.222 covered hole is not a blocker", assert_a_covered_hole_is_not_a_blocker),
     ("0.8.226 dimension can be radial", assert_a_dimension_can_be_radial),
+    ("0.8.227 title block is writable", assert_the_title_block_is_not_blocked_by_the_safe_area),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

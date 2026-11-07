@@ -755,6 +755,42 @@ def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_m
         return error("requirements_failed", str(exc))
 
 
+def _title_block_zone(sheet_w, sheet_h):
+    """The bottom-right corner where the title block lives, as (x0, y0, x1, y1).
+
+    Report 2026-11-07 (P0-2): `add_note(text="2:1", x=0.3565, y=0.0285)` was refused with
+    `block_out_of_safe_area` — `safe_area.bottom` is 0.065 and the whole title block sits
+    below 0.061. The safe area exists to keep the DRAWING area clear of the frame; the title
+    block is not the drawing area, it is a printed form, and filling it is the normal case.
+
+    So the two rules were mutually exclusive and every field except `name` / `code` /
+    `material` (three hard-coded slots) had no way in: 重量, 版本, 共/第几张, 日期.
+
+    The rectangle is ESTIMATED from the sheet, not measured off the template's cells —
+    on a GB A3 the title block measured `x 0.24..0.42, y 0.02..0.06`, i.e. the right 43%
+    and the bottom 20%. A caller that writes something absurd in here still gets the
+    estimate back in the receipt so it can tell this apart from a real layout check.
+
+    Returns None when the sheet is too small for the split to mean anything.
+    """
+    try:
+        w, h = float(sheet_w), float(sheet_h)
+    except Exception:
+        return None
+    if w <= 0.05 or h <= 0.05:
+        return None
+    return (round(w * 0.55, 4), 0.0, round(w, 4), round(h * 0.22, 4))
+
+
+def _inside(bbox, rect):
+    """True when `bbox` lies entirely inside `rect` (both [x0,y0,x1,y1])."""
+    try:
+        return (bbox[0] >= rect[0] - 1e-9 and bbox[1] >= rect[1] - 1e-9
+                and bbox[2] <= rect[2] + 1e-9 and bbox[3] <= rect[3] + 1e-9)
+    except Exception:
+        return False
+
+
 def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True,
              avoid_collisions=False):
     """Add a drawing note (技术要求 lines). x/y are sheet metres.
@@ -857,6 +893,7 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
         # request is the only way to catch that: the request was fine, the box was not.
         safe = None
         out_of_safe_area = None
+        _title_block_exempt = False
         try:
             from .drawing import template_safe_area as _safe_area
             sheet = doc.GetFirstView
@@ -874,6 +911,14 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
                     violations.append("right")
                 if final_bbox[3] > sheet_h - safe.get("top", 0) + 1e-9:
                     violations.append("top")
+                if violations:
+                    # The title block is a printed form, not drawing space. If the block is
+                    # entirely inside that corner, it is filling a form field and the safe
+                    # area does not apply.
+                    _zone = _title_block_zone(sheet_w, sheet_h)
+                    if _zone and _inside(final_bbox, _zone):
+                        violations = []
+                        _title_block_exempt = True
                 if violations:
                     out_of_safe_area = {
                         "axes": violations,
@@ -910,6 +955,11 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
                           adjusted=bool(collisions_avoided),
                           collisions_avoided=collisions_avoided,
                           bbox_final=[round(v, 4) for v in final_bbox],
+                          # True when the safe-area check was waived because the block sits
+                          # inside the title-block corner. The rect is ESTIMATED from the
+                          # sheet size, so a caller writing form fields wants to know the
+                          # layout check did not actually run on this call.
+                          title_block_zone_used=bool(_title_block_exempt),
                           shifted_m=([round(float(x_m) - position_requested[0], 4),
                                       round(float(y_m) - position_requested[1], 4)]
                                      if collisions_avoided else [0.0, 0.0]))
