@@ -6397,8 +6397,14 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
         try:
             _tv = dim.GetToleranceValues          # property, not a call
             if isinstance(_tv, (tuple, list)) and len(_tv) >= 2:
-                limits_stored_m["upper"] = round(float(_tv[0]), 8)
-                limits_stored_m["lower"] = round(float(_tv[1]), 8)
+                # ORDER IS (LOWER, UPPER), same as `SetToleranceValues(TolMin, TolMax)`.
+                # Measured 2026-11-07 on 飞达动力轴, requested upper +0.018 / lower -0.003:
+                # `GetToleranceValues` returned (-3e-06, 1.8e-05) in METRES, i.e.
+                # (-0.003 mm, +0.018 mm). The receipt had them swapped, and the swap then
+                # tripped `lower_sign_wrong` — the tool reported its own reading error as a
+                # writing error.
+                limits_stored_m["lower"] = round(float(_tv[0]), 8)
+                limits_stored_m["upper"] = round(float(_tv[1]), 8)
         except Exception:
             pass
         # A bilateral lower limit that is not negative means the band is one-sided; that is
@@ -7202,12 +7208,24 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             # `ok` now means "a native hole callout exists"; a sheet covered only by Ø
             # dimensions reports `ok: false` with `covered: true`, so the two facts can no
             # longer contradict each other.
+            # P2-7 of a 2026-11-07 report: a plain through-bore with counterbores was a
+            # BLOCKER because no native hole callout existed, while the same receipt said
+            # `covered: true` (three Ø dimensions on the sheet). GB accepts a Ø dimension on
+            # a plain hole; the native callout carries depth/countersink/thread, which is
+            # required for THREADED and countersunk holes, not for a reamed bore.
+            #
+            # So it blocks only when NOTHING covers the holes: no callout AND no Ø
+            # dimension. "Only Ø dimensions" is a `pending` item — visible, and it does not
+            # downgrade a delivered drawing to 仅供参考/未完成.
             record("hole_callouts", holes_in_drawing > 0,
                    "%s / 模型 %d 个圆柱面候选" % (_how, hole_candidates),
-                   ("没有任何原生孔标注对象；只有 Ø 尺寸，沉孔/深度/螺纹信息缺失，"
-                    "需人工补或换视图"
+                   ("没有任何原生孔标注对象；只有 Ø 尺寸覆盖。普通通孔/沉孔用 Ø 标注符合 GB，"
+                    "螺纹孔与沉头孔才需要原生孔标注"
+                    if holes_in_drawing == 0 and diameter_dims else
+                    "孔既没有标注也没有 Ø 尺寸覆盖，孔信息完全缺失"
                     if holes_in_drawing == 0 else
                     "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图"),
+                   blocking=(holes_in_drawing == 0 and diameter_dims == 0),
                    hole_callout_objects=holes_in_drawing,
                    diameter_dimensions=diameter_dims,
                    covered_by_diameter_only=(holes_in_drawing == 0 and diameter_dims > 0),

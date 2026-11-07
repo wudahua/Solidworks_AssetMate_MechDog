@@ -6774,6 +6774,55 @@ def assert_the_tolerance_probe_reads_a_window_not_the_page():
         "the window is appended to the page text again — deviations will be double-counted")
     return "the tolerance probe reads a local window around the nominal"
 
+def assert_the_limits_readback_is_lower_then_upper():
+    """0.8.222 — `GetToleranceValues` returns (LOWER, UPPER), and the receipt swapped them.
+
+    Measured 2026-11-07 on 飞达动力轴, requested upper +0.018 / lower -0.003:
+
+        GetToleranceValues -> (-3e-06, 1.8e-05)      in metres, i.e. (-0.003, +0.018)
+
+    The receipt labelled `_tv[0]` as "upper", so it reported `upper: -3e-06`,
+    `lower: 1.8e-05` — and then `lower_sign_wrong` fired because "lower" was positive.
+    **The tool reported its own reading error as a writing error.**
+
+    Same order as `SetToleranceValues(TolMin, TolMax)`, which was already correct.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_dimension_tolerance")) or ""
+    low_at = body.find('limits_stored_m["lower"] = round(float(_tv[0])')
+    up_at = body.find('limits_stored_m["upper"] = round(float(_tv[1])')
+    assert low_at > 0, "the lower limit no longer comes from _tv[0]"
+    assert up_at > 0, "the upper limit no longer comes from _tv[1]"
+    assert low_at < up_at or True, "order of assignment does not matter; the indices do"
+    return "the tolerance readback maps _tv[0] to lower and _tv[1] to upper"
+
+
+def assert_a_covered_hole_is_not_a_blocker():
+    """0.8.222 — a plain bore with Ø dimensions was a BLOCKER.
+
+    Report 2026-11-07 (P2-7): the part had a Ø18 through-bore and Ø30 counterbores at both
+    ends. `hole_callouts` reported `ok: false` (no native callout) and the same receipt said
+    `covered: true` with three Ø dimensions. That blocker downgraded a finished drawing to
+    仅供参考/未完成.
+
+    GB accepts a Ø dimension on a plain hole; the native callout carries depth /
+    countersink / thread, which is required for THREADED and countersunk holes. Making the
+    callout mandatory for every cylindrical face rejects valid drawings — the same mistake
+    the 0.8.200 `fillable` change was made to avoid.
+
+    It now blocks only when NOTHING covers the holes (no callout AND no Ø dimension);
+    "Ø only" is `pending`.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delivery_check")) or ""
+    assert "blocking=(holes_in_drawing == 0 and diameter_dims == 0)" in body, (
+        "a Ø-covered hole blocks delivery again")
+    assert "covered_by_diameter_only" in body, (
+        "the receipt no longer distinguishes Ø coverage from a native callout")
+    return "a hole covered by Ø dimensions is pending, not blocking"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6959,6 +7008,8 @@ STATIC_REGRESSIONS = [
     ("0.8.219 tolerance prints three decimals", assert_a_tolerance_can_print_three_decimals),
     ("0.8.220 probe reads a window", assert_the_tolerance_probe_reads_a_window_not_the_page),
     ("0.8.221 note reader used everywhere", assert_the_note_reader_is_used_everywhere),
+    ("0.8.222 limits readback order", assert_the_limits_readback_is_lower_then_upper),
+    ("0.8.222 covered hole is not a blocker", assert_a_covered_hole_is_not_a_blocker),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
