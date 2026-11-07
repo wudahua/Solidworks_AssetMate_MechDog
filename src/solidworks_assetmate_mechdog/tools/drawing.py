@@ -5715,8 +5715,71 @@ def _find_dimension(doc, value_mm, view_name=None):
     return None, None
 
 
+def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
+    """What the PDF text layer actually shows around a toleranced dimension.
+
+    Report 2026-11-07 (P0), final line: "readback 读的是你写进去的值，它证明不了图面上是
+    什么" — and it was right. The 2026-11-05 "fix" passed every readback and still printed
+    a BASIC box. This is the check that would have caught it.
+
+    Measured 2026-11-07 on 飞达动力轴, one fresh drawing per type, upper=lower=0.05:
+
+        bilateral  ['35', '0.05', '0.05']         two deviations, side by side
+        symmetric  ['35 ±0.05']                   one ± value
+        basic      ['35']                         no deviation at all
+        limit      ['35.05', '35.05']             two LIMITS (nominal±dev), not deviations
+
+    Those four shapes are distinguishable, so that is what gets asserted. Note what is NOT
+    asserted: that bilateral stacks vertically. On this build the two deviations come out
+    side by side at the same y (measured 545.4 for both), and no `IDisplayDimension`
+    property controls it — the shape is still bilateral, just laid out inline.
+
+    Returns a dict with `lines` (text containing the nominal or the deviation),
+    `shape` (one of the four names, or `unrecognised`) and `evidence`.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except Exception:
+        return {"checked": False, "reason": "pypdfium2_missing"}
+
+    try:
+        page = pdfium.PdfDocument(pdf_path)[0]
+        textpage = page.get_textpage()
+        raw = textpage.get_text_range()
+    except Exception as exc:                                        # noqa: BLE001
+        return {"checked": False, "reason": "pdf_unreadable: %s" % str(exc)[:60]}
+
+    nominal = ("%g" % round(float(nominal_mm), 3))
+    dev = ("%g" % round(float(upper_mm), 3)) if upper_mm is not None else None
+    hi = ("%g" % round(float(nominal_mm) + float(upper_mm), 3)) if upper_mm is not None else None
+
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    hits = [ln for ln in lines
+            if nominal in ln or (dev and dev in ln) or (hi and hi in ln)]
+
+    joined = " ".join(hits)
+    dev_count = joined.count(dev) if dev else 0
+    hi_count = joined.count(hi) if hi else 0
+
+    if "±" in joined and dev and dev in joined:
+        shape = "symmetric_plus_minus"
+    elif hi and hi != nominal and hi_count >= 1 and dev_count == 0:
+        shape = "limit_values"
+    elif dev_count >= 2:
+        shape = "bilateral_two_deviations"
+    elif dev_count == 0:
+        shape = "basic_no_deviation"
+    else:
+        shape = "unrecognised"
+
+    return {"checked": True, "shape": shape, "lines": hits[:8],
+            "deviation_count": dev_count, "limit_count": hi_count,
+            "expected": tol}
+
+
 def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
-                           upper=0.1, lower=0.1, view_name=None, apply=True):
+                           upper=0.1, lower=0.1, view_name=None, apply=True,
+                           verify_render=False):
     """Apply a native tolerance to an existing drawing dimension.
 
     The dimension is located by its VALUE in millimetres (drafting tolerances are
@@ -5915,13 +5978,60 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
                 "参数 %s=%r 看起来是「米」当成了「毫米」：按毫米算等于 %.6g mm，图面上会消失。"
                 "upper/lower 的单位是毫米。"
                 % (unit_suspect["parameter"], unit_suspect["value"], unit_suspect["as_mm"]))
+        # ── Figure-level proof ───────────────────────────────────────────────────────
+        # "readback 读的是你写进去的值，它证明不了图面上是什么" (report, 2026-11-07).
+        # Export once and read the text layer, so the receipt carries what a person would
+        # SEE rather than what COM stored. Costs one PDF export (~2 s) when asked for.
+        pdf_probe = {"checked": False, "reason": "verify_render_false"}
+        if verify_render:
+            _tmp_pdf = None
+            try:
+                import tempfile as _tempfile
+                _fd, _tmp_pdf = _tempfile.mkstemp(suffix=".pdf")
+                os.close(_fd)
+                drawing_ok_export = export_drawing(drawing_path, _tmp_pdf, fmt="pdf")
+                if drawing_ok_export.get("ok"):
+                    pdf_probe = _tolerance_text_on_pdf(_tmp_pdf, value_mm, tolerance_type,
+                                                       float(upper), float(lower))
+                else:
+                    pdf_probe = {"checked": False,
+                                 "reason": "export_failed: %s"
+                                           % drawing_ok_export.get("error")}
+            except Exception as exc:                                # noqa: BLE001
+                pdf_probe = {"checked": False, "reason": str(exc)[:80]}
+            finally:
+                try:
+                    if _tmp_pdf and os.path.exists(_tmp_pdf):
+                        os.remove(_tmp_pdf)
+                except Exception:
+                    pass
+
+        # Map the printed shape back to the requested type so a mismatch is a FAILURE,
+        # not a note. This is the check that would have caught the 2026-11-05 regression:
+        # `bilateral` reported readback 1 and printed a BASIC box, and every field said ok.
+        _want = {"bilateral": "bilateral_two_deviations",
+                 "symmetric": "symmetric_plus_minus",
+                 "basic": "basic_no_deviation",
+                 "limit": "limit_values"}.get(str(tolerance_type).lower())
+        _shape = pdf_probe.get("shape")
+        render_matches = (None if not pdf_probe.get("checked") or not _want
+                          else _shape == _want)
+        if render_matches is False:
+            warnings.append(
+                "图面与请求不符：要求 `%s`（应呈现为 %s），PDF 文本层实际是 `%s` —— "
+                "readback 是对的，但印出来的不是这个公差。"
+                % (tolerance_type, _want, _shape))
+
         return drawing_ok(applied=True, saved=True, planned=planned,
                           tolerance_type_readback=applied,
                           rendered_text=rendered_text,
-                 limits_stored_m=limits_stored_m,
-                 lower_sign_wrong=lower_sign_wrong,
+                          limits_stored_m=limits_stored_m,
+                          lower_sign_wrong=lower_sign_wrong,
                           rendered_verified=bool(rendered_text),
                           unit_suspect=unit_suspect,
+                          pdf_render=pdf_probe,
+                          pdf_render_expected=_want,
+                          pdf_render_matches=render_matches,
                           warning=(" ".join(warnings) if warnings else None))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

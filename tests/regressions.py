@@ -6094,6 +6094,46 @@ def assert_the_rollback_uses_the_sheet_name_space():
         "com-quirks still says deleting a just-inserted dimension is impossible")
     return "the rollback diffs on the sheet name space and deletes what it found"
 
+def assert_a_tolerance_is_checked_on_the_figure():
+    """0.8.202 — readback proves what COM stored, not what the sheet prints.
+
+    The 2026-11-05 regression is the case in point: `bilateral` was mapped to 1, readback
+    said `tolerance_type_readback: 1` (a valid swTolType_e), `applied: true`,
+    `lower_sign_wrong: false` — and the PDF showed `┌ Ø14.20 ┐`, a BASIC box with no
+    tolerance at all. Every field agreed with itself and none of them looked at the paper.
+
+    A report put it plainly: "readback 读的是你写进去的值，它证明不了图面上是什么".
+
+    So `add_dimension_tolerance(verify_render=True)` exports the sheet and classifies the
+    text layer. Measured 2026-11-07, one fresh drawing per type, upper = lower = 0.05:
+
+        bilateral  ['35', '0.05', '0.05']    -> bilateral_two_deviations
+        symmetric  ['35 ±0.05']              -> symmetric_plus_minus
+        basic      ['35']                    -> basic_no_deviation
+        limit      ['35.05', '35.05']        -> limit_values
+
+    `pdf_render_matches` compares that against the requested type, so "the figure is wrong"
+    is a reported failure rather than four fields that each look fine.
+    """
+    src = _read("tools/drawing.py")
+    assert "_tolerance_text_on_pdf" in src, (
+        "the figure is no longer inspected — a tolerance can be stored correctly and "
+        "printed as a BASIC box without anything noticing")
+    assert "verify_render=False" in src, "verify_render parameter is gone"
+    assert "pdf_render_matches" in src, (
+        "the receipt does not compare the printed shape against the request")
+
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "add_dimension_tolerance")) or ""
+    for shape in ("bilateral_two_deviations", "symmetric_plus_minus",
+                  "basic_no_deviation", "limit_values"):
+        assert shape in body, "the expected shape %r is not mapped" % shape
+    assert "pypdfium2" in src, "the PDF text layer is no longer read"
+
+    server = _read("server.py")
+    assert "verify_render" in server, "the MCP tool does not expose verify_render"
+    return "the printed tolerance is classified and compared against the request"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -6263,6 +6303,7 @@ STATIC_REGRESSIONS = [
     ("0.8.194 guard a missing measurement", assert_a_missing_measurement_is_not_compared),
     ("0.8.197 a view names its projection", assert_a_view_names_its_own_projection),
     ("0.8.198 rollback uses sheet names", assert_the_rollback_uses_the_sheet_name_space),
+    ("0.8.202 tolerance checked on the figure", assert_a_tolerance_is_checked_on_the_figure),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
