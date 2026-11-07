@@ -6637,9 +6637,64 @@ def assert_a_title_block_scale_can_be_written():
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                       "set_title_block")) or ""
     assert "scale_pattern" in body, "the bare n:m matcher is gone"
-    assert "_re.compile" in body or "re.compile" in body, (
-        "no pattern matcher for the scale cell")
-    return "the scale cell is matched as a bare n:m value"
+    # 0.8.221 found the actual cause: `notes = _sheet_notes(sheet)` passed the PARAMETER
+    # (a page name or None), so the list was empty or raised and the loop never ran —
+    # third site of the same 0.8.204 rename miss, after `_note_at` and before the receipt.
+    assert "_sheet_notes(_sheet_obj)" in body, (
+        "the note list is built from the `sheet` parameter again, which is a page name — "
+        "the loop body never executes and every field reads as unmatched")
+    assert "_sheet_notes(sheet)" not in body, (
+        "`_sheet_notes(sheet)` is back; `sheet` is the parameter")
+    # And the value has to be a RATIO: str(2.0) wrote "2.0" into a cell that reads "1:1".
+    assert "_scale_text" in body, (
+        "the scale is written as a decimal again instead of n:m")
+    return "the scale cell is found, and written as a ratio"
+
+
+def assert_the_note_reader_is_used_everywhere():
+    """0.8.221 — one bad read, three sites, three releases to find them all.
+
+    `IAnnotation.GetText` does not exist; the method is `INote.GetText()` with no
+    arguments. Three separate places read a note and all three were broken in the same
+    way, and each one silently produced "":
+
+      1. `_note_at` looked up the existing cell by position — fixed 0.8.215 (`_note_text`);
+      2. the marker loop read `before` — fixed 0.8.215 (`_note_text`);
+      3. the scale-cell loop read `text` for its n:m pattern — fixed 0.8.221.
+
+    Site 3 is why `set_title_block(scale=2.0)` reported
+    "title block has no scale value in the bottom band" while `list_drawing_annotations`
+    printed that very text at [0.3591, 0.0304].
+
+    A grep is the right assertion here: the point is that NO site reads GetText directly
+    any more.
+    """
+    src = _read("tools/drawing.py")
+    lines = src.splitlines()
+
+    # Only the `set_title_block` body matters — `_note_text` itself must call GetText, and
+    # `add_hole_callouts` legitimately calls `ICallout.GetText()`. Scanning the whole file
+    # reports both as offenders, which is how the first version of this assertion failed.
+    start = next(i for i, l in enumerate(lines) if l.startswith("def set_title_block("))
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].startswith("def ") and not lines[i].startswith("def set_title_block")),
+               len(lines))
+    body_lines = lines[start:end]
+    offenders = []
+    for offset, line in enumerate(body_lines):
+        stripped = line.split("#", 1)[0]
+        if ".GetText" not in stripped:
+            continue
+        if "_note_text" in stripped:
+            continue
+        # dimension text slots live on IDisplayDimension and take an index — legitimate
+        if "dimension" in stripped.lower() or "display" in stripped.lower():
+            continue
+        offenders.append("line %d: %s" % (start + offset + 1, stripped.strip()[:70]))
+    assert not offenders, (
+        "a note is still read with the wrong GetText — it will silently return an empty "
+        "string and the cell will look free://n" + "\n".join(offenders[:5]))
+    return "every note read in set_title_block goes through _note_text"
 
 def assert_a_tolerance_can_print_three_decimals():
     """0.8.219 — H7 fits printed as +0.02 because the tolerance had two decimal places.
@@ -6903,6 +6958,7 @@ STATIC_REGRESSIONS = [
     ("0.8.217 title block scale cell", assert_a_title_block_scale_can_be_written),
     ("0.8.219 tolerance prints three decimals", assert_a_tolerance_can_print_three_decimals),
     ("0.8.220 probe reads a window", assert_the_tolerance_probe_reads_a_window_not_the_page),
+    ("0.8.221 note reader used everywhere", assert_the_note_reader_is_used_everywhere),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

@@ -3618,7 +3618,13 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         if _sheet_err is not None:
             return _sheet_err
         _sheet_obj = doc.GetFirstView
-        notes = _sheet_notes(sheet)
+        # THIRD site of the same miss (report 2026-11-07, P0-2). `sheet` is the PARAMETER
+        # (a page name or None) since 0.8.204; the local Sheet object is `_sheet_obj`.
+        # `_sheet_notes(None)` returned [] and `_sheet_notes("图纸2")` raised, so the
+        # marker loop below never ran once — which is why `scale` was reported as
+        # "title block has no scale value in the bottom band" while `1:1` sat at
+        # [0.3591, 0.0304]. `_note_at` was fixed in 0.8.215; this call was not.
+        notes = _sheet_notes(_sheet_obj)
         planned, unmatched, skipped_reversed, skipped_extra = [], [], [], []
 
         wants = []
@@ -3643,10 +3649,13 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
             except Exception:
                 sheet_h = 0.297
             for note in notes:
-                try:
-                    text = note.GetText
-                except Exception:
-                    continue
+                # SECOND occurrence of the same defect (report 2026-11-07, P0-2). The
+                # main marker loop was fixed to use `_note_text`; this one still did
+                # `text = note.GetText`, which yields a bound method (or raises), so
+                # `isinstance(text, str)` was always False and EVERY note was skipped.
+                # `scale: 1:1` sat at [0.3591, 0.0304] — inside the band, matching the
+                # pattern — and the receipt still said "no scale value in the bottom band".
+                text = _note_text(note)
                 if not isinstance(text, str) or not scale_pattern.match(text):
                     continue
                 try:
@@ -3655,8 +3664,13 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                     position = None
                 if position and position[1] > sheet_h * 0.15:
                     continue  # outside the title-block band
+                # `str(scale)` wrote "2.0" into a cell that reads "1:1" — a scale cell holds
+                # a RATIO, not a decimal. `create_drawing` builds `1:2` / `2:1` from the same
+                # number with this formula; using it here keeps the two paths identical.
+                _scale_text = (("1:%g" % round(1.0 / float(scale), 4)) if float(scale) < 1
+                               else ("%g:1" % round(float(scale), 4)))
                 planned.append({
-                    "field": "scale", "before": text, "after": str(scale), "note": note,
+                    "field": "scale", "before": text, "after": _scale_text, "note": note,
                     "angle_deg": 0.0, "position": position,
                 })
             if not any(p["field"] == "scale" for p in planned):
@@ -3666,10 +3680,14 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         for field, marker, new_value in wants:
             candidates = []
             for note in notes:
-                try:
-                    text = note.GetText
-                except Exception:
-                    continue
+                # FOURTH site of the same bad read, and the most consequential: this is the
+                # `marker not in text` test that decides whether the name / code / material
+                # cells are FOUND at all. `note.GetText` is a bound method, so
+                # `isinstance(text, str)` was always False and every cell fell through to
+                # the `via: "created"` branch — which ADDS a note instead of rewriting the
+                # existing one. That is the "两处 POM / 两处 JT-001" in the 2026-11-07
+                # report; 0.8.215 only fixed the `before` read further down, not this test.
+                text = _note_text(note)
                 if not isinstance(text, str) or marker not in text:
                     continue
                 try:
