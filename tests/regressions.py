@@ -7533,6 +7533,51 @@ def assert_the_line_style_table_is_measured_not_documented():
         "the discrepancy with the documented order is no longer stated")
     return "the line-style table is what was measured, and the receipt reports it"
 
+def assert_a_failed_section_says_where_it_is():
+    """0.8.244 — the two remaining P0-1 suggestions, both solved differently than proposed.
+
+    **Suggestion 2 said**: reuse `cut_plane_not_in_view_plane` on the `orientation` path.
+    That guard already exists and already rejects a normal parallel to the viewing
+    direction (`axes[2]`). But `orientation="horizontal"` derives `axes[1]`, which the guard
+    correctly ALLOWS — the cut is legal, it just does not happen.
+
+    So I swept view x orientation x offset on 小车底部滚轮 (2026-11-08):
+
+        front + horizontal  off=0        section_not_cut      <- the real dead spot
+        front + horizontal  off=-0.020   ok  edges 16  hatch 2
+        front + horizontal  off=-0.005   ok  edges 32  hatch 2
+        front + horizontal  off=+0.005   ok  edges 28  hatch 2
+        front + vertical    any offset   hatch_missing
+        end   + vertical    off=-0.005   ok  edges 32  hatch 2
+        end   + horizontal  off=-0.005   ok  edges 32  hatch 2
+
+    The blocker is `offset_m == 0`, not the orientation — the cut plane lands exactly on
+    the symmetry plane and no edge appears. The hint now says that, with the numbers.
+
+    **Suggestion 3 said**: default `keep_on_failure=False`. Auto-deleting would also delete
+    the evidence of WHERE the cut plane landed, and the report itself noted that
+    `delete_view` cannot clean the parent's cut line anyway. So the view stays and the
+    receipt names it.
+
+    Measured:
+        ok=False error=section_not_cut view_kept=True
+        view_to_delete='剖面视图 A-A'
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_section_view")) or ""
+    assert "offset_m=0` 会切不开" in body, (
+        "the hint no longer names the offset that actually fails")
+    assert "view_kept=True" in body, (
+        "a failed section is left on the sheet without saying so again")
+    assert "view_to_delete" in body, (
+        "the receipt does not name the view it left behind")
+    assert "_new_view_name = str(getattr(section" in body, (
+        "the new view's name is not captured, so the branches cannot reference it")
+    assert "off=-0.005" in body or "±0.005" in body, (
+        "the measured offsets that DO work are missing from the hint")
+    return "a failed section names itself and the offsets that would have worked"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7738,6 +7783,7 @@ STATIC_REGRESSIONS = [
     ("0.8.239 datum is not a centreline", assert_a_datum_symbol_is_not_a_centreline),
     ("0.8.240 one-sided bilateral", assert_a_one_sided_bilateral_is_recognised),
     ("0.8.241 line styles are measured", assert_the_line_style_table_is_measured_not_documented),
+    ("0.8.244 a failed section says where it is", assert_a_failed_section_says_where_it_is),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

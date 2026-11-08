@@ -5717,6 +5717,11 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 "or an earlier failed attempt left the view in a bad state — reopen the drawing.",
                 cut_plane=cut_plane,
             )
+        # Named once, so every failure branch below can tell the caller WHICH view it left
+        # on the sheet. `section_not_cut` used to say "the view was created but nothing was
+        # cut" and stop there — the reader then found an empty `A-A` sitting in the layout
+        # with no way to know it was this call that put it there.
+        _new_view_name = str(getattr(section, "Name", "") or "")
         try:
             section.ScaleDecimal = scale
         except Exception:
@@ -5911,10 +5916,36 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                     "剖面视图已创建，但它和父视图的边数相同（%s vs %s）——**没有剖开**。"
                     % (sanity.get("edge_count"), sanity.get("source_edge_count")),
                     "剖切面没有生效：视图里没有出现任何内腔或孔的边。"
-                    "回转体（轮 / 轴 / 套 / 法兰）的轴向全剖请**改从端视图用 "
-                    "orientation='vertical' 剖切** —— 这份报告在 0.8.215 和 0.8.235 上"
-                    "两次实测该路线可得正确全剖（28 条边 / hatch_count 2）。"
+                    # Measured 2026-11-08 on 小车底部滚轮 (a revolved wheel), sweeping every
+                    # combination of view x orientation x offset:
+                    #
+                    #   front + horizontal  off=0        section_not_cut   <- the dead spot
+                    #   front + horizontal  off=-0.020   ok  edges 16  hatch 2
+                    #   front + horizontal  off=-0.005   ok  edges 32  hatch 2
+                    #   front + horizontal  off=+0.005   ok  edges 28  hatch 2
+                    #   front + vertical    any offset   hatch_missing
+                    #   end   + vertical    off=-0.005   ok  edges 32  hatch 2
+                    #   end   + horizontal  off=-0.005   ok  edges 32  hatch 2
+                    #
+                    # So the earlier advice ("cut the end view vertically") was right but
+                    # incomplete, and `offset_m=0` is a genuine dead spot on the front view:
+                    # the cut plane sits exactly on the symmetry plane and no edge appears.
+                    "先试 **offset_m 不为 0**：实测在前视图上 `offset_m=0` 会切不开，"
+                    "而 `±0.005` / `±0.020` 都能得到正确全剖（16~32 条边、hatch 2）。"
+                    "换视图也行：**端视图（右视/俯视）用 orientation='vertical'** 同样可得 "
+                    "32 条边 / hatch 2（2026-11-08 复测确认）。"
                     "剖面线属性不用查，回执里的 hatch_diagnostics 已经显示它们是正常值。",
+                    # Report 2026-11-08 (P0-1, suggestion 3): a failed section used to be
+                    # left on the sheet with no mention in the receipt, so the caller found
+                    # an empty `A-A` polluting the layout later. It is still kept — deleting
+                    # automatically would also delete the evidence that shows WHERE the cut
+                    # plane landed — but the receipt now says so and names the view.
+                    view_kept=True,
+                    view_to_delete=_new_view_name,
+                    delete_hint=("失败的空剖视图仍留在图上（%r）。不需要就 "
+                                 "delete_view(view_name=%r) 清掉；注意父视图上残留的"
+                                 "剖切线用 delete_view 清不干净。" % (_new_view_name,
+                                                                     _new_view_name)),
                     **diag)
             return error(
                 "hatch_missing",
