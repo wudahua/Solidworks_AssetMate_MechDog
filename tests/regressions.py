@@ -7357,6 +7357,69 @@ def assert_three_p2_items_are_fixed():
         "a failed SetText is swallowed — the dimension would print without the Ø and say ok")
     return "save default, ratio strings and dimension prefixes all behave as documented"
 
+def assert_two_more_p2_items_are_fixed():
+    """0.8.238 — P2-1 tolerance readback (measured) and P2-6 idempotency (code only).
+
+    **P2-1** — `list_drawing_annotations` reported a toleranced dimension as
+    `"Ø30 (公差类型 2，值未读回)"`. A reader could see that a tolerance existed but not what
+    it said, so checking the printed deviation meant looking at the sheet by eye.
+    `GetToleranceValues` was already readable (0.8.222 fixed its order for
+    `add_dimension_tolerance`), it was simply never called from the read path.
+
+    Measured 2026-11-08 on 飞达动力轴, bilateral +0.033/0:
+        tolerance_values_mm {'lower': -0.0, 'upper': 0.033}
+        display_text        'Ø35 +0.033/-0'
+
+    **P2-6** — `add_center_marks` called twice on one view left TWO marks at the same point
+    (`细节项目254` / `256`, both [0.2157, 0.1481]). SolidWorks does not deduplicate, and
+    coincident marks draw a thicker line that reads as a rendering artifact.
+
+    Now the count is read BEFORE the call and an already-marked view is skipped with
+    `skipped: "already_marked"`.
+
+    **NOT verified on a real machine**: every fixture on this disk (`door`, 飞达动力轴,
+    小车底部滚轮) reports `GetCenterMarkCount == 0` on every view, so there is no geometry
+    to mark and the skip branch never fires. The assertion is code-level only. Stated here
+    rather than implied by a green tick.
+    """
+    src = _read("tools/drawing.py")
+
+    _ls = "list_drawing_annotations" if "def list_drawing_annotations" in src else None
+    assert _ls, "list_drawing_annotations is gone"
+    assert "tolerance_values_mm" in src, (
+        "the annotation receipt no longer carries the tolerance numbers")
+    assert "GetToleranceValues" in src, (
+        "the tolerance values are not read at all — display_text will fall back to "
+        "'值未读回'")
+    assert "公差值读回失败" in src, (
+        "a failed tolerance read has no distinct message; it would look the same as "
+        "'no tolerance'")
+
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_center_marks")) or ""
+    assert "_marks_before" in body, (
+        "add_center_marks no longer reads the count before inserting — a second call "
+        "stacks duplicate marks at the same point")
+    assert "already_marked" in body, (
+        "an already-marked view is not reported as skipped")
+    return "tolerance values are readable; center marks are skipped when already present"
+
+
+def assert_the_mcp_entry_still_works_after_adding_tools():
+    """The guard on the MCP entry must not reject a call to a tool it has not seen.
+
+    Cheap companion to the stdio assertion: if `_install_argument_guard` ever looks up a
+    tool by the wrong key, every call would come back `unknown_argument` — a failure mode
+    that is only visible from outside the process.
+    """
+    src = _read("server.py")
+    assert 'known.get(name)' in src, (
+        "the guard no longer looks the tool up by name; it would reject valid calls")
+    assert 'if declared:' in src, (
+        "the guard has no empty-schema escape — a tool with no parameters would reject "
+        "every call")
+    return "the request guard degrades to a pass-through when it cannot resolve a tool"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7557,6 +7620,8 @@ STATIC_REGRESSIONS = [
     ("0.8.236 skipped duplicate is removed", assert_a_skipped_duplicate_is_actually_removed),
     ("0.8.236 uncut section names itself", assert_a_section_that_did_not_cut_says_so),
     ("0.8.237 three P2 items", assert_three_p2_items_are_fixed),
+    ("0.8.238 tolerance + center marks", assert_two_more_p2_items_are_fixed),
+    ("0.8.238 guard survives unknown tools", assert_the_mcp_entry_still_works_after_adding_tools),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

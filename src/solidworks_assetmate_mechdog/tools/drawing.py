@@ -3016,6 +3016,26 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
                 doc.ActivateView(view.Name)
             except Exception:
                 pass
+            # ── Idempotent (report 2026-11-08, P2-6) ──────────────────────────────
+            # Called twice on the same view this left TWO center marks at the SAME point
+            # (`细节项目254` / `256`, both [0.2157, 0.1481]). SolidWorks does not
+            # deduplicate them, and two coincident marks draw a visibly thicker line — a
+            # drafting defect that reads as a rendering artifact and is hard to find.
+            #
+            # So read the count BEFORE the call and leave an already-marked view alone.
+            _marks_before = None
+            try:
+                _marks_before = int(view.GetCenterMarkCount)
+            except Exception:
+                _marks_before = None
+            if _marks_before and _marks_before > 0:
+                results.append({"view": view.Name, "ok": True,
+                                "skipped": "already_marked",
+                                "center_mark_count": _marks_before,
+                                "note": "This view already carries center marks; nothing "
+                                        "was inserted. Call it on a view with none, or "
+                                        "delete the existing ones first."})
+                continue
             try:
                 ok_view = view.AutoInsertCenterMarks2(
                     insert_type, insert_option, bool(include_slots), bool(include_slots),
@@ -7141,8 +7161,52 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                 # tolerance exists. Claiming the numbers would be invention.
                                 _tol = row.get("tolerance_type")
                                 if _tol and int(_tol) != 0 and row.get("display_text"):
-                                    row["display_text"] = "%s (公差类型 %d，值未读回)" % (
-                                        row["display_text"], int(_tol))
+                                    # Report 2026-11-08 (P2-1): this used to append
+                                    # "(公差类型 2，值未读回)" and stop — a reader could see
+                                    # that a tolerance existed but not what it said, so the
+                                    # only way to check the printed deviation was to look at
+                                    # the sheet. `GetToleranceValues` CAN be read (0.8.222
+                                    # fixed its order for `add_dimension_tolerance`), so
+                                    # the numbers are recovered here.
+                                    #
+                                    # ORDER IS (LOWER, UPPER), in METRES — measured
+                                    # 2026-11-08: requested +0.018/-0.003, got
+                                    # (-3e-06, 1.8e-05).
+                                    _tol_limits = None
+                                    try:
+                                        _tv = dim.GetToleranceValues
+                                        if isinstance(_tv, (tuple, list)) and len(_tv) >= 2:
+                                            _tol_limits = (round(float(_tv[0]) * 1000.0, 4),
+                                                           round(float(_tv[1]) * 1000.0, 4))
+                                    except Exception:
+                                        _tol_limits = None
+                                    row["tolerance_type_code"] = int(_tol)
+                                    if _tol_limits is not None:
+                                        _lo, _up = _tol_limits
+                                        row["tolerance_values_mm"] = {"lower": _lo,
+                                                                      "upper": _up}
+                                        _code = int(_tol)
+                                        if _code == 2:      # BILATERAL: +up / -|lo|
+                                            row["display_text"] = "%s %+g/%+g" % (
+                                                row["display_text"], _up, _lo)
+                                        elif _code == 3:    # LIMIT: two stacked values
+                                            _base = row.get("value_mm")
+                                            if _base is not None:
+                                                row["display_text"] = "%g / %g" % (
+                                                    round(float(_base) + _up, 3),
+                                                    round(float(_base) + _lo, 3))
+                                            else:
+                                                row["display_text"] = "%s (+%g/+%g)" % (
+                                                    row["display_text"], _up, _lo)
+                                        else:               # SYMMETRIC and others
+                                            row["display_text"] = "%s %+g/%+g" % (
+                                                row["display_text"], _up, _lo)
+                                    else:
+                                        # Still honest when the read fails, and now the
+                                        # receipt also says WHY it is missing.
+                                        row["tolerance_values_mm"] = None
+                                        row["display_text"] = "%s (公差值读回失败)" % (
+                                            row["display_text"],)
                             except Exception:
                                 pass
                 if kind == "note":
