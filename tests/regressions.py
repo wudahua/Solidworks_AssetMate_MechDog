@@ -7307,7 +7307,7 @@ def assert_a_section_that_did_not_cut_says_so():
         "a view with the parent's edge count is reported as hatch_missing again")
     assert "_same_edges" in body, (
         "there is no branch on the edge count, so the two failures share a hint")
-    assert "orientation='vertical'" in body, (
+    assert "vertical" in body and "section_not_cut" in body, (
         "the working recipe is not in the hint; the caller has to guess it again")
     return "a section that did not cut names itself, with the recipe that does work"
 
@@ -7566,7 +7566,7 @@ def assert_a_failed_section_says_where_it_is():
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                      "add_section_view")) or ""
-    assert "offset_m=0` 会切不开" in body, (
+    assert "全部 `section_not_cut`" in body, (
         "the hint no longer names the offset that actually fails")
     assert "view_kept=True" in body, (
         "a failed section is left on the sheet without saying so again")
@@ -7574,7 +7574,7 @@ def assert_a_failed_section_says_where_it_is():
         "the receipt does not name the view it left behind")
     assert "_new_view_name = str(getattr(section" in body, (
         "the new view's name is not captured, so the branches cannot reference it")
-    assert "off=-0.005" in body or "±0.005" in body, (
+    assert "0.004 / 0.005 / 0.020" in body, (
         "the measured offsets that DO work are missing from the hint")
     return "a failed section names itself and the offsets that would have worked"
 
@@ -7775,6 +7775,37 @@ def assert_a_zero_offset_section_is_nudged():
     assert "auto_nudge_zero_offset" in server, (
         "the MCP tool does not expose the switch")
     return "a zero offset is nudged and the receipt names the offset actually used"
+
+def assert_an_eccentric_section_is_refused():
+    """0.8.252 — a CHORD section reported `ok: true, ratio 0.992`.
+
+    Report 2026-11-08 (P0): the only offset that produced hatching on 小车底部滚轮 was
+    0.004, which pushes the cut plane 2 mm off the axis. On a Ø64 circle that is a chord
+    `2*sqrt(32^2-2^2) = 63.875`, and the section measured 63.48 against a 63.98 source.
+    It passed every check, including `ratio 0.992` — inside SECTION_KEEP_TOLERANCE (10%).
+
+    A 10% tolerance cannot catch a 0.5 mm chord. Measured with the new check:
+
+        offset 0.004  section_off_axis  shrunk 0.50  ratio 0.9922
+        offset 0.005  section_off_axis  shrunk 0.79  ratio 0.9877
+
+    The threshold is 0.5% of the source (or 0.2 mm, whichever is larger), and only a
+    SHRINK counts — a section may legitimately be longer if the cut exposes depth.
+
+    KNOWN GAP: offset 0.020 still returns ok, because that call loses `section_kept_mm`
+    entirely (`ratio: None`) and the check has nothing to compare. Recorded rather than
+    papered over.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_section_view")) or ""
+    assert "section_off_axis" in body, (
+        "an eccentric chord passes as a full section again")
+    assert "_off_axis" in body and "shrunk_mm" in body, (
+        "the receipt does not report how much narrower the section is")
+    assert "0.005 * float(_src)" in body, (
+        "the 0.5% threshold is gone; the 10% SECTION_KEEP_TOLERANCE is too loose for this")
+    return "a chord section is refused with the amount it shrank"
 
 STATIC_REGRESSIONS = [
 
@@ -7987,6 +8018,7 @@ STATIC_REGRESSIONS = [
     ("0.8.248 empty schemas are guarded", assert_the_entry_guard_covers_empty_schemas),
     ("0.8.249 degenerate safe area says so", assert_a_degenerate_safe_area_says_so),
     ("0.8.251 a zero offset is nudged", assert_a_zero_offset_section_is_nudged),
+    ("0.8.252 an eccentric section is refused", assert_an_eccentric_section_is_refused),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

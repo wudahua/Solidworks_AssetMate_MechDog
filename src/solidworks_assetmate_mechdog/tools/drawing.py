@@ -6024,11 +6024,12 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                     # So the earlier advice ("cut the end view vertically") was right but
                     # incomplete, and `offset_m=0` is a genuine dead spot on the front view:
                     # the cut plane sits exactly on the symmetry plane and no edge appears.
-                    "先试 **offset_m 不为 0**：实测在前视图上 `offset_m=0` 会切不开，"
-                    "而 `±0.005` / `±0.020` 都能得到正确全剖（16~32 条边、hatch 2）。"
-                    "换视图也行：**端视图（右视/俯视）用 orientation='vertical'** 同样可得 "
-                    "32 条边 / hatch 2（2026-11-08 复测确认）。"
-                    "剖面线属性不用查，回执里的 hatch_diagnostics 已经显示它们是正常值。",
+                    "**先看清楚：这个零件有可能怎么偏都切不开。** 2026-11-08 在 `小车底部滚轮`（Ø64×26，单实体导入件）上逐值实测：\n"
+                    "  前视图 horizontal，offset 0 / 0.004 / 0.005 / 0.020 —— **全部 `section_not_cut`**（4 条边、无剖面线、`precise_outline` 与父视图相同）；\n"
+                    "  端视图 vertical，offset 0 → `hatch_missing`；0.004 → ok 28 边 hatch 2，但剖面高 63.48 对源 63.98（**偏心**）；0.020 → 49.94（偏心 22%）。\n"
+                    "**所以「换个 offset 就能切」不成立。** 单实体导入件的剖切 行为和特征建模的零件不同：\n"
+                    "`限位导向套`（特征件）前视图 offset 0 失败、**1e-3 成功且过轴**（46 边 hatch 4 ratio 1.000）；同一个工具用在同一台 SW2024 SP4 上，结果取决于零件。\n"
+                    "**能做的**：① 端视图 + `vertical` + `offset_m` 取 1e-3 量级，若 `sanity.section_size_mm` 与 `source_size_mm` 差超过 0.5 mm 就是偏心剖面，不可交付；② 换 `create_drawing(views=[...])` 的视图组合再试；③ 都不行就把剖视留给 SolidWorks 手工做——**不要交付一张偏心剖面**。",
                     # Report 2026-11-08 (P0-1, suggestion 3): a failed section used to be
                     # left on the sheet with no mention in the receipt, so the caller found
                     # an empty `A-A` polluting the layout later. It is still kept — deleting
@@ -6047,6 +6048,48 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 "GB 要求剖切面必须画剖面线；这种视图在生产上不能用。"
                 "请在 SolidWorks 界面手工检查该视图的区域剖面线属性（是否选了 Hatch / "
                 "Material crosshatch），或换一个能正常显示剖面线的模板/零件做对照。",
+                **diag)
+        # ── Off-axis section (report 2026-11-08, P0 suggestion 2) ────────────────────
+        # `SECTION_KEEP_TOLERANCE` is 10%, which is far too loose to catch an ECCENTRIC
+        # cut. Measured on 小车底部滚轮, end view, vertical:
+        #
+        #     offset 0.004  ratio 0.992  section 63.48 vs source 63.98   <- 0.5 mm chord
+        #     offset 0.020  ratio None   section 49.94 vs source 63.98   <- 14 mm chord
+        #
+        # The first passed every check (`ok: true, ratio 0.992`); the second lost its ratio
+        # entirely. Both are chords, not sections through the axis, and a revolved part's
+        # axial section must go through the axis — that is the whole point of the view.
+        #
+        # 0.5% is deliberately tight: a correct through-axis cut matches the source to
+        # rounding (measured 1.000 on 限位导向套). Anything looser lets a chord through.
+        _kept = sanity.get("section_kept_mm")
+        _src = sanity.get("source_kept_mm")
+        _off_axis = None
+        try:
+            if _kept is not None and _src:
+                _shrunk = float(_src) - float(_kept)
+                # Only a SHRINK matters; a section can legitimately be longer than its
+                # parent if the cut exposes depth.
+                if _shrunk > max(0.005 * float(_src), 0.2):
+                    _off_axis = {
+                        "shrunk_mm": round(_shrunk, 3),
+                        "section_kept_mm": round(float(_kept), 3),
+                        "source_kept_mm": round(float(_src), 3),
+                        "ratio": round(float(_kept) / float(_src), 4),
+                    }
+        except Exception:
+            _off_axis = None
+        if _off_axis:
+            return error(
+                "section_off_axis",
+                "剖视图比源视图窄了 %s mm（%.3f → %.3f）—— **这不是过轴全剖，是一条偏心弦**。"
+                % (_off_axis["shrunk_mm"], _off_axis["source_kept_mm"],
+                   _off_axis["section_kept_mm"]),
+                "回转体的轴向全剖必须过轴线。偏心剖面会把外圆读小（本例弦长 63.48 对 "
+                "Ø63.98）、把孔读小，图上却看不出异常。把 offset_m 调回 0 附近；"
+                "如果 0 切不开（单实体导入件常见），这个零件在当前构建上做不出正确的"
+                "轴向全剖，**不要交付这张偏心剖面**。视图保留了，供你判断偏心方向。",
+                off_axis=_off_axis,
                 **diag)
         if sanity.get("checked") and sanity.get("verdict") == "suspicious":
             return error(
