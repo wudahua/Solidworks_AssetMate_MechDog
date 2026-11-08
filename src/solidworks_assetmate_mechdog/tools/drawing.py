@@ -7143,7 +7143,13 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         blockers, pending, passed, checks = [], [], [], {}
         ledger_missing = []
 
-        def record(name, ok, detail=None, blocking=True, **extra):
+        # `blocking` is KEYWORD-ONLY. It used to be the fourth positional parameter, so an
+        # explanation passed in that slot silently became the blocking flag — and any
+        # explicit `blocking=` then raised `got multiple values`. Keyword-only makes that
+        # class of mistake a TypeError at the call site with a line number, instead of a
+        # swallowed failure that empties the verdict. Asserted by
+        # `assert_record_blocking_is_keyword_only`.
+        def record(name, ok, detail=None, *, blocking=True, **extra):
             # `extra` carries the numbers behind the verdict (attached vs excused); without
             # them a reader cannot tell "8 attached" from "23 attached".
             entry = {"ok": bool(ok), "detail": detail}
@@ -7280,14 +7286,29 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             # So it blocks only when NOTHING covers the holes: no callout AND no Ø
             # dimension. "Only Ø dimensions" is a `pending` item — visible, and it does not
             # downgrade a delivered drawing to 仅供参考/未完成.
+            # The explanation is APPENDED to `detail`, not passed as a fourth positional
+            # argument. Measured 2026-11-08 by a report: the extra argument bound to
+            # `blocking`, and the `blocking=` keyword then raised
+            #
+            #   record() got multiple values for argument 'blocking'
+            #
+            # which killed `delivery_check` AFTER it had run most of its checks (51.5 s in),
+            # so `verdict` / `blockers` / `pending` all came back empty while
+            # `produce_drawing` still reported `ok: true`. The whole delivery judgement
+            # disappeared and the receipt looked like a pass.
+            #
+            # This is the same lesson already written 80 lines below at `cosmetic_threads`:
+            # "`blocking` is positional, and the explanation goes into `detail` rather than
+            # a fifth argument" — I read it and then broke it here in 0.8.222.
             record("hole_callouts", holes_in_drawing > 0,
-                   "%s / 模型 %d 个圆柱面候选" % (_how, hole_candidates),
-                   ("没有任何原生孔标注对象；只有 Ø 尺寸覆盖。普通通孔/沉孔用 Ø 标注符合 GB，"
-                    "螺纹孔与沉头孔才需要原生孔标注"
-                    if holes_in_drawing == 0 and diameter_dims else
-                    "孔既没有标注也没有 Ø 尺寸覆盖，孔信息完全缺失"
-                    if holes_in_drawing == 0 else
-                    "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图"),
+                   ("%s / 模型 %d 个圆柱面候选。"
+                    % (_how, hole_candidates))
+                   + ("没有任何原生孔标注对象；只有 Ø 尺寸覆盖。普通通孔/沉孔用 Ø 标注符合 GB，"
+                      "螺纹孔与沉头孔才需要原生孔标注"
+                      if holes_in_drawing == 0 and diameter_dims else
+                      "孔既没有标注也没有 Ø 尺寸覆盖，孔信息完全缺失"
+                      if holes_in_drawing == 0 else
+                      "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图"),
                    blocking=(holes_in_drawing == 0 and diameter_dims == 0),
                    hole_callout_objects=holes_in_drawing,
                    diameter_dimensions=diameter_dims,

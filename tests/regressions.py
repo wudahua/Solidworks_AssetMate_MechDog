@@ -6923,6 +6923,70 @@ def assert_center_marks_count_what_was_inserted():
         "`marked` is incremented on the API return again")
     return "center marks are counted by what appeared, not by what the API returned"
 
+def assert_record_blocking_is_keyword_only():
+    """0.8.230 — a fourth positional argument bound to `blocking` and killed delivery_check.
+
+    Report 2026-11-08 (P0): every `delivery_check` call failed with
+
+        delivery_check.<locals>.record() got multiple values for argument 'blocking'
+
+    after 51.5 s of work, so `verdict` / `blockers` / `pending` all came back empty while
+    `produce_drawing` still reported `ok: true`. The whole delivery judgement vanished and
+    the receipt read as a pass.
+
+    Cause, introduced by me in 0.8.222: I appended an explanation to the `hole_callouts`
+    call as a FOURTH POSITIONAL argument, then also passed `blocking=`. The explanation
+    became the flag, and the keyword collided with it.
+
+    The same lesson is already written 80 lines below at `cosmetic_threads`:
+    "`blocking` is positional, and the explanation goes into `detail` rather than a fifth
+    argument". Reading it did not stop me.
+
+    Two guards:
+      1. `blocking` is keyword-only, so this class of mistake is a TypeError at the call
+         site with a line number instead of a swallowed failure.
+      2. No `record()` call may pass 4+ positional args AND a `blocking` keyword.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    fn = _function_node(tree, "delivery_check")
+    assert fn is not None, "delivery_check is gone"
+
+    record_def = None
+    for node in ast.walk(fn):
+        if isinstance(node, ast.FunctionDef) and node.name == "record":
+            record_def = node
+            break
+    assert record_def is not None, "the record() helper is gone"
+    assert record_def.args.kwonlyargs, (
+        "`blocking` is a positional parameter again — an explanation passed in that slot "
+        "silently becomes the flag and any explicit blocking= raises")
+    assert any(a.arg == "blocking" for a in record_def.args.kwonlyargs), (
+        "`blocking` is not keyword-only")
+
+    offenders = []
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "record"):
+            continue
+        has_blocking_kw = any(k.arg == "blocking" for k in node.keywords)
+        if len(node.args) >= 4 and has_blocking_kw:
+            offenders.append(node.lineno)
+        elif len(node.args) >= 4:
+            # 4 positional args also collide, now that `blocking` is keyword-only — this
+            # would be a TypeError too, just a different message.
+            offenders.append(node.lineno)
+    assert not offenders, (
+        "these record() calls pass too many positional arguments: lines %r" % (offenders,))
+
+    # And the pipeline must not turn a failed verdict into an empty one.
+    pipe = _read("tools/pipeline.py")
+    assert "delivery_check 执行失败" in pipe, (
+        "the pipeline reads the verdict fields unconditionally again — a crashed "
+        "delivery_check will surface as verdict: null with empty blockers, which reads "
+        "as deliverable")
+    return "record() takes blocking keyword-only, and a failed verdict cannot look empty"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7113,6 +7177,7 @@ STATIC_REGRESSIONS = [
     ("0.8.226 dimension can be radial", assert_a_dimension_can_be_radial),
     ("0.8.227 title block is writable", assert_the_title_block_is_not_blocked_by_the_safe_area),
     ("0.8.228 center marks count inserts", assert_center_marks_count_what_was_inserted),
+    ("0.8.230 record() blocking keyword-only", assert_record_blocking_is_keyword_only),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

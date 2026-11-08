@@ -542,8 +542,24 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         annotations=summary,
         layout_warnings=layout_warnings,
         coverage=recon.get("coverage"),
-        verdict=verdict.get("verdict"),
-        blockers=[b.get("detail") for b in (verdict.get("blockers") or [])],
+        # Report 2026-11-08 (P1): `delivery_check` crashed (a bad `record()` call), returned
+        # an ERROR dict, and this line read `verdict.get("verdict")` -> None, `blockers` ->
+        # [], `pending` -> []. The receipt then said `ok: true` with empty blockers, which
+        # reads as "deliverable" when in fact NO delivery judgement was ever made.
+        #
+        # A failed check is not a pass. If the step did not run, say so in the verdict and
+        # put the reason where a reviewer looks. `ok` keeps its existing meaning (a failed
+        # step does not abort the pipeline), but the three delivery fields can no longer be
+        # silently empty.
+        verdict=(
+            verdict.get("verdict") if verdict.get("ok")
+            else "未判定：delivery_check 执行失败（%s）"
+            % (str(verdict.get("message") or verdict.get("error") or "unknown")[:120],)
+        ),
+        blockers=([b.get("detail") for b in (verdict.get("blockers") or [])]
+                  if verdict.get("ok") else
+                  ["delivery_check 未完成，交付判定丢失：%s"
+                   % (str(verdict.get("message") or verdict.get("error") or "unknown")[:120],)]),
         pending=[p.get("detail") for p in (verdict.get("pending") or [])]
                 # Report 2026-11-06 (P3): a projection that violates GB/T 14692 went into
                 # `creation_warnings` only, so the verdict stayed "待设计审核" with an empty
