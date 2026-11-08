@@ -6609,7 +6609,7 @@ def assert_a_section_that_did_not_cut_is_not_ok():
         "the default verdict overwrites the specific one again — `no_hatch` will come out "
         "as `ok` exactly as before")
     caps = _read("tools/capabilities.py")
-    assert "orientation='vertical'" in caps, (
+    assert "cut_line_overshoot_m" in caps, (
         "the working recipe for an axial section of a revolved part is not documented; "
         "the only way to find it is to guess")
     return "a section that did not cut reports a named doubt, not ok"
@@ -8132,6 +8132,38 @@ def assert_a_missed_point_is_not_an_empty_view():
         "the hint does not name the likely cause — a point on a centre line")
     return "a point that misses every edge is told apart from an empty view"
 
+def assert_the_capability_text_names_the_two_real_causes():
+    """0.8.262 — the capability table blamed "geometry" for missing hatching.
+
+    Report 2026-11-08 (P3-1):
+
+        check_capabilities.section_view says hatching depends on part geometry;
+        measured, it depends on the OFFSET (whether the line endpoints land on the contour)
+        and on whether the part HAS A MATERIAL.
+
+    Both are now measured facts:
+
+    * the cut line used to be clamped to `min(w, h) * 0.5`, putting its endpoints exactly on
+      the outline of a symmetric view — the collapse this table used to call "geometry"
+    * an unmaterialed part produces `hatch 0` for the same geometry and the same arguments;
+      `set_part_material` makes the same call return `hatch 2`
+
+    The `workaround` now says `cut_line_overshoot_m` fixed the first, names the material
+    requirement for the second, and warns against using `offset_m` to compensate (offset
+    5 mm on a Ø16 bore leaves a 12.5 mm section, so the printed diameter is wrong).
+    """
+    caps = _read("tools/capabilities.py")
+    assert "cut_line_overshoot_m" in caps, (
+        "the table does not name the thing that actually fixed the zero-offset case")
+    assert "未赋材质时 hatch 恒 0" in caps, (
+        "the material requirement is still missing — that hint sends people to the hatch "
+        "settings dialog, which is a dead end")
+    assert "不要用 `offset_m` 去凑" in caps, (
+        "the table still lets a caller reach for an offset that produces a chord")
+    assert "section_line_remains" in caps, (
+        "the table does not say a failed section leaves a line behind")
+    return "the table names the overshoot, the material requirement, and the offset trap"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8352,6 +8384,7 @@ STATIC_REGRESSIONS = [
     ("0.8.259 a failed delete is not ok", assert_a_failed_delete_does_not_report_ok),
     ("0.8.260 edges carry edge_index", assert_edges_carry_the_index_that_dimensioning_needs),
     ("0.8.261 a missed point is not an empty view", assert_a_missed_point_is_not_an_empty_view),
+    ("0.8.262 the table names the real causes", assert_the_capability_text_names_the_two_real_causes),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

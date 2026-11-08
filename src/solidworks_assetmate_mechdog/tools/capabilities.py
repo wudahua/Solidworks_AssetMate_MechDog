@@ -498,28 +498,35 @@ CAPABILITIES = [
     {
         "id": "section_view",
         "status": "partial",
-        "summary": ("剖视图（模型坐标剖切面 + 剖切 sanity 校验）· 剖面线取决于几何，"
-                    "部分零件必然 `hatch_missing`"),
+        "summary": ("剖视图（模型坐标剖切面 + 剖切 sanity 校验）· `offset_m=0` 可切；"
+                    "剖面线取决于**剖切线是否伸出轮廓**与**零件是否赋材质**，不是「看运气」"),
         # Report 2026-11-07 (P0-1): a revolved part (wheel / shaft / sleeve / flange) needs
         # an AXIAL full section, and taking it from the front view silently produced an
         # uncut projection — `edge_count` equal to the parent's, `hatch_count 0`, and
         # `sanity.verdict: "ok"`. The working recipe is to cut the END view vertically.
         # `sanity` now reports `no_hatch` / `identical_to_source` instead of `ok`.
-        "workaround": ("回转体的轴向全剖：**从前视图剖切会退化成普通投影**"
-                       "（实测 8/8 次：`edge_count` 等于父视图、`hatch_count 0`）。"
-                       "报告者给出的一条可行路线是「从端视图用 `orientation='vertical'` 剖切」，"
-                       "**但这条只实测成功过一次（2026-11-07，28 边 / 2 剖面线），"
-                       "2026-11-08 复跑同样参数得到 4 边 / 0 剖面线，未复现**——"
-                       "原因不明，不要当成规律。"
-                       "无论走哪条路，本工具都会把退化结果报成 "
-                       "`sanity.verdict: 'no_hatch'` 或 `'identical_to_source'`，不再报 `ok`。"
-                       "**0.8.236 起 `edge_count == source_edge_count` 单独返回 "
-                       "`section_not_cut`** —— 那时是「根本没剖开」，不是「剖开了没画剖面线」，"
-                       "两者的 hint 不再共用。"
-                       "**注意：失败时剖面视图仍会留在图上**（`keep_on_failure` 默认保留），"
-                       "空剖视图会污染版面，需要 `delete_view` 手工清；已知 `delete_view` 清不掉"
-                       "父视图残留的剖切线。"
-                       "所以按回执判断成败，不要按这个配方判断。"),
+        "workaround": ("**`cut_line_overshoot_m`（默认 4 mm）—— 2026-11-08 修掉根因**。"
+                       "「`offset_m=0` 切不开」不是偏置问题，是**剖切线长度被 clamp 到"
+                       "「短边一半」，端点正好落在轮廓圆上**（65×65 视图的半长 = 半径），"
+                       "SolidWorks 把这种退化线当成「没穿过实体」，返回普通投影。"
+                       "现在线会伸出轮廓，`offset_m=0` 直接可切：实测 `限位导向套` 前视 "
+                       "46 边 / hatch 4 / ratio 1.000，`小车底部滚轮`（单实体导入件）"
+                       "前视 28 边 / hatch 2 / ratio 1.000。"
+                       "仍然切不开时按顺序试：①`cut_line_overshoot_m=0.008`；"
+                       "②**检查零件是否赋了材质 —— 未赋材质时 hatch 恒 0**"
+                       "（同一几何同一参数，`set_part_material` 之后立刻 hatch 2）；"
+                       "③手工做。"
+                       "**不要用 `offset_m` 去凑** —— 回转体上偏 5 mm，Ø16 内孔剖面变成 "
+                       "2·√(8²−5²)=12.5 mm，标出来的直径是错的；`section_off_axis` 会拦"
+                       "「剖面比源视图窄 0.5% 以上」的情况，但它拦不住所有偏心。"
+                       "**精度分层**：`edge_count == source_edge_count` 返回 "
+                       "`section_not_cut`（根本没剖开）；`hatch_count == 0` 返回 "
+                       "`hatch_missing`（剖开了没画线）；两者 hint 不共用。"
+                       "**失败视图**：`keep_on_failure='auto'` 默认删掉 `section_not_cut` / "
+                       "`section_empty` 的空剖视，保留 `hatch_missing`（能看出剖切面落在哪）。"
+                       "删除能清掉 84% 的污染，但**父视图草图里的剖切线清不掉**"
+                       "（`EnumSectionLines` 在本 binding 抛错），回执用 "
+                       "`section_line_remains: true` 如实说明。"),
         "why": ("0.8.21 起 `cut_plane_normal` / `cut_plane_origin` 可用**模型坐标**指定剖切面；"
                 "内部按「视图 deflated outline 与零件包围盒的尺寸匹配」确定图纸轴 ↔ 模型轴"
                 "（`GetViewPlaneNormal` 不存在、`ModelToViewTransform` 的 16 个数不是行主序 "
