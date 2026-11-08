@@ -8062,6 +8062,42 @@ def assert_a_failed_delete_does_not_report_ok():
         "the SelectByID2-only path is back; it returns True and deletes nothing")
     return "a delete that left dimensions behind is reported as a failure"
 
+def assert_edges_carry_the_index_that_dimensioning_needs():
+    """0.8.260 — the edge list had no `edge_index`, so nobody could select an edge by index.
+
+    Report 2026-11-08 (P1-3) reported two things. The first:
+
+        consequences: `add_distance_dimension` cannot select edges by index in a side view
+
+    That one is real and the cause is a naming mismatch. `list_drawing_edges` built each
+    row as `{"index": index}` while `add_distance_dimension` documents `edge_a` as "Index
+    of the FIRST edge (from list_drawing_edges)". Callers read `edge_index`, got None, and
+    fell back to hand-placed sheet coordinates.
+
+    Both keys exist now. Measured 2026-11-08 on 限位导向套 (right view):
+        edges=5  all have edge_index: True
+        add_distance_dimension(0, 1) -> ok=True value=1.0
+
+    The second claim — `|center - point| = 8.5 mm` against a self-reported radius of
+    31.5 mm — I could NOT reproduce: on this build every row satisfies
+    `|sheet_center - sheet_point_on_circle| == sheet_radius_m` to 0.01 mm, and
+    `sheet_projected` is True. So the inconsistent-coordinate half is recorded as
+    unreproduced rather than "fixed".
+
+    `sheet_projected` also now appears per row (it was envelope-only), so a caller filtering
+    edges does not have to cross-reference the payload.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "list_drawing_edges")) or ""
+    assert '"edge_index": index' in body, (
+        "edges no longer carry `edge_index`; selecting by index breaks again")
+    assert '"index": index' in body, (
+        "the old key was replaced instead of aliased — existing callers break")
+    assert '_row["sheet_projected"]' in body, (
+        "sheet_projected is back to envelope-only")
+    return "edges carry both index names, and sheet_projected is on every row"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8280,6 +8316,7 @@ STATIC_REGRESSIONS = [
     ("0.8.256 a view lands where asked", assert_a_view_lands_where_it_was_asked_for),
     ("0.8.257 one callout per hole size", assert_one_callout_per_hole_size),
     ("0.8.259 a failed delete is not ok", assert_a_failed_delete_does_not_report_ok),
+    ("0.8.260 edges carry edge_index", assert_edges_carry_the_index_that_dimensioning_needs),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

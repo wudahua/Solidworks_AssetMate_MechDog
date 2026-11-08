@@ -4411,7 +4411,13 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
                 raw_edges = []
 
         for index, raw in enumerate(raw_edges):
-            item = {"index": index}
+            # `index` AND `edge_index` — report 2026-11-08 (P1-3). `add_distance_dimension`
+            # documents its `edge_a` as "Index of the FIRST edge (from
+            # list_drawing_edges)", but this row only carried `index`. Every caller reading
+            # `edge_index` got None, concluded the view could not be selected by index, and
+            # fell back to hand-placed sheet coordinates. Both keys now exist so neither
+            # naming breaks.
+            item = {"index": index, "edge_index": index}
             if include_points:
                 try:
                     edge = win.Dispatch(raw)
@@ -4535,6 +4541,20 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
         # and that the only trustworthy check is a pixel measurement of the exported page.
         # Callers that place things by sheet coordinate (dimensions, leaders, datum tags)
         # should confirm one known feature against the PDF first.
+        # Same flag on every row as on the envelope: a caller that filters edges wants to
+        # know per-edge whether the sheet coordinates are real, without cross-referencing
+        # the payload. Report 2026-11-08 (P1-3) read `sheet_projected` per edge and got
+        # None on every one.
+        try:
+            for _row in rows:
+                _row["sheet_projected"] = bool(projected)
+                if not projected:
+                    _row["sheet_projection_reason"] = (
+                        "no axis mapping for this view — sheet_* coordinates are absent "
+                        "rather than guessed")
+        except Exception:
+            pass
+
         payload = {"drawing": doc_title, "view": target_name,
                    "edge_count": len(rows), "edges": rows,
                    "sheet_projected": projected,
