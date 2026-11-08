@@ -3666,10 +3666,20 @@ def _sheet_notes(sheet):
 
 # GB A3 title-block slot centres, measured on gb_a3.drwdot. Some templates leave these
 # cells BLANK (no placeholder text at all), so text matching alone cannot fill them.
+# Cell anchors for a GB A3 title block (`gb_a3.drwdot`), in sheet metres.
+#
+# Report 2026-11-08 (P2-2): `material` used to point at (0.344, 0.021), which is the
+# "主管设计" row — the y was the same as `code`'s. The template's own Q235 sample sits at
+# (0.3415, 0.055), so writing material there overwrote the wrong cell. The dry-run receipt
+# even showed the coordinates, but without the text that was already in that cell there was
+# no way to notice.
+#
+# These anchors are TEMPLATE SPECIFIC. `set_title_block` now echoes what is already at the
+# target cell so a wrong slot shows up before anything is written.
 TITLE_SLOTS = {
     "name": (0.391, 0.036),
     "code": (0.391, 0.022),
-    "material": (0.344, 0.021),
+    "material": (0.344, 0.055),
 }
 
 
@@ -8254,6 +8264,24 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                         types = [int(raw_types)]
                 except Exception:
                     pass
+                # ── `...2` is not the whole story (report 2026-11-08, P2-3) ─────────────
+                # `GetAttachedEntityTypes` returns nothing for two dimensions this toolkit
+                # created itself with `add_distance_dimension` (a 70 mm overall length and a
+                # 48 mm hole spacing), while the rendered leaders plainly touched geometry —
+                # `delivery_check` counted them as `2/7 无关联实体`.
+                #
+                # The `...3` family answers for those. Read the COUNT rather than the array:
+                # it is one integer, it needs no VARIANT handling, and it is enough to
+                # separate "attached" from "not".
+                if not types:
+                    try:
+                        _n3 = ann.GetAttachedEntityCount3
+                        _n3 = int(_n3() if callable(_n3) else _n3)
+                        if _n3 > 0:
+                            types = [-1] * _n3
+                            row["attached_count_source"] = "GetAttachedEntityCount3"
+                    except Exception:
+                        pass
                 row["attached_count"] = len(types)
                 row["attached_kinds"] = [SELECT_TYPE_NAMES.get(t, "type_%d" % t) for t in types]
                 # Report 2026-11-04 P2-5: three dimensions on a real sheet (65 overall

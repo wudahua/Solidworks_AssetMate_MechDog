@@ -8164,6 +8164,35 @@ def assert_the_capability_text_names_the_two_real_causes():
         "the table does not say a failed section leaves a line behind")
     return "the table names the overshoot, the material requirement, and the offset trap"
 
+def assert_the_material_slot_is_the_material_cell():
+    """0.8.263 — `material` wrote to the "主管设计" row.
+
+    Report 2026-11-08 (P2-2): the dry run planned `cell_slot_m = [0.344, 0.021]` while the
+    template's own Q235 sample sits at (0.3415, 0.055). The y was `code`'s y — material was
+    overwriting a different row of the title block.
+
+    The tell was available all along: the receipt already printed the coordinates, and once
+    the slot is right the cell's existing text comes back as the template's own sample.
+    Measured 2026-11-08 on gb_a3.drwdot:
+
+        field=material  slot=[0.344, 0.055]  before='Q235'  after='Q235'
+
+    `before='Q235'` is the proof — the grid coordinate is reading the cell that holds the
+    template's material sample.
+
+    KNOWN GAP: these anchors are hard-coded for `gb_a3.drwdot`. A different template needs
+    different numbers, and the tool has no way to find a cell by its label.
+    """
+    src = _read("tools/drawing.py")
+    i = src.find("TITLE_SLOTS = {")
+    j = src.find("}", i)
+    block = src[i:j]
+    assert '"material": (0.344, 0.055)' in block, (
+        "material points at the 主管设计 row again (y=0.021 is code's row)")
+    assert '"code": (0.391, 0.022)' in block, "the code slot moved unexpectedly"
+    assert '"name": (0.391, 0.036)' in block, "the name slot moved unexpectedly"
+    return "material reads the cell that holds Q235, not the row below it"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8385,6 +8414,7 @@ STATIC_REGRESSIONS = [
     ("0.8.260 edges carry edge_index", assert_edges_carry_the_index_that_dimensioning_needs),
     ("0.8.261 a missed point is not an empty view", assert_a_missed_point_is_not_an_empty_view),
     ("0.8.262 the table names the real causes", assert_the_capability_text_names_the_two_real_causes),
+    ("0.8.263 the material slot is the material cell", assert_the_material_slot_is_the_material_cell),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
