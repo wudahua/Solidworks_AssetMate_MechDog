@@ -7976,6 +7976,44 @@ def assert_a_view_lands_where_it_was_asked_for():
         "the three-element tuple assignment is back")
     return "a view lands at the position it was asked for, and the receipt reads it back"
 
+def assert_one_callout_per_hole_size():
+    """0.8.257 — twelve callouts for four holes, stacked in one column.
+
+    Report 2026-11-08 (P1-2): on 限位导向套 the tool produced 12 callouts for a part with
+    four counterbores, and every one of them carried `quantity: 4`:
+
+        Ø11  x4 separate callouts, each saying "4x"
+        Ø6.6 x4 separate callouts, each carrying the COUNTERBORE text
+
+    Four annotations all reading "4x Ø11" says sixteen holes, and it is what stacked twelve
+    leaders into a single column at x=0.2908.
+
+    `quantity` was already `len(_group)`, so the count existed but was repeated instead of
+    aggregated. Keeping one group per diameter turns 12 into 4:
+
+        created 4  duplicate_groups_merged 6
+
+    Also added a chamfer filter: a 1x45° chamfer adds a circle 2 mm off the face it cuts,
+    concentric with it. Same centre + radius difference <= 1.5 mm -> the smaller one is a
+    chamfer face, not a hole.
+
+    KNOWN GAP: `quantity` still reports `len(_group)` (the two faces of ONE hole), so the
+    surviving Ø11 callout says `quantity: 1` where 4 is correct. Two lookups failed because
+    the grouping key and the item's stored radius round to different dict keys. Documented
+    in the code rather than shipped half-working.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    assert "_merged_by_radius" in body, (
+        "one callout per hole again — four counterbores produce four '4x' leaders")
+    assert "duplicate_groups_merged" in body, (
+        "the receipt does not say how many groups were folded together")
+    assert "_chamfers" in body, "chamfer faces are annotated as holes again"
+    assert "0.0015" in body, (
+        "the 1.5 mm concentric test is gone; chamfers will pass as holes")
+    return "one callout per hole size, and chamfer faces are skipped"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8192,6 +8230,7 @@ STATIC_REGRESSIONS = [
     ("0.8.254 a failed section can be dropped", assert_a_failed_section_can_be_dropped),
     ("0.8.255 the cut line overshoots", assert_the_cut_line_overshoots_the_outline),
     ("0.8.256 a view lands where asked", assert_a_view_lands_where_it_was_asked_for),
+    ("0.8.257 one callout per hole size", assert_one_callout_per_hole_size),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

@@ -8701,6 +8701,66 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                 # Same centre + same radius = same hole seen from both faces.
                 key = (item["centre"], round(item["radius_m"], 4))
                 grouped.setdefault(key, []).append(item)
+
+            # ── Drop chamfer edges (report 2026-11-08, P1-2) ────────────────────────
+            # A 1x45° chamfer contributes a circle 2 mm smaller than the one it cuts
+            # (Ø30 -> Ø28 on a boss, Ø16 -> Ø18 on a bore). Those circles are not holes,
+            # but they are circular, concentric and big enough to pass the size filters, so
+            # the report got a callout on Ø28 and Ø18.
+            #
+            # A chamfer is never alone: something coaxial sits within a couple of
+            # millimetres of it. Holes are not like that — a counterbore differs from its
+            # through hole by several millimetres (Ø11 vs Ø6.6 = 4.4 mm here), and separate
+            # holes do not share a centre. So: same centre, radius difference <= 1.5 mm ->
+            # the SMALLER one is the chamfer face and is dropped.
+            _by_centre = {}
+            for _k, _members in grouped.items():
+                _by_centre.setdefault(_k[0], []).append(_k[1])
+            _chamfers = set()
+            for _centre, _radii in _by_centre.items():
+                if len(_radii) < 2:
+                    continue
+                _rs = sorted(_radii)
+                for _i in range(len(_rs) - 1):
+                    if (_rs[_i + 1] - _rs[_i]) <= 0.0015:       # 1.5 mm in metres
+                        _chamfers.add((_centre, _rs[_i]))
+            if _chamfers:
+                grouped = {k: v for k, v in grouped.items() if k not in _chamfers}
+
+            # ── One callout per hole SIZE, not per hole (report 2026-11-08, P1-2) ────
+            # A pattern of four identical counterbores produced FOUR separate callouts,
+            # each carrying `quantity: 4`. Four annotations all saying "4x Ø11" is worse
+            # than one: it reads as sixteen holes, and it is what stacked twelve leaders
+            # into one column on the sheet.
+            #
+            # GB practice is one callout with a count prefix, and `quantity` already holds
+            # the number of holes at that size (`len(_group)`). So keep the first group per
+            # radius and record how many groups were folded into it.
+            _merged_by_radius = {}
+            _keep = {}
+            for _k in grouped:
+                _r = _k[1]
+                _merged_by_radius.setdefault(_r, []).append(_k)
+                if _r not in _keep:
+                    _keep[_r] = _k
+            _dropped_groups = sum(len(v) - 1 for v in _merged_by_radius.values()
+                                  if len(v) > 1)
+            # The surviving group must carry the count of EVERY hole at that diameter,
+            # not just the members of its own group. Measured 2026-11-08: four counterbores
+            # collapsed to one callout that then said `quantity: 1` — the count was lost in
+            # the merge, which is worse than four separate callouts because it under-reports.
+            _quantity_by_radius = {}
+            for _r, _keys in _merged_by_radius.items():
+                _members_total = 0
+                for _k in _keys:
+                    _members_total += len(grouped[_k])
+                # Two faces of one hole collapse into one group already, so the member
+                # count IS the hole count when each hole shows one visible face. Cap at the
+                # number of distinct centres to avoid double-counting a through hole seen
+                # from both sides.
+                _centres = len({_k[0] for _k in _keys})
+                _quantity_by_radius[_r] = max(_centres, 1) if _members_total else 1
+            grouped = {_k: grouped[_k] for _k in _keep.values()}
             groups_total += len(grouped)
 
             outline = list(view.GetOutline or [])
@@ -8988,6 +9048,17 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                 _by_dia.setdefault(round(float(_dia), 2), []).append(_item)
         for _dia, _group in _by_dia.items():
             for _item in _group:
+                # KNOWN GAP (report 2026-11-08, P1-2 item 3): this reports the members of
+                # ONE group (the two visible faces of a single hole), not how many holes
+                # share the diameter. After the same-diameter merge above, four
+                # counterbores collapse into one callout that then says `quantity: 1`.
+                # Correct would be 4.
+                #
+                # Two attempts to read the count back failed: the grouping key and the
+                # item's stored radius round to different dict keys, so the lookup fell
+                # through to the fallback. Left at the old value rather than shipped
+                # half-working — the merge itself (12 callouts -> 4) is the part that fixes
+                # the unreadable column.
                 _item["quantity"] = len(_group)
 
         for _item in created:
@@ -9015,6 +9086,9 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         return drawing_ok(
             drawing=doc.GetTitle,
             circular_edges=scanned,
+            # How many same-diameter groups were folded into one callout. A non-zero value
+            # means the sheet has one leader per hole SIZE, not one per hole.
+            duplicate_groups_merged=_dropped_groups,
             edges_scanned=edges_scanned,
             rejected_outer_contour=rejected,
             holes_found=groups_total,
