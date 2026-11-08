@@ -7694,6 +7694,48 @@ def assert_the_entry_guard_covers_empty_schemas():
         "the unknown-key comparison is gone")
     return "an empty schema still refuses unknown arguments"
 
+def assert_a_degenerate_safe_area_says_so():
+    """0.8.249 — the safe area changed depending on whether the process created the file.
+
+    Report 2026-11-08 (P0-A), same sheet, same 0.42x0.297, same process:
+
+        A: create_drawing just finished   bottom 0.065  right  0.004  title_top 0.061
+        B: CloseDoc + reopen              bottom 0.004  right -0.016  title_top 0.0
+
+    and B still said `source: "template"`. So `add_note` at (0.06, 0.05) was refused in A
+    and accepted in B, with `bbox_final` identical in both.
+
+    Two defects:
+    * the cache key is `(sheet.Name, w, h)` — it cannot tell two openings of one file
+      apart, so a reopened drawing kept serving the previous opening's numbers;
+    * a collapsed scan (negative right margin, no title block found, 4 mm bottom band) was
+      still labelled a template measurement.
+
+    Fixed by clearing the cache when a document closes (the one moment the old numbers are
+    known stale) and by rejecting three physically impossible results, falling back to
+    ratios with `degraded: true`.
+
+    Measured 2026-11-08 on 飞达动力轴:
+        fresh   bottom=0.0650 right=0.0040 left=0.0588 title_top=0.061 degraded=False
+        reopen  bottom=0.0650 right=0.0040 left=0.0588 title_top=0.061 degraded=False
+    """
+    src = _read("tools/drawing.py")
+    assert "_degenerate.append" in src, (
+        "a collapsed template scan is accepted as a measurement again")
+    assert "title_block_top==frame_bottom" in src, (
+        "the 'no title block found' signature is not checked")
+    assert 'fb["degraded"] = True' in src or "_fb[\"degraded\"] = True" in src, (
+        "the fallback does not announce that it is a guess")
+    close_body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                           "close_document")) or ""
+    assert "_SAFE_AREA_CACHE.clear()" in close_body, (
+        "closing a document no longer clears the safe-area cache, so a reopened drawing "
+        "serves the previous opening's measurement")
+    layout_src = _read("tools/layout.py")
+    assert "safe_area_degraded" in layout_src, (
+        "add_note does not tell the caller that the layout check ran against a guess")
+    return "a collapsed scan falls back and says so; a reopen re-measures"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7903,6 +7945,7 @@ STATIC_REGRESSIONS = [
     ("0.8.245 a line can follow a view", assert_a_sheet_line_can_follow_a_view),
     ("0.8.248 a refused note is taken back", assert_a_refused_note_is_taken_back),
     ("0.8.248 empty schemas are guarded", assert_the_entry_guard_covers_empty_schemas),
+    ("0.8.249 degenerate safe area says so", assert_a_degenerate_safe_area_says_so),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

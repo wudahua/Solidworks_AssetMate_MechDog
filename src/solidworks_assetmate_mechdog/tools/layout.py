@@ -991,7 +991,15 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
                 note_left_on_sheet=not _rolled_back,
                 rollback_error=_rb_error)
 
+        # Whether the safe-area numbers above came from a real template scan or a ratio
+        # guess. Report 2026-11-08 (P0-A): a degenerate scan used to present itself as
+        # `source: "template"`, so the caller could not tell that the layout check ran
+        # against nothing. Now the flag travels with the receipt.
+        _safe_degraded = bool((safe or {}).get("degraded"))
+        _safe_source = (safe or {}).get("source")
         return drawing_ok(drawing=doc.GetTitle, note=name, text=str(encoded_text),
+                          safe_area_degraded=_safe_degraded,
+                          safe_area_source=_safe_source,
                           text_requested=str(text), text_warnings=text_warnings,
                           position_m=[round(float(x_m), 4), round(float(y_m), 4)],
                           position_requested_m=position_requested,

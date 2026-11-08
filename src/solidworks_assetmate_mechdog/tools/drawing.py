@@ -2941,6 +2941,16 @@ def close_document(drawing_path):
     try:
         from ..sw_session import get_sw
 
+        # The safe-area cache is keyed by (sheet.Name, w, h) — it cannot tell two openings
+        # of the same file apart, so a re-opened drawing kept serving the previous
+        # opening's measurement. Report 2026-11-08 (P0-A) hit exactly that: the same sheet
+        # measured `bottom 0.065` when freshly created and `0.004` after close+reopen.
+        # Closing is the one moment we know the old measurement is stale.
+        try:
+            _SAFE_AREA_CACHE.clear()
+        except Exception:
+            pass
+
         software = get_sw()
         want = os.path.normcase(os.path.abspath(str(drawing_path)))
         closed = []
@@ -5019,6 +5029,9 @@ def _template_safe_area_impl(sheet, sheet_w, sheet_h):
         "left": sheet_w * 0.14, "right": sheet_w * 0.01,
         "top": sheet_h * 0.012, "bottom": sheet_h * 0.22,
         "source": "ratio",
+        # A ratio guess is not a measurement. Saying so lets `add_note` / `measure_layout`
+        # show the caller that the layout check ran against a guess.
+        "degraded": True,
     }
     if len(segments) < 8:
         return fallback
@@ -5067,7 +5080,35 @@ def _template_safe_area_impl(sheet, sheet_w, sheet_h):
         "source": "template",
         "title_block_top": round(title_top, 4),
         "parts_list_right": round(list_right, 4),
+        "degraded": False,
     }
+
+    # ── Reject a degenerate scan (report 2026-11-08, P0-A) ──────────────────────────
+    # Re-opening the SAME drawing made this return `bottom 0.065 -> 0.004`,
+    # `right 0.004 -> -0.016`, `title_block_top 0.061 -> 0.0` — while still saying
+    # `source: "template"`. So the caller could not tell a good measurement from a
+    # collapsed one, and `add_note` at the same coordinates went from refused to accepted
+    # depending on whether the process had created the drawing or merely re-opened it.
+    #
+    # The three signatures below are physically impossible for a real GB template:
+    #   right < 0                    the frame is wider than the sheet
+    #   title_block_top == frame_bottom   no title block was found at all
+    #   bottom < 2 mm                the reserved band vanished
+    # Any one of them means the scan failed, so fall back to ratios and SAY SO.
+    _degenerate = []
+    if measured["right"] < 0:
+        _degenerate.append("right=%.4f<0" % measured["right"])
+    if abs(title_top - frame_bottom) < 1e-6:
+        _degenerate.append("title_block_top==frame_bottom (not found)")
+    if measured["bottom"] < 0.002:
+        _degenerate.append("bottom=%.4f<0.002" % measured["bottom"])
+    if _degenerate:
+        _fb = dict(fallback)
+        _fb["source"] = ("ratio (template scan degenerate: %s)"
+                         % "; ".join(_degenerate))
+        _fb["degraded"] = True
+        _fb["degenerate_reasons"] = _degenerate
+        return _fb
 
     # Sanity check before trusting the measurement. On A2 the frame scan missed the right
     # border entirely and reported a usable band of 212 mm out of 594 mm, which then drove
