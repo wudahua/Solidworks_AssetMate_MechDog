@@ -808,7 +808,12 @@ def main():
                 "'not checked'" % (label, synced))
             assert synced.get("skipped") or synced.get("text"), (
                 "%s: the receipt neither synced nor said why: %r" % (label, synced))
-            results.append("%s=%s" % (label, "synced" if synced.get("text") else "skipped"))
+            # NOT "skipped": the case DID run, fully, and its assertions passed. What the
+            # word describes is that the title-block scale needed no sync (scale=1.0 is the
+            # template's own value, save=False writes nothing). "skipped" reads as "this
+            # case did not execute", which is the opposite and hides whether the path was
+            # covered at all.
+            results.append("%s=%s" % (label, "synced" if synced.get("text") else "not_needed"))
         return ", ".join(results)
 
     r.check("create_drawing scale=1:1 / save=False", _create_drawing_paths)
