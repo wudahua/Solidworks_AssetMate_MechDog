@@ -9414,7 +9414,13 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                                 "请换候选。" % _why_not)})
                     continue
                 _snap_before = _dimension_selection_names(_doc_live) if _doc_live else []
-                _names_before = [n for n, _ in _snap_before]
+                # `None` means the reader FAILED — it must survive to the decision below,
+                # not be consumed here (report 2026-11-08, P2-3). Unpacking it directly
+                # raises `TypeError: cannot unpack non-iterable NoneType`, so the tri-state
+                # added in 0.8.216 protected nothing: the "safe refusal to delete" turned
+                # into an uncaught exception instead.
+                _names_before = (None if _snap_before is None
+                                 else [n for n, _ in _snap_before])
                 added = add_distance_dimension(
                     drawing_path, cand["edge_a"], cand["edge_b"],
                     x_m=pt[0], y_m=pt[1] - 0.015)
@@ -9490,8 +9496,16 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                     # that visibly carries 10 dimensions, so this guard is load-bearing,
                     # not defensive decoration.
                     _snap_after = _dimension_selection_names(_doc_live) if _doc_live else []
-                    _names_after = [n for n, _ in _snap_after]
-                    _new_names = [n for n in _names_after if n not in _names_before]
+                    _names_after = (None if _snap_after is None
+                                    else [n for n, _ in _snap_after])
+                    # `_names_after` is tri-state too. If either read failed the diff cannot
+                    # be computed, and an empty list would be read downstream as "nothing new
+                    # appeared" — the safest answer is an empty list PLUS a flag saying the
+                    # diff was not computable.
+                    _diff_computable = (_names_after is not None
+                                        and _names_before is not None)
+                    _new_names = ([n for n in _names_after if n not in _names_before]
+                                  if _diff_computable else [])
                     # `bool(_names_before)` was the bug (report 2026-11-07, P0-1): "no
                     # dimensions before inserting" is a LEGAL state — it is the first
                     # auto-dimension run — but the guard treated it the same as "the reader
@@ -9557,8 +9571,14 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
                                     "ok": False,
                                     "error": "value_mismatch",
                                     "inserted_but_wrong": True,
-                                    "snapshot_before": len(_names_before),
-                                    "snapshot_after": len(_names_after),
+                                    # `len(None)` raises, and this line runs on a path
+                                    # that is already reporting a failure — a second
+                                    # exception here would replace the real diagnosis.
+                                    "snapshot_before": (None if _names_before is None
+                                                        else len(_names_before)),
+                                    "snapshot_after": (None if _names_after is None
+                                                       else len(_names_after)),
+                                    "diff_computable": _diff_computable,
                                     "new_names": _new_names[:6],
                                     "rolled_back": (_rollback_possible
                                                     and bool(_new_names)
@@ -9622,8 +9642,23 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             applied_failed=len([a for a in applied if not a["ok"]]),
             inserted_but_wrong=len([a for a in applied
                                     if a.get("inserted_but_wrong")]),
-            # Explicit: `applied_count: 0` does NOT mean the drawing is untouched.
-            sheet_modified=any(a.get("inserted_but_wrong") for a in applied),
+            # Report 2026-11-08 (P2-1): `sheet_modified` was computed as "did I insert a
+            # wrong dimension at any point", so it stayed `true` even after every one of
+            # them was rolled back and `annotation_count` returned to its baseline. Read
+            # next to `rolled_back: 1`, that says "the sheet was damaged" when the sheet is
+            # exactly as it was.
+            #
+            # Two separate facts, two separate fields:
+            #   insert_attempted_wrong  a wrong dimension WAS created (historical)
+            #   sheet_modified          the sheet is different NOW (residual work)
+            # `sheet_modified` keeps its name because a caller may already branch on it —
+            # but it now means what it says, and the old meaning is still available.
+            insert_attempted_wrong=any(a.get("inserted_but_wrong") for a in applied),
+            sheet_modified=any(a.get("inserted_but_wrong") and not a.get("rolled_back")
+                               for a in applied),
+            residual_inserted_but_wrong=len([a for a in applied
+                                             if a.get("inserted_but_wrong")
+                                             and not a.get("rolled_back")]),
             rolled_back=len([a for a in applied if a.get("rolled_back")]),
             breaker_tripped=_breaker_tripped,
             # Gaps whose value was already on the sheet: skipped, not attempted, not failed.

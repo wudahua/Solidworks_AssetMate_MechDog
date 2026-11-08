@@ -6987,6 +6987,87 @@ def assert_record_blocking_is_keyword_only():
         "as deliverable")
     return "record() takes blocking keyword-only, and a failed verdict cannot look empty"
 
+def assert_the_tri_state_survives_unpacking():
+    """0.8.231 — the tri-state reader protected nothing, because the caller unpacked None.
+
+    Report 2026-11-08 (P2-3), static evidence: 0.8.216 made `_dimension_selection_names`
+    return `None` on a failed read, and the rollback guard checks `_names_before is not
+    None`. But the very next line was
+
+        _names_before = [n for n, _ in _snap_before]
+
+which raises `TypeError: cannot unpack non-iterable NoneType` on exactly the state the
+tri-state was introduced to represent. The "safe refusal to delete" was an uncaught
+exception instead.
+
+Downstream had the same problem: `_new_names = [n for n in _names_after if ...]` and
+`len(_names_after)` both blow up on None, and the second one runs ON THE FAILURE PATH —
+replacing the real diagnosis with a TypeError.
+
+All four sites are covered here.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "plan_dimension_gaps")) or ""
+    assert "_names_before = (None if _snap_before is None" in body, (
+        "the before-snapshot is unpacked without a None check again")
+    assert "_names_after = (None if _snap_after is None" in body, (
+        "the after-snapshot is unpacked without a None check again")
+    assert "_diff_computable" in body, (
+        "the diff is computed without checking both sides — a failed read becomes "
+        "\"nothing new appeared\", which is the opposite of safe")
+    assert '"snapshot_before": (None if _names_before is None' in body, (
+        "`len(None)` on the failure path again — that TypeError replaces the real cause")
+    return "a failed snapshot read reaches the decision as None, not as a TypeError"
+
+
+def assert_sheet_modified_means_modified():
+    """0.8.231 — `sheet_modified: true` next to `rolled_back: 1`.
+
+    Report 2026-11-08 (P2-1): in the zero-dimension scenario both `apply_gaps` calls
+    reported `inserted_but_wrong: 1 / rolled_back: 1 / sheet_modified: true` while
+    `annotation_count` stayed at 8. The sheet was back to its baseline, but the receipt
+    said it had been modified — read next to `rolled_back`, that says "damaged" when it
+    means "I tried something and undid it".
+
+    Now two fields: `insert_attempted_wrong` (historical) and `sheet_modified` (residual),
+    plus `residual_inserted_but_wrong` as a count.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "plan_dimension_gaps")) or ""
+    assert "insert_attempted_wrong=" in body, (
+        "the historical fact has no field of its own again")
+    assert ("sheet_modified=any(a.get(\"inserted_but_wrong\") and not a.get(\"rolled_back\")"
+            in body), (
+        "`sheet_modified` counts attempted inserts again, so a fully rolled-back sheet "
+        "still reads as modified")
+    assert "residual_inserted_but_wrong=" in body, (
+        "no count of what actually remains on the sheet")
+    return "sheet_modified means the sheet differs now, not that an insert was attempted"
+
+
+def assert_a_trash_failure_is_not_blamed_on_the_document():
+    """0.8.231 — the hint named the wrong cause.
+
+    Report 2026-11-08 (P2-2):
+        {"error": "output_locked",
+         "message": "cannot overwrite ...: [safe-delete] 操作失败 ... trash operation",
+         "hint": "Close the drawing in SolidWorks and retry."}
+
+    The drawing was NOT open. The failure was the recycle bin refusing the delete. A hint
+    that points at the wrong subsystem costs more than no hint.
+
+    Now the two cases carry different codes and different advice, and the underlying
+    exception text is passed through.
+    """
+    src = _read("tools/pipeline.py")
+    assert "output_trash_failed" in src, (
+        "a recycle-bin refusal is still reported as `output_locked`")
+    assert "underlying=" in src, (
+        "the underlying exception text is dropped again, so the caller cannot see why")
+    return "a failed delete and a locked document are reported as different things"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7178,6 +7259,9 @@ STATIC_REGRESSIONS = [
     ("0.8.227 title block is writable", assert_the_title_block_is_not_blocked_by_the_safe_area),
     ("0.8.228 center marks count inserts", assert_center_marks_count_what_was_inserted),
     ("0.8.230 record() blocking keyword-only", assert_record_blocking_is_keyword_only),
+    ("0.8.231 tri-state survives unpacking", assert_the_tri_state_survives_unpacking),
+    ("0.8.231 sheet_modified means modified", assert_sheet_modified_means_modified),
+    ("0.8.231 trash failure is not a lock", assert_a_trash_failure_is_not_blamed_on_the_document),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

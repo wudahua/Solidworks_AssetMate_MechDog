@@ -165,8 +165,28 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             try:
                 os.remove(_exists_at)
             except OSError as exc:
-                return error("output_locked", "cannot overwrite %s: %s" % (_exists_at, exc),
-                             "Close the drawing in SolidWorks and retry.")
+                # Report 2026-11-08 (P2-2): the hint said "Close the drawing in SolidWorks
+                # and retry" while the actual failure was
+                #
+                #   [safe-delete] 操作失败 ... Error during a `trash` operation
+                #
+                # — a policy refusal on the RECYCLE BIN, with the drawing not open at all.
+                # A hint that names the wrong cause sends the caller to fix something that
+                # is not broken, so the two cases are separated here and the underlying
+                # text is passed through instead of being replaced by advice.
+                _text = str(exc)
+                _trash = ("trash" in _text.lower() or "safe-delete" in _text.lower()
+                          or "recycle" in _text.lower())
+                return error(
+                    "output_trash_failed" if _trash else "output_locked",
+                    "cannot overwrite %s: %s" % (_exists_at, exc),
+                    ("This is the DELETE failing, not the drawing being open: whatever "
+                     "removes files here (the recycle bin / a safe-delete policy) refused. "
+                     "Remove the file yourself, or pass a different output_path."
+                     if _trash else
+                     "The drawing is open in SolidWorks. Close it and retry, or pass a "
+                     "different output_path."),
+                    underlying=str(exc)[:200])
 
     steps = []
 
