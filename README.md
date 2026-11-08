@@ -71,7 +71,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 
-### 二、工程图（41）
+### 二、工程图（42）
 
 | 工具 | 作用 |
 |---|---|
@@ -111,6 +111,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `list_sheets` | ✅ 列出每一页：名称、尺寸、视图、哪个是活动页。只有活动页会被其它工具修改。 |
 | `activate_sheet` | ✅ 切页（按 `name` 或 `index`）。`add_sheet` 之后新页是活动的且**没有视图**，标注前先切回有视图的那一页。 |
 | `add_view_to_sheet` | ✅ 在**指定页**建模型视图（先切页再 `CreateDrawViewFromModelView3`）。这是多页出图的另一半：`add_sheet` 建页，它往页上放东西。 |
+| `measure_layout` | 量**现有**图纸：每个视图的包围盒、视图组占位、`views_fill_ratio`（远低于 1 说明视图散在包围盒里）、四周余量与 `min_margin_m`（还没被占用的版面预算）。只读，全部用 `precise_outline`。 |
 | `add_sheet_line` | ✅ **能渲染，前提是 `AddToDB=True`**（2026-11-06 实测 572 像素；之前 0 像素是因为缺这个开关）。默认 `verify_render=True`，看 `visibility`：`changed_pixels>0` 画上了，`0` 返回 `line_not_rendered`，`checked:false` 表示渲染器不可用（**不等于没画**）。实测范围仅 SW2024 SP4 + 飞达动力轴 A3。 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
 | `list_drawing_edges` | 视图可见边（索引 + 模型坐标 + **图纸坐标** `sheet_start/end`；失败时 `sheet_projected:false` 带原因） |
@@ -385,7 +386,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 69 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 70 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash

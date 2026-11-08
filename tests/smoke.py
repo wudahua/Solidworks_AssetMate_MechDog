@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import shutil
 import sys
@@ -1228,6 +1229,15 @@ def main():
         drw = os.path.join(workdir, "smoke_views.SLDDRW")
         shutil.copy2(src, part)
         require(drawing.create_drawing(part, drw, views=["front", "top"], paper="A3"))
+
+        # measure_layout: per-view boxes, the group, and the margin budget. Read-only.
+        _measure = layout.measure_layout(drw)
+        require(_measure)
+        _m = json.loads(_measure) if isinstance(_measure, str) else _measure
+        assert _m.get("group"), "measure_layout found no view group on a sheet with views"
+        assert (_m.get("min_margin_m") is not None), (
+            "measure_layout reported no margins — the budget number is the point of it")
+        assert (_m.get("views") or []), "measure_layout listed no views"
 
         title = drawing.set_title_block(drw, scale="1:2")
         assert title.get("ok") is not None, "set_title_block returned no verdict"

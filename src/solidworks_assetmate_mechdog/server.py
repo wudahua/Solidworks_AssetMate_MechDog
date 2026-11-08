@@ -634,6 +634,25 @@ def add_sheet(
 
 
 @mcp.tool()
+def measure_layout(
+    drawing_path: Annotated[str, Field(description="Path to the .SLDDRW to measure.")],
+    sheet: Annotated[str | None, Field(description="Sheet name to measure. Omit for the active sheet.")] = None,
+) -> str:
+    """Measure what the sheet actually uses: per-view boxes, the group, and the margins.
+
+    Answers, on an EXISTING drawing: how much of the sheet the views occupy, whether they
+    tile their bounding box or are scattered, and how much room is left between the
+    outermost geometry and the frame — that last number is the budget the next dimension
+    would have had.
+
+    Read-only. Every box comes from `precise_outline` (constant 11.9 mm deflation), which
+    this project measured to be the only reliable source; vertex-walking is both wrong and
+    slow on real parts.
+    """
+    return _json(layout.measure_layout(drawing_path, sheet=sheet))
+
+
+@mcp.tool()
 def add_sheet_line(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], x1_m: Annotated[float, Field(description="Sheet X of the line start, in metres.")], y1_m: Annotated[float, Field(description="Sheet Y of the line start, in metres.")], x2_m: Annotated[float, Field(description="Sheet X of the line end, in metres.")], y2_m: Annotated[float, Field(description="Sheet Y of the line end, in metres.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,    verify_render: Annotated[bool, Field(description="Prove the line rendered by exporting the page before and after and diffing pixels (default True). Costs two PDF exports. Read the result: visibility.checked=true and changed_pixels>0 means it drew; changed_pixels=0 returns line_not_rendered; visibility.checked=false means the renderer was unavailable, which is NOT the same as 'not drawn'.")] = True,
 ) -> str:

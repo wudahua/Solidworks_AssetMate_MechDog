@@ -75,6 +75,29 @@ def export_bom(
     resolve_lightweight loads suppressed/lightweight parts first. Without it every
     lightweight component returns GetModelDoc2=None and mass/material come back null.
     """
+    # ── Extension first (report 2026-11-08, P2-6; carried since round 6) ──────────────
+    # `open_document(path, SW_DOC_ASSEMBLY)` on a `.sldprt` returns
+    #
+    #   OpenDoc6 returned null with errors=65536 for doc_type=2 (.sldprt)
+    #
+    # — the error text itself names a document-type mismatch, and the call still asked for
+    # an assembly. Five reports have quoted it. The extension is knowable before opening
+    # anything, so say the useful thing instead: what file it is, what this tool needs, and
+    # which tool handles the other case.
+    _ext = os.path.splitext(str(assembly_path))[1].lower()
+    if _ext and _ext != ".sldasm":
+        return error(
+            "wrong_document_type",
+            "%s is a %s, but a BOM needs an assembly (.sldasm)"
+            % (os.path.basename(str(assembly_path)), _ext),
+            ("For a part, use `get_mass_properties` or `list_bodies` — a single part has "
+             "no bill of materials. Pass the assembly that CONTAINS this part instead."
+             if _ext == ".sldprt" else
+             "This tool only reads assemblies."),
+            document_type=_ext.lstrip("."),
+            requires=".sldasm",
+            path=str(assembly_path))
+
     try:
         doc = open_document(assembly_path, SW_DOC_ASSEMBLY)
         if resolve_lightweight:

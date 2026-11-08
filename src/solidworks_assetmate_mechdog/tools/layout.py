@@ -1818,6 +1818,113 @@ def add_view_to_sheet(drawing_path, sheet, model_path=None, view_name="*前视",
         return error("add_view_to_sheet_failed", str(exc))
 
 
+def measure_layout(drawing_path, sheet=None):
+    """Measure what the sheet actually uses: per-view boxes, the group, and the margins.
+
+    Answers the three questions `tools/measure_layout.py` was written for, on an EXISTING
+    drawing instead of a freshly built one — that script rebuilds every time, which is
+    fine for a one-off probe and useless when you are looking at the sheet in front of you.
+
+      1. How big is each view, and how big is the group? "40% of the sheet" is either small
+         views (nothing to fix) or a packer clustering them in a corner (a bug).
+      2. How much room is left between the outermost geometry and the frame? That is the
+         budget the next dimension would have had.
+      3. `safe_area - group` leaves four margins; those are what a dimension band could be
+         made of.
+
+    Read-only. Uses `precise_outline` (constant 11.9 mm deflation) rather than any
+    vertex-walking, which this project measured to be both wrong and ~200 s on a 25-feature
+    part.
+    """
+    try:
+        import win32com.client as win
+        from .drawing import (precise_outline, template_safe_area,
+                              _activate_sheet_if_given, _sw_version_string)
+        doc = _open_drawing(drawing_path)
+        _target, _err = _activate_sheet_if_given(doc, sheet)
+        if _err is not None:
+            return _err
+        sheet_obj = doc.GetFirstView
+        outline = [float(v) for v in (sheet_obj.GetOutline or ())]
+        if len(outline) < 4:
+            return error("no_sheet_outline", "the sheet reported no outline")
+        sheet_w, sheet_h = outline[2] - outline[0], outline[3] - outline[1]
+        safe = template_safe_area(sheet_obj, sheet_w, sheet_h) or {}
+
+        views = []
+        xs0 = ys0 = None
+        xs1 = ys1 = None
+        total_area = 0.0
+        # `sheet_obj.GetViews` raises `<unknown>.GetViews` — the property lives on `ISheet`,
+        # which the sheet dispatcher does not expose. `_sheet_model_views` already goes
+        # through the typed interface (and honours `expected`), so reuse it instead of
+        # repeating the cast.
+        for v in _sheet_model_views(doc):
+            try:
+                name = str(v.Name)
+            except Exception:
+                continue
+            box = precise_outline(v)
+            if not box:
+                views.append({"name": name, "measured": False,
+                              "reason": "outline too small for a deflated comparison"})
+                continue
+            w, h = box[2] - box[0], box[3] - box[1]
+            total_area += w * h
+            xs0 = box[0] if xs0 is None else min(xs0, box[0])
+            ys0 = box[1] if ys0 is None else min(ys0, box[1])
+            xs1 = box[2] if xs1 is None else max(xs1, box[2])
+            ys1 = box[3] if ys1 is None else max(ys1, box[3])
+            views.append({"name": name, "measured": True,
+                          "bbox_m": [round(v_, 4) for v_ in box],
+                          "size_m": [round(w, 4), round(h, 4)],
+                          "area_ratio_of_sheet": round(w * h / (sheet_w * sheet_h), 4)})
+
+        if xs0 is None:
+            return drawing_ok(drawing=doc.GetTitle, sheet_size_m=[round(sheet_w, 4),
+                                                                   round(sheet_h, 4)],
+                              safe_area={k: round(float(v_), 4) for k, v_ in safe.items()
+                                         if isinstance(v_, (int, float))},
+                              views=[], group=None, margins=None,
+                              note="no measurable model views on this sheet")
+
+        group = [xs0, ys0, xs1, ys1]
+        group_w, group_h = xs1 - xs0, ys1 - ys0
+        margins = {
+            "left": round(xs0 - float(safe.get("left", 0)), 4),
+            "bottom": round(ys0 - float(safe.get("bottom", 0)), 4),
+            "right": round((sheet_w - float(safe.get("right", 0))) - xs1, 4),
+            "top": round((sheet_h - float(safe.get("top", 0))) - ys1, 4),
+        }
+        return drawing_ok(
+            drawing=doc.GetTitle,
+            sheet=sheet or "current",
+            sw_version=_sw_version_string(),
+            sheet_size_m=[round(sheet_w, 4), round(sheet_h, 4)],
+            safe_area={k: round(float(v_), 4) for k, v_ in safe.items()
+                       if isinstance(v_, (int, float))},
+            views=views,
+            group={"bbox_m": [round(v_, 4) for v_ in group],
+                   "size_m": [round(group_w, 4), round(group_h, 4)],
+                   "area_ratio_of_sheet": round(group_w * group_h / (sheet_w * sheet_h), 4)},
+            # Union of view areas / group area. Near 1.0 means the views tile their box
+            # tightly; low means the packer scattered them and the bounding box is mostly
+            # empty — which is the "clustered in a corner" case.
+            views_fill_ratio=round(total_area / (group_w * group_h), 4)
+            if group_w > 0 and group_h > 0 else None,
+            margins=margins,
+            # The four margins are the budget a dimension band would have had.
+            min_margin_m=round(min(margins.values()), 4) if margins else None,
+            note=("每个视图用 precise_outline（恒定内缩 11.9 mm）。margins 是视图组到"
+                  "安全区四边的余量，min_margin_m 为最小的一边 —— 那个数就是还没有被"
+                  "占用的版面预算。views_fill_ratio 远低于 1 说明视图散在包围盒里。"),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:                                        # noqa: BLE001
+        return error("measure_layout_failed", str(exc)[:160])
+
+
 def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
                    verify_render=True):
     """Draw a line in TRUE sheet space.
