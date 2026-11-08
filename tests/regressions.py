@@ -7118,6 +7118,50 @@ def assert_every_tool_rejects_unknown_arguments():
         "lose every parameter")
     return "every tool refuses arguments it does not declare, and keeps its schema"
 
+def assert_a_sheet_line_can_be_dash_dot():
+    """0.8.235 — "no line style API" was wrong for the sixth time.
+
+    Report 2026-11-07 (P1-3): a section view of a turned part needs its axis drawn, GB/T
+    4458.1 wants it dash-dot, and `add_sheet_line` could only draw solid. I answered that
+    there was no API, having checked `dir(ISketchSegment)` — 32 properties, no `Style`, no
+    `SetLineStyle` anywhere in the type library.
+
+    **`dir()` answers "what does the type library declare", not "what can this object do".**
+    `ISketchSegment.Style` is a late-bound property. Measured 2026-11-08:
+
+        seg.Style        -> 0
+        seg.Style = 1    -> reads back 1
+        seg.Style = 4    -> reads back 4
+
+    So the line CAN be styled. What is NOT established is which number draws which
+    pattern: a render of Style 1..7 showed seven different patterns but the crop contained
+    the frame and title block too, and I could not map them to names with confidence.
+
+    Hence `line_style` accepts a NAME (documented `swLineStyles_e` guess) or a NUMBER
+    (passed through untouched), and the receipt always reports `line_style_applied` — the
+    raw value read back — so a caller who has eyeballed their own build can bypass the
+    guess entirely.
+
+    Measured 2026-11-08:
+        "dashdot" -> applied 5     4 -> applied 4      "3" -> applied 3
+        "solid"   -> applied 1     "bogus" -> bad_line_style
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_sheet_line")) or ""
+    assert "_segment.Style = _code" in body, (
+        "the segment style is not set again — an axis can only be drawn solid")
+    assert "line_style_applied" in body, (
+        "the receipt does not report the value actually applied, so a wrong name is "
+        "indistinguishable from a right one")
+    assert "_LINE_STYLES" in src, "the name table is gone"
+    assert "isdigit()" in body, (
+        "a bare number is not accepted — the only way to bypass the unverified name table")
+    assert "bad_line_style" in body, "an unknown style is silently defaulted again"
+    server = _read("server.py")
+    assert "line_style: Annotated[str" in server, "the MCP tool does not expose line_style"
+    return "a sheet line can carry a dash-dot style, chosen by name or by raw number"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7313,6 +7357,7 @@ STATIC_REGRESSIONS = [
     ("0.8.231 sheet_modified means modified", assert_sheet_modified_means_modified),
     ("0.8.231 trash failure is not a lock", assert_a_trash_failure_is_not_blamed_on_the_document),
     ("0.8.233 unknown arguments are refused", assert_every_tool_rejects_unknown_arguments),
+    ("0.8.235 a sheet line can be dash-dot", assert_a_sheet_line_can_be_dash_dot),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

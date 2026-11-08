@@ -292,7 +292,11 @@ CAPABILITIES = [
                        "也没有 `SetLineStyle`，只有 GTOL 框架与引线的 `FrameLineStyle` / "
                        "`LeaderLineStyle`；图纸视图上 `GetSketchSegments` 也访问不到）。"
                        "所以：孔中心符号用 `add_center_marks`（这些视图它能插），"
-                       "**点划线样的回转轴线目前没有可靠入口，需要手工画**。"
+                       "**但点划线能画**（2026-11-08 更正）：`add_sheet_line(line_style=...)`，"
+                       "`ISketchSegment.Style` 是后期绑定属性，`dir()` 查不到不等于没有。"
+                       "枚举的视觉对应按 SolidWorks 文档写，**未在本 build 目视确认**——"
+                       "确认过就直接传数字。"
+                       "~~点划线样的回转轴线目前没有可靠入口~~（此结论已推翻）。"
                        "`views_marked` 从 0.8.228 起只在 `center_mark_count > 0` 时计数，"
                        "不会再对「返回 True 但插入 0 个」的视图报成功。"
                        "继续查的方向：宏录制取线型 API 的真实调用、`PrintSetup` 参数形态。"),

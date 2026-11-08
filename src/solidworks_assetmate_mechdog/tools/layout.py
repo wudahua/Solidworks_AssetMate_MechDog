@@ -1925,8 +1925,41 @@ def measure_layout(drawing_path, sheet=None):
         return error("measure_layout_failed", str(exc)[:160])
 
 
+# `swLineStyles_e`. The TYPE LIBRARY does not expose `ISketchSegment.Style` — it has 32
+# properties and none of them is a line style — so every previous probe concluded the
+# capability was missing. It is not: `IDispatch` late binding reads and writes it fine.
+# Measured 2026-11-08 on 飞达动力轴 A3: `get Style` returned 0, and `Style = 1..4`
+# each read back as the value written.
+#
+# Lesson: `dir(IType)` answers "what does the type library declare", NOT "what can this
+# COM object do". Those are different questions, and this project has now been wrong
+# about that six times.
+# `swLineStyles_e` as documented by SolidWorks. **The visual mapping is NOT verified on
+# this build** — a 2026-11-08 render of Style 1..7 showed seven visibly different patterns,
+# but the crop also contained the frame and title block and I could not map them to names
+# with confidence. So the number is accepted directly as well:
+#
+#     line_style="dashdot"   -> a named guess (see the table)
+#     line_style=4           -> exactly `Style = 4`, no interpretation
+#
+# A caller that has eyeballed the style on their own build should pass the NUMBER. The
+# receipt always reports `line_style_applied` (the raw value read back), so the two never
+# drift apart silently.
+_LINE_STYLES = {
+    "default": 0,        # swLineStyleDefault
+    "solid": 1,          # swLineStyleSolid
+    "dashed": 2,         # swLineStyleDashed
+    "phantom": 3,        # swLineStylePhantom
+    "chaindash": 4,      # swLineStyleChainDash
+    "dashdot": 5,        # swLineStyleChainDashDot   <- GB 细点划线 / 轴线（按文档）
+    "chaindashdot": 5,   # alias
+    "dashdotdot": 6,     # swLineStyleChainDashDotDot
+    "chaindashdotdot": 6,
+}
+
+
 def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
-                   verify_render=True):
+                   verify_render=True, line_style="solid"):
     """Draw a line in TRUE sheet space.
 
     `SketchManager.CreateLine` on a drawing interprets coordinates as model space and
@@ -1980,8 +2013,40 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
         # Sheet space -> sketch space: a drawing sketch is placed at the sheet origin, so
         # sheet metres are already the right unit. Passing millimetres is what produced the
         # scaled fan of lines.
-        sketch.CreateLine(float(x1_m), float(y1_m), 0.0,
-                          float(x2_m), float(y2_m), 0.0)
+        _segment = sketch.CreateLine(float(x1_m), float(y1_m), 0.0,
+                                     float(x2_m), float(y2_m), 0.0)
+        # ── Line style (report 2026-11-07, P1-3) ───────────────────────────────────
+        # An axis must be a dash-dot line (GB/T 4458.1), and `add_sheet_line` could only
+        # draw solid. The style lives on the SEGMENT, and must be set while the sketch is
+        # still open — after `InsertSketch(True)` the segment is no longer reachable from
+        # `ActiveSketch`.
+        style_applied = None
+        _raw_style = line_style
+        # A bare number is passed through untouched: the name table is a documented guess,
+        # and a caller who has checked the appearance on their build should not have to
+        # fight it.
+        _code = None
+        if isinstance(_raw_style, int) or (isinstance(_raw_style, str)
+                                           and _raw_style.strip().lstrip("-").isdigit()):
+            _code = int(_raw_style)
+            _want = str(_code)
+        else:
+            _want = str(_raw_style or "solid").lower()
+            if _want not in _LINE_STYLES:
+                return error("bad_line_style",
+                             "line_style must be a number 0-6 or one of %s"
+                             % ", ".join(sorted(_LINE_STYLES)),
+                             "Got %r" % (_raw_style,))
+            _code = _LINE_STYLES[_want]
+        if _segment is not None:
+            try:
+                _segment.Style = _code
+                style_applied = int(_segment.Style)
+            except Exception as _sty_exc:                           # noqa: BLE001
+                return error("line_style_failed",
+                             "could not set line style %r: %s" % (_want, str(_sty_exc)[:80]),
+                             "The line was drawn but its style is not what you asked for — "
+                             "check the figure before shipping.")
         try:
             sketch.AddToDB = False
         except Exception:
@@ -2028,6 +2093,12 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
                           line_m=[[round(float(x1_m), 4), round(float(y1_m), 4)],
                                   [round(float(x2_m), 4), round(float(y2_m), 4)]],
                           visibility=visibility,
+                          # Requested vs applied, the same split as `style_used` on
+                          # dimensions: a line drawn solid when a dash-dot was asked for is
+                          # worse than an error, because an axis that looks continuous reads
+                          # as an outline to anyone reviewing the sheet.
+                          line_style=str(line_style or "solid").lower(),
+                          line_style_applied=style_applied,
                           note=("坐标为图纸空间米；图纸草图不接受毫米。"
                                 "verify_render=True 时用前后 PDF 像素差分证明线真的出现了；"
                                 "0 像素=线没画上，返回 line_not_rendered。"))
