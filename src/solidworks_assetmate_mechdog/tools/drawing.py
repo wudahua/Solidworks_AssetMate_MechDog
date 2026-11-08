@@ -1279,7 +1279,19 @@ def _open_drawing(path):
 
 
 def export_drawing(drawing_path, output_path, fmt=None):
-    """Export an existing .SLDDRW to PDF / DWG / DXF. PDF comes from a drawing only."""
+    """Export an existing .SLDDRW to PDF / DWG / DXF. PDF comes from a drawing only.
+
+    **`SaveAsSilent` corrupts the document's live state — export is END-OF-PIPELINE.**
+
+    Measured 2026-11-08: export a drawing, then call `add_center_marks` on the same path,
+    and every `AutoInsertCenterMarks2` fails; the sheet is unchanged while `GetPathName`
+    still points at the `.SLDDRW`, so nothing looks wrong.
+
+    `_sf_render_page` takes the same route (it calls `SaveAsSilent` too), so a
+    before/after image diff is NOT possible between two edits of one document — the
+    "before" render kills the "after" work. Three attempts to build one inside
+    `add_center_marks` failed for exactly this reason; the diff logic was never at fault.
+    """
     try:
         out = os.path.abspath(output_path)
         ext = os.path.splitext(out)[1].lower()
@@ -8988,6 +9000,14 @@ LEADER_STYLES = {"none": 0, "straight": 1, "bent": 2}
 
 
 def _sf_render_page(doc, out_pdf, work_dir):
+    """Render the current page to a PIL image.
+
+    **This calls `SaveAsSilent`, which corrupts the live document** (measured 2026-11-08:
+    after a render, `AutoInsertCenterMarks2` on the same doc starts failing). So it is safe
+    to call at the end of an operation, and unsafe to call in the middle of one. A
+    before/after diff inside a single tool call is therefore not possible in this codebase
+    — every render path has the same problem.
+    """
     """Export the CURRENT in-memory drawing to PDF and render page 1 to a PIL image.
 
     P2-11: used twice (before and after inserting the symbol) so a pixel diff can prove
