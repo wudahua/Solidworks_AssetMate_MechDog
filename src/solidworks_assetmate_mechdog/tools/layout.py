@@ -1947,14 +1947,46 @@ def measure_layout(drawing_path, sheet=None):
 # drift apart silently.
 _LINE_STYLES = {
     "default": 0,        # swLineStyleDefault
-    "solid": 1,          # swLineStyleSolid
+    "solid": 1,          # swLineStyleSolid        <- nominal
     "dashed": 2,         # swLineStyleDashed
     "phantom": 3,        # swLineStylePhantom
     "chaindash": 4,      # swLineStyleChainDash
-    "dashdot": 5,        # swLineStyleChainDashDot   <- GB 细点划线 / 轴线（按文档）
+    "dashdot": 5,        # swLineStyleChainDashDot <- nominal (GB 细点划线 / 轴线)
     "chaindashdot": 5,   # alias
     "dashdotdot": 6,     # swLineStyleChainDashDotDot
     "chaindashdotdot": 6,
+}
+
+# ── What the numbers ACTUALLY print on this build (measured 2026-11-08) ──────────────
+# A blank A3, one 130 mm line per value, exported to PDF, rendered at 6x, and the
+# before/after diff analysed: `cov` is the fraction of the line's span that carries ink,
+# `strokes` the number of separate strokes along it.
+#
+#     Style 1  cov 0.689  strokes  69     fine dashed
+#     Style 2  cov 0.714  strokes  31
+#     Style 3  cov 0.770  strokes  25
+#     Style 4  cov 0.942  strokes   7     long dashes, narrow gaps
+#     Style 5  cov 0.114  strokes 194     VERY sparse — dots
+#     Style 6  cov 0.569  strokes  20     thick (5 px vs 4)
+#     Style 7  cov 1.000  strokes   1     solid
+#
+# **The documented enum order does not match this build.** `style=7` is the only fully
+# continuous line, and `style=1` (nominal `swLineStyleSolid`) prints as fine dashes. So the
+# `solid` default is NOT a solid line on SW2024 SP4.
+#
+# I am NOT changing the default on the strength of one build — a wrong default is worse
+# than a documented oddity. What this table is for:
+#   * a caller who wants a genuinely continuous line can pass 7
+#   * a caller who wants a fine dash-dot axis can pass 4 (long dashes) or 5 (sparse dots)
+#   * `line_style_applied` still reports the raw value, so nothing silently drifts
+_LINE_STYLE_MEASURED = {
+    1: {"coverage": 0.689, "strokes": 69, "note": "fine dashed on SW2024 SP4"},
+    2: {"coverage": 0.714, "strokes": 31},
+    3: {"coverage": 0.770, "strokes": 25},
+    4: {"coverage": 0.942, "strokes": 7, "note": "long dashes, narrow gaps"},
+    5: {"coverage": 0.114, "strokes": 194, "note": "very sparse dots"},
+    6: {"coverage": 0.569, "strokes": 20, "note": "thicker stroke"},
+    7: {"coverage": 1.000, "strokes": 1, "note": "the only continuous line"},
 }
 
 
@@ -2099,6 +2131,12 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
                           # as an outline to anyone reviewing the sheet.
                           line_style=str(line_style or "solid").lower(),
                           line_style_applied=style_applied,
+                          # The measured appearance of that value on THIS build. Sent back
+                          # because the documented enum names do not match what prints:
+                          # `style=1` is nominal solid but renders as fine dashes, and only
+                          # `style=7` is continuous. A caller asking for an axis should not
+                          # have to discover that by looking at the sheet.
+                          line_style_measured=_LINE_STYLE_MEASURED.get(style_applied),
                           note=("坐标为图纸空间米；图纸草图不接受毫米。"
                                 "verify_render=True 时用前后 PDF 像素差分证明线真的出现了；"
                                 "0 像素=线没画上，返回 line_not_rendered。"))

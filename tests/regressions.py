@@ -7495,6 +7495,44 @@ def assert_a_one_sided_bilateral_is_recognised():
         "the occurrence count is back")
     return "a `+x/0` bilateral is recognised, and the receipt names which sides printed"
 
+def assert_the_line_style_table_is_measured_not_documented():
+    """0.8.241 — the documented `swLineStyles_e` order does not match what prints.
+
+    Report 2026-11-08 (P2-9): I had written that `line_style="dashdot"` maps to 5 "per the
+    documentation" and that the visual mapping was unverified. So it was measured — one
+    130 mm line per value on a blank A3, exported, rendered 6x, before/after diff:
+
+        Style 1  cov 0.689  strokes  69     fine dashed
+        Style 2  cov 0.714  strokes  31
+        Style 3  cov 0.770  strokes  25
+        Style 4  cov 0.942  strokes   7     long dashes, narrow gaps
+        Style 5  cov 0.114  strokes 194     very sparse dots
+        Style 6  cov 0.569  strokes  20     thicker stroke
+        Style 7  cov 1.000  strokes   1     solid
+
+    **`style=1` is nominal `swLineStyleSolid` and prints as fine dashes. Only `style=7` is
+    continuous.** The enum order on SW2024 SP4 is not the documented one.
+
+    The default is NOT changed on the strength of one build (a wrong default is worse than
+    a documented oddity), but the receipt now carries `line_style_measured` so a caller
+    sees the coverage and stroke count of what they picked instead of discovering it by
+    looking at the sheet.
+    """
+    src = _read("tools/layout.py")
+    assert "_LINE_STYLE_MEASURED" in src, (
+        "the measured table is gone — callers are back to guessing from documentation")
+    assert "line_style_measured" in src, (
+        "the receipt does not report how the style actually printed")
+    i = src.find("_LINE_STYLE_MEASURED = {")
+    block = src[i:i + 1600]
+    assert "7:" in block and "1.000" in block, (
+        "the measured data for style 7 (the only continuous line) is missing")
+    # The note lives ABOVE the table (it explains why the table exists), so search the
+    # whole source, not the table's own slice.
+    assert "does not match this build" in src or "not match this build" in src, (
+        "the discrepancy with the documented order is no longer stated")
+    return "the line-style table is what was measured, and the receipt reports it"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7699,6 +7737,7 @@ STATIC_REGRESSIONS = [
     ("0.8.238 guard survives unknown tools", assert_the_mcp_entry_still_works_after_adding_tools),
     ("0.8.239 datum is not a centreline", assert_a_datum_symbol_is_not_a_centreline),
     ("0.8.240 one-sided bilateral", assert_a_one_sided_bilateral_is_recognised),
+    ("0.8.241 line styles are measured", assert_the_line_style_table_is_measured_not_documented),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
