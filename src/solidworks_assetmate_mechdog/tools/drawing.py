@@ -4844,9 +4844,45 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
             # taking the nearest one — SelectByID2 cannot hit drawing edges by coordinates.
             hit = _nearest_edge_at_sheet_point(view, float(x), float(y), float(tolerance))
             if hit is None:
+                # ── "view has no edges" is NOT the only reason (report 2026-11-08, P2-1) ─
+                # `_nearest_edge_at_sheet_point` returns the nearest edge even when it is
+                # outside tolerance, so None means one of exactly two things: the view
+                # enumerates no edges, or its scale reads 0. The report saw this message on
+                # a view whose `list_drawing_edges` answered 14 edges — the point sat on a
+                # CENTRE LINE, which `GetVisibleEntities2(view, 1)` does not enumerate
+                # (that type only covers edges). The caller then concluded the view was
+                # empty and gave up on dimensions for it.
+                #
+                # Count the edges here so the two cases stop sharing one sentence.
+                _edge_n = None
+                try:
+                    import win32com.client as _wc
+                    _edge_n = len([_wc.Dispatch(e)
+                                   for e in (view.GetVisibleEntities2(view, 1) or ())])
+                except Exception:
+                    _edge_n = None
+                _scale_n = None
+                try:
+                    _scale_n = float(view.ScaleDecimal)
+                except Exception:
+                    _scale_n = None
+                if _edge_n:
+                    return error(
+                        "point_missed_every_edge",
+                        "视图里有 %d 条可见边，但点 (%.4f, %.4f) 离它们都超过 %.1f mm"
+                        % (_edge_n, float(x), float(y), float(tolerance) * 1000),
+                        "这个点可能落在**中心线、构造圆、或空白的视图范围内**——"
+                        "`GetVisibleEntities2(view, 1)` 只枚举「边」，不枚举中心线和草图段，"
+                        "所以落在中心线圆上的点永远配不中边。"
+                        "改用 `edge_index`（`list_drawing_edges` 每条边都带 `edge_index`），"
+                        "或把点移到某条边附近。视图本身没问题，边数已回传。",
+                        visible_edges=_edge_n, scale=_scale_n,
+                        point=[round(float(x), 4), round(float(y), 4)],
+                        tolerance_m=float(tolerance))
                 return error(
                     "segment_not_found",
-                    "No visible edges could be enumerated in this view",
+                    "No visible edges could be enumerated in this view "
+                    "(edges=%r, scale=%r)" % (_edge_n, _scale_n),
                     "The view may be blank, not activated, or not rebuilt yet. Activate "
                     "it and retry, or pass edge_index from list_drawing_edges.",
                 )

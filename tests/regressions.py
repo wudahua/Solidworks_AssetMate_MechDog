@@ -8098,6 +8098,40 @@ def assert_edges_carry_the_index_that_dimensioning_needs():
         "sheet_projected is back to envelope-only")
     return "edges carry both index names, and sheet_projected is on every row"
 
+def assert_a_missed_point_is_not_an_empty_view():
+    """0.8.261 — "no visible edges" was reported on a view that had 14 of them.
+
+    Report 2026-11-08 (P2-1): `add_drawing_dimension(x=0.167, y=0.242)` on a view whose
+    `list_drawing_edges` answered 14 edges returned
+
+        segment_not_found: "No visible edges could be enumerated in this view"
+
+    The point sat on a CENTRE LINE. `GetVisibleEntities2(view, 1)` enumerates EDGES only —
+    centre lines and construction circles are a different entity type and are never in that
+    list. `_nearest_edge_at_sheet_point` returns the nearest edge even when it is outside
+    tolerance, so `None` can only mean "the view enumerates no edges" or "scale reads 0".
+    The message was therefore wrong, and the caller concluded the view was hopeless and
+    gave up dimensioning it.
+
+    Two cases, two codes now. Measured 2026-11-08 on 限位导向套 (right view, asking for the
+    view centre):
+
+        ok=False  error=point_missed_every_edge  visible_edges=5
+
+    The receipt carries `visible_edges`, `scale`, `point` and `tolerance_m`, and the hint
+    says the point is probably on a centre line and that `edge_index` is the way in.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_drawing_dimension")) or ""
+    assert "point_missed_every_edge" in body, (
+        "a missed point is reported as an empty view again")
+    assert "visible_edges=_edge_n" in body, (
+        "the receipt does not say how many edges the view actually has")
+    assert "中心线" in body, (
+        "the hint does not name the likely cause — a point on a centre line")
+    return "a point that misses every edge is told apart from an empty view"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8317,6 +8351,7 @@ STATIC_REGRESSIONS = [
     ("0.8.257 one callout per hole size", assert_one_callout_per_hole_size),
     ("0.8.259 a failed delete is not ok", assert_a_failed_delete_does_not_report_ok),
     ("0.8.260 edges carry edge_index", assert_edges_carry_the_index_that_dimensioning_needs),
+    ("0.8.261 a missed point is not an empty view", assert_a_missed_point_is_not_an_empty_view),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
