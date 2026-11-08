@@ -732,6 +732,7 @@ def measure_layout(
 def add_sheet_line(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], x1_m: Annotated[float, Field(description="Sheet X of the line start, in metres.")], y1_m: Annotated[float, Field(description="Sheet Y of the line start, in metres.")], x2_m: Annotated[float, Field(description="Sheet X of the line end, in metres.")], y2_m: Annotated[float, Field(description="Sheet Y of the line end, in metres.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,    verify_render: Annotated[bool, Field(description="Prove the line rendered by exporting the page before and after and diffing pixels (default True). Costs two PDF exports. Read the result: visibility.checked=true and changed_pixels>0 means it drew; changed_pixels=0 returns line_not_rendered; visibility.checked=false means the renderer was unavailable, which is NOT the same as 'not drawn'.")] = True,
     line_style: Annotated[str, Field(description="'solid' (default), 'dashed', 'dashdot' (GB fine dash-dot, use this for an axis / centre line), 'dashdotdot', or 'phantom'. The style is set on the sketch segment via late-bound IDispatch — the type library does not declare it, so it is easy to conclude wrongly that it does not exist.")] = "solid",
+    view_name: Annotated[str | None, Field(description="Model view to attach the line to. When set, the line lives in THAT VIEW'S sketch and moves/rescales with the view; when omitted it goes on the sheet sketch and stays where it was drawn. Read `follows_view` back to confirm.")] = None,
 ) -> str:
     """Draw a line in true sheet space (metres).
 
@@ -754,11 +755,12 @@ def add_sheet_line(
     Drawing sketches take sheet metres, not millimetres: passing 236/62 produced a scaled
     fan of diagonals instead of a horizontal line.
     """
-    return _json(layout.add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=save, verify_render=verify_render, line_style=line_style))
+    return _json(layout.add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=save, verify_render=verify_render, line_style=line_style, view_name=view_name))
 
 
 @mcp.tool()
 @_reject_unknown_arguments
+
 def sheet_metal_qc(model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")], include_cylinders: Annotated[bool, Field(description="Include cylindrical faces in the quality report.")] = False) -> str:
     """Sheet-metal manufacturability checks: thickness, bend count, bend relief.
 

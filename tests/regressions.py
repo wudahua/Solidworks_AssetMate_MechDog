@@ -7578,6 +7578,48 @@ def assert_a_failed_section_says_where_it_is():
         "the measured offsets that DO work are missing from the hint")
     return "a failed section names itself and the offsets that would have worked"
 
+def assert_a_sheet_line_can_follow_a_view():
+    """0.8.245 — "the line cannot follow a view" was a wrong conclusion, for the 7th time.
+
+    Report 2026-11-08 (P2-7): `add_sheet_line` draws on the SHEET sketch, so the axis does
+    not move when the view moves or rescales. I filed that as a data-model limitation:
+    "a sheet sketch line does not belong to a view, SolidWorks cannot do otherwise".
+
+    It can. The sketch is created by `InsertSketch`, and WHICH sketch that is depends on
+    what is active:
+
+        doc.ActivateSheet(...)  then InsertSketch -> sheet sketch  (草图1)
+        doc.ActivateView(...)   then InsertSketch -> VIEW sketch   (草图3, owned by the view)
+
+    Measured 2026-11-08 on 飞达动力轴:
+        after ActivateView(工程图视图1):
+            view.GetSketch  -> 草图3     <- the line's sketch
+            sheet.GetSketch -> 草图1
+
+    So `view_name` was added: with a name the line lands in that view's own sketch and
+    travels with it; without one it stays on the sheet, unchanged from before.
+
+    Measured:
+        no view_name -> attached_to "sheet"        follows_view False
+        view_name    -> attached_to "工程图视图1"   follows_view True
+        bad name     -> view_not_found
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_sheet_line")) or ""
+    assert "doc.ActivateView(_target.Name)" in body, (
+        "the line is drawn on the sheet sketch again — it will not follow the view")
+    assert "attached_to=_attached_to or \"sheet\"" in body, (
+        "the receipt does not say which sketch the line landed in")
+    assert "follows_view=bool(_attached_to)" in body, (
+        "the receipt does not say whether the line will travel with the view")
+    assert "view_not_found" in body, (
+        "a bad view name is accepted silently instead of being refused")
+    server = _read("server.py")
+    assert "view_name: Annotated[str | None" in server, (
+        "the MCP tool does not expose view_name")
+    return "a line can be attached to a view and then it follows, or stay on the sheet"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7784,6 +7826,7 @@ STATIC_REGRESSIONS = [
     ("0.8.240 one-sided bilateral", assert_a_one_sided_bilateral_is_recognised),
     ("0.8.241 line styles are measured", assert_the_line_style_table_is_measured_not_documented),
     ("0.8.244 a failed section says where it is", assert_a_failed_section_says_where_it_is),
+    ("0.8.245 a line can follow a view", assert_a_sheet_line_can_follow_a_view),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

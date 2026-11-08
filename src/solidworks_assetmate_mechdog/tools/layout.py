@@ -1991,7 +1991,7 @@ _LINE_STYLE_MEASURED = {
 
 
 def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
-                   verify_render=True, line_style="solid"):
+                   verify_render=True, line_style="solid", view_name=None):
     """Draw a line in TRUE sheet space.
 
     `SketchManager.CreateLine` on a drawing interprets coordinates as model space and
@@ -2021,10 +2021,44 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
             except Exception:
                 before_page = None
         sheet = doc.GetFirstView
-        try:
-            doc.ActivateSheet(doc.GetCurrentSheet().GetName)
-        except Exception:
-            pass
+        # ── Attach to a view, or stay on the sheet (report 2026-11-08, P2-7) ──────
+        # A line drawn on the SHEET sketch belongs to the sheet: move the view, or change
+        # its scale, and the line stays put. I had recorded that as a data-model
+        # limitation. It is not — `ActivateView` before `InsertSketch` puts the sketch on
+        # the VIEW, and then the line travels with it.
+        #
+        # Measured 2026-11-08 on 飞达动力轴, after ActivateView(工程图视图1):
+        #     view.GetSketch  -> 草图3      <- the sketch the line landed in
+        #     sheet.GetSketch -> 草图1
+        # Without ActivateView the new sketch belongs to the sheet instead.
+        _attached_to = None
+        if view_name:
+            _target = None
+            for _cand in _sheet_model_views(doc):
+                try:
+                    if str(_cand.Name) == str(view_name):
+                        _target = _cand
+                        break
+                except Exception:
+                    continue
+            if _target is None:
+                return error("view_not_found",
+                             "no model view named %r on this sheet" % (view_name,),
+                             "Read the names with list_sheets, or omit view_name to "
+                             "draw on the sheet instead.")
+            try:
+                doc.ActivateView(_target.Name)
+                _attached_to = str(_target.Name)
+            except Exception as _av_exc:                            # noqa: BLE001
+                return error("view_activation_failed",
+                             "could not activate %r: %s"
+                             % (view_name, str(_av_exc)[:80]),
+                             "Drawing on the sheet still works; omit view_name.")
+        else:
+            try:
+                doc.ActivateSheet(doc.GetCurrentSheet().GetName)
+            except Exception:
+                pass
         doc.ClearSelection2(True)
         try:
             doc.InsertSketch()
@@ -2131,6 +2165,12 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
                           # as an outline to anyone reviewing the sheet.
                           line_style=str(line_style or "solid").lower(),
                           line_style_applied=style_applied,
+                          # Which sketch the line landed in. "sheet" means it will NOT
+                          # follow a view when the view moves or rescales; a view name
+                          # means it will. That difference is what the P2-7 report was
+                          # about.
+                          attached_to=_attached_to or "sheet",
+                          follows_view=bool(_attached_to),
                           # The measured appearance of that value on THIS build. Sent back
                           # because the documented enum names do not match what prints:
                           # `style=1` is nominal solid but renders as fine dashes, and only
