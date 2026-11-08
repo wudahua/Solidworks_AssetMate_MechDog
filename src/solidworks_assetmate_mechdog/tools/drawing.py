@@ -3684,8 +3684,24 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                 # `str(scale)` wrote "2.0" into a cell that reads "1:1" — a scale cell holds
                 # a RATIO, not a decimal. `create_drawing` builds `1:2` / `2:1` from the same
                 # number with this formula; using it here keeps the two paths identical.
-                _scale_text = (("1:%g" % round(1.0 / float(scale), 4)) if float(scale) < 1
-                               else ("%g:1" % round(float(scale), 4)))
+                # Report 2026-11-08 (P2-8): `create_drawing` calls this with a RATIO
+                # STRING ("1:2"), the manual callers pass a float (2.0), and only the float
+                # path worked — `float("1:2")` raised ValueError, which the outer
+                # `except (FileNotFoundError, ValueError)` turned into `bad_input`. So the
+                # same feature failed from the pipeline and succeeded by hand, and the
+                # receipt blamed the input rather than this line.
+                _ratio_value = scale
+                if isinstance(_ratio_value, str) and ":" in _ratio_value:
+                    _lhs, _rhs = _ratio_value.split(":", 1)
+                    _ratio_value = float(_lhs) / float(_rhs)
+                else:
+                    _ratio_value = float(_ratio_value)
+                if _ratio_value <= 0:
+                    return error("bad_input",
+                                 "scale must be positive, got %r" % (scale,))
+                _scale_text = (("1:%g" % round(1.0 / _ratio_value, 4))
+                               if _ratio_value < 1
+                               else ("%g:1" % round(_ratio_value, 4)))
                 planned.append({
                     "field": "scale", "before": text, "after": _scale_text, "note": note,
                     "angle_deg": 0.0, "position": position,
@@ -4398,7 +4414,7 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
 
 
 def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=None,
-                          save=False):
+                          save=True, prefix=""):
     """Dimension the distance BETWEEN two edges — the only way to get an overall length.
 
     P2-7 of a 2026-11-03 report: a 60 mm shaft could not be given a `60` dimension at all.
@@ -4464,6 +4480,26 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
                 "the same view normally qualify.")
 
         display = win.Dispatch(raw)
+        # ── Ø / R prefix (report 2026-11-08, P2-3) ──────────────────────────────────
+        # A groove's mouth is a real diameter but between two arcs `AddDimension2` yields a
+        # plain length, so a turned part ended up with a bare `58` where the drawing needs
+        # `Ø58`. `IDisplayDimension.SetText(1, prefix)` sets the prefix — measured
+        # 2026-11-08: SetText(1..4) each read back through GetText(1..4).
+        #
+        # `dir(IDisplayDimension)` does not list `SetText` either; it is late-bound, the
+        # same blind spot that hid `ISketchSegment.Style`. Tried first, not assumed absent.
+        prefix_applied = None
+        _want_prefix = str(prefix or "")
+        if _want_prefix:
+            try:
+                display.SetText(1, _want_prefix)
+                prefix_applied = str(display.GetText(1) or "")
+            except Exception as _pfx_exc:                            # noqa: BLE001
+                return error("prefix_failed",
+                             "could not set the dimension prefix %r: %s"
+                             % (_want_prefix, str(_pfx_exc)[:80]),
+                             "The dimension was created WITHOUT the prefix — check the "
+                             "figure before shipping, or delete it and retry.")
         value_mm = None
         dimension_type = None
         try:
@@ -4500,6 +4536,10 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
             edge_a=int(edge_a), edge_b=int(edge_b),
             value_mm=value_mm,
             dimension_type=dimension_type,
+            # Requested vs applied: `SetText` can fail on some builds, and a Ø that did not
+            # land reads as a plain length to anyone checking the sheet.
+            prefix_requested=str(prefix or "") or None,
+            prefix_applied=prefix_applied,
             value_is_angular=(dimension_type in (1, 3)) if dimension_type is not None else None,
             position_m=[round(float(x_m), 4), round(float(y_m), 4)],
             note=("这是两条边之间的距离，不是任何一条边的长度。"

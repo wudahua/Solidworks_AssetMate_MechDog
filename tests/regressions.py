@@ -7311,6 +7311,52 @@ def assert_a_section_that_did_not_cut_says_so():
         "the working recipe is not in the hint; the caller has to guess it again")
     return "a section that did not cut names itself, with the recipe that does work"
 
+def assert_three_p2_items_are_fixed():
+    """0.8.237 — three P2 items from the 0.8.235 report, all small and all real.
+
+    **P2-4 `save` default contradicted its own description.**
+    `add_distance_dimension` declared `save=False` while the schema text said "default
+    True", and every sibling write tool defaults to True. A caller that omitted it lost the
+    dimension silently: it existed in memory and vanished on reopen.
+
+    **P2-8 the scale sync failed from `create_drawing` and worked by hand.**
+    The pipeline passes a RATIO STRING ("1:2"); manual callers pass a float (2.0).
+    `float("1:2")` raised ValueError, which the outer `except (FileNotFoundError,
+    ValueError)` turned into `bad_input` — so the receipt blamed the input and the same
+    feature succeeded when called directly. Measured 2026-11-08:
+        create_drawing(scale=2.0) -> title_scale_synced {from 1.0, to 2.0, text '2:1',
+                                                         verified_by 'written[].ok'}
+        set_title_block(scale='1:2') -> written [('scale', True)]
+
+    **P2-3 no Ø / R prefix.**
+    A groove mouth measured between two arcs is a real diameter but `AddDimension2` makes
+    it a plain length, so a turned part carried a bare `58` where the sheet needs `Ø58`.
+    `IDisplayDimension.SetText(1, prefix)` sets it — and like `ISketchSegment.Style`, it is
+    NOT in `dir()`: late-bound again. Measured:
+        add_distance_dimension(..., prefix='Ø') -> prefix_applied 'Ø', display_text 'Ø3'
+    """
+    src = _read("server.py")
+    assert 'save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True' in src, (
+        "add_distance_dimension's save default contradicts its own description again")
+
+    drawing_src = _read("tools/drawing.py")
+    tb = ast.get_source_segment(drawing_src, _function_node(ast.parse(drawing_src),
+                                                           "set_title_block")) or ""
+    assert "isinstance(_ratio_value, str)" in tb, (
+        "a ratio string like '1:2' raises ValueError again — the pipeline path breaks "
+        "while the manual float path keeps working")
+    assert "_ratio_value = float(_lhs) / float(_rhs)" in tb, (
+        "the 'n:m' form is not parsed as a ratio")
+
+    dist = ast.get_source_segment(drawing_src, _function_node(ast.parse(drawing_src),
+                                                              "add_distance_dimension")) or ""
+    assert "display.SetText(1" in dist, "the dimension prefix is not set"
+    assert "prefix_applied" in dist, (
+        "the receipt does not report the prefix that actually landed")
+    assert "prefix_failed" in dist, (
+        "a failed SetText is swallowed — the dimension would print without the Ø and say ok")
+    return "save default, ratio strings and dimension prefixes all behave as documented"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7510,6 +7556,7 @@ STATIC_REGRESSIONS = [
     ("0.8.236 MCP entry refuses unknown args", assert_the_mcp_entry_rejects_unknown_arguments),
     ("0.8.236 skipped duplicate is removed", assert_a_skipped_duplicate_is_actually_removed),
     ("0.8.236 uncut section names itself", assert_a_section_that_did_not_cut_says_so),
+    ("0.8.237 three P2 items", assert_three_p2_items_are_fixed),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

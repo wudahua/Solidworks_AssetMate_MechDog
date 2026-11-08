@@ -1444,7 +1444,8 @@ def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing 
 def add_distance_dimension(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], edge_a: Annotated[int, Field(description="Index of the FIRST edge (from list_drawing_edges) used to measure the gap.")], edge_b: Annotated[int, Field(description="Index of the SECOND edge; the dimension measures the distance between the two.")],
                            x_m: Annotated[float, Field(description="Sheet X in metres.")], y_m: Annotated[float, Field(description="Sheet Y in metres.")],
                            view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
-                           save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = False) -> str:
+                           save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,
+                           prefix: Annotated[str, Field(description="Prefix for the dimension text: 'Ø', 'R', '□', or '' for none. A groove mouth measured between two arcs comes out as a plain length, so a turned part needs 'Ø' here. Read `prefix_applied` back — SetText can fail on some builds and the dimension then prints without it.")] = "") -> str:
     """Dimension the distance BETWEEN two edges — how you get an overall length.
 
     `add_drawing_dimension` hits ONE edge and reports that edge's own length, so a shaft
@@ -1477,6 +1478,7 @@ def add_drawing_dimension(
     edge_index: Annotated[int | None, Field(description="Index into list_drawing_edges for this view; lets you attach to an edge without sheet coordinates.")] = None,
     skip_duplicates: Annotated[bool, Field(description="Refuse to add a dimension that duplicates an existing one on the sheet (same value, same view). Default True — a second identical dimension reads as a drafting error.")] = True,
     style: Annotated[str, Field(description="Callout form for an arc or circle: 'radius' (R), 'diameter' (Ø), 'linear' (plain), or 'auto' to let SolidWorks decide. A semicircular groove projects as an ARC and 'auto' measures it as a DIAMETER, which is a meaningless callout on a turned part — pass 'radius' for R. The receipt's `style_used` says which one was actually created; if SolidWorks refuses the radial call it falls back to linear and says so.")] = "auto",
+    prefix: Annotated[str, Field(description="Prefix for the dimension text: 'Ø', 'R', '□', or '' for none. A groove mouth measured between two arcs comes out as a plain length, so a turned part needs 'Ø' here to read correctly on the sheet. Read `prefix_applied` back — SetText can fail on some builds and the dimension then prints without it.")] = "",
 ) -> str:
     """Add ONE dimension on a projected edge at sheet point (x, y) in meters.
 
