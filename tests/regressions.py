@@ -7568,8 +7568,11 @@ def assert_a_failed_section_says_where_it_is():
                                                      "add_section_view")) or ""
     assert "全部 `section_not_cut`" in body, (
         "the hint no longer names the offset that actually fails")
-    assert "view_kept=True" in body, (
-        "a failed section is left on the sheet without saying so again")
+    assert "_maybe_drop_failed_view" in body, (
+        "a failed section is left on the sheet unconditionally again")
+    assert "view_removed" in body and "section_line_remains" in body, (
+        "the receipt does not say whether the view was dropped, nor that the section line "
+        "survives the delete")
     assert "view_to_delete" in body, (
         "the receipt does not name the view it left behind")
     assert "_new_view_name = str(getattr(section" in body, (
@@ -7852,6 +7855,52 @@ def assert_center_marks_count_annotations_not_the_view_counter():
         "when marks exist" % (_uses_counter,))
     return "centre marks are counted as annotations, and four verdicts are told apart"
 
+def assert_a_failed_section_can_be_dropped():
+    """0.8.254 — a failed section left 11127 dirty pixels on the sheet, and could not be
+    cleaned.
+
+    Report 2026-11-08 (P2-2): a failed section stays on the sheet, and `delete_view`
+    cannot remove the section line it left in the parent view's sketch.
+
+    Measured on 小车底部滚轮 (end view, vertical, offset 0):
+
+        failed section                    11127 pixels differ from baseline
+        after layout.delete_view          1829 pixels still differ
+
+    So `delete_view` removes 84% of the mess and cannot finish: `EnumSectionLines` raises
+    on this binding (`EnumSectionLines2` demands an argument, `EnumSectionLines` fails to
+    read), so the line cannot be reached at all. There is no way to clean it completely.
+
+    The honest design is therefore: drop the view when it carries NO information, keep it
+    when it does, and say which happened.
+
+        keep_on_failure="auto"   drop for section_not_cut / section_empty
+                                 keep for hatch_missing (the cut happened; the view shows
+                                 where the plane landed — that is diagnostic value)
+        "keep"                   always keep
+        "drop"                   always drop
+
+    Measured:
+        auto  removed False kept True
+        keep  removed False kept True
+        drop  removed True  kept False  section_line_remains True
+
+    First implementation compared `_keep is False`, which never matched the STRING "drop"
+    that MCP sends, so "drop" silently behaved like "keep".
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_section_view")) or ""
+    assert "keep_on_failure" in body, "the caller cannot choose what happens to a failure"
+    assert "_maybe_drop_failed_view" in body, "the decision is not centralised"
+    assert "section_line_remains" in body, (
+        "the receipt implies a clean sheet when the parent's section line survives")
+    assert 'in ("false", "drop", "delete", "remove")' in body, (
+        "string modes are compared with `is False` again, so drop behaves like keep")
+    server = _read("server.py")
+    assert "keep_on_failure" in server, "the MCP tool does not expose the switch"
+    return "a failed section can be dropped, and the receipt admits what remains"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8065,6 +8114,7 @@ STATIC_REGRESSIONS = [
     ("0.8.251 a zero offset is nudged", assert_a_zero_offset_section_is_nudged),
     ("0.8.252 an eccentric section is refused", assert_an_eccentric_section_is_refused),
     ("0.8.253 centre marks count annotations", assert_center_marks_count_annotations_not_the_view_counter),
+    ("0.8.254 a failed section can be dropped", assert_a_failed_section_can_be_dropped),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

@@ -1275,6 +1275,7 @@ def add_section_view(
     cut_line_ratio: Annotated[float, Field(description="Cut-line length as a fraction of the view; clamped to half the SHORT edge so arrows stay on the geometry. Lower it for very flat views.")] = 0.55,
     align_to_parent: Annotated[bool, Field(description="Keep the section in projection with its parent view (default True — correct drawing practice). A section is created aligned, so a requested y is silently rewritten to stay on the parent's axis; set False to break the alignment and honour the position you asked for. The receipt shows alignment_kept / position_axis_ignored / alignment_broken either way.")] = True,
     auto_nudge_zero_offset: Annotated[bool, Field(description="Nudge a zero offset to 1 mm. `offset_m=0` puts the cut line on the view centre, and SolidWorks does not cut there on a symmetric view (measured 2026-11-08: offsets 0, 1e-6, 1e-5 and 1e-4 all fail; 1e-3 succeeds with ratio 1.000). Leave true to get the axis cut anyway; set false to see the raw failure. Read `offset_nudged` and `offset_used_m` back.")] = True,
+    keep_on_failure: Annotated[str, Field(description="What to do with a section view that failed verification: 'auto' (default) deletes it when it carries no information (section_not_cut / section_empty) and keeps it when it does (hatch_missing shows where the plane landed); 'keep' always keeps; 'drop' always deletes. NOTE: even a successful delete leaves the section line in the parent view's sketch — that line cannot be reached on this build, so about 1.8k pixels remain (measured: 11127 dirty before, 1829 after). Read `view_removed` / `section_line_remains` back.")] = "auto",
 ) -> str:
     """Create a SECTION VIEW through a model view (exposes internal features).
 
@@ -1303,7 +1304,7 @@ def add_section_view(
         offset_m=offset_m, position=position, label=label, flip=flip, depth=depth,
         cut_plane_normal=cut_plane_normal, cut_plane_origin=cut_plane_origin,
         verify_cut=verify_cut, cut_line_ratio=cut_line_ratio,
-        align_to_parent=align_to_parent, auto_nudge_zero_offset=auto_nudge_zero_offset))
+        align_to_parent=align_to_parent, auto_nudge_zero_offset=auto_nudge_zero_offset, keep_on_failure=keep_on_failure))
 
 
 @mcp.tool()

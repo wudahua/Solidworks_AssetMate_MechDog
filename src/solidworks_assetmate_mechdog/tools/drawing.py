@@ -5643,7 +5643,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                      offset_m=0.0, position=None, label="A", flip=False, depth=0.0,
                      cut_plane_normal=None, cut_plane_origin=None, verify_cut=True,
                      cut_line_ratio=0.55, align_to_parent=True,
-                     auto_nudge_zero_offset=True):
+                     auto_nudge_zero_offset=True, keep_on_failure="auto"):
     """Create a SECTION VIEW through a model view.
 
     Sign convention (measured on the 灌装阀阀体 top view, 59x28x80, bypass hole at z=28):
@@ -6066,6 +6066,50 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             except Exception as _exc:                               # noqa: BLE001
                 alignment_broken = {"ok": False, "error": str(_exc)[:100]}
 
+        # ── Should a failed section stay on the sheet? (report 2026-11-08, P2-2) ──────
+        # A deflated empty section pollutes the layout; measured 2026-11-08 on
+        # 小车底部滚轮, a failed cut changed 11127 pixels. `layout.delete_view` gets that
+        # down to 1829 — it removes the view, NOT the section line left in the parent's
+        # sketch (`EnumSectionLines` raises on this binding, so the line cannot be reached
+        # and there is no way to finish the job from here).
+        #
+        # So: drop the view when it carries no information (`section_not_cut`,
+        # `section_empty`), keep it when it does (`hatch_missing` on a real cut shows WHERE
+        # the plane landed). "auto" is the default because the empty case is strictly
+        # better deleted — 84% less pollution — and the receipt says what remains either
+        # way, instead of implying a clean sheet.
+        def _maybe_drop_failed_view(_reason_code):
+            _keep = keep_on_failure
+            # `keep_on_failure` arrives as a STRING from MCP ("auto" / "keep" / "drop"),
+            # so `is False` never matched and "drop" silently behaved like "keep".
+            _mode = str(_keep).lower()
+            _drop = (_mode in ("false", "drop", "delete", "remove") or
+                     (_mode == "auto" and _reason_code in
+                      ("section_not_cut", "section_empty")))
+            if not _drop or not _new_view_name:
+                return {"view_removed": False,
+                        "view_kept": bool(_new_view_name),
+                        "kept_because": ("keep_on_failure=%r" % (_keep,))}
+            try:
+                from .layout import delete_view as _dv
+                # `add_section_view` has no `save` switch — it always persists, so the
+                # cleanup does too.
+                _r = _dv(drawing_path, _new_view_name, save=True)
+                _ok_del = bool(_r.get("ok"))
+            except Exception as _exc:                               # noqa: BLE001
+                return {"view_removed": False, "view_kept": True,
+                        "delete_error": str(_exc)[:80]}
+            return {"view_removed": _ok_del,
+                    "view_kept": not _ok_del,
+                    # Even a successful delete leaves the parent's section line behind.
+                    "section_line_remains": True,
+                    "note": ("视图已删除，但父视图草图里的剖切线删不掉 —— "
+                             "`EnumSectionLines` 在这个 binding 上会抛错。"
+                             "残留约 1.8k 像素（实测：删前 11127，删后 1829）。"
+                             if _ok_del else
+                             "delete_view 没能删掉这个空剖视图，需要手工处理。")}
+
+
         diag = {
             "drawing": doc.GetTitle, "section": section.Name, "source_view": target.Name,
             "label": str(label), "orientation": str(orientation), "flip": bool(flip),
@@ -6138,12 +6182,8 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                     # an empty `A-A` polluting the layout later. It is still kept — deleting
                     # automatically would also delete the evidence that shows WHERE the cut
                     # plane landed — but the receipt now says so and names the view.
-                    view_kept=True,
                     view_to_delete=_new_view_name,
-                    delete_hint=("失败的空剖视图仍留在图上（%r）。不需要就 "
-                                 "delete_view(view_name=%r) 清掉；注意父视图上残留的"
-                                 "剖切线用 delete_view 清不干净。" % (_new_view_name,
-                                                                     _new_view_name)),
+                    **_maybe_drop_failed_view("section_not_cut"),
                     **diag)
             return error(
                 "hatch_missing",
@@ -6151,6 +6191,10 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 "GB 要求剖切面必须画剖面线；这种视图在生产上不能用。"
                 "请在 SolidWorks 界面手工检查该视图的区域剖面线属性（是否选了 Hatch / "
                 "Material crosshatch），或换一个能正常显示剖面线的模板/零件做对照。",
+                view_to_delete=_new_view_name,
+                # `auto` keeps this one: the cut DID happen, so the view shows where the
+                # plane landed — that is diagnostic value the empty case does not have.
+                **_maybe_drop_failed_view("hatch_missing"),
                 **diag)
         # ── Off-axis section (report 2026-11-08, P0 suggestion 2) ────────────────────
         # `SECTION_KEEP_TOLERANCE` is 10%, which is far too loose to catch an ECCENTRIC
