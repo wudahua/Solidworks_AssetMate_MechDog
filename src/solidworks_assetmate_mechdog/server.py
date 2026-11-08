@@ -41,6 +41,52 @@ if getattr(mcp, "_mcp_server", None) is not None:
     mcp._mcp_server.version = __version__
 
 
+def _reject_unknown_arguments(fn):
+    """Refuse a call that passes an argument this tool does not declare.
+
+    Report 2026-11-08 (P2-5, carried since round 4): `health_check(bogus_param=123)`
+    returned `isError=False` and a normal payload. FastMCP fills missing arguments with
+    defaults and DROPS anything it does not recognise — `extra=ignore` is the pydantic
+    default and there is no per-call override at this layer.
+
+    That makes a typo invisible: `drw_path=` instead of `drawing_path=` silently calls the
+    tool with the real parameter at its default, and the receipt looks like a normal run.
+    For a tool that writes to a drawing, "it ran with the wrong arguments and said ok" is
+    the worst possible outcome.
+
+    `functools.wraps` keeps `__wrapped__`, and `inspect.signature` follows it, so FastMCP
+    still generates the same inputSchema from the original signature. Only the CALL is
+    intercepted.
+    """
+    import functools
+    import inspect
+    import json as _jsonlib
+
+    try:
+        accepted = set(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        return fn                      # builtins / C functions: nothing to check
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        unknown = sorted(k for k in kwargs if k not in accepted)
+        if unknown:
+            return _jsonlib.dumps({
+                "ok": False,
+                "error": "unknown_argument",
+                "message": "unknown argument(s): %s" % ", ".join(unknown),
+                "unknown": unknown,
+                "accepted": sorted(accepted),
+                "hint": ("This tool does not have those parameters. The call was refused "
+                         "rather than run with them dropped — a mistyped name would "
+                         "otherwise fall back to the default and the receipt would look "
+                         "normal."),
+            }, ensure_ascii=False)
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 def _json(payload):
     """Serialise a tool result, and log it when it reports failure.
 
@@ -104,6 +150,7 @@ _install_excepthook()
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def health_check(deep: Annotated[bool, Field(description="Include the deeper diagnostic probes (slower).")] = False) -> str:
     """Report whether the MCP bridge and SolidWorks are both alive.
 
@@ -115,6 +162,7 @@ def health_check(deep: Annotated[bool, Field(description="Include the deeper dia
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def ping() -> str:
     """Cheapest possible "is it alive" probe (P0-1).
 
@@ -127,6 +175,7 @@ def ping() -> str:
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def recent_failures(tail: Annotated[int, Field(description="How many recent log entries to return.")] = 20) -> str:
     """Read back the last N failures from logs/mcp-YYYYMMDD.log.
 
@@ -152,6 +201,7 @@ def recent_failures(tail: Annotated[int, Field(description="How many recent log 
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def produce_drawing(
     model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
     output_path: Annotated[str | None, Field(description="Where to write the result. Extension decides the format when fmt is omitted.")] = None,
@@ -191,6 +241,7 @@ def produce_drawing(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def plan_drawing(
     model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
     paper: Annotated[str, Field(description="Sheet size, e.g. 'A3' or 'A4'; drives the template and the usable area.")] = "A3",
@@ -210,6 +261,7 @@ def plan_drawing(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def check_capabilities(operation: Annotated[str | None, Field(description="Which capability slice to report; null returns the whole table.")] = None) -> str:
     """What this toolkit can and cannot do — answer before a long pipeline, not after.
 
@@ -220,6 +272,7 @@ def check_capabilities(operation: Annotated[str | None, Field(description="Which
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def recolor_assembly(
     assembly_path: Annotated[str, Field(description="Assembly file (.SLDASM), absolute path.")],
     palette: Annotated[dict, Field(description="Colour palette to apply; names are matched case-insensitively.")],
@@ -240,6 +293,7 @@ def recolor_assembly(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def list_bodies(part_path: Annotated[str, Field(description="Single part file (.SLDPRT), absolute path.")]) -> str:
     """List solid bodies in a part: name, faces, edges, vertices.
 
@@ -249,6 +303,7 @@ def list_bodies(part_path: Annotated[str, Field(description="Single part file (.
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def recolor_bodies(
     part_path: Annotated[str, Field(description="Single part file (.SLDPRT), absolute path.")],
     palette: Annotated[dict, Field(description="Colour palette to apply; names are matched case-insensitively.")],
@@ -266,6 +321,7 @@ def recolor_bodies(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def export_bom(
     assembly_path: Annotated[str, Field(description="Assembly file (.SLDASM), absolute path.")],
     include_mass: Annotated[bool, Field(description="Include mass in the BOM rows.")] = True,
@@ -287,6 +343,7 @@ def export_bom(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def rename_components(
     part_paths: Annotated[list[str], Field(description="List of part files to rename; each is opened in turn.")],
     mapping: Annotated[dict | None, Field(description="How to map old names to new ones.")] = None,
@@ -311,6 +368,7 @@ def rename_components(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def batch_export(
     targets: Annotated[list[str], Field(description="Files to export, one entry per input.")],
     output_dir: Annotated[str, Field(description="Directory for generated files; created if missing.")],
@@ -328,6 +386,7 @@ def batch_export(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def set_view(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     view_name: Annotated[str, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")],
@@ -352,12 +411,14 @@ def set_view(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def place_views(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], placements: Annotated[list, Field(description="Explicit [x, y] positions, one per view, in sheet metres.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True) -> str:
     """Place several views at once: [{view, x, y, scale}] in sheet metres."""
     return _json(layout.place_views(drawing_path, placements, save=save))
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def delete_dimensions(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     keep_values: Annotated[list | None, Field(description="Values to keep when deleting; everything else matching the filter goes.")] = None,
@@ -376,6 +437,7 @@ def delete_dimensions(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_weld_symbol(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], weld_type: Annotated[str, Field(description="Weld symbol kind. Only 'fillet' is implemented; groove/plug/spot are refused rather than approximated.")] = "fillet", size_mm: Annotated[float, Field(description="Weld leg size in millimetres; the whole symbol scales with it.")] = 6.0,
                     x_m: Annotated[float, Field(description="Sheet X in metres.")] = 0.0, y_m: Annotated[float, Field(description="Sheet Y in metres.")] = 0.0,
                     target_x_m: Annotated[float | None, Field(description="Sheet X the leader points at, in metres; omit for no leader.")] = None, target_y_m: Annotated[float | None, Field(description="Sheet Y the leader points at, in metres.")] = None,
@@ -417,6 +479,7 @@ def add_weld_symbol(drawing_path: Annotated[str, Field(description="Existing .SL
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_technical_requirements(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], lines: Annotated[list[str], Field(description="The requirement lines, one entry each. Lines already starting with '1.' or '1、' keep their number; the rest get ordinals.")],
                                x_m: Annotated[float | None, Field(description="Sheet X in metres.")] = None, y_m: Annotated[float | None, Field(description="Sheet Y in metres.")] = None,
                                height_mm: Annotated[float, Field(description="Note text height in millimetres (3.5 is the GB default).")] = 3.5, title: Annotated[str, Field(description="Heading placed above the list; empty string writes the lines without a heading.")] = "技术要求",
@@ -439,6 +502,7 @@ def add_technical_requirements(drawing_path: Annotated[str, Field(description="E
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_note(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], text: Annotated[str, Field(description="Note body. Ø ± ° are rewritten to SolidWorks format codes so DWG/DXF keeps them legible.")], x_m: Annotated[float, Field(description="Sheet X in metres.")], y_m: Annotated[float, Field(description="Sheet Y in metres.")],
     height_mm: Annotated[float | None, Field(description="Note text height in millimetres (3.5 is the GB default).")] = None, bold: Annotated[bool, Field(description="Render the note in bold.")] = False, save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,
@@ -456,6 +520,7 @@ def add_note(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def layout_dimensions(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
@@ -477,6 +542,7 @@ def layout_dimensions(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def delete_view(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True) -> str:
     """Delete a drawing view by name.
 
@@ -487,6 +553,7 @@ def delete_view(drawing_path: Annotated[str, Field(description="Existing .SLDDRW
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def delete_annotation(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], name: Annotated[str, Field(description="Annotation name exactly as reported by list_drawing_annotations.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,
                       position_m: Annotated[list[float] | None, Field(description="Exact sheet position [x, y] in metres. Required when several annotations share a name (SolidWorks reuses D1/D2).")] = None) -> str:
     """Delete one annotation (hole callout / GT / surface finish / note / dimension) by name.
@@ -503,6 +570,7 @@ def delete_annotation(drawing_path: Annotated[str, Field(description="Existing .
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def move_annotation(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], name: Annotated[str, Field(description="Annotation name exactly as reported by list_drawing_annotations.")], x_m: Annotated[float, Field(description="Sheet X in metres.")], y_m: Annotated[float, Field(description="Sheet Y in metres.")],
                     save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True, position_m: Annotated[list[float] | None, Field(description="Exact sheet position [x, y] in metres. Required when several annotations share a name (SolidWorks reuses D1/D2).")] = None) -> str:
     """Move an annotation or dimension to a sheet position in metres.
@@ -517,6 +585,7 @@ def move_annotation(drawing_path: Annotated[str, Field(description="Existing .SL
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def set_dimension_position(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], name: Annotated[str, Field(description="Annotation name exactly as reported by list_drawing_annotations.")], x_m: Annotated[float, Field(description="Sheet X in metres.")], y_m: Annotated[float, Field(description="Sheet Y in metres.")],
                            save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,
                            position_m: Annotated[list[float] | None, Field(description="Exact sheet position [x, y] in metres. Required when several annotations share a name (SolidWorks reuses D1/D2).")] = None) -> str:
@@ -535,6 +604,7 @@ def set_dimension_position(drawing_path: Annotated[str, Field(description="Exist
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_bom_table(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
@@ -558,6 +628,7 @@ def add_bom_table(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def list_sheets(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW. Absolute path.")],
 ) -> str:
@@ -571,6 +642,7 @@ def list_sheets(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def activate_sheet(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW. Absolute path.")],
     name: Annotated[str | None, Field(description="Sheet name to activate, e.g. '图纸2'. Give this or index.")] = None,
@@ -586,6 +658,7 @@ def activate_sheet(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_view_to_sheet(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW. Absolute path.")],
     sheet: Annotated[str | int | None, Field(description="Target sheet name or 1-based index. Omit to use the active sheet.")] = None,
@@ -608,6 +681,7 @@ def add_view_to_sheet(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_sheet(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to add a sheet to. Absolute path.")], name: Annotated[str, Field(description="Name for the new sheet, e.g. '图纸2'. Omit to auto-name from the current sheet count.")] = None, paper: Annotated[str, Field(description="Paper size: A0/A1/A2/A3/A4 (default A3).")] = None, scale: Annotated[float, Field(description="Sheet scale, e.g. 1.0 for 1:1, 0.5 for 1:2.")] = 1.0, save: Annotated[bool, Field(description="Save the document after adding the sheet (default True).")] = True, first_angle: Annotated[bool, Field(description="First-angle projection for the new sheet (default True, matching GB).")] = True,
 ) -> str:
@@ -634,6 +708,7 @@ def add_sheet(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def measure_layout(
     drawing_path: Annotated[str, Field(description="Path to the .SLDDRW to measure.")],
     sheet: Annotated[str | None, Field(description="Sheet name to measure. Omit for the active sheet.")] = None,
@@ -653,6 +728,7 @@ def measure_layout(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_sheet_line(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], x1_m: Annotated[float, Field(description="Sheet X of the line start, in metres.")], y1_m: Annotated[float, Field(description="Sheet Y of the line start, in metres.")], x2_m: Annotated[float, Field(description="Sheet X of the line end, in metres.")], y2_m: Annotated[float, Field(description="Sheet Y of the line end, in metres.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,    verify_render: Annotated[bool, Field(description="Prove the line rendered by exporting the page before and after and diffing pixels (default True). Costs two PDF exports. Read the result: visibility.checked=true and changed_pixels>0 means it drew; changed_pixels=0 returns line_not_rendered; visibility.checked=false means the renderer was unavailable, which is NOT the same as 'not drawn'.")] = True,
 ) -> str:
@@ -681,6 +757,7 @@ def add_sheet_line(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def sheet_metal_qc(model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")], include_cylinders: Annotated[bool, Field(description="Include cylindrical faces in the quality report.")] = False) -> str:
     """Sheet-metal manufacturability checks: thickness, bend count, bend relief.
 
@@ -695,6 +772,7 @@ def sheet_metal_qc(model_path: Annotated[str, Field(description="Part or assembl
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def flat_pattern_report(model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")]) -> str:
     """Where the flat-pattern size comes from — and what this toolkit did not do.
 
@@ -706,6 +784,7 @@ def flat_pattern_report(model_path: Annotated[str, Field(description="Part or as
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_geometric_tolerance(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     x: Annotated[float, Field(description="Sheet X in metres.")],
@@ -747,6 +826,7 @@ def add_geometric_tolerance(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_datum_feature(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
                       edge_index: Annotated[int | None, Field(description="Index into list_drawing_edges for this view; lets you attach to an edge without sheet coordinates.")] = None, label: Annotated[str, Field(description="Letter identifying this item: the view letter for a section/detail (e.g. 'A' in A-A) or the datum letter for a datum feature symbol.")] = "A",
                       x_m: Annotated[float | None, Field(description="Sheet X in metres.")] = None, y_m: Annotated[float | None, Field(description="Sheet Y in metres.")] = None,
@@ -773,6 +853,7 @@ def add_datum_feature(drawing_path: Annotated[str, Field(description="Existing .
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_surface_finish(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     x: Annotated[float, Field(description="Sheet X in metres.")],
@@ -811,6 +892,7 @@ def add_surface_finish(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def verify_dimension_attachments(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None) -> str:
     """Report what each dimension is attached to (edge / face / sketch segment / nothing).
 
@@ -820,6 +902,7 @@ def verify_dimension_attachments(drawing_path: Annotated[str, Field(description=
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def prune_orphan_dimensions(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
     dry_run: Annotated[bool, Field(description="True reports the plan without touching the document.")] = True, save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True, confirm: Annotated[bool, Field(description="Must be True to actually delete; without it the call only reports what it would delete.")] = False,
@@ -845,6 +928,7 @@ def prune_orphan_dimensions(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def list_circular_edges(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
@@ -856,6 +940,7 @@ def list_circular_edges(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_hole_callouts(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
@@ -879,6 +964,7 @@ def add_hole_callouts(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def reconcile_ledger(
     model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
@@ -895,6 +981,7 @@ def reconcile_ledger(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def plan_dimension_gaps(
     model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to inspect and optionally modify. Absolute path; the file is opened and saved in place when apply_gaps=True.")],
@@ -968,6 +1055,7 @@ def plan_dimension_gaps(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def survey_drawings(
     folder: Annotated[str, Field(description="Directory of drawings to survey.")],
     sample_size: Annotated[int, Field(description="How many drawings to include in the survey sample.")] = 100,
@@ -991,6 +1079,7 @@ def survey_drawings(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def delivery_check(
     model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
@@ -1011,6 +1100,7 @@ def delivery_check(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def list_drawing_annotations(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None) -> str:
     """Inventory every annotation: dimensions (with value + tolerance), notes,
     geometric tolerances (frame content), center marks, hole callouts.
@@ -1022,6 +1112,7 @@ def list_drawing_annotations(drawing_path: Annotated[str, Field(description="Exi
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_dimension_tolerance(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     value_mm: Annotated[float, Field(description="Driving dimension value in millimetres to match against.")],
@@ -1050,12 +1141,14 @@ def add_dimension_tolerance(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def material_library(database: Annotated[str, Field(description="Material database to read from (e.g. solidworks materials); null uses the default.")] = "SolidWorks Materials.sldmat") -> str:
     """List material names available in the installed SolidWorks material library."""
     return _json(material_tools.material_library(database=database))
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def set_part_material(
     paths: Annotated[list[str], Field(description="Part file paths, one entry per item; each is opened and written.")],
     material_name: Annotated[str, Field(description="Material to assign, e.g. '普通碳钢'.")],
@@ -1075,6 +1168,7 @@ def set_part_material(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def assign_materials(
     paths: Annotated[list[str], Field(description="Part file paths, one entry per item; each is opened and written.")],
     rules: Annotated[list | None, Field(description="Per-part material assignment rules.")] = None,
@@ -1094,6 +1188,7 @@ def assign_materials(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def build_feature_ledger(
     model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
     include_faces: Annotated[bool, Field(description="Read per-face data too (slower, needed for face-level checks).")] = True,
@@ -1111,6 +1206,7 @@ def build_feature_ledger(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def create_drawing(
     model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
     output_path: Annotated[str | None, Field(description="Where to write the result. Extension decides the format when fmt is omitted.")] = None,
@@ -1140,6 +1236,7 @@ def create_drawing(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def export_drawing(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], output_path: Annotated[str, Field(description="Where to write the result. Extension decides the format when fmt is omitted.")], fmt: Annotated[str | None, Field(description="Output format, e.g. 'pdf', 'dwg', 'dxf', 'step'.")] = None) -> str:
     """Export a .SLDDRW to PDF / DWG / DXF.
 
@@ -1149,6 +1246,7 @@ def export_drawing(drawing_path: Annotated[str, Field(description="Existing .SLD
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def render_drawing(pdf_path: Annotated[str, Field(description="PDF to rasterise into PNG pages.")], output_dir: Annotated[str | None, Field(description="Directory for generated files; created if missing.")] = None, scale: Annotated[float, Field(description="View or sheet scale as a decimal (2.0 means 2:1).")] = 2.0) -> str:
     """Render each PDF page to PNG so the drawing can be visually checked.
 
@@ -1158,6 +1256,7 @@ def render_drawing(pdf_path: Annotated[str, Field(description="PDF to rasterise 
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_section_view(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
@@ -1204,6 +1303,7 @@ def add_section_view(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_detail_view(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
@@ -1235,6 +1335,7 @@ def add_detail_view(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_flat_pattern_view(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     model_path: Annotated[str, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")],
@@ -1256,6 +1357,7 @@ def add_flat_pattern_view(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def survey_dimensions_by_view(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")]) -> str:
     """Report how dimensions are spread across the model views — READ ONLY, changes nothing.
 
@@ -1278,6 +1380,7 @@ def survey_dimensions_by_view(drawing_path: Annotated[str, Field(description="Ex
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def auto_dimension(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     all_views: Annotated[bool, Field(description="Insert into every model view. False inserts into the ACTIVE view only and activates one for you.")] = True,
@@ -1314,6 +1417,7 @@ def auto_dimension(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
                        include_points: Annotated[bool, Field(description="Include start/end coordinates. False returns indices only and is much faster.")] = True,
     flip_x: Annotated[bool, Field(description="Mirror every sheet X about the view centre. Use when a side view comes back left-right reversed — verify by exporting a PDF and measuring one known feature, then pass true. Measured 2026-11-03 on 旋转轴 at 2:1: unflipped reported the Ø14 collar at x=0.1288 while the page has it at 0.0487; flipped matches.")] = False,
@@ -1335,6 +1439,7 @@ def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing 
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_distance_dimension(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], edge_a: Annotated[int, Field(description="Index of the FIRST edge (from list_drawing_edges) used to measure the gap.")], edge_b: Annotated[int, Field(description="Index of the SECOND edge; the dimension measures the distance between the two.")],
                            x_m: Annotated[float, Field(description="Sheet X in metres.")], y_m: Annotated[float, Field(description="Sheet Y in metres.")],
                            view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
@@ -1358,6 +1463,7 @@ def add_distance_dimension(drawing_path: Annotated[str, Field(description="Exist
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_drawing_dimension(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     x: Annotated[float, Field(description="Sheet X in metres.")],
@@ -1385,6 +1491,7 @@ def add_drawing_dimension(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def set_view_scale(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")], scale: Annotated[float, Field(description="View or sheet scale as a decimal (2.0 means 2:1).")],
                    save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True) -> str:
     """Change one view's scale on an existing drawing (no need to rebuild the sheet)."""
@@ -1392,6 +1499,7 @@ def set_view_scale(drawing_path: Annotated[str, Field(description="Existing .SLD
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def move_view(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")], x_m: Annotated[float, Field(description="Sheet X in metres.")], y_m: Annotated[float, Field(description="Sheet Y in metres.")],
               save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True) -> str:
     """Move one existing view to a sheet point (metres)."""
@@ -1399,6 +1507,7 @@ def move_view(drawing_path: Annotated[str, Field(description="Existing .SLDDRW t
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def close_document(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")]) -> str:
     """Close a document SolidWorks still holds open (frees the file for delete/replace).
 
@@ -1409,6 +1518,7 @@ def close_document(drawing_path: Annotated[str, Field(description="Existing .SLD
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_center_marks(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     include_slots: Annotated[bool, Field(description="Also mark slots, not just round holes.")] = True,
@@ -1424,6 +1534,7 @@ def add_center_marks(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def add_hole_callout(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], x: Annotated[float, Field(description="Sheet X in metres.")], y: Annotated[float, Field(description="Sheet Y in metres.")],
                     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
                     model_path: Annotated[str | None, Field(description="Part or assembly to work on (.SLDPRT / .SLDASM), absolute path.")] = None,
@@ -1439,6 +1550,7 @@ def add_hole_callout(drawing_path: Annotated[str, Field(description="Existing .S
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def set_title_block(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
     name: Annotated[str | None, Field(description="Annotation name exactly as reported by list_drawing_annotations.")] = None,
@@ -1465,6 +1577,7 @@ def set_title_block(
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def drawing_audit(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")]) -> str:
     """Audit a drawing: views, scales, blank views, dimension and annotation counts.
 
@@ -1475,6 +1588,7 @@ def drawing_audit(drawing_path: Annotated[str, Field(description="Existing .SLDD
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def get_assembly_tree(assembly_path: Annotated[str, Field(description="Assembly file (.SLDASM), absolute path.")], max_depth: Annotated[int, Field(description="How many levels of the assembly tree to descend; null means all.")] = 1, refresh: Annotated[bool, Field(description="Re-read the model from disk instead of using cached data.")] = False) -> str:
     """List assembly components with part names, paths, colors and instance info.
 
@@ -1486,6 +1600,7 @@ def get_assembly_tree(assembly_path: Annotated[str, Field(description="Assembly 
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def get_mass_properties(assembly_path: Annotated[str, Field(description="Assembly file (.SLDASM), absolute path.")]) -> str:
     """Read whole-assembly mass, volume, surface area and center of mass (SI units).
 
@@ -1496,6 +1611,7 @@ def get_mass_properties(assembly_path: Annotated[str, Field(description="Assembl
 
 
 @mcp.tool()
+@_reject_unknown_arguments
 def export_preview(
     assembly_path: Annotated[str, Field(description="Assembly file (.SLDASM), absolute path.")],
     output_path: Annotated[str, Field(description="Where to write the result. Extension decides the format when fmt is omitted.")],

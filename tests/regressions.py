@@ -7068,6 +7068,56 @@ def assert_a_trash_failure_is_not_blamed_on_the_document():
         "the underlying exception text is dropped again, so the caller cannot see why")
     return "a failed delete and a locked document are reported as different things"
 
+def assert_every_tool_rejects_unknown_arguments():
+    """0.8.233 — a mistyped argument ran the tool with it silently dropped.
+
+    Report 2026-11-08 (P2-5, carried since round 4): `health_check(bogus_param=123)`
+    returned `isError=False` and a normal payload. FastMCP drops unrecognised keys —
+    `extra=ignore` is pydantic's default and there is no per-call override at that layer.
+
+    On a tool that writes to a drawing, "it ran with the wrong arguments and reported ok"
+    is the worst outcome: `drw_path=` instead of `drawing_path=` would fall back to the
+    real parameter's default.
+
+    Every `@mcp.tool()` now carries `@_reject_unknown_arguments`, which compares the
+    keyword names against the wrapped signature and returns `unknown_argument` BEFORE the
+    body runs. `functools.wraps` keeps `__wrapped__`, so `inspect.signature` (and therefore
+    the generated inputSchema) is unchanged.
+
+    Measured 2026-11-08 against the real server module:
+        server.health_check(bogus_param=123) -> unknown_argument, unknown ['bogus_param']
+        server.health_check()                -> normal payload, no error
+        signature parameters                 -> 1 (unchanged)
+    """
+    src = _read("server.py")
+    tree = ast.parse(src)
+    decorated = 0
+    missing = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        names = []
+        for d in node.decorator_list:
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute):
+                names.append(d.func.attr)          # mcp.tool()
+            elif isinstance(d, ast.Name):
+                names.append(d.id)
+        if "tool" not in names:
+            continue
+        decorated += 1
+        if "_reject_unknown_arguments" not in names:
+            missing.append(node.name)
+    assert decorated >= 70, "expected at least 70 registered tools, found %d" % decorated
+    assert not missing, (
+        "these tools run with unknown arguments silently dropped: %r" % (missing[:8],))
+
+    assert "def _reject_unknown_arguments(" in src, "the guard is gone"
+    assert "unknown_argument" in src, "the refusal no longer has a code"
+    assert "functools.wraps(fn)" in src, (
+        "the wrapper does not preserve the signature — the generated inputSchema would "
+        "lose every parameter")
+    return "every tool refuses arguments it does not declare, and keeps its schema"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7262,6 +7312,7 @@ STATIC_REGRESSIONS = [
     ("0.8.231 tri-state survives unpacking", assert_the_tri_state_survives_unpacking),
     ("0.8.231 sheet_modified means modified", assert_sheet_modified_means_modified),
     ("0.8.231 trash failure is not a lock", assert_a_trash_failure_is_not_blamed_on_the_document),
+    ("0.8.233 unknown arguments are refused", assert_every_tool_rejects_unknown_arguments),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
