@@ -7457,6 +7457,44 @@ def assert_a_datum_symbol_is_not_a_centreline():
         "type 2 is not listed in the ambiguity table")
     return "a datum symbol is named as one, and the shared type code is disclosed"
 
+def assert_a_one_sided_bilateral_is_recognised():
+    """0.8.240 — a CORRECT bilateral stack was reported `unrecognised`.
+
+    Report 2026-11-08 (P2-2): the sheet printed `+0.033/0`, `pdf_render_matches` said
+    false, and `shape` was `unrecognised` with `deviation_count: 1`.
+
+    The shape detector counted how many times ONE string appeared and required `>= 2` for
+    bilateral. **A `+0.018/0` tolerance only ever prints one deviation** — a zero lower
+    limit is not drawn as a second number. So the count could never reach 2 for the most
+    common unilateral-bilateral case, and a correct drawing was flagged as unrecognised
+    by the very check meant to catch wrong drawings.
+
+    The count was never the question. Presence per side is:
+        upper present, lower 0     -> bilateral (one printed number is correct)
+        upper and lower present     -> bilateral
+        only the summed limit       -> limit_values
+        neither                     -> basic
+
+    Measured 2026-11-08 on 飞达动力轴:
+        +0.018/0    shape bilateral_two_deviations  matches True  dev 1  up True lo False
+        +0.033/0    shape bilateral_two_deviations  matches True  dev 1  up True lo False
+        +0.05/+0.05 shape bilateral_two_deviations  matches True  dev 2  up True lo True
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "_tolerance_text_on_pdf")) or ""
+    assert "_has_up" in body and "_has_lo" in body, (
+        "the shape test counts occurrences again instead of asking which sides printed")
+    assert "elif _has_up or _has_lo:" in body, (
+        "a single printed deviation no longer counts as bilateral — a `+x/0` tolerance "
+        "will be called unrecognised again")
+    assert "upper_present" in body and "lower_present" in body, (
+        "the receipt does not say which deviations were actually found, so a mismatch "
+        "cannot be diagnosed")
+    assert "dev_count >= 2" not in body, (
+        "the occurrence count is back")
+    return "a `+x/0` bilateral is recognised, and the receipt names which sides printed"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7660,6 +7698,7 @@ STATIC_REGRESSIONS = [
     ("0.8.238 tolerance + center marks", assert_two_more_p2_items_are_fixed),
     ("0.8.238 guard survives unknown tools", assert_the_mcp_entry_still_works_after_adding_tools),
     ("0.8.239 datum is not a centreline", assert_a_datum_symbol_is_not_a_centreline),
+    ("0.8.240 one-sided bilateral", assert_a_one_sided_bilateral_is_recognised),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

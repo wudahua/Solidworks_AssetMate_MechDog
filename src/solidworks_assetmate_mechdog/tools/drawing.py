@@ -6425,12 +6425,46 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     dev_count = joined.count(dev) if dev else 0
     hi_count = joined.count(hi) if hi else 0
 
+    # ── Report 2026-11-08 (P2-2) ──────────────────────────────────────────────────
+    # `shape` counted how many times ONE string appeared and required >= 2 for
+    # "bilateral". A `+0.018/0` tolerance only ever prints ONE deviation — the lower limit
+    # is zero and zero is not drawn as a second number. So a perfectly correct bilateral
+    # stack came back `deviation_count: 1` and fell through to `unrecognised`.
+    #
+    # The count was never the right question. A shape is determined by WHICH numbers are
+    # present, not by how many times one of them repeats:
+    #
+    #   upper present, lower is 0      -> bilateral (one printed deviation is correct)
+    #   upper and lower both present    -> bilateral
+    #   only the summed limit present  -> limit_values
+    #   neither                        -> basic
+    _lo_text = None
+    _lo_value = None
+    try:
+        if lower_mm is not None:
+            _lo_value = float(lower_mm)
+            _lo_text = "%g" % round(abs(_lo_value), 3)
+    except Exception:
+        _lo_text = None
+        _lo_value = None
+    _has_up = bool(dev) and dev in joined and (upper_mm is None or float(upper_mm) != 0)
+    # A zero lower limit is legitimately absent from the sheet; a non-zero one must be
+    # there, and its sign may or may not print, so match the magnitude.
+    _has_lo = (bool(_lo_text) and _lo_value not in (None, 0.0)
+               and (_lo_text in joined or ("-%s" % _lo_text) in joined))
+
+    _tol_name = str(tol or "").lower().split("(")[0].strip()
     if "±" in joined and dev and dev in joined:
         shape = "symmetric_plus_minus"
     elif hi and hi != nominal and hi_count >= 1 and dev_count == 0:
         shape = "limit_values"
-    elif dev_count >= 2:
+    elif _has_up or _has_lo:
+        # Either deviation present is enough. `+0.018/0` prints the upper only, and calling
+        # that "unrecognised" was the false negative this check exists to prevent.
         shape = "bilateral_two_deviations"
+    elif _tol_name and _tol_name not in ("none", "basic") and dev_count == 0:
+        # A tolerance was requested but nothing of it reached the sheet.
+        shape = "basic_no_deviation"
     elif dev_count == 0:
         shape = "basic_no_deviation"
     else:
@@ -6439,6 +6473,8 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     return {"checked": True, "shape": shape, "lines": hits[:8],
             "windowed": _window_used,
             "deviation_count": dev_count, "limit_count": hi_count,
+            "upper_present": bool(_has_up), "lower_present": bool(_has_lo),
+            "lower_expected": _lo_value,
             "expected": tol}
 
 
