@@ -4547,6 +4547,17 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
                 pass
             existing |= {round(v * 1000) for v in drawing_dimension_values(doc)}
             existing |= {round(float(v) * 1000) for v in (known_values or [])}
+        # Identity snapshot, kept only when the duplicate check is on. `IDisplayDimension`
+        # has no way to be selected or deleted — `GetAnnotation` is not in the type library
+        # and `Select` is not on it either (measured 2026-11-08) — so the just-inserted
+        # duplicate has to be found by DIFF against a snapshot taken before the insert.
+        # That is the same mechanism 0.8.216 verified for the rollback path.
+        _dims_before = None
+        if skip_duplicates:
+            try:
+                _dims_before = {n for n, _ in (_dimension_selection_names(doc) or [])}
+            except Exception:
+                _dims_before = None
         view = None
         if view_name:
             for candidate in _iter_views(doc):
@@ -4762,13 +4773,60 @@ def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0
                 pass
         # Dimensions are per-value: the same length annotated twice on two views is a
         # drafting error, so skip values that already exist anywhere on the sheet.
-        if skip_duplicates and picked_length is not None and round(picked_length * 1000) in existing:
+        #
+        # Report 2026-11-08 (P0-2), TWO defects in this one check:
+        #
+        # 1. It compared `picked_length` — the EDGE's projected length — against the sheet.
+        #    With `style="radius"` on an arc, the edge measures Ø20 but the dimension
+        #    created is R10, so the test said "20 already exists" (the groove WIDTH is 20)
+        #    while the thing actually being added was a different value. The dimension that
+        #    landed was therefore not a duplicate at all, and it was reported as skipped.
+        #
+        # 2. The dimension had ALREADY been created by this point, and the "skip" path did
+        #    not remove it. `created: false, skipped: "duplicate_value"` while a second R10
+        #    sits on the sheet next to the first — the report had to delete it by hand.
+        #
+        # So: compare the value that ACTUALLY landed, and if the verdict is "duplicate",
+        # undo the insert before returning.
+        _landed_value = None
+        try:
+            _landed_value = float(dim.SystemValue)
+        except Exception:
+            _landed_value = picked_length
+        if (skip_duplicates and _landed_value is not None
+                and round(_landed_value * 1000) in existing):
+            _undone = False
+            try:
+                _snap_now = _dimension_selection_names(doc) or []
+                _fresh = [(n, a) for n, a in _snap_now
+                          if _dims_before is not None and n not in _dims_before]
+                for _nm, _ann in _fresh:
+                    try:
+                        doc.ClearSelection2(True)
+                        if _ann.Select(False):
+                            _call_method(doc, "EditDelete")
+                            _undone = True
+                    except Exception:
+                        continue
+            except Exception:
+                _undone = False
             doc.ClearSelection2(True)
+            try:
+                _call_method(doc, "EditRebuild3")
+            except Exception:
+                pass
             return drawing_ok(
                 drawing=doc.GetTitle, created=False, selected=selected,
                 view=view.Name if view is not None else None,
-                value_m=float(picked_length), skipped="duplicate_value",
-                note="The same dimension already exists on this sheet.",
+                value_m=float(_landed_value), skipped="duplicate_value",
+                # Whether the just-created duplicate was actually removed. A False here
+                # means the sheet now carries a duplicate that this call created — the
+                # caller must clean it up, and must not be told "skipped" without that.
+                duplicate_removed=_undone,
+                note=("The same dimension already exists on this sheet."
+                      if _undone else
+                      "The same dimension already exists AND the duplicate this call "
+                      "created could not be removed — delete it by hand."),
             )
 
         doc.ClearSelection2(True)
@@ -5775,9 +5833,29 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         if hatch_count == 0:
             # The cut face exists but carries no hatching: the drawing is wrong even though
             # every other check passes. 飞达动力轴 reported exactly this while `verdict: ok`.
-            # Root cause not found — `SetAutoHatch` (parts out of scope), `ScaleHatchPattern`
-            # (scales an existing pattern), `SectionDepth`, `SetDisplayOnlySurfaceCut` all
-            # leave the count at 0. Reported as an error so it cannot slip into a delivery.
+            #
+            # Report 2026-11-08 (P0-1): the hint below used to send everyone to the hatch
+            # SETTINGS, and for a revolved part that is the wrong room entirely — the view
+            # was never cut. `hatch_diagnostics` showed `display_mode 2 / style 2` (normal)
+            # while `edge_count == source_edge_count == 4`: no new edge, no cut.
+            #
+            # Two different failures, two different hints:
+            #   same edge count as the parent -> the cut never happened
+            #   more edges, still no hatch   -> the cut happened but hatching is off
+            _same_edges = (sanity.get("edge_count") is not None
+                           and sanity.get("source_edge_count") is not None
+                           and sanity.get("edge_count") == sanity.get("source_edge_count"))
+            if _same_edges:
+                return error(
+                    "section_not_cut",
+                    "剖面视图已创建，但它和父视图的边数相同（%s vs %s）——**没有剖开**。"
+                    % (sanity.get("edge_count"), sanity.get("source_edge_count")),
+                    "剖切面没有生效：视图里没有出现任何内腔或孔的边。"
+                    "回转体（轮 / 轴 / 套 / 法兰）的轴向全剖请**改从端视图用 "
+                    "orientation='vertical' 剖切** —— 这份报告在 0.8.215 和 0.8.235 上"
+                    "两次实测该路线可得正确全剖（28 条边 / hatch_count 2）。"
+                    "剖面线属性不用查，回执里的 hatch_diagnostics 已经显示它们是正常值。",
+                    **diag)
             return error(
                 "hatch_missing",
                 "剖面视图已创建，但剖切面没有任何剖面线（GetFaceHatchCount = 0）。",

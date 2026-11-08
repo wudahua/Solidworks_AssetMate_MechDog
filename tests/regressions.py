@@ -7162,6 +7162,155 @@ def assert_a_sheet_line_can_be_dash_dot():
     assert "line_style: Annotated[str" in server, "the MCP tool does not expose line_style"
     return "a sheet line can carry a dash-dot style, chosen by name or by raw number"
 
+def assert_the_mcp_entry_rejects_unknown_arguments():
+    """0.8.236 — v0.8.233's guard was installed AFTER pydantic dropped the keys.
+
+    Report 2026-11-08, measured over real MCP stdio:
+
+        tools/call health_check {"bogus_param":123}   -> isError False, normal payload
+        tools/call add_sheet   {"bogus_param":123}    -> isError False, "file not found"
+
+    while the identical direct Python call DID return `unknown_argument`. FastMCP
+    validates `arguments` against the generated inputSchema first, and pydantic's default
+    `extra="ignore"` discards undeclared keys — so the wrapper's `unknown` set was always
+    empty. It only ever fired where the tests were looking.
+
+    The check now sits on `Server.request_handlers[CallToolRequest]`, which sees
+    `params.arguments` as it came off the wire.
+
+    THIS ASSERTION STARTS A REAL SERVER over stdio. That is the point: the previous test
+    for this feature was a static AST scan ("every tool carries the decorator"), which is
+    exactly why 221/221 and 44/44 were green while the user-visible behaviour never
+    changed. A source-level assertion cannot prove an entry-point check fires.
+
+    Measured 2026-11-08:
+        tools: 70
+        health_check {"bogus_param":123} -> isError True, unknown_argument
+        add_sheet    {"bogus_param":123} -> isError True, unknown_argument
+        health_check {}                  -> isError False
+    """
+    import asyncio
+    import os as _os
+    import sys as _sys
+
+    src = _read("server.py")
+    assert "_install_argument_guard" in src, "the request-level guard is gone"
+    assert "request_handlers" in src, (
+        "the guard is no longer on the request handler — it is back after pydantic drops "
+        "the keys, where it can never fire")
+    assert "_install_argument_guard(mcp)" in src, (
+        "the guard is defined but never installed in main()")
+
+    async def _run():
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        params = StdioServerParameters(
+            command=_sys.executable,
+            args=["-c", "from solidworks_assetmate_mechdog.server import main; main()"],
+            env={**_os.environ, "PYTHONPATH": _os.path.join(ROOT, "src")},
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+                assert len(listed.tools) >= 70, "expected 70+ tools, got %d" % len(listed.tools)
+                bad = await session.call_tool("health_check", {"bogus_param": 123})
+                body = bad.content[0].text if bad.content else ""
+                assert bad.isError, (
+                    "an unknown argument was accepted over MCP — the guard is running "
+                    "after the point where pydantic drops the key")
+                assert "unknown_argument" in body, (
+                    "refused, but not as unknown_argument: %r" % body[:160])
+                good = await session.call_tool("health_check", {})
+                assert not good.isError, (
+                    "a NORMAL call was rejected — the guard is too broad")
+
+    try:
+        asyncio.run(_run())
+    except Exception as exc:                                        # noqa: BLE001
+        raise AssertionError(
+            "could not drive the MCP server over stdio: %s" % str(exc)[:200])
+    return "the MCP entry refuses unknown arguments; a normal call still works"
+
+def assert_a_skipped_duplicate_is_actually_removed():
+    """0.8.236 — "skipped" while the duplicate stayed on the sheet.
+
+    Report 2026-11-08 (P0-2):
+
+        add_drawing_dimension(edge_index=10, style="radius")     # skip_duplicates default
+        -> {"created": false, "value_m": 0.02, "skipped": "duplicate_value"}
+
+        list_drawing_annotations
+        -> RD8 and RD9, SAME position, SAME value, SAME type
+
+    Two defects in one check:
+
+    1. It compared `picked_length` — the edge's projected length (Ø20) — against the sheet.
+       With `style="radius"` the dimension actually created is R10, so the test rejected a
+       dimension that was not a duplicate (the 20 it matched was the groove WIDTH).
+    2. The dimension had already been created, and the skip path did not remove it. The
+       caller got `created: false` and a second R10 on the sheet — a drafting error they
+       had to delete by hand.
+
+    `IDisplayDimension` cannot be deleted directly: `GetAnnotation` is not in the type
+    library (`找不到成员`) and `Select`/`Select2` are not on it either (both `<unknown>`).
+    So the undo goes through the identity snapshot that 0.8.216 verified:
+    `_dimension_selection_names` before and after, and `ann.Select(False)` + EditDelete on
+    the difference.
+
+    Measured 2026-11-08 on 小车底部滚轮:
+        dim1 created=True
+        dim2 created=False skipped=duplicate_value duplicate_removed=True
+        dimensions on sheet: 1
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_drawing_dimension")) or ""
+    assert "_landed_value" in body, (
+        "the duplicate test compares the EDGE length again — a radius dimension will be "
+        "rejected as a duplicate of the groove width")
+    assert "_dims_before" in body, (
+        "no identity snapshot before the insert, so a duplicate cannot be found to undo")
+    assert "duplicate_removed" in body, (
+        "the receipt claims skipped without saying whether the duplicate was removed")
+    # Scan CALLS, not text: the explanation mentions `GetAnnotation` by name, and a
+    # substring test flags the comment that documents why it must not be used.
+    _bad_calls = [n.lineno for n in ast.walk(_function_node(ast.parse(src),
+                                                            "add_drawing_dimension"))
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                  and n.func.attr == "GetAnnotation"]
+    assert not _bad_calls, (
+        "IDisplayDimension.GetAnnotation does not exist (measured: 找不到成员) — called at "
+        "line(s) %r" % (_bad_calls,))
+    return "a skipped duplicate is removed, and the receipt says so"
+
+
+def assert_a_section_that_did_not_cut_says_so():
+    """0.8.236 — the hint sent people to the hatch settings for a view that never cut.
+
+    Report 2026-11-08 (P0-1): `hatch_diagnostics` showed `display_mode 2 / style 2` —
+    both normal — while `edge_count == source_edge_count == 4` and the drawing had no
+    bore at all. The same receipt's `verdict_reason` said it correctly ("an uncut
+    projection also satisfies the width test") and then the hint said:
+
+        请在 SolidWorks 界面手工检查该视图的区域剖面线属性 ... 或换一个能正常显示剖面线的模板
+
+    Two different failures, one shared message. Now `edge_count == source_edge_count`
+    returns `section_not_cut` with the recipe that actually works (cut the END view
+    vertically), and the hatch advice is kept for the case where the cut DID happen.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_section_view")) or ""
+    assert "section_not_cut" in body, (
+        "a view with the parent's edge count is reported as hatch_missing again")
+    assert "_same_edges" in body, (
+        "there is no branch on the edge count, so the two failures share a hint")
+    assert "orientation='vertical'" in body, (
+        "the working recipe is not in the hint; the caller has to guess it again")
+    return "a section that did not cut names itself, with the recipe that does work"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7358,6 +7507,9 @@ STATIC_REGRESSIONS = [
     ("0.8.231 trash failure is not a lock", assert_a_trash_failure_is_not_blamed_on_the_document),
     ("0.8.233 unknown arguments are refused", assert_every_tool_rejects_unknown_arguments),
     ("0.8.235 a sheet line can be dash-dot", assert_a_sheet_line_can_be_dash_dot),
+    ("0.8.236 MCP entry refuses unknown args", assert_the_mcp_entry_rejects_unknown_arguments),
+    ("0.8.236 skipped duplicate is removed", assert_a_skipped_duplicate_is_actually_removed),
+    ("0.8.236 uncut section names itself", assert_a_section_that_did_not_cut_says_so),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

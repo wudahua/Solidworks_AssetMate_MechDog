@@ -1630,7 +1630,79 @@ def export_preview(
     ))
 
 
+def _install_argument_guard(app):
+    """Reject unknown keys at the MCP request entry, BEFORE pydantic drops them.
+
+    v0.8.233 put `_reject_unknown_arguments` on the tool functions. Report 2026-11-08
+    measured that this changes nothing over stdio: FastMCP validates `arguments` against
+    the generated inputSchema first, and pydantic's default `extra="ignore"` DISCARDS
+    undeclared keys. By the time the wrapper runs, `kwargs` contains only the declared
+    ones — the guard's `unknown` set is always empty. It only ever fired on direct Python
+    calls, i.e. exactly where the tests were looking.
+
+    So the check moves to the only place that can still see the raw payload:
+    `Server.request_handlers[CallToolRequest]`. That handler receives `params.arguments`
+    as it came off the wire.
+
+    Returns True when the guard is installed. A False return is not fatal — the server
+    still runs, just without the extra check — because this is the ONLY thing that touches
+    mcp's private `_mcp_server`, and losing it must never take the whole server down.
+    """
+    try:
+        import json as _jsonlib
+        from mcp import types as _mt
+
+        low = getattr(app, "_mcp_server", None)
+        handlers = getattr(low, "request_handlers", None) if low is not None else None
+        if not handlers:
+            return False
+        key = _mt.CallToolRequest
+        original = handlers.get(key)
+        if original is None:
+            return False
+
+        manager = getattr(app, "_tool_manager", None)
+        known = getattr(manager, "_tools", None) or {}
+
+        async def _guarded(request):
+            try:
+                name = request.params.name
+                raw = request.params.arguments or {}
+                tool = known.get(name)
+                if tool is not None:
+                    declared = set((tool.parameters or {}).get("properties") or {})
+                    if declared:
+                        unknown = sorted(k for k in raw if k not in declared)
+                        if unknown:
+                            payload = {
+                                "ok": False,
+                                "error": "unknown_argument",
+                                "message": "unknown argument(s): %s" % ", ".join(unknown),
+                                "unknown": unknown,
+                                "accepted": sorted(declared),
+                                "hint": ("This tool has no such parameter. The call was "
+                                         "refused instead of run with it dropped — a "
+                                         "mistyped name would otherwise fall back to the "
+                                         "default and the receipt would look normal."),
+                            }
+                            return _mt.ServerResult(_mt.CallToolResult(
+                                content=[_mt.TextContent(type="text",
+                                                         text=_jsonlib.dumps(
+                                                             payload, ensure_ascii=False))],
+                                isError=True))
+            except Exception:
+                # Never let the guard itself break a call it does not understand.
+                pass
+            return await original(request)
+
+        handlers[key] = _guarded
+        return True
+    except Exception:
+        return False
+
+
 def main():
+    _install_argument_guard(mcp)
     mcp.run()
 
 
