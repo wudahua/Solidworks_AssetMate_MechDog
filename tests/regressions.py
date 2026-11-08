@@ -7420,6 +7420,43 @@ def assert_the_mcp_entry_still_works_after_adding_tools():
         "every call")
     return "the request guard degrades to a pass-through when it cannot resolve a tool"
 
+def assert_a_datum_symbol_is_not_a_centreline():
+    """0.8.239 — a DATUM FEATURE SYMBOL was reported as `kind: "centerline"`.
+
+    Report 2026-11-08 (P2-5): `InsertDatumTag2` produced `细节项目257`, and
+    `list_drawing_annotations` filed it under `centerline`. Anything counting centrelines
+    was counting datum symbols.
+
+    Measured 2026-11-08 on 飞达动力轴: the annotation from `InsertDatumTag2` reports
+    `GetType == 2`, and on that sheet type 2 was produced ONLY by the datum symbol (every
+    hole centre mark was 13).
+
+    I could NOT build a real centreline to prove it never reports 2 — `InsertCenterLine`
+    is a property returning bool (calling it raises "'bool' object is not callable") and
+    `InsertCenterLine2` raises 找不到成员. `GetAttachedEntityTypes` is `(1,)` for both, so
+    that is not a discriminator either.
+
+    So the map now names the OBSERVED producer and every type-2 row carries
+    `kind_ambiguous: ["datum_tag", "centerline"]` plus a note. Callers get the useful
+    answer and the uncertainty at the same time, instead of a confident wrong one.
+
+    Measured:
+        kind=datum_tag  ambiguous=['datum_tag', 'centerline']
+    """
+    src = _read("tools/drawing.py")
+    assert '2: "datum_tag"' in src, (
+        "type 2 is filed as centerline again — datum symbols get counted as centrelines")
+    assert "ANNOTATION_KIND_AMBIGUOUS" in src, (
+        "the ambiguity table is gone; the receipt presents a guess as a fact")
+    assert "kind_ambiguous" in src, (
+        "a type-2 row no longer says the code is shared")
+    assert "kind_note" in src, (
+        "there is no explanation of why the two cannot be told apart")
+    i = src.find("ANNOTATION_KIND_AMBIGUOUS = {")
+    assert 2 in [int(x) for x in __import__("re").findall(r"(\d+):", src[i:i + 80])], (
+        "type 2 is not listed in the ambiguity table")
+    return "a datum symbol is named as one, and the shared type code is disclosed"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7622,6 +7659,7 @@ STATIC_REGRESSIONS = [
     ("0.8.237 three P2 items", assert_three_p2_items_are_fixed),
     ("0.8.238 tolerance + center marks", assert_two_more_p2_items_are_fixed),
     ("0.8.238 guard survives unknown tools", assert_the_mcp_entry_still_works_after_adding_tools),
+    ("0.8.239 datum is not a centreline", assert_a_datum_symbol_is_not_a_centreline),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

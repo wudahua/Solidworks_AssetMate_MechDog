@@ -6750,9 +6750,28 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
 
 
 ANNOTATION_KINDS = {
-    2: "centerline", 4: "dimension", 5: "geometric_tolerance", 6: "note",
+    # Report 2026-11-08 (P2-5): this map said `2: "centerline"`, and a DATUM FEATURE
+    # SYMBOL came back as `kind: "centerline"`. Measured 2026-11-08 on 飞达动力轴 with
+    # `InsertDatumTag2`: the annotation created by it reports `GetType == 2`, and on that
+    # sheet type 2 was produced ONLY by the datum symbol — every hole centre mark was 13.
+    #
+    # I could not build a real centreline to compare against (`InsertCenterLine` is a
+    # property returning bool, not a method, and `InsertCenterLine2` raises 找不到成员), so
+    # I cannot prove that a centreline never reports 2. Both report
+    # `GetAttachedEntityTypes == (1,)` as well, so that is not a discriminator either.
+    #
+    # Hence: type 2 is reported as `datum_tag` (the observed producer) and every such row
+    # carries `kind_ambiguous` naming centreline as the other possibility. A caller that
+    # must be certain has to look at the sheet; a caller that counted "centre lines" was
+    # counting datum symbols.
+    2: "datum_tag", 4: "dimension", 5: "geometric_tolerance", 6: "note",
     7: "surface_finish", 8: "datum_tag", 9: "datum_target", 11: "balloon",
     12: "weld_symbol", 13: "center_mark", 14: "hole_callout",
+}
+
+# Type codes that cannot be resolved to one kind by the API alone.
+ANNOTATION_KIND_AMBIGUOUS = {
+    2: ("datum_tag", "centerline"),
 }
 
 
@@ -6912,6 +6931,10 @@ def list_drawing_annotations(drawing_path, view_name=None):
                 except Exception:
                     continue
                 kind = ANNOTATION_KINDS.get(kind_code, "other_%d" % kind_code)
+                # Type codes the API cannot resolve on its own. Reported rather than
+                # guessed: counting "centre lines" on a sheet full of datum symbols is the
+                # failure this field exists to make visible.
+                _ambiguous = ANNOTATION_KIND_AMBIGUOUS.get(kind_code)
                 # Reset per iteration: leaving the previous value in place made a callout
                 # inherit the PREVIOUS annotation's text when its own read failed.
                 callout_text = ""
@@ -6982,6 +7005,15 @@ def list_drawing_annotations(drawing_path, view_name=None):
                 if name:
                     seen.add(key)
                 row = {"kind": kind, "name": name, "scope": scope}
+                if _ambiguous:
+                    # Keep `kind` as the observed producer so existing callers do not
+                    # break, but say out loud that the type code is not exclusive.
+                    row["kind_ambiguous"] = list(_ambiguous)
+                    row["kind_note"] = (
+                        "swAnnotationType %d is emitted by %s — the API does not "
+                        "distinguish them (both report GetAttachedEntityTypes (1,)). "
+                        "`kind` is the one observed here; verify on the sheet before "
+                        "counting." % (kind_code, " and ".join(_ambiguous)))
                 # `text` must be written AFTER row exists. It used to be written before
                 # this line, which meant: first scanned annotation -> UnboundLocalError
                 # (the tool returned annotations_failed); any later one -> the text was
