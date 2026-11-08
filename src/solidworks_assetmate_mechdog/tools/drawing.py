@@ -5643,7 +5643,8 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                      offset_m=0.0, position=None, label="A", flip=False, depth=0.0,
                      cut_plane_normal=None, cut_plane_origin=None, verify_cut=True,
                      cut_line_ratio=0.55, align_to_parent=True,
-                     auto_nudge_zero_offset=True, keep_on_failure="auto"):
+                     auto_nudge_zero_offset=False, keep_on_failure="auto",
+                     cut_line_overshoot_m=0.004):
     """Create a SECTION VIEW through a model view.
 
     Sign convention (measured on the 灌装阀阀体 top view, 59x28x80, bypass hole at z=28):
@@ -5818,8 +5819,22 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         # 0.62 of the LONG edge overshoots on any non-square view: a report's arrows stuck
         # out ~15 mm and landed on the technical-requirements block. Clamp to half the SHORT
         # edge as well, and let the caller shrink it further.
-        half = min(max(view_w, view_h) * float(cut_line_ratio),
-                   min(view_w, view_h) * 0.5) / scale
+        # ── The cut line MUST overshoot the outline (report 2026-11-08, P0-1) ────────
+        # `min(view_w, view_h) * 0.5` puts the line's endpoints EXACTLY on the outline of a
+        # symmetric view: a 65x65 view gets a half-length of 32.5 mm, which is precisely the
+        # radius. SolidWorks treats that as a line that does not cross the solid and returns
+        # a plain projection — 5 contour edges, no hatching, `section_not_cut`.
+        #
+        # That is why `offset=0` was a dead point on 限位导向套 (Ø65 circle) and why nudging
+        # the offset "worked": it moved the endpoints off the circle. The offset was never
+        # the problem, so nudging it was treating a symptom — and on a revolved part it
+        # produces a CHORD (offset 5 mm on a Ø16 bore gives a 12.5 mm section).
+        #
+        # A few millimetres of overshoot fixes the cause: the line then crosses the outline
+        # on both sides no matter where the centre is, and `offset=0` becomes a normal cut.
+        _overshoot = max(0.0, float(cut_line_overshoot_m))
+        half = (min(max(view_w, view_h) * float(cut_line_ratio),
+                    min(view_w, view_h) * 0.5) + _overshoot) / scale
         # ── Zero offset cannot cut (measured 2026-11-08) ────────────────────────────
         # `offset_m=0` puts the cut line exactly on the view centre. Measured on
         # 限位导向套, front view, horizontal cut:
@@ -6171,12 +6186,9 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                     # So the earlier advice ("cut the end view vertically") was right but
                     # incomplete, and `offset_m=0` is a genuine dead spot on the front view:
                     # the cut plane sits exactly on the symmetry plane and no edge appears.
-                    "**先看清楚：这个零件有可能怎么偏都切不开。** 2026-11-08 在 `小车底部滚轮`（Ø64×26，单实体导入件）上逐值实测：\n"
-                    "  前视图 horizontal，offset 0 / 0.004 / 0.005 / 0.020 —— **全部 `section_not_cut`**（4 条边、无剖面线、`precise_outline` 与父视图相同）；\n"
-                    "  端视图 vertical，offset 0 → `hatch_missing`；0.004 → ok 28 边 hatch 2，但剖面高 63.48 对源 63.98（**偏心**）；0.020 → 49.94（偏心 22%）。\n"
-                    "**所以「换个 offset 就能切」不成立。** 单实体导入件的剖切 行为和特征建模的零件不同：\n"
-                    "`限位导向套`（特征件）前视图 offset 0 失败、**1e-3 成功且过轴**（46 边 hatch 4 ratio 1.000）；同一个工具用在同一台 SW2024 SP4 上，结果取决于零件。\n"
-                    "**能做的**：① 端视图 + `vertical` + `offset_m` 取 1e-3 量级，若 `sanity.section_size_mm` 与 `source_size_mm` 差超过 0.5 mm 就是偏心剖面，不可交付；② 换 `create_drawing(views=[...])` 的视图组合再试；③ 都不行就把剖视留给 SolidWorks 手工做——**不要交付一张偏心剖面**。",
+                    "**`offset_m=0` 现在可以切了**（0.8.255 修掉根因）。之前切不开不是偏置问题，是**剖切线长度被 clamp 到「短边一半」，端点正好落在轮廓圆上**，SolidWorks 把这种退化线当成「没穿过实体」，返回一个普通投影。现在线会**外扩 `cut_line_overshoot_m`（默认 4 mm）**，端点一定在轮廓外。\n"
+                    "实测（2026-11-08，`offset=0`）：`限位导向套` 前视 46 边 / hatch 4 / ratio 1.000；`小车底部滚轮`（单实体导入件）前视 28 边 / hatch 2 / ratio 1.000 —— **两种零件都过轴**。\n"
+                    "**如果仍然切不开**：① 把 `cut_line_overshoot_m` 加到 0.008；② 检查零件是否赋了材质 —— 同一几何同一参数，**未赋材质时 hatch 恒 0**（`set_part_material` 之后立刻 hatch 2）；③ 还不行就把剖视留给 SolidWorks 手工做，**不要用 `offset_m` 去凑** —— 回转体上偏 2 mm 剖面宽度就从 64 掉到 63.5，标出来的直径是错的。",
                     # Report 2026-11-08 (P0-1, suggestion 3): a failed section used to be
                     # left on the sheet with no mention in the receipt, so the caller found
                     # an empty `A-A` polluting the layout later. It is still kept — deleting

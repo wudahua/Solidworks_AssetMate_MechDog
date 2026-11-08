@@ -1605,7 +1605,7 @@ def assert_cut_line_placed_on_its_view():
         "CreateLine is not drawn around the view-sketch origin")
     assert "pos[0] + offset" not in body and "pos[0] - half" not in body, (
         "CreateLine still adds view.Position — sheet metres inside a model-space sketch")
-    assert "min(view_w, view_h) * 0.5) / scale" in body, (
+    assert "min(view_w, view_h) * 0.5)" in body and "/ scale" in body, (
         "half is not converted from sheet metres to model space")
     assert "precise_outline(target)" in body, (
         "half does not use the deflated outline, so the 11.9 mm margin stretches the line")
@@ -2376,7 +2376,7 @@ def assert_cut_line_uses_view_sketch():
                                                       "add_section_view")) or ""
     assert "sm.CreateLine(offset, -half" in body, (
         "the cut line is still shifted by view.Position (sheet coordinates)")
-    assert "min(view_w, view_h) * 0.5) / scale" in body, (
+    assert "min(view_w, view_h) * 0.5)" in body and "/ scale" in body, (
         "half is not converted from sheet metres to model space")
     assert "view's own position added" not in body, (
         "the wrong-coordinate comment that caused this is still there")
@@ -7566,7 +7566,7 @@ def assert_a_failed_section_says_where_it_is():
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                      "add_section_view")) or ""
-    assert "全部 `section_not_cut`" in body, (
+    assert "现在可以切了" in body, (
         "the hint no longer names the offset that actually fails")
     assert "_maybe_drop_failed_view" in body, (
         "a failed section is left on the sheet unconditionally again")
@@ -7577,7 +7577,7 @@ def assert_a_failed_section_says_where_it_is():
         "the receipt does not name the view it left behind")
     assert "_new_view_name = str(getattr(section" in body, (
         "the new view's name is not captured, so the branches cannot reference it")
-    assert "0.004 / 0.005 / 0.020" in body, (
+    assert "cut_line_overshoot_m" in body, (
         "the measured offsets that DO work are missing from the hint")
     return "a failed section names itself and the offsets that would have worked"
 
@@ -7901,6 +7901,45 @@ def assert_a_failed_section_can_be_dropped():
     assert "keep_on_failure" in server, "the MCP tool does not expose the switch"
     return "a failed section can be dropped, and the receipt admits what remains"
 
+def assert_the_cut_line_overshoots_the_outline():
+    """0.8.255 — the real reason `offset=0` never cut: the cut line ENDED on the outline.
+
+    Report 2026-11-08 (P0-1), second report, nails it:
+
+        `cut_line_ratio` is clamped to `min(view_w, view_h) * 0.5 / scale`. A 65x65 view
+        therefore gets a half-length of 32.5 mm — exactly the radius — so the line's
+        endpoints sit ON the outline circle. SolidWorks treats that as a line that does not
+        cross the solid and returns a plain projection (5 contour edges, no hatching).
+
+    That explains everything:
+    * why `offset=0` was the dead point (endpoints on the circle)
+    * why nudging the offset "worked" (it moved the endpoints off the circle)
+    * why 0.8.251's offset nudge was treating a symptom, not the cause
+
+    A few millimetres of overshoot removes the cause. Measured with
+    `cut_line_overshoot_m=0.004` at `offset_m=0`:
+
+        限位导向套  front horizontal   ok  46 edges  hatch 4  ratio 1.000
+        限位导向套  right vertical     ok  12 edges  hatch 1  ratio 1.000
+        小车底部滚轮 front horizontal  ok  28 edges  hatch 2  ratio 1.000
+        小车底部滚轮 right vertical    ok  28 edges  hatch 2  ratio 1.000
+
+    The wheel is a single imported body — it previously failed at EVERY offset on the front
+    view. The offset nudge is now off by default because it is no longer needed.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_section_view")) or ""
+    assert "cut_line_overshoot_m" in body, (
+        "the cut line can end on the outline again, which SolidWorks reads as no cut")
+    assert "_overshoot" in body and "+ _overshoot" in body, (
+        "the overshoot is not added to the half length")
+    assert "auto_nudge_zero_offset=False" in body, (
+        "the offset is still nudged by default even though the overshoot removed the need")
+    server = _read("server.py")
+    assert "cut_line_overshoot_m" in server, "the MCP tool does not expose the overshoot"
+    return "the cut line extends past the outline, so offset 0 cuts normally"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8115,6 +8154,7 @@ STATIC_REGRESSIONS = [
     ("0.8.252 an eccentric section is refused", assert_an_eccentric_section_is_refused),
     ("0.8.253 centre marks count annotations", assert_center_marks_count_annotations_not_the_view_counter),
     ("0.8.254 a failed section can be dropped", assert_a_failed_section_can_be_dropped),
+    ("0.8.255 the cut line overshoots", assert_the_cut_line_overshoots_the_outline),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
