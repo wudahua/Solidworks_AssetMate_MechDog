@@ -7997,10 +7997,16 @@ def assert_one_callout_per_hole_size():
     concentric with it. Same centre + radius difference <= 1.5 mm -> the smaller one is a
     chamfer face, not a hole.
 
-    KNOWN GAP: `quantity` still reports `len(_group)` (the two faces of ONE hole), so the
-    surviving Ø11 callout says `quantity: 1` where 4 is correct. Two lookups failed because
-    the grouping key and the item's stored radius round to different dict keys. Documented
-    in the code rather than shipped half-working.
+    v0.8.258 fixed `quantity` too. The first two attempts failed because the two dicts use
+    DIFFERENT UNITS: `_by_dia` is keyed in millimetres (`diameter_mm`), while
+    `_quantity_by_radius` is keyed in metres (`round(radius_m, 4)`). `diameter_mm / 2000`
+    puts them on the same scale and the count is right:
+
+        Ø11.0  qty=4  quantity_source=distinct_centres_at_this_diameter
+        Ø6.6   qty=4  quantity_source=distinct_centres_at_this_diameter
+
+    A caller who reads `quantity: 1` on a 4-hole pattern will drill three holes short, so
+    this one mattered more than the chamfer filter.
     """
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
@@ -8010,6 +8016,11 @@ def assert_one_callout_per_hole_size():
     assert "duplicate_groups_merged" in body, (
         "the receipt does not say how many groups were folded together")
     assert "_chamfers" in body, "chamfer faces are annotated as holes again"
+    assert "_quantity_by_radius" in body and "2000.0" in body, (
+        "quantity is back to counting callouts; the metre/millimetre conversion is what "
+        "makes it count holes")
+    assert "quantity_source" in body, (
+        "the receipt does not say the count came from distinct centres")
     assert "0.0015" in body, (
         "the 1.5 mm concentric test is gone; chamfers will pass as holes")
     return "one callout per hole size, and chamfer faces are skipped"

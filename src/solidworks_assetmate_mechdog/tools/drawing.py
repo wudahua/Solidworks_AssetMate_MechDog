@@ -9047,19 +9047,22 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             if _dia is not None:
                 _by_dia.setdefault(round(float(_dia), 2), []).append(_item)
         for _dia, _group in _by_dia.items():
+            # `len(_group)` counts CALLOUTS, not holes: after the same-diameter merge there
+            # is exactly one, so every callout said `quantity: 1` even for a 4-hole pattern.
+            # `_quantity_by_radius` was computed during the merge and holds the number of
+            # distinct centres at that radius — that is the hole count.
+            #
+            # Key conversion is where the previous two attempts died: `_by_dia` is keyed in
+            # MILLIMETRES (`diameter_mm`), `_quantity_by_radius` in METRES (the grouping key
+            # is `round(radius_m, 4)`). `diameter_mm / 2000` puts them on the same scale.
+            _r_m = round(float(_dia) / 2000.0, 4)
+            _holes_at_this_dia = int(_quantity_by_radius.get(_r_m, 0) or 0)
             for _item in _group:
-                # KNOWN GAP (report 2026-11-08, P1-2 item 3): this reports the members of
-                # ONE group (the two visible faces of a single hole), not how many holes
-                # share the diameter. After the same-diameter merge above, four
-                # counterbores collapse into one callout that then says `quantity: 1`.
-                # Correct would be 4.
-                #
-                # Two attempts to read the count back failed: the grouping key and the
-                # item's stored radius round to different dict keys, so the lookup fell
-                # through to the fallback. Left at the old value rather than shipped
-                # half-working — the merge itself (12 callouts -> 4) is the part that fixes
-                # the unreadable column.
-                _item["quantity"] = len(_group)
+                _item["quantity"] = max(_holes_at_this_dia, 1)
+                if _holes_at_this_dia > 1:
+                    # Say where the number came from — a caller checking the sheet against
+                    # the model wants to know this is a distinct-centre count, not a guess.
+                    _item["quantity_source"] = "distinct_centres_at_this_diameter"
 
         for _item in created:
             _item.pop("_display_dimension", None)
