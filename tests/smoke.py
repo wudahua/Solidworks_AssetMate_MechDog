@@ -1419,6 +1419,102 @@ def main():
                 pass
         return "verdict ok=%r" % result.get("ok")
 
+    # --- 0.8.248 behavioural guard: a refused note must leave NOTHING behind -------
+    def _refused_note_leaves_nothing():
+        """Report 2026-11-08 (P0-B): two `ok:false` calls still put two notes on the sheet.
+
+        The safe-area check runs after `InsertNote` + save, so the refusal path used to
+        leave a real note on a real drawing. An agent that reads `ok:false` retries with a
+        new y, and the sheet accumulates copies of a block the tool said it did not place.
+
+        This asserts the OUTCOME, not the source: count the annotations, ask for a note
+        below the safe edge, count again. If the refusal did not roll back, the second
+        count is one higher and this fails.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_refuse.SLDPRT")
+        drw = os.path.join(workdir, "smoke_refuse.SLDDRW")
+        shutil.copy2(src, part)
+        try:
+            require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+            before = drawing.list_drawing_annotations(drw).get("annotation_count")
+            result = layout.add_note(drw, "SMOKE-REFUSED", 0.06, 0.05,
+                                     height_mm=3.5, save=True)
+            after = drawing.list_drawing_annotations(drw).get("annotation_count")
+            if result.get("ok"):
+                # The sheet's safe area allowed it, so there is nothing to roll back.
+                # Not a pass on the rollback, but not a failure of it either.
+                return "accepted at this sheet's safe area (%r -> %r)" % (before, after)
+            assert result.get("error") == "block_out_of_safe_area", (
+                "unexpected refusal: %r" % (result.get("error"),))
+            assert after == before, (
+                "a refused note was left on the sheet (%r -> %r)" % (before, after))
+            if not result.get("note_rolled_back"):
+                raise AssertionError(
+                    "refused, count unchanged, but note_rolled_back is falsy — the receipt "
+                    "and the sheet disagree")
+            return "refused and rolled back (%r -> %r)" % (before, after)
+        finally:
+            for name in ("smoke_refuse.SLDDRW", "smoke_refuse.SLDPRT"):
+                try:
+                    get_sw().CloseDoc(name)
+                except Exception:
+                    pass
+
+    # --- 0.8.249 behavioural guard: the safe area must not change across a reopen -----
+    def _safe_area_survives_reopen():
+        """Report 2026-11-08 (P0-A): `bottom 0.065` fresh, `0.004` after close+reopen.
+
+        Same sheet, same size, and the reopened one still claimed `source: 'template'`.
+        The cache key is `(sheet.Name, w, h)`, which cannot tell two openings of one file
+        apart, so the second measurement was the first one's — or a collapsed scan.
+
+        This drives both states and compares the numbers.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_safe.SLDPRT")
+        drw = os.path.join(workdir, "smoke_safe.SLDDRW")
+        shutil.copy2(src, part)
+
+        def measure():
+            doc = drawing._open_drawing(drw)
+            sheet = doc.GetFirstView
+            box = list(sheet.GetOutline)
+            return drawing.template_safe_area(sheet, box[2] - box[0], box[3] - box[1])
+
+        try:
+            require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+            fresh = measure()
+            drawing.close_document(drw)
+            reopened = measure()
+            # What must hold is HONESTY, not equality. Measured 2026-11-08: re-opening
+            # the same file really does make the template scan collapse
+            # (`right=-0.0160<0; title_block_top==frame_bottom`), so the reopened numbers
+            # come from the ratio fallback and cannot equal the fresh measurement. What
+            # must never happen again is the collapse being presented as
+            # `source: "template"` — that is what made `add_note` refuse in one process and
+            # accept in another with identical coordinates.
+            _same = all(abs((fresh.get(k) or 0) - (reopened.get(k) or 0)) < 1e-4
+                        for k in ("left", "right", "top", "bottom"))
+            if not _same:
+                assert reopened.get("degraded"), (
+                    "the safe area changed across a reopen (%r -> %r) but is still "
+                    "labelled %r — a collapsed scan must not pass as a measurement"
+                    % ({k: fresh.get(k) for k in ("left", "right", "bottom")},
+                       {k: reopened.get(k) for k in ("left", "right", "bottom")},
+                       reopened.get("source")))
+                assert "degenerate" in str(reopened.get("source")), (
+                    "fallback happened but the receipt does not say why: %r"
+                    % (reopened.get("source"),))
+            return ("same (bottom=%.4f)" % fresh.get("bottom", 0) if _same else
+                    "changed but disclosed (%r)" % (reopened.get("source"),)[:40])
+        finally:
+            for name in ("smoke_safe.SLDDRW", "smoke_safe.SLDPRT"):
+                try:
+                    get_sw().CloseDoc(name)
+                except Exception:
+                    pass
+
     # --- 0.8.6 behavioural guard: total material failure must not report ok:true --
     def _material_write_honesty():
         src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
@@ -1719,6 +1815,8 @@ def main():
     r.check("single hole callout", _hole_callout_single)
     r.check("rename components (dry-run)", _rename)
     r.check("flat pattern view", _flat_pattern_view)
+    r.check("a refused note leaves nothing (0.8.248)", _refused_note_leaves_nothing)
+    r.check("safe area survives a reopen (0.8.249)", _safe_area_survives_reopen)
     r.check("material write honesty (0.8.6)", _material_write_honesty)
     r.check("reconcile ledger + delivery verdict", _reconcile_delivery)
     def _close_document():
