@@ -8025,6 +8025,43 @@ def assert_one_callout_per_hole_size():
         "the 1.5 mm concentric test is gone; chamfers will pass as holes")
     return "one callout per hole size, and chamfer faces are skipped"
 
+def assert_a_failed_delete_does_not_report_ok():
+    """0.8.259 — `delete_dimensions` reported success while listing what it had failed to
+    delete.
+
+    Report 2026-11-08 (P1-1):
+
+        keep_values: []       -> removed 0, failed 0, remaining_count 8, ok TRUE
+        keep_values: [9999]   -> removed 0, failed 0, remaining_count 8, ok TRUE
+
+    `remaining_matches` already named the eight dimensions that should be gone, and
+    `verified_clean` was already False — but `drawing_ok` hard-codes `ok: true`, so a batch
+    job checking `ok` silently shipped them.
+
+    `ok` now means "nothing that should be gone is still there": any residual returns
+    `dimensions_not_all_removed` with the counts and a pointer at
+    `delete_annotation(name, position_m)`.
+
+    Measured 2026-11-08 on 限位导向套 (keep_values=[]):
+        ok=False  error=dimensions_not_all_removed  removed=0  failed=0  remaining=4
+
+    KNOWN GAP: `removed` is still 0 — `EditDelete` runs without effect here, and trying
+    `IAnnotation.Select(False)` first (which works in `delete_annotation`) did not help.
+    The receipt now refuses to call that a success; actually deleting those dimensions is a
+    separate problem, and the hint points at the tool that does work.
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delete_dimensions")) or ""
+    assert "dimensions_not_all_removed" in body, (
+        "a delete that left dimensions behind reports success again")
+    assert "if remaining:" in body, "the residual list does not gate the verdict"
+    assert "verified_clean=False" in body, (
+        "the failure receipt still claims the sheet is clean")
+    assert "ann.Select(False)" in body, (
+        "the SelectByID2-only path is back; it returns True and deletes nothing")
+    return "a delete that left dimensions behind is reported as a failure"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8242,6 +8279,7 @@ STATIC_REGRESSIONS = [
     ("0.8.255 the cut line overshoots", assert_the_cut_line_overshoots_the_outline),
     ("0.8.256 a view lands where asked", assert_a_view_lands_where_it_was_asked_for),
     ("0.8.257 one callout per hole size", assert_one_callout_per_hole_size),
+    ("0.8.259 a failed delete is not ok", assert_a_failed_delete_does_not_report_ok),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

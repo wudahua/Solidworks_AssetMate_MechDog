@@ -489,12 +489,25 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
                 # name is what actually selects it. Position is kept as a fallback for builds
                 # where the name differs from the selection name.
                 selected = False
+                # `IAnnotation.Select(False)` first. Report 2026-11-08 (P1-1): every
+                # `SelectByID2` below returned True, `EditDelete` ran, and NOTHING was
+                # deleted — `removed: 0, failed: 0, remaining: 4`. `delete_annotation`
+                # already proved `Select(False)` + `EditDelete` works on dimensions
+                # (0.8.23), so use the same route here and keep the name/position lookups
+                # as a fallback for the cases it misses.
+                try:
+                    selected = bool(ann.Select(False))
+                except Exception:
+                    selected = False
                 # The Callout argument must be a byref null VARIANT; passing None raises
                 # 'type mismatch' and SelectByID2 returns False (quirk section 3).
                 callout = byref_dispatch_null()
-                for candidate, px, py, pz in ((name, 0.0, 0.0, 0.0),
+                for candidate, px, py, pz in ((("", 0.0, 0.0, 0.0) if selected else
+                                               (name, 0.0, 0.0, 0.0)),
                                               (name + "@" + view.Name, 0.0, 0.0, 0.0),
                                               ("", position[0], position[1], position[2])):
+                    if selected:
+                        break
                     try:
                         if doc.Extension.SelectByID2(candidate, "DIMENSION", px, py, pz,
                                                      False, 0, callout, 0):
@@ -558,6 +571,32 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
         except Exception:
             remaining = []
 
+        # ── `ok` must depend on what is left on the sheet (report 2026-11-08, P1-1) ──
+        # `drawing_ok` always reports `ok: true`, so this call used to say success while
+        # `remaining_matches` listed eight dimensions it had failed to remove — and with
+        # `failed: 0`, so even the failure list was empty. A batch job that trusts `ok`
+        # silently ships the dimensions it meant to delete.
+        #
+        # Worse, `keep_values: []` (which should mean "delete everything") reported
+        # `removed: 0, failed: 0, remaining: 8`: `EditDelete` ran and had no effect, which
+        # is a THIRD state that was being reported as success.
+        #
+        # `ok` now means "nothing that should be gone is still there".
+        if remaining:
+            return error(
+                "dimensions_not_all_removed",
+                "%d 条尺寸该删却还在图上（removed %d / failed %d）"
+                % (len(remaining), len(removed), len(failed)),
+                "`remaining_matches` 列出了它们。`EditDelete` 有时对选中对象无效 —— "
+                "用 `delete_annotation(name, position_m)` 精确删，它按名字+位置定位，"
+                "不依赖选择集。`keep_values=[]` 表示全删，这条回执说明全删未生效。",
+                removed=len(removed), kept=len(kept), failed=len(failed),
+                removed_items=removed[:40],
+                kept_values=[k["value_mm"] for k in kept][:40],
+                failed_items=failed[:10],
+                remaining_matches=remaining[:40],
+                remaining_count=len(remaining),
+                verified_clean=False)
         return drawing_ok(
             drawing=doc.GetTitle,
             removed=len(removed), kept=len(kept), failed=len(failed),
@@ -565,7 +604,7 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
             failed_items=failed[:10],
             remaining_matches=remaining[:40],
             remaining_count=len(remaining),
-            verified_clean=not remaining,
+            verified_clean=True,
             note=("按值保留（默认容差 0.05 mm）。SolidWorks 无批量删除接口；实测 14 条一次调用 < 5 s。"
                   " `remaining_matches` 是删除后重新枚举的结果——**非空表示没删净**，"
                   "这些值不在 `keep_values` 里却还在图上，请用 `delete_annotation(name, position_m)` 精确删。"),
