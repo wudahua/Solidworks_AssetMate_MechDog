@@ -2998,6 +2998,37 @@ def close_document(drawing_path):
 
 
 @perf_hooks.timed("center_marks")
+def _count_center_marks(doc):
+    """How many centre-mark annotations the drawing actually holds.
+
+    Report 2026-11-08 (P2-1): `IView.GetCenterMarkCount` reads 0 on this binding even when
+    marks exist — the tool's own note said so, yet 0.8.228 changed the success test to
+    `count > 0`. That turned a false PASS into a false FAIL: a view that already carried
+    two centre marks, and a view where the insert worked, both reported `ok: false`.
+
+    Counting the annotations is the only signal that does not depend on
+    `GetCenterMarkCount`. `IAnnotation.GetType == 13` is `swAnnotationType_CenterMark`,
+    the same code `list_drawing_annotations` maps to "center_mark".
+    """
+    try:
+        import win32com.client as win
+    except Exception:
+        return None
+    total = 0
+    for view in _iter_views(doc):
+        try:
+            items = list(view.GetAnnotations or ())
+        except Exception:
+            continue
+        for raw in items:
+            try:
+                if int(win.Dispatch(raw).GetType) == 13:
+                    total += 1
+            except Exception:
+                continue
+    return total
+
+
 def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view_name=None,
                      save=True):
     """Auto-insert center marks and centerlines on every hole/slot in every view.
@@ -3012,6 +3043,8 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
     """
     try:
         doc = _open_drawing(drawing_path)
+        # Before/after annotation counts — the honest signal, see `_count_center_marks`.
+        _cm_before = _count_center_marks(doc)
         insert_type = 1 | (4 if include_slots else 0)  # Hole = 1, Slots = 4
         insert_option = 2  # swCenterMarkStyle_e.swCenterMark_Single
         processed = marked = 0
@@ -3056,18 +3089,29 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             # drafting defect that reads as a rendering artifact and is hard to find.
             #
             # So read the count BEFORE the call and leave an already-marked view alone.
-            _marks_before = None
+            # `GetCenterMarkCount` reads 0 on this binding even when the view HAS marks,
+            # so counting annotations in this view is the only way to know it is already
+            # marked. Measured 2026-11-08 on 限位导向套: with the old check, a second call
+            # added TWO MORE marks (before 2, after 4) instead of skipping.
+            _view_marks = 0
             try:
-                _marks_before = int(view.GetCenterMarkCount)
+                import win32com.client as _win
+                for _raw in (view.GetAnnotations or ()):
+                    try:
+                        if int(_win.Dispatch(_raw).GetType) == 13:
+                            _view_marks += 1
+                    except Exception:
+                        continue
             except Exception:
-                _marks_before = None
-            if _marks_before and _marks_before > 0:
+                _view_marks = 0
+            if _view_marks > 0:
                 results.append({"view": view.Name, "ok": True,
                                 "skipped": "already_marked",
-                                "center_mark_count": _marks_before,
-                                "note": "This view already carries center marks; nothing "
-                                        "was inserted. Call it on a view with none, or "
-                                        "delete the existing ones first."})
+                                "center_mark_count": _view_marks,
+                                "center_mark_source": "annotations",
+                                "note": "This view already carries %d centre mark(s); "
+                                        "nothing was inserted. Delete them first if you "
+                                        "want a fresh pass." % _view_marks})
                 continue
             try:
                 ok_view = view.AutoInsertCenterMarks2(
@@ -3089,8 +3133,18 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             # So a view counts as marked only when the count moved. `ok_view` alone is
             # reported separately as `api_returned_true` so the difference stays visible.
             per_view = None
+            # Count this view's centre-mark ANNOTATIONS instead of asking
+            # `GetCenterMarkCount`, which reads 0 here even when marks were just created.
             try:
-                per_view = int(view.GetCenterMarkCount)
+                import win32com.client as _wc
+                _n = 0
+                for _raw in (view.GetAnnotations or ()):
+                    try:
+                        if int(_wc.Dispatch(_raw).GetType) == 13:
+                            _n += 1
+                    except Exception:
+                        continue
+                per_view = _n
             except Exception:
                 per_view = None
             _inserted = bool(per_view and per_view > 0)
@@ -3114,21 +3168,70 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             perf_hooks.bump("redraw_calls")
         except Exception:
             pass
+        _cm_after = _count_center_marks(doc)
+        _cm_added = (None if _cm_before is None or _cm_after is None
+                     else _cm_after - _cm_before)
         layout = None
         # PR1: honour save=False so a pipeline run saves once at the end. This was the last
         # of the five sub-tools still saving unconditionally.
         if save:
             _save_drawing(doc)
-        return ok(
+        # ── What "marked" means (report 2026-11-08, P2-1) ───────────────────────────
+        # `views_marked` used to come from `GetCenterMarkCount`, which reads 0 on this
+        # binding even when marks exist. 0.8.228 then made `count > 0` the ONLY proof of
+        # success, so a view that already had marks — or one where the insert worked —
+        # returned `ok: false`. The report calls it exactly right: a false PASS became a
+        # false FAIL.
+        #
+        # `_cm_added` is the change in centre-mark ANNOTATIONS across the whole drawing.
+        # It does not consult `GetCenterMarkCount` at all.
+        _marked_by_count = marked > 0
+        _marked_by_annotations = bool(_cm_added and _cm_added > 0)
+        _api_said_yes = any(v.get("api_returned_true") for v in results)
+        _skipped_any = any(v.get("skipped") for v in results)
+        # FOUR outcomes, not two:
+        #   added > 0                       -> marked
+        #   every view already had marks    -> already_marked (a success, not a failure —
+        #                                      the sheet ends up correct either way)
+        #   added == 0, api said yes        -> unverified (this binding lies about counts)
+        #   added == 0, api said no         -> genuinely nothing to mark
+        #
+        # Measured 2026-11-08: without the `already_marked` branch, three consecutive calls
+        # on a view that came with two marks all returned `nothing_to_mark`, which reads as
+        # "this tool cannot mark anything" when in fact the sheet was already correct.
+        _verdict = ("marked" if _marked_by_annotations else
+                    "already_marked" if _skipped_any else
+                    "unverified" if _api_said_yes else "nothing_to_mark")
+        _receipt = dict(
             drawing=doc.GetTitle,
             layout=layout,
             views_processed=processed,
-            views_marked=marked,
+            # The annotation delta is the number a caller can trust.
+            views_marked=(_cm_added if _marked_by_annotations else 0),
+            views_marked_by_count=marked,
+            center_marks_before=_cm_before,
+            center_marks_after=_cm_after,
+            center_marks_added=_cm_added,
+            verdict=_verdict,
             skipped_views=skipped_views,
             views=results,
-            note="GetCenterMarkCount under-reports on this binding; views_marked is the "
-                 "reliable signal. Verify visually with render_drawing.",
         )
+        if _verdict == "nothing_to_mark":
+            return error(
+                "center_marks_not_drawn",
+                "no centre-mark annotation was created and AutoInsertCenterMarks2 "
+                "returned false for every view",
+                "The views have no hole/slot geometry this build can mark. If you expected "
+                "marks, check the view actually shows holes.",
+                **{k: v for k, v in _receipt.items() if k != "drawing"})
+        return ok(
+            **(_receipt | {"note": (
+                "`views_marked` is the change in centre-mark ANNOTATIONS, not "
+                "`GetCenterMarkCount` (which reads 0 on this binding even when marks "
+                "exist). `verdict: 'unverified'` means nothing new was added but "
+                "AutoInsertCenterMarks2 reported success — the marks may already have been "
+                "there, or the insert was a no-op; look at the sheet before trusting "
+                "either.")}))
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

@@ -7807,6 +7807,51 @@ def assert_an_eccentric_section_is_refused():
         "the 0.5% threshold is gone; the 10% SECTION_KEEP_TOLERANCE is too loose for this")
     return "a chord section is refused with the amount it shrank"
 
+def assert_center_marks_count_annotations_not_the_view_counter():
+    """0.8.253 — the fix for a false PASS created a false FAIL.
+
+    Report 2026-11-08 (P2-1): on a view that already carried two centre marks,
+    `add_center_marks` returned `views_marked: 0, ok: false, api_returned_true: true,
+    center_mark_count: 0`. 0.8.228 had made `GetCenterMarkCount > 0` the only proof of
+    success, and that counter reads 0 on this binding even when marks exist. So the tool
+    went from reporting success for nothing to reporting failure for everything.
+
+    Counting the ANNOTATIONS is the signal that does not depend on that counter. Measured
+    2026-11-08:
+
+        限位导向套  run1/run2  ok True  verdict already_marked  added 0
+        气缸盖      run1/run2  ok True  verdict unverified      added 0
+
+    Both used to be `ok: false`. Four verdicts now:
+
+        marked          an annotation was actually created
+        already_marked  the view already had marks — a success, not a failure
+        unverified      nothing added but the API said yes; look at the sheet
+        nothing_to_mark nothing added and the API said no — the only real failure
+
+    The idempotency check moved with it: `GetCenterMarkCount` also failed to skip, so a
+    second call added TWO MORE marks (before 2, after 4) instead of skipping.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_center_marks")) or ""
+    assert "_count_center_marks" in src, "the annotation counter is gone"
+    assert "_cm_added" in body, (
+        "the receipt no longer reports how many marks were actually added")
+    assert "already_marked" in body, (
+        "a view that already had marks reports failure again")
+    assert "unverified" in body, (
+        "an inconclusive result is reported as failure again")
+    # AST, not substrings: the comment that explains why this counter is useless mentions
+    # it by name, so a text test fails on its own documentation.
+    _uses_counter = [n.lineno for n in ast.walk(_function_node(ast.parse(src),
+                                                               "add_center_marks"))
+                     if isinstance(n, ast.Attribute) and n.attr == "GetCenterMarkCount"]
+    assert not _uses_counter, (
+        "the success test reads GetCenterMarkCount again (lines %r), which answers 0 even "
+        "when marks exist" % (_uses_counter,))
+    return "centre marks are counted as annotations, and four verdicts are told apart"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8019,6 +8064,7 @@ STATIC_REGRESSIONS = [
     ("0.8.249 degenerate safe area says so", assert_a_degenerate_safe_area_says_so),
     ("0.8.251 a zero offset is nudged", assert_a_zero_offset_section_is_nudged),
     ("0.8.252 an eccentric section is refused", assert_an_eccentric_section_is_refused),
+    ("0.8.253 centre marks count annotations", assert_center_marks_count_annotations_not_the_view_counter),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
