@@ -1827,10 +1827,30 @@ def add_view_to_sheet(drawing_path, sheet, model_path=None, view_name="*前视",
                          % os.path.basename(str(model)))
 
         # The call ignores x/y on SW2024 (measured) — write the position explicitly.
+        #
+        # Report 2026-11-08 (P0-2): every view landed at `(0, x_m)` — x discarded, y set to
+        # the requested x. Three views in a row went to x=0, outside the frame
+        # (`margins.left = -0.0938`). That is the v0.8.9 marshalling trap: a plain
+        # `view.Position = (x, y, 0.0)` arrives as a VARIANT the dispatcher re-packs in the
+        # wrong order.
+        #
+        # `set_view` already solved it with DISPATCH_PROPERTYPUT + a typed VARIANT, so the
+        # same call is used here. The array is TWO doubles — not three; passing a 3-tuple is
+        # what the plain assignment does and is part of why it mis-marshals.
+        position_applied = None
+        position_error = None
         try:
-            view.Position = (float(x_m), float(y_m), 0.0)
-        except Exception:
-            pass
+            from win32com.client import VARIANT
+            import pythoncom
+            _prop_put(view, "Position",
+                      VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8,
+                              [float(x_m), float(y_m)]))
+            try:
+                position_applied = [round(float(v), 4) for v in list(view.Position)[:2]]
+            except Exception:
+                position_applied = None
+        except Exception as _pos_exc:                                   # noqa: BLE001
+            position_error = str(_pos_exc)[:120]
 
         applied_scale = None
         if scale is not None:
@@ -1860,6 +1880,11 @@ def add_view_to_sheet(drawing_path, sheet, model_path=None, view_name="*前视",
         return drawing_ok(drawing=doc.GetTitle, sheet=target, sheet_index=names.index(target) + 1,
                           view_name=str(view_name), model=os.path.basename(str(model)),
                           position_m=[round(float(x_m), 4), round(float(y_m), 4)],
+                          # What the view reports after the typed write. A plain
+                          # `view.Position = (x, y, 0)` mis-marshals to `(0, x)` here, so
+                          # the requested value alone is not evidence that it landed.
+                          position_applied=position_applied,
+                          position_error=position_error,
                           scale=applied_scale, views=after_views,
                           view_count=len(after_views),
                           note="视图已建在「%s」上（该页现在是活动页）。" % target)

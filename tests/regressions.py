@@ -7940,6 +7940,42 @@ def assert_the_cut_line_overshoots_the_outline():
     assert "cut_line_overshoot_m" in server, "the MCP tool does not expose the overshoot"
     return "the cut line extends past the outline, so offset 0 cuts normally"
 
+def assert_a_view_lands_where_it_was_asked_for():
+    """0.8.256 — every view landed at `(0, x_m)`: x discarded, y taken from x.
+
+    Report 2026-11-08 (P0-2), three views created in one go:
+
+        asked (0.145, 0.225)  landed (0.000, 0.145)
+        asked (0.300, 0.225)  landed (0.000, 0.300)
+        asked (0.372, 0.115)  landed (0.000, 0.372)
+
+    All three at x=0, outside the frame (`margins.left = -0.0938`). The report guessed
+    `(x, y)` had been written as `(0, x)`; that is exactly the v0.8.9 marshalling trap —
+    a plain `view.Position = (x, y, 0.0)` arrives as a VARIANT the dispatcher re-packs in
+    the wrong order. `set_view` had already solved it with DISPATCH_PROPERTYPUT and a
+    typed VARIANT, but `add_view_to_sheet` still used the plain assignment.
+
+    Fixed by using the same typed write there. Note the array is TWO doubles, not three.
+
+    Measured 2026-11-08 on 限位导向套:
+        asked (0.145, 0.225)  applied [0.145, 0.225]
+        asked (0.300, 0.225)  applied [0.300, 0.225]
+        asked (0.372, 0.115)  applied [0.372, 0.115]
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_view_to_sheet")) or ""
+    assert "_prop_put(view, \"Position\"" in body, (
+        "the position is written with a plain assignment again, which mis-marshals to "
+        "(0, x) on this binding")
+    assert "VT_ARRAY | pythoncom.VT_R8" in body, (
+        "the typed VARIANT is gone; the dispatcher will re-pack the array")
+    assert "position_applied" in body, (
+        "the receipt reports the REQUESTED position without reading back what landed")
+    assert "view.Position = (float(x_m)" not in body, (
+        "the three-element tuple assignment is back")
+    return "a view lands at the position it was asked for, and the receipt reads it back"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8155,6 +8191,7 @@ STATIC_REGRESSIONS = [
     ("0.8.253 centre marks count annotations", assert_center_marks_count_annotations_not_the_view_counter),
     ("0.8.254 a failed section can be dropped", assert_a_failed_section_can_be_dropped),
     ("0.8.255 the cut line overshoots", assert_the_cut_line_overshoots_the_outline),
+    ("0.8.256 a view lands where asked", assert_a_view_lands_where_it_was_asked_for),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
