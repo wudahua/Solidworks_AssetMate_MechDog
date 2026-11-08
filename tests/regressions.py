@@ -7736,6 +7736,46 @@ def assert_a_degenerate_safe_area_says_so():
         "add_note does not tell the caller that the layout check ran against a guess")
     return "a collapsed scan falls back and says so; a reopen re-measures"
 
+def assert_a_zero_offset_section_is_nudged():
+    """0.8.251 — `offset_m=0` cannot be cut on a symmetric view; the axis cut was lost.
+
+    Report 2026-11-08 (P0), on a revolved part: asking for the standard axial full section
+    returned `section_not_cut` / `hatch_missing`, while 0.8.215 produced it fine. The
+    suggested workarounds (offset ±0.005 / ±0.020) either failed too or produced an
+    ECCENTRIC section that still reported `ok: true, ratio: 0.998` — a chord, not a section
+    through the axis.
+
+    Measured 2026-11-08 on 限位导向套, front view, horizontal cut:
+
+        offset 0 / 1e-6 / 1e-5 / 1e-4   hatch_missing  edges 5  hatch 0
+        offset 1e-3                     ok  edges 46  hatch 4  ratio 1.000
+        offset 4e-3                     ok  edges 34  hatch 2  ratio 0.992
+
+    So it is neither a zero-length line nor a float-equality problem: SolidWorks does not
+    cut when the line sits on the centre line. `1e-3` sheet metres is 0.25-0.5 mm on the
+    model — the section came back 64.95 wide against a 64.98 source, i.e. through the axis
+    to drawing tolerance.
+
+    The tool now nudges a zero offset to 1 mm instead of refusing (refusing would break
+    every caller that asks for the axis cut), and reports what it did:
+
+        ok=True req=0.0 used=0.001 nudged=True edges=46 hatch=4 ratio=1.0
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_section_view")) or ""
+    assert "auto_nudge_zero_offset" in body, (
+        "a zero offset is refused again, so the normal axis-cut request fails")
+    assert "_offset_nudged" in body, "the nudge is not tracked"
+    assert "offset_nudged" in body, (
+        "the receipt does not say the section was cut at a nudged offset")
+    assert "offset_used_m" in body, (
+        "the receipt does not say which offset was actually used")
+    server = _read("server.py")
+    assert "auto_nudge_zero_offset" in server, (
+        "the MCP tool does not expose the switch")
+    return "a zero offset is nudged and the receipt names the offset actually used"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7946,6 +7986,7 @@ STATIC_REGRESSIONS = [
     ("0.8.248 a refused note is taken back", assert_a_refused_note_is_taken_back),
     ("0.8.248 empty schemas are guarded", assert_the_entry_guard_covers_empty_schemas),
     ("0.8.249 degenerate safe area says so", assert_a_degenerate_safe_area_says_so),
+    ("0.8.251 a zero offset is nudged", assert_a_zero_offset_section_is_nudged),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

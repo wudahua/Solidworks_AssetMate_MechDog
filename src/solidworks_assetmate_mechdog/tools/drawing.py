@@ -5539,7 +5539,8 @@ def _section_sanity(source_view, section, orientation, depth,
 def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                      offset_m=0.0, position=None, label="A", flip=False, depth=0.0,
                      cut_plane_normal=None, cut_plane_origin=None, verify_cut=True,
-                     cut_line_ratio=0.55, align_to_parent=True):
+                     cut_line_ratio=0.55, align_to_parent=True,
+                     auto_nudge_zero_offset=True):
     """Create a SECTION VIEW through a model view.
 
     Sign convention (measured on the 灌装阀阀体 top view, 59x28x80, bypass hole at z=28):
@@ -5681,6 +5682,13 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 "dominant_axis": int(dominant),
                 "derived_orientation": str(orientation),
                 "derived_offset_m": round(float(offset_m), 6),
+            # What the caller asked for vs what was actually cut. `offset_m=0` cannot be
+            # cut on a symmetric view (see the note where the line is drawn), so the tool
+            # nudges it to 1 mm and says so here rather than silently cutting a section at
+            # a different place than requested.
+            "offset_requested_m": round(_offset_requested, 6),
+            "offset_used_m": round(float(offset_m), 6),
+            "offset_nudged": bool(_offset_nudged),
                 "mapping": axis_map,
             }
         doc.ActivateView(target.Name)
@@ -5709,6 +5717,28 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         # edge as well, and let the caller shrink it further.
         half = min(max(view_w, view_h) * float(cut_line_ratio),
                    min(view_w, view_h) * 0.5) / scale
+        # ── Zero offset cannot cut (measured 2026-11-08) ────────────────────────────
+        # `offset_m=0` puts the cut line exactly on the view centre. Measured on
+        # 限位导向套, front view, horizontal cut:
+        #
+        #     offset 0 / 1e-6 / 1e-5 / 1e-4   hatch_missing  edges 5  hatch 0
+        #     offset 1e-3                     ok  edges 46  hatch 4  ratio 1.000
+        #     offset 4e-3                     ok  edges 34  hatch 2  ratio 0.992
+        #
+        # So it is neither a zero-length line (the segment spans the view) nor a
+        # floating-point equality problem (1e-4 fails too). SolidWorks does not cut when
+        # the line sits on the centre line of a symmetric view.
+        #
+        # `1e-3` sheet metres is 0.25-0.5 mm on the model at 2:1-4:1 — the section came back
+        # 64.95 wide against a 64.98 source, i.e. through the axis to drawing tolerance.
+        #
+        # Nudge rather than refuse: asking for the axis cut is the normal request, so
+        # refusing would break every caller. The receipt says which offset was used.
+        _offset_requested = float(offset_m)
+        _offset_nudged = False
+        if abs(_offset_requested) < 1e-9 and bool(auto_nudge_zero_offset):
+            offset_m = 1e-3
+            _offset_nudged = True
         offset = float(offset_m) / scale
         # A top view's sketch y axis runs at -Z, so a model-space offset applied to the
         # horizontal cut line lands mirrored. Measured on 灌装阀阀体: offset -0.012 produced
@@ -6028,6 +6058,12 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 "Check offset_m sign and magnitude against the source view, or pass "
                 "cut_plane_origin in model coordinates. The view is kept for inspection.",
                 **diag)
+        # What the caller asked for vs what was actually cut. `offset_m=0` cannot be cut
+        # on a symmetric view, so the tool nudges it to 1 mm — the receipt must not let
+        # that pass silently.
+        diag.update(offset_requested_m=round(_offset_requested, 6),
+                    offset_used_m=round(float(offset_m), 6),
+                    offset_nudged=bool(_offset_nudged))
         return drawing_ok(**diag)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
