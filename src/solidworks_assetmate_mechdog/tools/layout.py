@@ -935,18 +935,61 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
             safe = None
 
         if out_of_safe_area:
+            # ── Take the note back off the sheet (report 2026-11-08, P0-B) ──────────
+            # The safe-area check runs AFTER `InsertNote` + `_save_drawing`, so returning
+            # an error here used to leave a real note on a real drawing while telling the
+            # caller `ok: false`. Report measured it end to end: two refusals at
+            # (0.06, 0.05) still produced `N1-BEFORE-EXPORT` and `N2-BEFORE-EXPORT` in
+            # `list_drawing_annotations`, and they survived close+reopen. An agent that
+            # sees `ok: false` retries with a new y and the sheet accumulates copies.
+            #
+            # The note exists, so it can be deleted by identity — the same mechanism
+            # `apply_gaps` uses for a wrong insert. The receipt says whether that worked;
+            # `note_left_on_sheet: true` means the caller must clean up by hand.
+            _rolled_back = False
+            _rb_error = None
+            try:
+                # Reuse the annotation captured at insert time (line ~845). Calling
+                # `GetAnnotation` again produced a different object and `Select` returned
+                # False on it — measured 2026-11-08: `note_rolled_back: false` with the
+                # note still on the sheet.
+                _rb_target = annotation
+                if _rb_target is None:
+                    _rb_target = _call_method(note, "GetAnnotation")
+                if _rb_target is not None:
+                    doc.ClearSelection2(True)
+                    _sel = None
+                    try:
+                        _sel = _rb_target.Select(False)
+                    except Exception:
+                        _sel = _call_method(_rb_target, "Select", False)
+                    if _sel:
+                        _call_method(doc, "EditDelete")
+                        _rolled_back = True
+                        if save:
+                            _save_drawing(doc)
+                    else:
+                        _rb_error = "annotation.Select(False) returned False"
+            except Exception as _rb_exc:                            # noqa: BLE001
+                _rb_error = str(_rb_exc)[:80]
             return error(
                 "block_out_of_safe_area",
                 "技术要求块落在安全区外（%s）。"
                 % "、".join(out_of_safe_area["axes"]),
                 "y 是文字块的**顶边**，块向下生长，所以字号越大越容易压到标题栏。"
                 "该块底边 %.4f，安全区底边 %.4f；这个高度的块最多可用 y=%.4f。"
+                "%s"
                 % (final_bbox[1], safe.get("bottom", 0) if safe else 0,
-                   out_of_safe_area["max_y_for_this_block_m"]),
+                   out_of_safe_area["max_y_for_this_block_m"],
+                   "" if _rolled_back else
+                   " **注意：这次创建的注记没能从图上删掉，需要手工清理。**"),
                 bbox_final=[round(v, 4) for v in final_bbox],
                 safe_area=out_of_safe_area["safe_area"],
                 max_y_for_this_block_m=out_of_safe_area["max_y_for_this_block_m"],
-                position_m=[round(float(x_m), 4), round(float(y_m), 4)])
+                position_m=[round(float(x_m), 4), round(float(y_m), 4)],
+                note_rolled_back=_rolled_back,
+                note_left_on_sheet=not _rolled_back,
+                rollback_error=_rb_error)
 
         return drawing_ok(drawing=doc.GetTitle, note=name, text=str(encoded_text),
                           text_requested=str(text), text_warnings=text_warnings,

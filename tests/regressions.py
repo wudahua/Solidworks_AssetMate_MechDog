@@ -7620,6 +7620,80 @@ def assert_a_sheet_line_can_follow_a_view():
         "the MCP tool does not expose view_name")
     return "a line can be attached to a view and then it follows, or stay on the sheet"
 
+def assert_a_refused_note_is_taken_back():
+    """0.8.248 — a REFUSED note stayed on the sheet, and the number of them grew.
+
+    Report 2026-11-08 (P0-B): `add_note` checks the safe area AFTER `InsertNote` and
+    `_save_drawing`, then returns `block_out_of_safe_area` without removing anything. The
+    report measured it end to end:
+
+        add_note("N1", 0.06, 0.05)  -> ok:false
+        add_note("N2", 0.06, 0.05)  -> ok:false
+        list_drawing_annotations    -> 10, with N1-BEFORE-EXPORT and N2-BEFORE-EXPORT
+
+    and they survived close+reopen. An agent seeing `ok:false` retries with a new y and
+    the sheet accumulates copies of a block the tool said it did not place.
+
+    The note exists at that point, so it is deleted by identity — the same mechanism
+    `apply_gaps` uses for a wrong insert. `note_left_on_sheet: true` means the delete
+    failed and the caller must clean up.
+
+    First attempt reused `_call_method(note, "GetAnnotation")` and got a DIFFERENT
+    annotation object whose `Select(False)` returned False. Reusing the annotation captured
+    at insert time (line ~845) works.
+
+    Measured 2026-11-08 on 飞达动力轴:
+        ok=False error=block_out_of_safe_area rolled_back=True left=False
+        annotation_count 6 -> 6 (delta 0)
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "add_note")) or ""
+    assert "note_rolled_back" in body, (
+        "a refused note is not rolled back again — the sheet keeps a block the receipt "
+        "said was not placed")
+    assert "note_left_on_sheet" in body, (
+        "the receipt cannot be told apart from a successful cleanup")
+    assert "_rb_target = annotation" in body, (
+        "the rollback re-fetches the annotation instead of reusing the one from insert; "
+        "that object's Select returns False")
+    assert "EditDelete" in body, "nothing is deleted on the refusal path"
+    return "a refused note is deleted from the sheet, and the receipt says whether it was"
+
+
+def assert_the_entry_guard_covers_empty_schemas():
+    """0.8.248 — `ping` was the one tool of 70 that still swallowed unknown arguments.
+
+    Report 2026-11-08: `ping({"bogus_param":123})` returned `isError=False, ok=True` while
+    `health_check` with the same key was refused. Root cause:
+
+        declared = set((tool.parameters or {}).get("properties") or {})
+        if declared:                      # <- empty schema skips the whole check
+            ...
+
+    `ping` declares no properties, so `declared` was empty and the guard fell through.
+    Since `ping` is THE health probe, that is the worst single tool to leave open — and it
+    also means any future no-argument tool would be born unprotected.
+
+    Measured 2026-11-08: `if declared:` is gone; an empty set now means "every key is
+    unknown", which is also the honest behaviour if schema generation ever fails.
+    """
+    src = _read("server.py")
+    i = src.find("def _install_argument_guard")
+    j = src.find(chr(10) + "def ", i + 10)
+    body = src[i:j]
+    # Scan the AST, not the text: the comment that explains WHY the guard was removed
+    # contains the very string it forbids.
+    _reintroduced = [n.lineno for n in ast.walk(_function_node(ast.parse(src),
+                                                               "_install_argument_guard"))
+                     if isinstance(n, ast.If) and isinstance(n.test, ast.Name)
+                     and n.test.id == "declared"]
+    assert not _reintroduced, (
+        "an empty schema skips the check again (line %r) — every no-argument tool is "
+        "unprotected" % (_reintroduced,))
+    assert "unknown = sorted(k for k in raw if k not in declared)" in body, (
+        "the unknown-key comparison is gone")
+    return "an empty schema still refuses unknown arguments"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -7827,6 +7901,8 @@ STATIC_REGRESSIONS = [
     ("0.8.241 line styles are measured", assert_the_line_style_table_is_measured_not_documented),
     ("0.8.244 a failed section says where it is", assert_a_failed_section_says_where_it_is),
     ("0.8.245 a line can follow a view", assert_a_sheet_line_can_follow_a_view),
+    ("0.8.248 a refused note is taken back", assert_a_refused_note_is_taken_back),
+    ("0.8.248 empty schemas are guarded", assert_the_entry_guard_covers_empty_schemas),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

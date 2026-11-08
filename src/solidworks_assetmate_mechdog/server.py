@@ -1675,9 +1675,16 @@ def _install_argument_guard(app):
                 tool = known.get(name)
                 if tool is not None:
                     declared = set((tool.parameters or {}).get("properties") or {})
-                    if declared:
-                        unknown = sorted(k for k in raw if k not in declared)
-                        if unknown:
+                    # No `if declared:` guard. A tool with an EMPTY schema (`ping`) declares
+                    # no properties, so any key at all is unknown — and skipping the check
+                    # for empty schemas let `ping({"bogus_param":123})` straight through.
+                    # Report 2026-11-08: 69 of 70 tools refused, and `ping` was the one that
+                    # did not — precisely the tool used as a health probe.
+                    #
+                    # An empty set is also the honest answer if schema generation ever fails:
+                    # refuse rather than silently accept everything.
+                    unknown = sorted(k for k in raw if k not in declared)
+                    if unknown:
                             payload = {
                                 "ok": False,
                                 "error": "unknown_argument",

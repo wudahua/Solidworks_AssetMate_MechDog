@@ -1281,16 +1281,27 @@ def _open_drawing(path):
 def export_drawing(drawing_path, output_path, fmt=None):
     """Export an existing .SLDDRW to PDF / DWG / DXF. PDF comes from a drawing only.
 
-    **`SaveAsSilent` corrupts the document's live state — export is END-OF-PIPELINE.**
+    **What is actually known about exporting mid-pipeline (corrected 2026-11-08).**
 
-    Measured 2026-11-08: export a drawing, then call `add_center_marks` on the same path,
-    and every `AutoInsertCenterMarks2` fails; the sheet is unchanged while `GetPathName`
-    still points at the `.SLDDRW`, so nothing looks wrong.
+    I had written that "`SaveAsSilent` corrupts the live document — export is
+    end-of-pipeline only". A report re-ran that scenario and could NOT reproduce it, and
+    this module's own `batch_export` docstring says the opposite ("behaves as an export and
+    leaves the document path unchanged").
 
-    `_sf_render_page` takes the same route (it calls `SaveAsSilent` too), so a
-    before/after image diff is NOT possible between two edits of one document — the
-    "before" render kills the "after" work. Three attempts to build one inside
-    `add_center_marks` failed for exactly this reason; the diff logic was never at fault.
+    The evidence, separated:
+
+    * `add_note` AFTER an export — **works**. The report wrote notes before and after an
+      export and both landed (`annotation_count` 10 -> 11), with `GetPathName` still
+      pointing at the `.SLDDRW`.
+    * `add_center_marks` AFTER an export — **failed once in my test**
+      (`ok:false, views_marked=None`). That was in a build where I had just added a
+      before/after render inside the same function; the failure is at least as likely to
+      have been my own code as the export.
+    * `batch_export`'s docstring — says `SaveAsSilent` leaves the path unchanged.
+
+    So: **export-last is a convention, not a proven constraint.** Do not cite this
+    function as evidence that mid-pipeline export breaks a document. If a future failure
+    appears right after an export, test `add_note` as a control before blaming the export.
     """
     try:
         out = os.path.abspath(output_path)
@@ -9002,11 +9013,14 @@ LEADER_STYLES = {"none": 0, "straight": 1, "bent": 2}
 def _sf_render_page(doc, out_pdf, work_dir):
     """Render the current page to a PIL image.
 
-    **This calls `SaveAsSilent`, which corrupts the live document** (measured 2026-11-08:
-    after a render, `AutoInsertCenterMarks2` on the same doc starts failing). So it is safe
-    to call at the end of an operation, and unsafe to call in the middle of one. A
-    before/after diff inside a single tool call is therefore not possible in this codebase
-    — every render path has the same problem.
+    Calls `SaveAsSilent`. Whether that leaves the document editable afterwards is NOT
+    established — see the corrected note on `export_drawing`. A report measured `add_note`
+    working fine after an export on SW2024 SP4.
+
+    What IS established: this function was the "after" half of the before/after diff inside
+    `add_center_marks`, and that diff came back as 0 changed pixels three times. The most
+    likely explanation is a defect in that experiment rather than in `SaveAsSilent`, so no
+    conclusion about mid-pipeline rendering is drawn here.
     """
     """Export the CURRENT in-memory drawing to PDF and render page 1 to a PIL image.
 
