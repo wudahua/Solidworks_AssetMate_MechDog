@@ -1076,6 +1076,73 @@ def main():
         return "sw %s, active doc %r" % (payload.get("sw_version"), payload.get("active_doc"))
 
     r.check("edit tools by name (move/delete/layout)", _editing_by_name)
+    def _partial_reaches_the_pipeline():
+        """0.8.285 on a real part: a partial callout run must not read as success.
+
+        Report 2026-11-09 (A) asked for exactly this: "跑 produce_drawing 后断言 若
+        add_hole_callouts 报 partial，则主回执里能找到 excluded_diameters_mm 且 pending
+        有对应条目".
+
+        Five layers had to be checked because the fix touched all five: step status,
+        the callouts sub-dict, the warning text, `pending`, and top-level `ok`.
+
+        If this fixture has no chamfer-ambiguous diameter the branch cannot fire. That is
+        reported as "not triggered" rather than passed — a green line for a path that never
+        ran is the failure mode this project keeps chasing.
+
+        MEASURED LIMIT 2026-11-10, both fixtures available on this machine:
+
+            default part (P05_karetku)   -> PASS 38.7s "not triggered",
+                                           callouts.verdict is None (no chamfer ambiguity)
+            限位导向套 via --part        -> FAIL 34.1s "call failed: None None",
+                                           produce_drawing itself fails on that part
+
+        So the partial branch (0.8.285's five-layer fix) is exercised by NEITHER fixture.
+        The check still earns its place: it pins the non-partial invariant (a clean run must
+        report ok=true) and it will assert the whole chain the moment a fixture that both
+        produces a drawing and has a chamfer-ambiguous diameter is supplied.
+        """
+        out = os.path.join(tempfile.mkdtemp(prefix="smoke_partial_"),
+                           "partial_%d.SLDDRW" % os.getpid())
+        try:
+            payload = require(pipeline.produce_drawing(args.part, output_path=out,
+                                                       overwrite=True))
+        finally:
+            try:
+                drawing.close_document(out)
+            except Exception:
+                pass
+
+        callouts = payload.get("callouts") or {}
+        if callouts.get("verdict") != "partial":
+            assert payload.get("ok") is True, (
+                "a run that is not partial reported ok=false: %s" % payload.get("ok"))
+            return ("not triggered — this fixture has no chamfer-ambiguous diameter "
+                    "(callouts.verdict=%r); the partial path was NOT exercised"
+                    % callouts.get("verdict"))
+
+        # partial fired: every layer must agree
+        assert callouts.get("ok") is False, "callouts.ok did not follow verdict=partial"
+        assert callouts.get("partial_reason"), "callouts.partial_reason is missing"
+        assert callouts.get("excluded_diameters_mm"), (
+            "callouts.excluded_diameters_mm is missing")
+        assert payload.get("ok") is False, (
+            "top-level ok is true while a step is partial — a batch pipeline would ship it")
+        assert "hole_callouts" in (payload.get("partial_steps") or []), (
+            "partial_steps does not name hole_callouts")
+        pending = " ".join(str(x) for x in (payload.get("pending") or []))
+        assert "孔标注缺" in pending, "pending does not mention the skipped diameters"
+        assert payload.get("callout_warning"), "callout_warning is null on a partial run"
+        step = [st for st in (payload.get("steps") or [])
+                if st.get("step") == "hole_callouts"]
+        assert step and step[0].get("status") == "partial", (
+            "the step is not marked partial")
+        assert step[0].get("detail"), "the partial step has no detail"
+        return ("partial reached every layer: ok=%s, skipped=%s, pending mentions it"
+                % (payload.get("ok"), callouts.get("excluded_diameters_mm")))
+
+    r.check("partial reaches produce_drawing", _partial_reaches_the_pipeline)
+
     def _tool_profiles():
         """The profile table must cover every registered tool (0.8.284).
 
