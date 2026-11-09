@@ -474,6 +474,7 @@ def create_drawing(
     view_scales=None,
     paper="A3",
     view_positions=None,
+    annotation_band_m=0.018,
 ):
     """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
 
@@ -604,6 +605,30 @@ def create_drawing(
         safe_x1 = sheet_w - float(safety.get("right", sheet_w * 0.01))
         safe_y0 = float(safety.get("bottom", sheet_h * 0.22))
         safe_y1 = sheet_h - float(safety.get("top", sheet_h * 0.012))
+
+        # ── Room for dimensions (report 2026-11-08, P3-1b) ──────────────────────────────
+        # The safe area says where DRAWING is allowed, not where a dimension fits. Packing
+        # views flush to it left the isometric view 4.5 mm from the frame
+        # (`min_margin_m: 0.0045`) with nowhere to put a leader.
+        #
+        # v0.8.262 tried this on `_place_views` and changed nothing measurable — that
+        # function only REPACKS views after they exist. The box that decides the initial
+        # positions is `safe_x0..safe_y1` right here, so the inset belongs here.
+        _band = max(0.0, float(annotation_band_m))
+        if _band:
+            safe_x0 += _band
+            safe_x1 -= _band
+            safe_y0 += _band
+            safe_y1 -= _band
+            # Never invert the box on a small sheet: keep at least 40% of each dimension.
+            if safe_x1 - safe_x0 < sheet_w * 0.4:
+                _mid = (safe_x0 + safe_x1) / 2.0
+                safe_x0 = _mid - sheet_w * 0.2
+                safe_x1 = _mid + sheet_w * 0.2
+            if safe_y1 - safe_y0 < sheet_h * 0.4:
+                _mid = (safe_y0 + safe_y1) / 2.0
+                safe_y0 = _mid - sheet_h * 0.2
+                safe_y1 = _mid + sheet_h * 0.2
         avail_w = max(safe_x1 - safe_x0, 0.05)
         avail_h = max(safe_y1 - safe_y0, 0.05)
         gap = 0.022

@@ -8302,6 +8302,38 @@ def assert_the_clamp_has_a_travel_budget():
     assert "max_clamp_travel_m" in server, "the MCP tool does not expose the budget"
     return "the clamp refuses to move an annotation more than 30 mm"
 
+def assert_the_layout_reserves_room_for_dimensions():
+    """0.8.269 — views were packed flush to the safe edge, 4.5 mm from the frame.
+
+    Report 2026-11-08 (P3-1b):
+
+        create_drawing 自动布局把轴测放到图纸下沿（min_margin_m = 0.0045，仅 4.5 mm 到图框），
+        标注空间被吃掉；建议布局时按「每视图预留 20–25 mm 标注带」计算
+
+    v0.8.262 tried this on `_place_views` and measured no change at all — that function only
+    REPACKS views after they exist. The box that decides the initial positions is
+    `safe_x0..safe_y1` inside `create_drawing`, so the inset had to go there.
+
+    Measured 2026-11-08 on 限位导向套 (3 views, A3):
+
+        band=0.000  min_margin 0.0045
+        band=0.018  min_margin 0.0478
+        band=0.030  min_margin 0.0478   (saturated — the views already fill the box)
+
+    KNOWN GAP: beyond 18 mm the band stops helping because the view scale and packing
+    absorb the extra room. 18 mm is the useful ceiling, not an arbitrary default.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "create_drawing")) or ""
+    assert "annotation_band_m" in body, (
+        "the layout box no longer reserves room, so dimensions have nowhere to go")
+    assert "safe_x0 += _band" in body, (
+        "the band is not applied to the box create_drawing actually uses")
+    server = _read("server.py")
+    assert "annotation_band_m" in server, "the MCP tool does not expose the band"
+    return "the layout reserves 18 mm per side for dimensions"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8527,6 +8559,7 @@ STATIC_REGRESSIONS = [
     ("0.8.267 chamfer pair both skipped", assert_both_circles_of_a_chamfer_pair_are_skipped),
     ("0.8.267 callouts are not dimensions", assert_a_hole_callout_is_not_a_deletable_dimension),
     ("0.8.268 the clamp has a budget", assert_the_clamp_has_a_travel_budget),
+    ("0.8.269 layout reserves room", assert_the_layout_reserves_room_for_dimensions),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

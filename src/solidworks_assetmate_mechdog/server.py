@@ -1221,6 +1221,7 @@ def create_drawing(
     paper: Annotated[str, Field(description="Sheet size, e.g. 'A3' or 'A4'; drives the template and the usable area.")] = "A3",
     view_positions: Annotated[list | None, Field(description="Per-view sheet positions [x, y] in metres, keyed by view name.")] = None,
     projection: Annotated[str, Field(description="Projection convention: 'first' (GB/T 14692, default) or 'third' (ISO/US). Chooses where the top view and the side view are placed.")] = "first",
+    annotation_band_m: Annotated[float, Field(description="Sheet metres reserved around every view for dimensions and leaders (default 0.018). The template safe area says where drawing is allowed, not where a dimension fits: packing views flush to it left the isometric view 4.5 mm from the frame with nowhere to put a leader. Set 0 to pack tight again.")] = 0.018,
 ) -> str:
     """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
 
@@ -1235,11 +1236,13 @@ def create_drawing(
         views=views or ["front", "top", "isometric"], scale=scale, auto_fit=auto_fit,
         view_scales=view_scales, paper=paper, view_positions=view_positions,
         projection=projection,
+        annotation_band_m=annotation_band_m,
     ))
 
 
 @mcp.tool()
 @_reject_unknown_arguments
+
 def export_drawing(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], output_path: Annotated[str, Field(description="Where to write the result. Extension decides the format when fmt is omitted.")], fmt: Annotated[str | None, Field(description="Output format, e.g. 'pdf', 'dwg', 'dxf', 'step'.")] = None) -> str:
     """Export a .SLDDRW to PDF / DWG / DXF.
 
