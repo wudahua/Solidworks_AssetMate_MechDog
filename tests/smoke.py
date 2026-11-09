@@ -849,18 +849,48 @@ def main():
         shutil.copy2(src, part)
         built = drawing.create_drawing(part, drw, views=["front", "right"], paper="A3")
         require(built)
+        # v0.8.255 changed the premise: the cut line now overshoots the outline, so this
+        # front cut DOES cut (measured 28 edges / hatch 2 on this very wheel). The original
+        # assertion — "an uncut section must not say ok" — can no longer be reached with
+        # default arguments, so force the old geometry back and check the verdict there.
         got = drawing.add_section_view(drw, view_name="工程图视图1",
-                                       orientation="horizontal", offset_m=0.0)
+                                       orientation="horizontal", offset_m=0.0,
+                                       cut_line_overshoot_m=0.0,
+                                       auto_nudge_zero_offset=False)
         sanity = got.get("sanity") or {}
         assert sanity.get("verdict") in ("no_hatch", "identical_to_source"), (
             "a section that did not cut reports verdict %r — the exact lie the 2026-11-07 "
             "report measured (edges %r vs parent %r, hatch %r). Verdict must be no_hatch "
-            "or identical_to_source."
+            "or identical_to_source. (overshoot forced to 0 to reproduce the old geometry)"
             % (sanity.get("verdict"), sanity.get("edge_count"),
                sanity.get("source_edge_count"), sanity.get("hatch_count")))
-        return "front-cut=%s (edges %s vs parent %s, hatch %s)" % (
-            sanity.get("verdict"), sanity.get("edge_count"),
-            sanity.get("source_edge_count"), sanity.get("hatch_count"))
+
+        # And the new behaviour, on a fresh drawing: the same call WITH the default
+        # overshoot has to actually cut. Without this the suite would happily accept a
+        # regression back to "never cuts" as long as the verdict stayed honest.
+        stem2 = "smoke_rev2_%s" % uuid.uuid4().hex[:6]
+        drw2 = os.path.join(workdir, stem2 + ".SLDDRW")
+        require(drawing.create_drawing(part, drw2, views=["front"], paper="A3"))
+        good = drawing.add_section_view(drw2, view_name="工程图视图1",
+                                        orientation="horizontal", offset_m=0.0)
+        gs = good.get("sanity") or {}
+        assert good.get("ok"), (
+            "the default overshoot no longer cuts this view: error=%r verdict=%r "
+            "edges=%r hatch=%r"
+            % (good.get("error"), gs.get("verdict"), gs.get("edge_count"),
+               gs.get("hatch_count")))
+        assert (gs.get("hatch_count") or 0) > 0, (
+            "the cut reports ok but carries no hatching: %r" % (gs,))
+
+        for name in (stem2 + ".SLDDRW", stem + ".SLDDRW"):
+            try:
+                get_sw().CloseDoc(os.path.basename(name))
+            except Exception:
+                pass
+        return ("forced-uncut=%s (edges %s vs %s); default=ok edges %s hatch %s"
+                % (sanity.get("verdict"), sanity.get("edge_count"),
+                   sanity.get("source_edge_count"), gs.get("edge_count"),
+                   gs.get("hatch_count")))
 
     r.check("revolved part section verdict", _revolved_section)
     r.check("add_bom_table (native, populated)", _bom_table)
@@ -949,9 +979,18 @@ def main():
                     "DIMENSION delete not confirmed: %r" % res)
                 assert res.get("counted_scope") == "all_views", (
                     "delete_annotation still counts only the sheet: %r" % res)
-        pruned = require(layout.delete_dimensions(drw, view_name="__SMOKE_NO_VIEW__"))
+        # This call passes a view name that does not exist, so NOTHING is attempted. The
+        # point is the receipt shape, not a deletion. Since 0.8.259 any residual makes the
+        # call return `dimensions_not_all_removed`, which `require` would turn into a
+        # failure — so assert the fields directly instead of treating it as a success path.
+        pruned = layout.delete_dimensions(drw, view_name="__SMOKE_NO_VIEW__")
         for key in ("removed", "kept", "failed"):
             assert key in pruned, "delete_dimensions missing %r bucket" % key
+        if not pruned.get("ok"):
+            assert pruned.get("error") == "dimensions_not_all_removed", (
+                "unexpected refusal from delete_dimensions: %r" % (pruned.get("error"),))
+            assert pruned.get("remaining_count", 0) > 0, (
+                "refused but reports nothing remaining: %r" % (pruned.get("remaining_count"),))
 
         # 0.8.23 / P0: geometric tolerance and surface finish must delete too — all four
         # kinds are the acceptance criterion of the v0.8.14 report.
