@@ -8668,6 +8668,75 @@ def assert_capability_entries_have_no_duplicate_keys():
         "written in the first is unreachable: %s" % offenders[:3])
     return "no capability entry repeats a key"
 
+def assert_coaxial_holes_produce_one_callout():
+    """0.8.278 — a counterbored hole got two identical callouts, each saying 4×.
+
+    Report 2026-11-09 (Q-2), with a 2x enlarged screenshot as evidence:
+
+        4 × Ø 6.60 完全贯穿
+           ⌴ Ø 11 ↧ 6.80
+        4 × Ø 6.60 完全贯穿        <- same words, second leader
+           ⌴ Ø 11 ↧ 6.80
+
+    One hole feature produced two annotations because the counterbore circle (Ø11) and the
+    through circle (Ø6.6) are different RADII, so the existing "merge by radius" pass saw
+    them as unrelated. Both carried `4 ×`, which reads as eight holes.
+
+    Grouping them needed the right notion of "coaxial", and the first attempt got it wrong:
+
+        Ø11  centre [-0.024, 0, 0.015 ]   <- on the face
+        Ø6.6 centre [ 0.024, 0, 0.0082]   <- 6.8 mm down, the counterbore depth
+
+    Z differs by exactly the counterbore depth, so the 1.5 mm 3D clustering used for
+    chamfers never paired them. Same axis means same X/Y, Z irrelevant — and the radius gap
+    must exceed the chamfer tolerance, or Ø16/Ø18 would be collapsed here as well.
+
+    Measured 2026-11-09:
+
+        created=[(11.0, 4)]
+        coaxial_duplicates_dropped: dropped Ø6.6 (kept Ø11.0) x4
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    assert "_coaxial_dropped" in body, "coaxial duplicates are created again"
+    assert "_same_axis" in body, (
+        "coaxial is judged by 3D centre again; a counterbore is 6.8 mm deep and never pairs")
+    assert "(_keep_r - _k[1]) > 0.0015" in body, (
+        "the radius-gap guard is gone; a chamfer pair would be collapsed here too")
+    return "one callout per coaxial hole, and the dropped diameters are named"
+
+
+def assert_a_callout_receipt_reads_every_text_slot():
+    """0.8.278 — `text` held one line of a two-line callout, claimed to be complete.
+
+    Report 2026-11-09 (Q-3). The sheet was correct; the receipt was truncated:
+
+        text: <HOLE-SPOT><MOD-DIAM> 11 <HOLE-DEPTH> 6.80
+        native_text_complete: true
+
+    The first line — `4 × Ø 6.60 完全贯穿` — lives in slot 3 and was never read, so two
+    callouts of DIFFERENT diameters returned IDENTICAL text. The report explicitly asked
+    that this be treated as "receipt incomplete", not "wrong text on the sheet", so that
+    nobody repairs the drawing.
+
+    Fixed by concatenating every slot that answers, and only claiming completeness when
+    more than one did:
+
+        text: <HOLE-SPOT><MOD-DIAM> 11 <HOLE-DEPTH> 6.80 | 4 x <MOD-DIAM> 6.60 完全贯穿 | ...
+        native_text_complete: true
+
+    STILL SOURCE-LEVEL: reads the slot list, does not compare against a rendered sheet.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    assert '" | ".join(_parts)' in body, "only one text slot is read again"
+    assert "text_is_partial" in body, (
+        "a one-slot read still claims native_text_complete")
+    assert "(1, 0, 2, 3" in body, "slot 3 is where the through-hole line lives"
+    return "the receipt concatenates every text slot and flags a partial read"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8901,6 +8970,8 @@ STATIC_REGRESSIONS = [
     ("0.8.275 the report says what it verified", assert_the_report_says_what_it_verified),
     ("0.8.276 static_check compares the tag", assert_static_check_actually_compares_the_tag),
     ("0.8.277 no duplicate capability keys", assert_capability_entries_have_no_duplicate_keys),
+    ("0.8.278 one callout per coaxial hole", assert_coaxial_holes_produce_one_callout),
+    ("0.8.278 callout text reads all slots", assert_a_callout_receipt_reads_every_text_slot),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

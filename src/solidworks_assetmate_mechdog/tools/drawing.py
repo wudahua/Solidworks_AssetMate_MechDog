@@ -8967,6 +8967,59 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             if _chamfers:
                 grouped = {k: v for k, v in grouped.items() if k not in _chamfers}
 
+            # ── Counterbore and through-hole are ONE feature (report 2026-11-09, Q-2) ────
+            # A counterbored hole shows two concentric circles: Ø11 (the counterbore) and
+            # Ø6.6 (the through hole). Both survived the radius merge because they are
+            # different radii, so the sheet got TWO callouts that are word-for-word
+            # identical — each carrying `4 ×`, which reads as eight holes:
+            #
+            #     4 × Ø 6.60 完全贯穿
+            #        ⌴ Ø 11 ↧ 6.80        (twice, on two leaders in the same corner)
+            #
+            # SolidWorks' own hole callout already writes both lines in one annotation.
+            # So keep the WIDER circle of a coaxial pair — its callout carries the
+            # counterbore line and the through line — and drop the other.
+            # Coaxial means "same axis", NOT "same centre in 3D". Measured on 限位导向套:
+            #
+            #     Ø11 counterbore  centre [-0.024, 0, 0.015 ]   <- on the face
+            #     Ø6.6 through     centre [ 0.024, 0, 0.0082]   <- 6.8 mm down, the cb depth
+            #
+            # The 1.5 mm clustering used for chamfers therefore never sees them as one
+            # feature. Here X/Y identity is what matters and Z is irrelevant; the radius
+            # gap must also exceed the chamfer tolerance, or the Ø16/Ø18 pair would be
+            # collapsed here too (it is already handled above).
+            def _same_axis(_a, _b, tol=0.0005):
+                return abs(float(_a[0]) - float(_b[0])) <= tol and \
+                       abs(float(_a[1]) - float(_b[1])) <= tol
+
+            _coaxial_dropped = []
+            _axis_groups = []
+            for _centre, _keys in _by_centre.items():
+                _alive = [_k for _k in _keys if _k in grouped]
+                if not _alive:
+                    continue
+                for _grp in _axis_groups:
+                    if _same_axis(_grp[0], _centre):
+                        _grp[1].extend(_alive)
+                        break
+                else:
+                    _axis_groups.append([_centre, list(_alive)])
+
+            for _centre, _alive in _axis_groups:
+                if len(_alive) < 2:
+                    continue
+                _keep_r = max(_k[1] for _k in _alive)
+                for _k in _alive:
+                    if _k[1] != _keep_r and (_keep_r - _k[1]) > 0.0015:
+                        _coaxial_dropped.append({
+                            "dropped_dia_mm": round(_k[1] * 2000, 2),
+                            "kept_dia_mm": round(_keep_r * 2000, 2),
+                            "centre": [round(float(v), 4) for v in _centre],
+                            "reason": "coaxial with a larger circle; its callout already "
+                                      "names both diameters",
+                        })
+                        grouped.pop(_k, None)
+
             # ── One callout per hole SIZE, not per hole (report 2026-11-08, P1-2) ────
             # A pattern of four identical counterbores produced FOUR separate callouts,
             # each carrying `quantity: 4`. Four annotations all saying "4x Ø11" is worse
@@ -9192,15 +9245,29 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # "Ø9 -> Θ99". A Ø8 through hole has no depth, which is why it looked fine.
             # SolidWorks' own hole-table text is correct; only the RECEIPT needs a value,
             # and only when the text cannot be read (SW2026 returns None for every slot).
-            _native = ""
-            for _probe in (1, 0, 2):
+            # ── Read EVERY slot, not just the first non-empty one ────────────────────
+            # Report 2026-11-09 (Q-3): the sheet showed two lines —
+            #
+            #     4 × Ø 6.60 完全贯穿
+            #        ⌴ Ø 11 ↧ 6.80
+            #
+            # but `text` came back as only `<HOLE-SPOT><MOD-DIAM> 11 <HOLE-DEPTH> 6.80`
+            # while `native_text_complete` said True. Slot 3 held the through-hole line and
+            # was never read, so two callouts of different diameters produced IDENTICAL
+            # `text` — any pipeline auditing the drawing against the receipt would call a
+            # correct sheet wrong.
+            #
+            # The sheet was right the whole time. Only the receipt was truncated.
+            _parts = []
+            for _probe in (1, 0, 2, 3, 4, 5):
                 try:
                     _candidate = dim_obj.GetText(_probe)
                 except Exception:
                     continue
-                if _candidate and str(_candidate).strip():
-                    _native = str(_candidate)
-                    break
+                _text = str(_candidate).strip() if _candidate else ""
+                if _text and _text not in _parts:
+                    _parts.append(_text)
+            _native = " | ".join(_parts)
             # Report 2026-11-04 P1-3, second pass: the native text ALREADY carries the
             # counterbore. Measured on 接槽 with NOTHING rewritten:
             #
@@ -9218,7 +9285,15 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             if _native:
                 item["text"] = _native
                 item["text_source"] = "native"
-                item["native_text_complete"] = True
+                # Completeness now means "every non-empty slot was read". When only one
+                # slot answered, say so rather than claiming completeness.
+                item["native_text_complete"] = len(_parts) > 1
+                if len(_parts) <= 1:
+                    item["text_is_partial"] = True
+                    item["text_note"] = (
+                        "only %d text slot(s) returned content; SolidWorks may hold the "
+                        "other line in a slot `GetText` does not expose on this binding"
+                        % len(_parts))
                 continue
             # The raw "<MOD-DIAM>" must be replaced or it prints literally, but writing only
             # the diameter leaves the DEPTH in another slot: a Ø15 hole then reads "Ø1515"
@@ -9345,6 +9420,7 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # These fields make the omission countable: every skipped diameter is listed,
             # with a flag when the pair is concentric with the view centre (the usual shape
             # of a main bore or its boss).
+            coaxial_duplicates_dropped=_coaxial_dropped[:10],
             excluded_diameters_mm=sorted(
                 {a["narrower_dia_mm"] for a in _ambiguous}
                 | {a["wider_dia_mm"] for a in _ambiguous}),
