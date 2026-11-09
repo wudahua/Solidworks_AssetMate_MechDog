@@ -1090,23 +1090,24 @@ def main():
         reported as "not triggered" rather than passed — a green line for a path that never
         ran is the failure mode this project keeps chasing.
 
-        MEASURED LIMIT 2026-11-10, both fixtures available on this machine:
+        MEASURED 2026-11-10:
 
-            default part (P05_karetku)   -> PASS 38.7s "not triggered",
-                                           callouts.verdict is None (no chamfer ambiguity)
-            限位导向套 via --part        -> FAIL 34.1s "call failed: None None",
-                                           produce_drawing itself fails on that part
+            default part (P05_karetku)  -> PASS "not triggered"; callouts.verdict is None
+            限位导向套 via --part       -> PASS, hole_callouts step is `partial`
 
-        So the partial branch (0.8.285's five-layer fix) is exercised by NEITHER fixture.
-        The check still earns its place: it pins the non-partial invariant (a clean run must
-        report ok=true) and it will assert the whole chain the moment a fixture that both
-        produces a drawing and has a chamfer-ambiguous diameter is supplied.
+        The second fixture DOES exercise the whole chain — 限位导向套 has a chamfered bore
+        whose pair cannot be disambiguated. The first attempt reported
+        "call failed: None None" only because this check used `require()`, which rejects a
+        payload with `ok:false`; that `false` is exactly the behaviour under test.
         """
         out = os.path.join(tempfile.mkdtemp(prefix="smoke_partial_"),
                            "partial_%d.SLDDRW" % os.getpid())
         try:
-            payload = require(pipeline.produce_drawing(args.part, output_path=out,
-                                                       overwrite=True))
+            # NOT `require()`: when the callout step is partial the top-level `ok` is
+            # False BY DESIGN (0.8.285), and `require` treats that as a failed call —
+            # "call failed: None None", which sent me hunting for a pipeline bug that
+            # was not there. A partial drawing is a successful run with a known gap.
+            payload = pipeline.produce_drawing(args.part, output_path=out, overwrite=True)
         finally:
             try:
                 drawing.close_document(out)
