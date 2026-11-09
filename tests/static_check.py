@@ -497,6 +497,34 @@ def main():
         for item in problems:
             print("  " + item)
         return 1
+    # Report 2026-11-09 (core problem B): "254/254 passed" told the reader nothing about
+    # whether the tag comparison actually ran. A guard that silently skips still shows PASS.
+    try:
+        import json as _json
+        _ver = None
+        _src = None
+        for _env in ("GITHUB_REF_NAME", "CI_COMMIT_TAG", "GIT_TAG"):
+            _c = (os.environ.get(_env) or "").strip().lstrip("v")
+            if _c:
+                _ver, _src = _c, "env:%s" % _env
+                break
+        if not _ver:
+            _mp = os.path.join("src", "solidworks_assetmate_mechdog", "_build_meta.json")
+            try:
+                with open(_mp, encoding="utf-8") as _fh:
+                    _m = _json.load(_fh)
+                _c = str(_m.get("tag") or "").strip().lstrip("v")
+                if _c:
+                    _ver, _src = _c, "packaged"
+            except Exception:
+                pass
+        if not _ver:
+            _ver, _src = None, "none"
+        print("tag_compare: %s" % (
+            ("compared against v%s (%s)" % (_ver, _src)) if _ver
+            else "SKIPPED (no tag source)"))
+    except Exception as _exc:
+        print("tag_compare: SKIPPED (%s)" % str(_exc)[:60])
     print("static check OK (%d tools, every module reference resolves, README in sync, "
           "every parameter documented)"
           % len(tools))

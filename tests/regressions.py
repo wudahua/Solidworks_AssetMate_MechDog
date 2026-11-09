@@ -3980,15 +3980,45 @@ def assert_version_strings_agree():
     # Compare with the tag only when HEAD sits exactly on one. A commit made between releases
     # legitimately sits ahead of the last tag, and failing on that would train people to skip
     # this check entirely.
+    # ── Where does the tag come from? (report 2026-11-09, core problem B) ────────────────
+    # `git describe` alone fails for the shape most people install from: a GitHub tarball
+    # has no `.git`, so the tag was silently None, the comparison was skipped, and the
+    # receipt still said "agrees across pyproject, __init__ and tag". A guard that reports
+    # success when it did nothing is worse than no guard.
+    #
+    # Order: CI env var (authoritative when present) -> packaged metadata (works offline and
+    # from an sdist) -> git (works in a working tree). If none answers, say SKIPPED.
     tag_version = None
-    try:
-        import subprocess
-        out = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
-                             cwd=ROOT, capture_output=True, text=True, timeout=10)
-        if out.returncode == 0:
-            tag_version = out.stdout.strip().lstrip("v")
-    except Exception:
-        tag_version = None
+    tag_source = None
+
+    for _env in ("GITHUB_REF_NAME", "CI_COMMIT_TAG", "GIT_TAG"):
+        _candidate = (os.environ.get(_env) or "").strip().lstrip("v")
+        if _candidate:
+            tag_version, tag_source = _candidate, "env:%s" % _env
+            break
+
+    if not tag_version:
+        _meta_path = os.path.join(SRC, "_build_meta.json")
+        try:
+            import json
+            with open(_meta_path, encoding="utf-8") as fh:
+                _meta = json.load(fh)
+            _candidate = str(_meta.get("tag") or "").strip().lstrip("v")
+            if _candidate:
+                tag_version, tag_source = _candidate, "packaged:_build_meta.json"
+        except Exception:
+            pass
+
+    if not tag_version:
+        try:
+            import subprocess
+            out = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
+                                 cwd=ROOT, capture_output=True, text=True, timeout=10)
+            if out.returncode == 0:
+                tag_version = out.stdout.strip().lstrip("v")
+                tag_source = "git:describe"
+        except Exception:
+            pass
 
     if tag_version:
         # Only "the tag is NEWER than the package" is a defect — that is exactly the shape of
@@ -4006,11 +4036,24 @@ def assert_version_strings_agree():
                     parts.append(0)
             return tuple(parts)
 
-        assert _as_tuple(declared) >= _as_tuple(tag_version), (
-            "HEAD is tagged v%s but the package declares %r — that is the un-bumped case"
-            % (tag_version, declared))
-    return "version %s agrees across pyproject, __init__ and tag%s" % (
-        declared, (" v" + tag_version) if tag_version else " (untagged HEAD)")
+        # `==`, not `>=`. `>=` only catches "tag is newer than the package"; it lets
+        # "package is newer than the tag" through, and — the case that actually shipped —
+        # two adjacent tags pointing at the SAME commit with the same declared version
+        # (v0.8.271 and v0.8.272 both said 0.8.271) passes `>=` every time.
+        assert _as_tuple(declared) == _as_tuple(tag_version), (
+            "tag is v%s (from %s) but the package declares %r — tag and declared version "
+            "must be equal. If the tag is older, the version was not bumped before tagging; "
+            "if the tag is newer, the bump landed after the tag." %
+            (tag_version, tag_source, declared))
+
+    if not tag_version:
+        # No tag source at all. Do not phrase this as agreement.
+        return ("version %s agrees across pyproject/__init__; "
+                "TAG COMPARE SKIPPED (no tag source: no CI env var, no _build_meta.json, "
+                "no .git)" % declared)
+
+    return "version %s agrees across pyproject, __init__ and tag v%s [%s]" % (
+        declared, tag_version, tag_source)
 
 
 def assert_ledger_dedupes_by_full_name():
@@ -8451,6 +8494,59 @@ def assert_the_chamfer_pair_is_matched_in_three_dimensions():
     assert "_keep_at" in body, "the through-bore escape hatch is gone"
     return "chamfer pairs are matched in 3D and in sheet space"
 
+def assert_the_tag_guard_can_see_the_tag():
+    """0.8.274 — the version guard passed on installs where it did nothing at all.
+
+    Report 2026-11-09 (core problems A and B). Three releases shipped with a stale version:
+
+        v0.8.134-136  stuck at 0.8.133
+        v0.8.264-265  stuck at 0.8.263
+        v0.8.272      stuck at 0.8.271, and it SHARES A COMMIT with v0.8.271
+
+    Every time the mechanism was the same: a `sed` with a hard-coded literal, matched nothing,
+    exited 0, and the commit plus tag went out anyway. `assert_version_strings_agree` could
+    not catch it because it only compared two strings that were stale TOGETHER.
+
+    v0.8.273 added a tag comparison — and made it useless for the install shape most people
+    use. `git describe` needs a `.git`, a GitHub tarball has none, so `tag_version` was None,
+    the comparison was skipped, and the receipt still read "agrees across pyproject, __init__
+    and tag (untagged HEAD)". A guard that reports success while doing nothing is worse than
+    no guard.
+
+    Three changes:
+    * tag source falls back through CI env -> `_build_meta.json` (shipped in the package) ->
+      `git describe`. Measured in a copy with no `.git`:
+      `version 0.8.274 agrees ... and tag v0.8.274 [packaged:_build_meta.json]`
+    * equality, not `>=`. Two adjacent tags on one commit with the same declared version
+      passes `>=` every time.
+    * when there is no tag source at all the receipt says `TAG COMPARE SKIPPED`, and
+      `static_check` prints `tag_compare: ...` so `254/254` cannot imply it ran.
+
+    `tools/bump_version.py` replaces the sed: it reads the current version, computes the next,
+    writes, then re-reads and fails if the file did not change. It also refuses to run when
+    `--check` finds HEAD on the previous tag's commit.
+    """
+    with open(os.path.join(ROOT, "tests", "regressions.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    i = src.find("def assert_version_strings_agree")
+    j = src.find("\ndef ", i + 10)
+    body = src[i:j]
+    assert "GITHUB_REF_NAME" in body, "no CI tag source; tarball installs skip silently"
+    assert "_build_meta.json" in body, "no packaged tag source"
+    assert "TAG COMPARE SKIPPED" in body, (
+        "a skipped comparison is still phrased as agreement")
+    assert "_as_tuple(declared) == _as_tuple(tag_version)" in body, (
+        "the comparison accepts a newer tag again; two tags on one commit pass >= every time")
+    assert "tag_source" in body, "the receipt does not say where the tag came from"
+
+    with open(os.path.join(ROOT, "tools", "bump_version.py"), encoding="utf-8") as fh:
+        bump = fh.read()
+    assert "WRITE DID NOT TAKE EFFECT" in bump, (
+        "the bump script can no longer prove it changed the file")
+    assert "SAME commit" in bump, (
+        "nothing stops tagging the same commit twice, which is how v0.8.272 shipped")
+    return "the tag guard sees the tag on tarball installs and fails loudly when it cannot"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8680,6 +8776,7 @@ STATIC_REGRESSIONS = [
     ("0.8.270 delivery skips faces", assert_delivery_check_does_not_walk_every_face),
     ("0.8.271 circle detection is gated", assert_circle_detection_is_gated_before_the_array_call),
     ("0.8.273 chamfer pairs match in 3D", assert_the_chamfer_pair_is_matched_in_three_dimensions),
+    ("0.8.274 the tag guard sees the tag", assert_the_tag_guard_can_see_the_tag),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
