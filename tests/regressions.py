@@ -9099,6 +9099,35 @@ def assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths():
     assert '"not a git repository"' in sc, "a non-repo is read as mid-release again"
     return "partial reaches the pipeline receipt, and the gate reads ROOT-relative paths"
 
+def assert_readme_documents_the_release_mechanics():
+    """0.8.286 — nine concepts shipped without a line of documentation.
+
+    Report 2026-11-09 (§6): `bump_version`, `tag_compare`, `_build_meta`, `package-data`,
+    `fail-closed`, `source-level`, `setdefault`, `text_flags`, `partial_reason` — zero
+    hits in README, fourth round running.
+
+    A feature nobody can find is not shipped. The mechanics matter more than most: three
+    releases went out with a stale version because the bump was a `sed` that matched
+    nothing, and two rounds of gates failed open before anyone noticed.
+
+    The section is deliberately number-free. Earlier doc checks drifted because a count was
+    printed in prose; the counts are printed by the tools themselves.
+    """
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+        readme = fh.read()
+
+    required = ["bump_version", "tag_compare", "_build_meta", "package-data",
+                "fail-closed", "source-level", "setdefault", "text_flags",
+                "partial_reason"]
+    missing = [k for k in required if k not in readme]
+    assert not missing, "README never explains: %s" % ", ".join(missing)
+
+    assert "SELF-DECLARED" in readme, (
+        "the packaged tag source is described as verified again")
+    assert "<N> assertions" in readme or "source-level : " in readme, (
+        "the two-suite banner is not documented")
+    return "README explains how releases are versioned, gated and reported"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9341,6 +9370,7 @@ STATIC_REGRESSIONS = [
     ("0.8.283 COM calls are serialised", assert_solidworks_calls_are_serialised),
     ("0.8.284 profiles are advisory", assert_tool_profiles_are_advisory_only),
     ("0.8.285 partial survives the pipeline", assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths),
+    ("0.8.286 README documents the release mechanics", assert_readme_documents_the_release_mechanics),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

@@ -249,7 +249,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 267 条历史回归
+python tests/check_all.py     # 秒级：语法 + 结构 + 268 条历史回归
 python tests/smoke.py         # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
 
@@ -377,6 +377,72 @@ MCP 注册（不依赖 PATH）：
 ```
 
 ---
+
+## 发布与自检
+
+### 版本号只用脚本改
+
+```bash
+python tools/bump_version.py --check   # 报告状态，不改文件；HEAD 撞上一 tag 时返回 1
+python tools/bump_version.py           # 0.8.285 -> 0.8.286
+python tools/bump_version.py --to 0.9.0
+```
+
+`bump_version.py` 做四步：**读当前版本 → 算下一个 → 写入 → 重新读回来断言确实变了**。
+写不进去就 `exit 2`。
+
+**为什么不用 `sed`**：历史上三次发版（0.8.134-136 / 0.8.264-265 / 0.8.272）都是
+`sed 's/0.8.271/0.8.272/'` 匹配不到却退出 0，commit 和 tag 照发。`v0.8.272` 与
+`v0.8.271` 指向同一个 commit，`pyproject.toml` 却还写 `0.8.271`。
+
+### tag 由三处来源比对
+
+`static_check.py` 每次读 tag 都按 **CI 环境变量（`GITHUB_REF_NAME` / `CI_COMMIT_TAG` /
+`GIT_TAG`）→ 随包 `_build_meta.json` → `git describe`** 的顺序回退，然后与
+`pyproject.toml` 的 version 做**相等**比较：
+
+```text
+tag_compare: v0.8.285 == pyproject 0.8.285  [source: packaged (SELF-DECLARED, not an external tag)]
+```
+
+- `packaged` 那份由 `bump_version.py` 和版本号同一次写入，**是自证不是外部证据** ——
+  所以标注写 `SELF-DECLARED`，不写成「已核对」。
+- `_build_meta.json` 通过 `pyproject.toml` 的 `[tool.setuptools.package-data]` 随包分发，
+  tarball / wheel 安装也有 tag 源。
+
+### 门禁是 fail-closed
+
+**读不到 tag 源就失败，不是跳过。**
+
+```text
+tag_compare: no tag source (no CI env var, no _build_meta.json) and HEAD cannot be shown
+             to be between tags — version not verifiable        → RC 1
+```
+
+唯一允许的跳过：工作树里 HEAD 处在两个 tag 之间（正常的发布中途状态）。
+`git describe` 报 `not a git repository` 视为**无法判断**，不是「不在 tag 上」——
+这两种曾被混成一种，于是任何非仓库目录都能让门禁放行。
+
+### 两套件分开报
+
+```text
+all offline checks passed
+  source-level : <N> assertions (text/AST only)
+  on-machine   : <M> checks, NOT run here — `python tests/smoke.py`
+```
+
+**`source-level` 只读源码文本**，不驱动 SolidWorks。把它当成行为证据是本项目犯过的错
+（v0.8.273 的断言通过了，图上主孔却没标）。真机覆盖只算 `smoke.py` 里那些 `r.check`。
+
+### 部分结果不等于成功
+
+`ok()` 用 `setdefault`，调用方可以传 `ok=False`；`add_hole_callouts` 在跳过倒角歧义直径时
+就传 `ok=False, verdict="partial"`，并写 `partial_reason` 与 `excluded_diameters_mm`。
+`produce_drawing` 会把它抬到顶层（`ok:false` + `partial_steps`）、写进 `pending`，
+并由 `_callout_warning()` 说明缺哪几个直径。
+
+单孔 `add_hole_callout` 另给 `text_flags`：读不到图面文字时报 `text_unreadable`，
+带深度符号时报 `depth_on_a_through_bore_suspect` —— **`ok:true` 不等于文字是对的**。
 
 ## 真机回归
 
