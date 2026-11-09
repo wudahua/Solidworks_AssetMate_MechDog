@@ -4047,10 +4047,35 @@ def assert_version_strings_agree():
             (tag_version, tag_source, declared))
 
     if not tag_version:
-        # No tag source at all. Do not phrase this as agreement.
-        return ("version %s agrees across pyproject/__init__; "
-                "TAG COMPARE SKIPPED (no tag source: no CI env var, no _build_meta.json, "
-                "no .git)" % declared)
+        # ── align with static_check (report 2026-11-09, B) ─────────────────────────────
+        # This branch used to PASS, so on the same package `static_check` returned RC 1
+        # while `regressions` printed "266/266 passed". Two suites disagreeing about the
+        # same fact is worse than either answer alone: the green banner gets quoted as
+        # evidence.
+        #
+        # Same rule as the gate: a working tree with HEAD between tags is a legitimate
+        # skip, anything else is a failure.
+        _on_tag = None
+        try:
+            import subprocess as _sp
+            _probe = _sp.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+            if _probe.returncode == 0:
+                _on_tag = True
+            elif "not a git repository" in (_probe.stderr or "").lower():
+                _on_tag = None
+            else:
+                _on_tag = False
+        except Exception:
+            _on_tag = None
+
+        if _on_tag is False:
+            return ("version %s agrees across pyproject/__init__; TAG COMPARE SKIPPED "
+                    "(HEAD is not on a tag — mid-release state)" % declared)
+        raise AssertionError(
+            "version %s cannot be checked against a tag: no CI env var, no "
+            "_build_meta.json, and HEAD cannot be shown to be between tags. Same rule as "
+            "static_check — an unverifiable release is not a passing one." % declared)
 
     return "version %s agrees across pyproject, __init__ and tag v%s [%s]" % (
         declared, tag_version, tag_source)
@@ -9018,6 +9043,62 @@ def assert_tool_profiles_are_advisory_only():
         "the advisory tool mutates the registry — that is a filter, not a table")
     return "the profile table is published as data; nothing is unregistered"
 
+def assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths():
+    """0.8.285 — two fixes each stopped one layer short.
+
+    Report 2026-11-09 on v0.8.281.
+
+    (A) `add_hole_callouts` reported `ok:false, verdict:"partial"` with
+    `excluded_diameters_mm: [8.0, 15.0]` — and `produce_drawing`, the entry a batch actually
+    calls, still answered `ok:true, verdict:"待设计审核", blockers:[]`,
+    `callout_warning:null`, step `("hole_callouts", false, null)`.
+
+    Five gaps, all fixed:
+    * `record()` now writes `status: ok|partial|failed` and falls back to
+      `partial_reason` for `detail`, so the step no longer reads `false, null`
+    * the `callouts` sub-dict passes `ok / verdict / partial_reason /
+      excluded_diameters_mm / ambiguous_chamfer_pairs` through — it was dropping exactly the
+      fields computed for it
+    * `_callout_warning()` has a partial branch instead of returning null
+    * `pending` gains "孔标注缺 N 个直径：Ø…"
+    * top-level `ok` follows any partial step, and `partial_steps` names them. The report
+      asked for one behaviour, explicitly not "top true / step false".
+
+    (B) The fail-closed gate read `_build_meta.json` through a RELATIVE path, so a perfectly
+    good install failed with "no tag source" merely because the script was invoked from
+    another cwd. Fixed to `ROOT`-relative, and `regressions.py`'s no-source branch now fails
+    too instead of printing 266/266 beside static_check's RC 1.
+
+    Measured 2026-11-09:
+
+        cross-cwd with meta  -> RC 0
+        no tag source, static      -> RC 1
+        no tag source, regressions -> RC 1
+    """
+    with open(os.path.join(SRC, "tools", "pipeline.py"), encoding="utf-8") as fh:
+        pipe = fh.read()
+    assert '"status": _status' in pipe, "a partial step still cannot be told from a crash"
+    assert 'payload.get("partial_reason")' in pipe, (
+        "the step detail is empty for a partial payload again")
+    assert '"verdict": callouts.get("verdict")' in pipe, (
+        "the callouts sub-dict drops verdict again")
+    assert '"excluded_diameters_mm": callouts.get("excluded_diameters_mm")' in pipe, (
+        "the excluded diameters never reach the pipeline receipt")
+    assert 'callouts.get("verdict") == "partial"' in pipe, (
+        "callout_warning is silent for a partial run again")
+    assert "孔标注缺 %d 个直径" in pipe, "pending does not mention the skipped diameters"
+    assert "ok=(not _partial_steps)" in pipe, (
+        "top-level ok contradicts a partial step again")
+    assert "partial_steps=_partial_steps" in pipe, "the partial steps are not named"
+
+    with open(os.path.join(ROOT, "tests", "static_check.py"), encoding="utf-8") as fh:
+        sc = fh.read()
+    assert 'os.path.join(ROOT, "src", "solidworks_assetmate_mechdog"' in sc, (
+        "the packaged tag source is read through a relative path again; any cwd but the "
+        "package root fails")
+    assert '"not a git repository"' in sc, "a non-repo is read as mid-release again"
+    return "partial reaches the pipeline receipt, and the gate reads ROOT-relative paths"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9259,6 +9340,7 @@ STATIC_REGRESSIONS = [
     ("0.8.282 the failure logger never touches COM", assert_the_failure_logger_never_touches_com),
     ("0.8.283 COM calls are serialised", assert_solidworks_calls_are_serialised),
     ("0.8.284 profiles are advisory", assert_tool_profiles_are_advisory_only),
+    ("0.8.285 partial survives the pipeline", assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

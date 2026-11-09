@@ -88,6 +88,16 @@ def _callout_warning(callouts):
     created = callouts.get("created_count") or 0
     elapsed = callouts.get("elapsed_s")
     scanned = callouts.get("circular_edges")
+    # Report 2026-11-09 (A): a partial run had `ok:false, verdict:"partial"` and was still
+    # described as nothing at all (`callout_warning: null`). The caller cannot fix what the
+    # receipt does not mention.
+    if callouts.get("verdict") == "partial":
+        skipped = callouts.get("excluded_diameters_mm") or []
+        return ("孔标注只完成了一部分：%d 条已创建、%d 条被拒；%s 因倒角配对无法判定而未标注。"
+                "这些直径若含主孔，图纸不能直接交付 —— 用 `add_drawing_dimension` 在对应圆上"
+                "补 Ø 尺寸，或对照模型手工确认。"
+                % (created, callouts.get("failed_count") or 0,
+                   "、".join("Ø%s" % d for d in skipped) or "部分直径"))
     if exceeded and created == 0:
         return ("孔标注因预算超时未完成（%.1f s 内只扫了 %s 条圆边，未生成任何标注）。"
                 "这不是「图纸没有孔」，请提高 hole_budget_s 后重试。"
@@ -191,11 +201,22 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     steps = []
 
     def record(name, payload, detail=""):
-        steps.append({
-            "step": name,
-            "ok": bool(payload.get("ok")) if isinstance(payload, dict) else bool(payload),
-            "detail": detail or (payload.get("error") if isinstance(payload, dict) else ""),
-        })
+        # ── partial is its own state (report 2026-11-09, core problem A) ────────────────
+        # `add_hole_callouts` reports `ok:false, verdict:"partial"` when it had to skip a
+        # chamfer-ambiguous diameter. Recording that as a plain failure lost the reason
+        # (`detail` came from `payload["error"]`, and a partial payload has none — the step
+        # showed `ok:false, detail:null`), while the top level still said `ok:true`.
+        #
+        # Now the step carries `status`, and `detail` falls back to `partial_reason`, so a
+        # reader can tell "6 of 7 callouts failed and 2 diameters were skipped" from
+        # "this step crashed".
+        _ok = bool(payload.get("ok")) if isinstance(payload, dict) else bool(payload)
+        _verdict = payload.get("verdict") if isinstance(payload, dict) else None
+        _status = "ok" if _ok else ("partial" if _verdict == "partial" else "failed")
+        _detail = ""
+        if isinstance(payload, dict):
+            _detail = detail or payload.get("partial_reason") or payload.get("error") or ""
+        steps.append({"step": name, "ok": _ok, "status": _status, "detail": _detail})
         return payload if isinstance(payload, dict) else {}
 
     # 0.8.120: outline reads are COUNTERS, not a cache. Reset per run so the number in the
@@ -475,7 +496,18 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                 or "no detail recorded"),
             documents_closed=closed)
 
+    # ── top-level `ok` must not contradict a partial step (report 2026-11-09, A) ────────
+    # `_CRITICAL` (create/dimensions/save) deliberately excludes hole callouts, so a sheet
+    # with skipped diameters reported `ok:true` — and a batch pipeline keyed on `ok` shipped
+    # it. The report asked for one of two behaviours, explicitly not "top true / step false".
+    #
+    # Chosen: `ok:false` whenever any step is partial, with `partial_steps` naming them.
+    # `verdict` is untouched — that is the delivery judgement and it comes from
+    # `delivery_check`, not from whether every callout landed.
+    _partial_steps = [st["step"] for st in steps if st.get("status") == "partial"]
     return ok(
+        ok=(not _partial_steps),
+        partial_steps=_partial_steps,
         model=path,
         drawing=target,
         category=resolved_category,
@@ -509,7 +541,16 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                   # indistinguishable from a part with no holes, and the verdict flipped
                   # on that difference alone.
                   "budget_exceeded": callouts.get("budget_exceeded"),
-                  "elapsed_s": callouts.get("elapsed_s")},
+                  "elapsed_s": callouts.get("elapsed_s"),
+                  # Report 2026-11-09 (A): `add_hole_callouts` computes `verdict`,
+                  # `partial_reason` and `excluded_diameters_mm` for exactly this reader and
+                  # all three were dropped here. The sub-dict is what a pipeline consumer
+                  # actually sees, so the omission made the detailed receipt unreachable.
+                  "ok": callouts.get("ok"),
+                  "verdict": callouts.get("verdict"),
+                  "partial_reason": callouts.get("partial_reason"),
+                  "excluded_diameters_mm": callouts.get("excluded_diameters_mm"),
+                  "ambiguous_chamfer_pairs": (callouts.get("ambiguous_chamfer_pairs") or [])[:5]},
         callout_warning=_callout_warning(callouts),
         # Plan says "keep N"; auto_dimension inserts every dimension marked for drawing.
         # The gap is real and stated rather than silently reconciled — pruning inserted
@@ -586,7 +627,16 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                 # `pending` list. A compliance defect is not a hint — it is a reason the
                 # drawing is not ready. Surfaced here so it appears where a reviewer looks.
                 + ["GB/T 14692 投影不合规：%s" % w.get("detail")
-                   for w in creation_warnings if w.get("issue") == "projection_note"],
+                   for w in creation_warnings if w.get("issue") == "projection_note"]
+                # Report 2026-11-09 (A): the callout step already knew which diameters it
+                # could not annotate; `pending` is where a reviewer looks, and it said
+                # nothing about them.
+                + (["孔标注缺 %d 个直径：%s（倒角配对无法判定；可能是主孔）"
+                    % (len(callouts.get("excluded_diameters_mm") or []),
+                       "、".join("Ø%s" % d
+                                for d in (callouts.get("excluded_diameters_mm") or [])))]
+                   if (callouts.get("verdict") == "partial"
+                       and callouts.get("excluded_diameters_mm")) else []),
         note=("流水线按类别套默认值；defaults_applied 里写明了假定什么。"
               "某一步失败不会中断后续步骤，逐条看 steps。"),
     )

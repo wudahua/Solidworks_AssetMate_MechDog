@@ -522,7 +522,13 @@ def main():
                 _ver, _src = _c, "env:%s" % _env
                 break
         if not _ver:
-            _mp = os.path.join("src", "solidworks_assetmate_mechdog", "_build_meta.json")
+            # ROOT-relative, like PYPROJECT two lines above. A relative path here made a
+            # perfectly good install fail when the script was invoked from another cwd —
+            # report 2026-11-09 (E4): "no tag source … version not verifiable", RC 1, on a
+            # package whose metadata was present and correct. Fail-closed is right; failing
+            # closed on the CALLER'S DIRECTORY is not.
+            _mp = os.path.join(ROOT, "src", "solidworks_assetmate_mechdog",
+                               "_build_meta.json")
             try:
                 with open(_mp, encoding="utf-8") as _fh:
                     _m = _json.load(_fh)
