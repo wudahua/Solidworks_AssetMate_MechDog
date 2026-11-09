@@ -8229,9 +8229,11 @@ def assert_both_circles_of_a_chamfer_pair_are_skipped():
     assert "_ambiguous" in body, "the pair is silently dropped without being reported"
     assert "ambiguous_chamfer_pairs" in body, (
         "the receipt does not name the circles it skipped")
-    assert "_chamfers.add((_centre, _rs[_i + 1]))" in body, (
-        "only the smaller circle is excluded again, which deletes the real bore on an "
-        "inner chamfer")
+    # v0.8.273 replaced "add the two named radii" with "drop every key in the cluster",
+    # because members differ slightly in centre and the survivor stayed annotated (Ø30).
+    assert "for _k in _keys:" in body and "_chamfers.add(_k)" in body, (
+        "only part of the cluster is excluded again, so one circle of the pair survives "
+        "as a hole callout")
     return "both circles of a chamfer pair are skipped and named"
 
 
@@ -8403,6 +8405,51 @@ def assert_circle_detection_is_gated_before_the_array_call():
     assert 'item["is_circle"] = False' in body, (
         "a straight edge no longer says so, so callers cannot filter")
     return "circle detection is gated behind IsCircle and straight edges say so"
+
+def assert_the_chamfer_pair_is_matched_in_three_dimensions():
+    """0.8.273 — the chamfer filter paired circles that were 70 mm apart.
+
+    Report 2026-11-09 (N-3) found Ø16 dropped and Ø18/Ø30 annotated as holes. Root cause was
+    worse than the report guessed: the callout scan stored only `(x, y)` of each circle
+    centre.
+
+    ```python
+    "centre": (round(params[0], 4), round(params[1], 4))   # Z thrown away
+    ```
+
+    With Z gone, the two ends of a through bore and a bore-versus-its-chamfer-mouth all look
+    like "the same centre", so the filter paired things 70 mm apart on the axis.
+
+    Three fixes, each measured:
+    1. keep Z; cluster centres by DISTANCE (1.5 mm) so a chamfer mouth at ~1 mm still pairs
+       with its face but a bore's far end does not
+    2. exclude the whole cluster, not "the smaller radius at this exact centre" — members
+       differ slightly, so Ø30 survived and stayed annotated
+    3. also compare diameters in SHEET space: `view_width` is on the paper, `radius_m * 2` is
+       the model, and on a 1:2 sheet Ø18 was being rejected as an outer contour
+
+    Measured 2026-11-09 on 限位导向套:
+
+        created   [Ø11 x4, Ø6.6 x4]
+        ambiguous [Ø16/Ø18, Ø28/Ø30]
+
+    Ø30 stopped being a hole. Ø16 is still not annotated — a front view shows a through bore
+    as ONE circle, so the "two distant centres = through hole" test cannot fire here. The
+    pair is named in the receipt instead, which is the report's own preference:
+    "宁可不标也不要标错".
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    assert "round(float(params[2]), 4)" in body, (
+        "Z is dropped again — circles 70 mm apart will pair")
+    assert "_near(" in body, (
+        "exact centre equality is back; a chamfer mouth at 1 mm never pairs")
+    assert "_view_scale" in body, (
+        "model diameter is compared against sheet width again; small holes get rejected "
+        "as outer contours on a scaled sheet")
+    assert "_keep_at" in body, "the through-bore escape hatch is gone"
+    return "chamfer pairs are matched in 3D and in sheet space"
 
 STATIC_REGRESSIONS = [
 
@@ -8632,6 +8679,7 @@ STATIC_REGRESSIONS = [
     ("0.8.269 layout reserves room", assert_the_layout_reserves_room_for_dimensions),
     ("0.8.270 delivery skips faces", assert_delivery_check_does_not_walk_every_face),
     ("0.8.271 circle detection is gated", assert_circle_detection_is_gated_before_the_array_call),
+    ("0.8.273 chamfer pairs match in 3D", assert_the_chamfer_pair_is_matched_in_three_dimensions),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

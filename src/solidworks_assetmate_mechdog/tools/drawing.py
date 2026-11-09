@@ -8830,7 +8830,20 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                         # survive the filters: "scanned: 0" next to "failed: 20" reads as
                         # "this view had nothing", when 20 edges were seen and rejected.
                         edges_scanned += 1
-                        if view_width and radius_m * 2 > view_width * 0.4:
+                                # ── Compare in the same space (2026-11-09) ──────────────────────────────
+                        # `view_width` is measured on the SHEET; `radius_m * 2` is the MODEL
+                        # diameter. On a 1:2 sheet (scale 0.5) Ø18 is 0.018 model but only 0.009 on
+                        # paper, so comparing them raw blocked Ø18 against a 0.0178 threshold and
+                        # reported it as an outer contour — which is how the chamfer mouth kept
+                        # disappearing from the callout list while Ø16 survived.
+                        try:
+                            _view_scale = float(view.ScaleDecimal)
+                        except Exception:
+                            _view_scale = 1.0
+                        if not _view_scale:
+                            _view_scale = 1.0
+                        _dia_on_sheet = radius_m * 2 * _view_scale
+                        if view_width and _dia_on_sheet > view_width * 0.4:
                             rejected += 1
                             failed.append({"view": view.Name,
                                            "diameter_mm": round(radius_m * 2000, 2),
@@ -8840,7 +8853,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                         candidates.append({
                             "edge": edge,
                             "radius_m": radius_m,
-                            "centre": (round(float(params[0]), 4), round(float(params[1]), 4)),
+                            # Keep Z. Report 2026-11-09 (N-3 follow-up): dropping it made the
+                        # two ends of a through bore, and the bore vs its own chamfer mouth,
+                        # all look like "the same centre" — so the chamfer filter paired a
+                        # 70 mm-long bore with a 1 mm chamfer edge on the opposite face.
+                        "centre": (round(float(params[0]), 4), round(float(params[1]), 4),
+                                   round(float(params[2]), 4)),
                             "z": float(params[2]),
                             "complete": edge.GetStartVertex is None,
                         })
@@ -8865,9 +8883,31 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # through hole by several millimetres (Ø11 vs Ø6.6 = 4.4 mm here), and separate
             # holes do not share a centre. So: same centre, radius difference <= 1.5 mm ->
             # the SMALLER one is the chamfer face and is dropped.
+            # Two circles belong to the same chamfer only if they share a centre in 3D,
+            # not just in projection. The grouping key carries all three coordinates now,
+            # so a through bore (two circles 70 mm apart along the axis) can never pair with
+            # itself, and a chamfer mouth (same face, 2 mm larger) still will.
+            # Cluster centres by DISTANCE, not by exact tuple equality. A chamfer mouth
+            # sits one chamfer-depth (about 1 mm) off the face it cuts, so an exact match
+            # never paired it; a through bore's two ends sit 70 mm apart and must not pair.
+            # 1.5 mm separates those two cases cleanly.
+            def _near(a, b, tol=0.0015):
+                return all(abs(float(x) - float(y)) <= tol for x, y in zip(a, b))
+
+            # Store the full KEYS, not just radii: exclusion has to drop every key in the
+            # cluster. Members of a cluster have slightly different centre tuples (a chamfer
+            # mouth sits ~1 mm off the face), so excluding "the smaller radius at THIS
+            # centre" left the other one alive and Ø30 survived as a hole callout.
             _by_centre = {}
-            for _k, _members in grouped.items():
-                _by_centre.setdefault(_k[0], []).append(_k[1])
+            for _k in grouped:
+                _placed = False
+                for _rep in _by_centre:
+                    if _near(_rep, _k[0]):
+                        _by_centre[_rep].append(_k)
+                        _placed = True
+                        break
+                if not _placed:
+                    _by_centre[tuple(_k[0])] = [_k]
             # Both circles of a close pair are excluded, never just the smaller one.
             #
             # Report 2026-11-09 (N-3): "discard the SMALLER" is right for an OUTER chamfer
@@ -8882,14 +8922,29 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # receipt names them, so a caller can annotate by hand instead of guessing.
             _chamfers = set()
             _ambiguous = []
-            for _centre, _radii in _by_centre.items():
-                if len(_radii) < 2:
+            for _centre, _keys in _by_centre.items():
+                if len(_keys) < 2:
                     continue
-                _rs = sorted(_radii)
+                _rs = sorted(_k[1] for _k in _keys)
                 for _i in range(len(_rs) - 1):
                     if (_rs[_i + 1] - _rs[_i]) <= 0.0015:       # 1.5 mm in metres
-                        _chamfers.add((_centre, _rs[_i]))
-                        _chamfers.add((_centre, _rs[_i + 1]))
+                        # A THROUGH bore shows the same diameter at two distant centres (both
+                        # ends of the hole). A chamfer mouth shows up once. So before dropping
+                        # the pair, check whether either diameter also appears somewhere else
+                        # in this view — if it does, that one is the bore and must stay.
+                        #
+                        # Report 2026-11-09 (N-3): dropping both left the main Ø16 bore
+                        # unannotated, which makes the drawing incomplete. This is the
+                        # "is it a through cylinder" test the report asked for, done with
+                        # circle centres instead of feature types.
+                        _keep_at = set()
+                        for _r_probe in (_rs[_i], _rs[_i + 1]):
+                            _places = {_k2[0] for _k2 in grouped if _k2[1] == _r_probe}
+                            if len(_places) >= 2:
+                                _keep_at.add(_r_probe)
+                        for _k in _keys:
+                            if _k[1] not in _keep_at:
+                                _chamfers.add(_k)
                         _ambiguous.append({
                             "centre": [round(float(v), 4) for v in _centre],
                             "narrower_dia_mm": round(_rs[_i] * 2000, 2),
