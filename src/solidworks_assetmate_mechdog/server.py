@@ -161,6 +161,94 @@ def health_check(deep: Annotated[bool, Field(description="Include the deeper dia
     return json.dumps(sw_session.health(deep=deep), ensure_ascii=False, indent=2)
 
 
+# ── Advisory grouping of the 70 tools (architecture review 2026-11-09, P1) ──────────
+# The review proposed `standard / drawing / expert / full` profiles that actually filter
+# what gets registered. Before building that, two things are worth stating:
+#
+#   * nothing in five rounds of feedback says a model picks the WRONG tool. Every reported
+#     problem was "the tool answered incorrectly", never "I could not find the tool";
+#   * filtering needs either 70 edited decorators or a private `_tool_manager._tools` poke.
+#
+# So this ships the grouping as DATA, not as enforcement. Nothing is hidden, nothing can
+# break, and if a real "selected the wrong tool" case appears the table is already written.
+# `full` stays the only profile that is actually in effect.
+_TOOL_PROFILES = {
+    "standard": [
+        "ping", "health_check", "recent_failures", "check_capabilities",
+        "list_tool_profiles",
+        "list_bodies", "get_assembly_tree", "get_mass_properties",
+        "list_sheets", "material_library", "close_document", "export_preview",
+        "list_drawing_annotations", "measure_layout",
+    ],
+    "drawing": [
+        # plan -> build -> annotate -> check -> export
+        "plan_drawing", "produce_drawing", "create_drawing", "drawing_audit",
+        "delivery_check", "reconcile_ledger", "plan_dimension_gaps", "survey_drawings",
+        "survey_dimensions_by_view", "build_feature_ledger",
+        "add_sheet", "activate_sheet", "add_view_to_sheet", "place_views", "set_view",
+        "move_view", "set_view_scale", "delete_view", "add_sheet_line", "set_title_block",
+        "add_section_view", "add_detail_view", "add_flat_pattern_view",
+        "auto_dimension", "add_drawing_dimension", "add_distance_dimension",
+        "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
+        "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
+        "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
+        "add_bom_table", "layout_dimensions", "set_dimension_position",
+        "move_annotation", "delete_annotation", "delete_dimensions",
+        "prune_orphan_dimensions", "verify_dimension_attachments",
+        "list_drawing_edges", "list_circular_edges",
+        "export_drawing", "render_drawing", "flat_pattern_report", "sheet_metal_qc",
+    ],
+    "expert": [
+        "recolor_assembly", "recolor_bodies", "rename_components",
+        "assign_materials", "set_part_material",
+        "export_bom", "batch_export",
+    ],
+    "full": ["* all 70 — this is what is registered today"],
+}
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def list_tool_profiles() -> str:
+    """Show the suggested tool grouping. Advisory only — every tool is still registered.
+
+    Answers "which subset would a drawing-only workflow need" without changing what the
+    server exposes. Nothing here filters or hides a tool, so no existing call can break and
+    no SDK-private surface is touched.
+
+    The grouping is a judgement call, not a measurement: `standard` is what a caller needs
+    just to see whether the bridge is alive and what is in front of it; `drawing` is the
+    full sheet workflow; `expert` is model/assembly-level work that a drawing session does
+    not touch. If a real "picked the wrong tool" case ever appears, this table is where a
+    filtering profile would start.
+    """
+    # Read the registry at CALL time: this runs after every decorator has fired, so the
+    # list is complete. Doing it at import time would capture a partial registry.
+    #
+    # This is the same private surface `_install_argument_guard` already touches
+    # (`_mcp_server.request_handlers`). The review's 7.3 asked for that kind of access to be
+    # centralised — it is: both pokes live here in server.py, not scattered through tools.
+    _manager = getattr(mcp, "_tool_manager", None)
+    names = sorted((getattr(_manager, "_tools", None) or {}).keys())
+
+    payload = {
+        "ok": True,
+        "note": "advisory grouping — every tool stays registered; `full` is what is in effect",
+        "profiles": _TOOL_PROFILES,
+        "counts": {k: (len(v) if k != "full" else len(names))
+                   for k, v in _TOOL_PROFILES.items()},
+        "registered": len(names),
+        # Tools that belong to no group. An empty list means the table is complete; a name
+        # here means someone added a tool and forgot the table, which is exactly the drift
+        # a filtering profile would silently inherit.
+        "ungrouped": [n for n in names
+                      if n not in _TOOL_PROFILES["standard"]
+                      and n not in _TOOL_PROFILES["drawing"]
+                      and n not in _TOOL_PROFILES["expert"]],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 @mcp.tool()
 @_reject_unknown_arguments
 def ping() -> str:

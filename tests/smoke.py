@@ -1076,6 +1076,24 @@ def main():
         return "sw %s, active doc %r" % (payload.get("sw_version"), payload.get("active_doc"))
 
     r.check("edit tools by name (move/delete/layout)", _editing_by_name)
+    def _tool_profiles():
+        """The profile table must cover every registered tool (0.8.284).
+
+        Pure Python — no SolidWorks. It runs here because `smoke covers every tool` insists
+        each tool is exercised somewhere, and this is the cheapest possible exercise.
+        """
+        import json as _json
+        payload = _json.loads(server.list_tool_profiles())
+        assert payload.get("ok") is True, payload
+        assert payload.get("ungrouped") == [], (
+            "tools missing from the profile table: %s" % payload.get("ungrouped"))
+        assert payload.get("registered", 0) >= 71, payload.get("registered")
+        return "registered=%s grouped=%s" % (
+            payload.get("registered"),
+            {k: v for k, v in (payload.get("counts") or {}).items() if k != "full"})
+
+    r.check("tool profiles cover every tool", _tool_profiles)
+
     r.check("health()", _health)
 
     def _bridge_selfheal():

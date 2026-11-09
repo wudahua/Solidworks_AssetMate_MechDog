@@ -118,7 +118,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `export_drawing` | PDF / DWG / DXF |
 | `render_drawing` | PDF → PNG，供目视检查 |
 
-### 三、规划与自检（15）
+### 三、规划与自检（16）
 
 | 工具 | 回答什么问题 |
 |---|---|
@@ -135,6 +135,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
 | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案；回显**运行中的版本 + 源码路径 + 解释器** |
 | `ping` | **最轻的存活探针**（约 18 ms，不碰 ActiveDoc）：SW 版本、往返延迟、上一个工具、自愈计数 |
+| `list_tool_profiles` | 71 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
 | `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
 | `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
 
@@ -248,7 +249,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 265 条历史回归
+python tests/check_all.py     # 秒级：语法 + 结构 + 266 条历史回归
 python tests/smoke.py         # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
 
@@ -386,7 +387,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 70 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 71 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash

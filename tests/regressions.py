@@ -4379,8 +4379,10 @@ def assert_docs_numbers_match_the_code():
                 target = dec.func if isinstance(dec, ast.Call) else dec
                 if isinstance(target, ast.Attribute) and target.attr == "tool":
                     registered += 1
-    assert registered == 70, (
-        "expected 70 registered tools, AST found %d — update this expectation "
+    # 71 since v0.8.284 (`list_tool_profiles`). Bump this line IN THE SAME COMMIT that adds
+    # a tool — the check exists so a new tool cannot slip in without anyone noticing.
+    assert registered == 71, (
+        "expected 71 registered tools, AST found %d — update this expectation "
         "deliberately when a tool is added" % registered)
 
     # Whitespace-tolerant because README wraps the sentence; `assert m` because not
@@ -8973,6 +8975,49 @@ def assert_solidworks_calls_are_serialised():
     assert 0 < lock_at < call_at, "the lock does not enclose the tool invocation"
     return "every tools/call runs under one lock, and the receipt can show contention"
 
+def assert_tool_profiles_are_advisory_only():
+    """0.8.284 — the review proposed filtering profiles; this ships the table, not a filter.
+
+    Architecture review 2026-11-09 (P1): `standard / drawing / expert / full`, with
+    `full` as the default so nothing breaks.
+
+    Two reasons it stopped at a table:
+
+    * nothing in five rounds of feedback says a model picks the WRONG tool. Every reported
+      problem was "the tool answered incorrectly", never "I could not find the tool";
+    * filtering needs either 70 edited decorators or a poked `_tool_manager._tools`, and
+      the review's own acceptance criterion ("common flows must not depend on hidden
+      expert tools") is a risk nobody has measured.
+
+    So `list_tool_profiles()` returns the grouping as data. Every tool stays registered —
+    that is the property this assertion protects. `ungrouped` must be empty, or a tool was
+    added and the table drifted, which is exactly what a real filter would silently inherit.
+
+    Measured 2026-11-09:
+
+        registered=71  counts={standard: 14, drawing: 50, expert: 7, full: 71}
+        ungrouped=[]
+    """
+    with open(os.path.join(SRC, "server.py"), encoding="utf-8").read() if False else open(
+            os.path.join(SRC, "server.py"), encoding="utf-8") as fh:
+        srv = fh.read()
+
+    assert "_TOOL_PROFILES" in srv, "the grouping table is gone"
+    assert "def list_tool_profiles(" in srv, "the advisory tool is gone"
+    assert "advisory grouping — every tool stays registered" in srv, (
+        "the receipt no longer says the grouping is advisory")
+
+    i = srv.find("def list_tool_profiles(")
+    j = srv.find("\ndef ", i + 10)
+    body = srv[i:j]
+    assert "_tool_manager" in body, "the registered count is not read from the live registry"
+    assert "ungrouped" in body, (
+        "drift is invisible: a new tool would belong to no profile and nobody would know")
+    # it must NOT filter: no pop/del against the registry
+    assert "_tools.pop" not in body and "del _tools" not in body, (
+        "the advisory tool mutates the registry — that is a filter, not a table")
+    return "the profile table is published as data; nothing is unregistered"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9213,6 +9258,7 @@ STATIC_REGRESSIONS = [
     ("0.8.281 partial is not success", assert_partial_work_is_not_reported_as_success),
     ("0.8.282 the failure logger never touches COM", assert_the_failure_logger_never_touches_com),
     ("0.8.283 COM calls are serialised", assert_solidworks_calls_are_serialised),
+    ("0.8.284 profiles are advisory", assert_tool_profiles_are_advisory_only),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
