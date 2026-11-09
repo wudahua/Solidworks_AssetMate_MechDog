@@ -117,3 +117,51 @@ reconcile ledger + delivery verdict      PASS   356.7s
 下一步该做的：拿 `P05_karetku.SLDPRT` 单测 `list_drawing_edges` 和
 `verify_dimension_attachments`，看哪个环节从秒级变成分钟级。
 **现在有 `--only` 了，这类定位每轮只要一两分钟。**
+
+---
+
+## 结果（v0.8.271 全量）
+
+```
+46 passed / 46 run   EXIT=0   42m10s
+```
+
+| 版本 | 总耗时 |
+|---|---|
+| 0.8.250 | 21m |
+| 0.8.264 | 72m |
+| **0.8.271** | **42m** |
+
+### 修了两处，都是真浪费
+
+| 改动 | 前 | 后 |
+|---|---|---|
+| `delivery_check` 不再枚举面 | 215.5s | **41.6s** |
+| `list_drawing_edges` 圆检测加 `IsCircle` 门 | 76.5s | **56.6s** |
+
+`edit tools by name` 从 312s 降到 91s，是这两条的直接结果。
+
+### 剩下的差距不能归因到改动的代码
+
+仍比 0.8.250 慢的五条：
+
+```
++324s  BOM quantity column adds up    90 -> 204 -> 413
++286s  export_bom + csv               73 -> 244 -> 359
++140s  get_assembly_tree               6 ->  46 -> 147
++ 89s  add_bom_table                 120 -> 190 -> 208
++ 68s  zero-match guard               50 ->  41 -> 119
+```
+
+**全是 BOM / 装配体。** 0.8.250→0.8.271 只改了 4 个文件（`__init__` / `drawing` / `server` /
+`layout` / `capabilities`），`bom.py` / `bom_native.py` / `assembly.py` 一行没动，
+也不引用被改的函数。
+
+### 「21 分钟」不是稳定基线
+
+`zero-match guard`：**0.8.264 = 41s**（比 0.8.250 的 50s 还快），**0.8.271 = 119s**。
+
+**同一区间内同一条用例差 3 倍。** 这台机器的状态（后台进程、SolidWorks 文档、磁盘）对结果
+影响很大，单次测量不足以定生死。
+
+**要做稳定基线**：同一条用例连跑 3 次取中位数。
