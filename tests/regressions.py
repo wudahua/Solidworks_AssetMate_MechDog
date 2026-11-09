@@ -8580,6 +8580,49 @@ def assert_the_report_says_what_it_verified():
     assert "_smoke_check_count" in ca, "the on-machine count is not computed"
     return "the banners say source-level vs on-machine, and neither implies the other"
 
+def assert_static_check_actually_compares_the_tag():
+    """0.8.276 — the tag guard printed "compared" without comparing anything.
+
+    Report 2026-11-09 (core problem A) ran the controlled experiment this project should
+    have run itself: set `_build_meta.json` to `{"tag": "v0.8.999"}` and leave everything
+    else alone.
+
+        python tests/static_check.py   ->  RC 0, prints "compared against v0.8.999"
+                                           then "static check OK"
+        python tests/regressions.py    ->  RC 1, the assertion caught it
+
+    The `tag_compare` block v0.8.274 added sat AFTER `if problems: return 1`, and the value
+    it computed only fed an f-string. `static_check` is the only gate that blocks a release,
+    so the entire guard lived in the one script CI might not run.
+
+    Fixed by moving the comparison BEFORE the early return and making a mismatch append to
+    `problems`. Measured both ways:
+
+        tag=v0.8.999  -> RC 1, "static check FAILED … tag v0.8.999 != pyproject 0.8.275"
+        tag=v0.8.275  -> RC 0, "tag_compare: v0.8.275 == pyproject 0.8.275"
+
+    The source label also stopped overclaiming. A packaged tag is written by
+    `bump_version.py` from the same `target` variable as the version, so offline it compares
+    `target == target`. It now prints `packaged (SELF-DECLARED, not an external tag)` —
+    report 2026-11-09, core problem B. There is no CI here to force `GITHUB_REF_NAME`, so
+    the honest move is to label the weak source rather than hide it.
+
+    STILL SOURCE-LEVEL: this reads `static_check.py`; it does not run it.
+    """
+    with open(os.path.join(ROOT, "tests", "static_check.py"), encoding="utf-8") as fh:
+        sc = fh.read()
+    i = sc.find("tag must AGREE")
+    j = sc.find("if problems:", i)
+    assert i > 0 and j > i, (
+        "the tag comparison is not before the early return, so it cannot block a release")
+    block = sc[i:j]
+    assert "problems.append" in block, (
+        "a tag mismatch still does not enter `problems` and cannot fail the gate")
+    assert "SELF-DECLARED" in block, (
+        "a packaged tag claims external verification again")
+    assert "_declared" in block, "the comparison has nothing to compare against"
+    return "static_check fails on a tag mismatch instead of printing a line"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8811,6 +8854,7 @@ STATIC_REGRESSIONS = [
     ("0.8.273 chamfer pairs match in 3D", assert_the_chamfer_pair_is_matched_in_three_dimensions),
     ("0.8.274 the tag guard sees the tag", assert_the_tag_guard_can_see_the_tag),
     ("0.8.275 the report says what it verified", assert_the_report_says_what_it_verified),
+    ("0.8.276 static_check compares the tag", assert_static_check_actually_compares_the_tag),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

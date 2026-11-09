@@ -492,15 +492,28 @@ def main():
     problems.extend(check_stale_roadmap(README, PYPROJECT))
     problems.extend(check_wrapper_signatures(SERVER))
     problems.extend(check_param_descriptions(SERVER))
-    if problems:
-        print("static check FAILED (%d issue(s), %d tools scanned):" % (len(problems), len(tools)))
-        for item in problems:
-            print("  " + item)
-        return 1
-    # Report 2026-11-09 (core problem B): "254/254 passed" told the reader nothing about
-    # whether the tag comparison actually ran. A guard that silently skips still shows PASS.
+
+    # ── the tag must AGREE, not merely be printed (report 2026-11-09, core problem A) ─────
+    # v0.8.274 added a `tag_compare` line here — after the `return 1` below, and with no
+    # comparison in it. A controlled experiment proved the gap: setting `_build_meta.json`
+    # to `v0.8.999` left `static_check` returning 0 and printing "compared against
+    # v0.8.999" followed by "static check OK". A log line that says "compared" without
+    # comparing is worse than no line, because the OK banner inherits its authority.
+    #
+    # `static_check` is the only gate that blocks a release, so the comparison belongs
+    # BEFORE the early return, and a mismatch has to become a problem.
     try:
         import json as _json
+
+        _declared = None
+        try:
+            with open(PYPROJECT, encoding="utf-8") as _fh:
+                import re as _re
+                _m0 = _re.search(r'^version\s*=\s*"([^"]+)"', _fh.read(), _re.M)
+            _declared = _m0.group(1) if _m0 else None
+        except Exception:
+            _declared = None
+
         _ver = None
         _src = None
         for _env in ("GITHUB_REF_NAME", "CI_COMMIT_TAG", "GIT_TAG"):
@@ -515,16 +528,33 @@ def main():
                     _m = _json.load(_fh)
                 _c = str(_m.get("tag") or "").strip().lstrip("v")
                 if _c:
-                    _ver, _src = _c, "packaged"
+                    # Self-declared, not evidence. `bump_version.py` writes the tag and the
+                    # version from the same `target` variable, so on a tarball install this
+                    # compares `target == target`. Say so instead of implying verification.
+                    _ver, _src = _c, "packaged (SELF-DECLARED, not an external tag)"
             except Exception:
                 pass
-        if not _ver:
-            _ver, _src = None, "none"
-        print("tag_compare: %s" % (
-            ("compared against v%s (%s)" % (_ver, _src)) if _ver
-            else "SKIPPED (no tag source)"))
+
+        if _ver is None:
+            print("tag_compare: SKIPPED (no tag source: no CI env var, no "
+                  "_build_meta.json, no .git)")
+        elif _declared is None:
+            problems.append("tag_compare: pyproject has no version line to compare against")
+        elif _ver != _declared:
+            problems.append(
+                "tag_compare: tag v%s (from %s) != pyproject version %s"
+                % (_ver, _src, _declared))
+            print("tag_compare: MISMATCH v%s (%s) vs %s" % (_ver, _src, _declared))
+        else:
+            print("tag_compare: v%s == pyproject %s  [source: %s]" % (_ver, _declared, _src))
     except Exception as _exc:
-        print("tag_compare: SKIPPED (%s)" % str(_exc)[:60])
+        problems.append("tag_compare: crashed (%s)" % str(_exc)[:80])
+
+    if problems:
+        print("static check FAILED (%d issue(s), %d tools scanned):" % (len(problems), len(tools)))
+        for item in problems:
+            print("  " + item)
+        return 1
     print("static check OK (%d tools, every module reference resolves, README in sync, "
           "every parameter documented)"
           % len(tools))
