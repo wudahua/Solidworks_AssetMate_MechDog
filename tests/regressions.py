@@ -8547,6 +8547,39 @@ def assert_the_tag_guard_can_see_the_tag():
         "nothing stops tagging the same commit twice, which is how v0.8.272 shipped")
     return "the tag guard sees the tag on tarball installs and fails loudly when it cannot"
 
+def assert_the_report_says_what_it_verified():
+    """0.8.275 — "255/255 passed" implied behaviour was verified. It was not.
+
+    Report 2026-11-09 (core problem C) counted: 254 of 254 assertions inspect source text,
+    and the 7 added in this round are no exception —
+
+        assert "_keep_at" in body
+
+    That is how v0.8.273 shipped with Ø16 still unannotated: the AST assertion passed, the
+    drawing was wrong.
+
+    Adding a real fixture for each is not the first step; saying what the number means is.
+    The banners now read:
+
+        source-level  255/255 passed   (source inspection only — no SolidWorks involved)
+
+    and `check_all` prints both counts side by side so neither can stand in for the other.
+
+    STILL SOURCE-LEVEL: this assertion checks the banner text, nothing more.
+    """
+    with open(os.path.join(ROOT, "tests", "regressions.py"), encoding="utf-8") as fh:
+        reg = fh.read()
+    assert "source inspection only" in reg, (
+        "the regressions banner claims verification again")
+    assert "no SolidWorks involved" in reg, (
+        "the banner does not say the machine was never touched")
+    with open(os.path.join(ROOT, "tests", "check_all.py"), encoding="utf-8") as fh:
+        ca = fh.read()
+    assert "on-machine" in ca and "NOT run here" in ca, (
+        "check_all does not separate the two kinds of check")
+    assert "_smoke_check_count" in ca, "the on-machine count is not computed"
+    return "the banners say source-level vs on-machine, and neither implies the other"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8777,6 +8810,7 @@ STATIC_REGRESSIONS = [
     ("0.8.271 circle detection is gated", assert_circle_detection_is_gated_before_the_array_call),
     ("0.8.273 chamfer pairs match in 3D", assert_the_chamfer_pair_is_matched_in_three_dimensions),
     ("0.8.274 the tag guard sees the tag", assert_the_tag_guard_can_see_the_tag),
+    ("0.8.275 the report says what it verified", assert_the_report_says_what_it_verified),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
@@ -8822,7 +8856,15 @@ def main():
             failures += 1
             print("ERROR %-32s %s: %s" % (name, type(exc).__name__, str(exc)[:90]))
     print("-" * 78)
-    print("%d/%d passed" % (len(STATIC_REGRESSIONS) - failures, len(STATIC_REGRESSIONS)))
+    # Say WHAT these are. Report 2026-11-09 (core problem C) counted them: 254 of 254 are
+    # source inspection — `assert "token" in body` — and 7 new ones from this round are no
+    # exception. "255/255 passed" reads as "the behaviour was verified", which is how
+    # v0.8.273 shipped with Ø16 still unannotated: the AST assertion passed, the drawing
+    # was wrong.
+    #
+    # Renaming the line is cheap and honest. Adding a real fixture for each of 254 is not.
+    print("source-level  %d/%d passed   (source inspection only — no SolidWorks involved)"
+          % (len(STATIC_REGRESSIONS) - failures, len(STATIC_REGRESSIONS)))
     return 0 if not failures else 1
 
 

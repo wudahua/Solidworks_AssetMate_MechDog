@@ -33,6 +33,27 @@ STEPS = [
 ]
 
 
+def _regression_count():
+    """How many entries `regressions.py` registers, without importing it."""
+    try:
+        with open(os.path.join(HERE, "regressions.py"), encoding="utf-8") as fh:
+            text = fh.read()
+        head = text.split("STATIC_REGRESSIONS = [", 1)[1]
+        body = head.split("\n]", 1)[0]
+        return body.count('\n    ("')
+    except Exception:
+        return 0
+
+
+def _smoke_check_count():
+    """How many `r.check(...)` calls `smoke.py` makes, without running it."""
+    try:
+        with open(os.path.join(HERE, "smoke.py"), encoding="utf-8") as fh:
+            return fh.read().count("r.check(")
+    except Exception:
+        return 0
+
+
 def main():
     failures = []
     for name, cmd in STEPS:
@@ -55,7 +76,15 @@ def main():
     if failures:
         print("FAILED: %s" % ", ".join(failures))
         return 1
-    print("all offline checks passed — for behaviour, run: python tests/smoke.py")
+    # Two very different things were being reported as one. Report 2026-11-09 (core
+    # problem C): every entry in `regressions.py` inspects source text; none of them drives
+    # SolidWorks. Printing both counts side by side stops "all offline checks passed" from
+    # implying the drawing itself was verified.
+    print("all offline checks passed")
+    print("  source-level : %d assertions (text/AST only)"
+          % _regression_count())
+    print("  on-machine   : %d checks, NOT run here — `python tests/smoke.py`"
+          % _smoke_check_count())
     return 0
 
 
