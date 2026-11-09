@@ -658,7 +658,16 @@ def rgb_of(values):
 
 
 def ok(**payload):
-    payload["ok"] = True
+    """Success reply. A caller may pass `ok=False` to report a partial result.
+
+    Report 2026-11-09 (R-2): `add_hole_callouts` returned `ok: true` together with
+    `verdict: "partial"` and four excluded diameters. Batch pipelines key off `ok`, so they
+    read a sheet missing its main bore as finished. The helper used to force `ok = True`,
+    which made the tool unable to say otherwise.
+
+    `setdefault`, not assignment: every existing call keeps returning `ok: true`.
+    """
+    payload.setdefault("ok", True)
     return payload
 
 

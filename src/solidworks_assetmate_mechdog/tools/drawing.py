@@ -9473,6 +9473,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # with a flag when the pair is concentric with the view centre (the usual shape
             # of a main bore or its boss).
             coaxial_duplicates_dropped=_coaxial_dropped[:10],
+            # Partial work is not success. See the verdict comment above.
+            ok=(not _ambiguous),
             excluded_diameters_mm=sorted(
                 {a["narrower_dia_mm"] for a in _ambiguous}
                 | {a["wider_dia_mm"] for a in _ambiguous}),
@@ -9520,9 +9522,23 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # cut holes. That is a geometry/build limit, not a parameter problem, so name it.
             # P1-1: a run that produced callouts AND rejected some is `partial`, not `ok`.
             # "budget_exceeded: true + 5 failed + verdict ok" was the old behaviour.
-            verdict=("ok" if created and not failed else
-                     ("partial" if created else
-                      ("no_native_callout" if groups_total else "nothing_to_annotate"))),
+            # Report 2026-11-09 (R-2): `ok: true` sat next to `verdict: "partial"` and four
+            # excluded diameters. On 限位导向套 that meant "one callout created, main Ø16 bore
+            # skipped" was reported as success — a batch pipeline keyed on `ok` would ship
+            # the sheet. Excluded diameters now count as partial, and `ok` follows `verdict`.
+            verdict=("partial" if _ambiguous else
+                     ("ok" if created and not failed else
+                      ("partial" if created else
+                       ("no_native_callout" if groups_total else "nothing_to_annotate")))),
+            partial_reason=(
+                ("%d 个直径因倒角配对无法判定而未标注（%s）。ok=false：按 ok 判断的批处理"
+                 "不得把这张图当成完整。"
+                 % (len({a["narrower_dia_mm"] for a in _ambiguous}
+                        | {a["wider_dia_mm"] for a in _ambiguous}),
+                    "、".join("Ø%s" % d for d in sorted(
+                        {a["narrower_dia_mm"] for a in _ambiguous}
+                        | {a["wider_dia_mm"] for a in _ambiguous}))))
+                if _ambiguous else None),
             native_callout_note=(
                 None if not failed else
                 ("%d 条成功、%d 条被拒（原因见 failed；被拒的标注已从图上撤销，不留残留）。"

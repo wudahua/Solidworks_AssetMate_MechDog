@@ -8842,6 +8842,46 @@ def assert_static_check_fails_when_it_cannot_check():
         "the packaged tag source is not shipped in a wheel/sdist")
     return "the gate fails closed, and the packaged tag source ships"
 
+def assert_partial_work_is_not_reported_as_success():
+    """0.8.281 — ok:true sat next to verdict:partial and four excluded diameters.
+
+    Report 2026-11-09 (R-2). On 限位导向套:
+
+        holes_found: 1, created_count: 1, verdict: "partial", ok: true
+        excluded_diameters_mm: [16.0, 18.0, 28.0, 30.0]   <- the main bore is in there
+
+    A batch pipeline keys off `ok`, so a sheet missing its main bore read as finished. The
+    transparency added in 0.8.277 (`excluded_diameters_mm`, `unannotated_note`) told a human
+    the truth; `ok` still told a machine the opposite.
+
+    Two changes:
+    * `sw_session.ok()` used to hard-assign `payload["ok"] = True`, so the tool COULD NOT
+      report otherwise. Now `setdefault` — every existing caller still gets `ok: true`, and
+      a caller that knows better can pass `ok=False`.
+    * `add_hole_callouts` sets `ok=(not _ambiguous)` and `verdict="partial"` whenever a
+      chamfer pair had to be skipped.
+
+    Measured 2026-11-09:
+
+        ok=False  verdict=partial  created=1
+        partial_reason="4 个直径因倒角配对无法判定而未标注（Ø16.0、Ø18.0、Ø28.0、Ø30.0）。"
+    """
+    with open(os.path.join(SRC, "sw_session.py"), encoding="utf-8") as fh:
+        sess = fh.read()
+    i = sess.find("def ok(")
+    j = sess.find("def error(", i)
+    assert "setdefault" in sess[i:j], (
+        "ok() forces success again; no tool can report a partial result")
+    assert 'payload["ok"] = True' not in sess[i:j], (
+        "the hard assignment is back")
+
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    assert "ok=(not _ambiguous)" in body, "excluded diameters do not affect ok"
+    assert "partial_reason" in body, "a partial run does not say what it skipped"
+    return "a run with excluded diameters reports ok=false and names them"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9079,6 +9119,7 @@ STATIC_REGRESSIONS = [
     ("0.8.278 callout text reads all slots", assert_a_callout_receipt_reads_every_text_slot),
     ("0.8.279 a callout reports what it could not verify", assert_a_single_callout_does_not_fake_a_verdict),
     ("0.8.280 the gate fails closed", assert_static_check_fails_when_it_cannot_check),
+    ("0.8.281 partial is not success", assert_partial_work_is_not_reported_as_success),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
