@@ -2613,3 +2613,43 @@ Empty    → 类型不匹配 arg 8
 
 **第 3 条是这轮最大的教训**：如果当初用 `save=True` 测，就不会发现第 ① 层，
 也就不会知道「快照和插入用的不是同一份文档」。
+
+---
+
+## `add_drawing_dimension(style="diameter")` 建得出尺寸，但图面没有文字
+
+实测 2026-11-09，`限位导向套.SLDPRT` 前视图，`edge_index=3`（`list_drawing_edges` 里
+`is_circle` 且 Ø16 的那条）：
+
+```json
+{"created": true, "selected": "edge_index", "style_requested": "diameter",
+ "style_used": "diameter", "value_m": 0.016, "ok": true}
+```
+
+回读：
+
+```
+RD1 | type=5（直径）| text='Ø' | value=16.0
+```
+
+**`type=5` 是直径尺寸、`value_m=0.016` 是 Ø16、`style_used` 也对。**
+导出 PDF 用 pypdfium2 按 6× 渲染成 7144×5052 PNG，裁中央视图放大：
+
+**图上有引线和箭头，没有数字。`GetText` 给的 `'Ø'` 后面本该由渲染器补 `16`，实际是空的。**
+
+### 这意味着什么
+
+**这条路「能建但不能用」** —— 比 `add_hole_callout` 的 `Ø16 ↧ 68` 好（至少不误导成盲孔），
+但**仍然不是一个可以交付的标注**。
+
+**也说明「改用 `add_drawing_dimension` 补 Ø16」这个建议（报告 2026-11-09 §3.3 第 5 点）
+没那么简单**：工具的 API 层是通的，断在渲染/文字这一层。
+
+### 没查清的
+
+- 文字是被 `offset_y=-0.015` 推出视图外，还是被隐藏属性关掉
+- `IDisplayDimension.GetText` 只回格式码是普遍现象还是这条路径特例
+- 同一工具标**线性**尺寸（`style` 非 diameter）时文字是否正常
+
+**下一个人接着查时，先只标一条线性尺寸做对照** —— 能立刻分出「直径特有的问题」还是
+「文字渲染的普遍问题」。
