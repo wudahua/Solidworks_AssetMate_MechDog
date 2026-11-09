@@ -8155,9 +8155,15 @@ def assert_the_capability_text_names_the_two_real_causes():
     caps = _read("tools/capabilities.py")
     assert "cut_line_overshoot_m" in caps, (
         "the table does not name the thing that actually fixed the zero-offset case")
-    assert "未赋材质时 hatch 恒 0" in caps, (
-        "the material requirement is still missing — that hint sends people to the hatch "
-        "settings dialog, which is a dead end")
+    # Was "the material requirement is stated". Report 2026-11-09 (N-1) measured an
+    # UNMATERIALED part returning hatch_count 4, so the requirement was never real — it was
+    # a side effect of the cut line ending on the outline. The table must now say the
+    # conclusion is RETIRED, not repeat it.
+    assert "作废" in caps, (
+        "the table still presents 'no material -> no hatching' as fact; it was disproved "
+        "on 2026-11-09 (unmaterialed part, hatch_count 4)")
+    assert "别再怀疑材质" in caps or "别再怀疑材质" in _read("tools/drawing.py"), (
+        "the hatch_missing hint still sends the caller off to assign a material")
     assert "不要用 `offset_m` 去凑" in caps, (
         "the table still lets a caller reach for an offset that produces a chord")
     assert "section_line_remains" in caps, (
@@ -8192,6 +8198,70 @@ def assert_the_material_slot_is_the_material_cell():
     assert '"code": (0.391, 0.022)' in block, "the code slot moved unexpectedly"
     assert '"name": (0.391, 0.036)' in block, "the name slot moved unexpectedly"
     return "material reads the cell that holds Q235, not the row below it"
+
+def assert_both_circles_of_a_chamfer_pair_are_skipped():
+    """0.8.267 — the chamfer filter deleted the real bore and annotated the chamfer mouth.
+
+    Report 2026-11-09 (N-3/N-4), the highest-severity finding of the retest:
+
+        Ø16 真实内孔     -> deleted as the "smaller one" of a concentric pair
+        Ø18 倒角口       -> annotated as a hole
+        Ø30 凸台外圆     -> annotated as a hole (only `<MOD-DIAM>`, no number)
+
+    v0.8.257's rule was "same centre, radius gap <= 1.5 mm -> drop the SMALLER". That is
+    right for an OUTER chamfer (Ø30 boss vs Ø28 face: drop Ø28) and exactly backwards for
+    an INNER one, where the bore wall sits 2 mm BELOW its chamfer mouth.
+
+    Which circle is the chamfer depends on the feature, and `IEdge` does not expose that
+    here — so neither is annotated, and the pair is named in the receipt:
+
+        created=2  diameters=[6.6, 11.0]
+        ambiguous: Ø16.0 / Ø18.0 (gap 1.0 mm)
+        ambiguous: Ø28.0 / Ø30.0 (gap 1.0 mm)
+
+    Only the two real holes survive, and Ø30 stopped being called a hole as a side effect.
+
+    Missing a callout is recoverable by hand. Calling a chamfer a hole is a wrong part.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    assert "_ambiguous" in body, "the pair is silently dropped without being reported"
+    assert "ambiguous_chamfer_pairs" in body, (
+        "the receipt does not name the circles it skipped")
+    assert "_chamfers.add((_centre, _rs[_i + 1]))" in body, (
+        "only the smaller circle is excluded again, which deletes the real bore on an "
+        "inner chamfer")
+    return "both circles of a chamfer pair are skipped and named"
+
+
+def assert_a_hole_callout_is_not_a_deletable_dimension():
+    """0.8.267 — after `add_hole_callouts`, every batch delete returned a false failure.
+
+    Report 2026-11-09 (N-2):
+
+        {"ok": false, "error": "dimensions_not_all_removed",
+         "removed": 0, "failed": 0, "remaining_count": 4,
+         "remaining_matches": [30.0, 18.0, 11.0, 6.6]}
+
+    Those four values are the callout DIAMETERS, not sizes. `AddHoleCallout2` returns an
+    `IDisplayDimension`, so `GetType == 4` lets a hole callout through the type filter, and
+    the sheet could never be reported clean again.
+
+    `IsHoleCallout` separates them. They are listed in `non_dimension_annotations` and kept
+    out of `ok`. Measured 2026-11-09 on 限位导向套:
+
+        delete: ok=True  remaining=0  non_dim=2
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delete_dimensions")) or ""
+    assert "IsHoleCallout" in body, (
+        "hole callouts count as deletable dimensions again, so any sheet with callouts "
+        "reports a permanent false failure")
+    assert "non_dimension_annotations" in body, (
+        "the receipt does not say which annotations were excluded")
+    return "hole callouts are excluded from the delete check"
 
 STATIC_REGRESSIONS = [
 
@@ -8415,6 +8485,8 @@ STATIC_REGRESSIONS = [
     ("0.8.261 a missed point is not an empty view", assert_a_missed_point_is_not_an_empty_view),
     ("0.8.262 the table names the real causes", assert_the_capability_text_names_the_two_real_causes),
     ("0.8.263 the material slot is the material cell", assert_the_material_slot_is_the_material_cell),
+    ("0.8.267 chamfer pair both skipped", assert_both_circles_of_a_chamfer_pair_are_skipped),
+    ("0.8.267 callouts are not dimensions", assert_a_hole_callout_is_not_a_deletable_dimension),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

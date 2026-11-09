@@ -545,6 +545,7 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
         # So re-enumerate and report what SURVIVED. Only a value in `keep` is allowed to
         # remain; anything else is a real leftover and gets named.
         remaining = []
+        non_dimension_annotations = []
         try:
             for view in _iter_views(doc):
                 if getattr(view, "Type", None) == 1:
@@ -559,6 +560,25 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
                         if int(ann.GetType) != 4:
                             continue
                         display = win.Dispatch(ann.GetSpecificAnnotation)
+                        # A hole callout IS an `IDisplayDimension`, so `GetType == 4` lets it
+                        # through. Report 2026-11-09 (N-2): after `add_hole_callouts`, a
+                        # `delete_dimensions` call listed the four callout diameters
+                        # (Ø30/Ø18/Ø11/Ø6.6) as "dimensions that should have been deleted",
+                        # so the sheet could never be reported clean and every batch delete
+                        # on such a drawing returned `ok: false`.
+                        #
+                        # They are not sizes you delete — they are the hole annotations
+                        # themselves. `IsHoleCallout` is the flag that separates them, and
+                        # it is the same one this toolkit already uses to decide a callout
+                        # was created.
+                        try:
+                            if bool(display.IsHoleCallout):
+                                non_dimension_annotations.append(
+                                    {"view": str(getattr(view, "Name", "")),
+                                     "kind": "hole_callout"})
+                                continue
+                        except Exception:
+                            pass
                         value, unit, _t = _dimension_measure(display)
                         if value is None:
                             continue
@@ -596,6 +616,10 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
                 failed_items=failed[:10],
                 remaining_matches=remaining[:40],
                 remaining_count=len(remaining),
+                # Annotations that are `GetType == 4` but are not sizes: hole callouts.
+                # Listed so the caller can see they exist, excluded from `ok`.
+                non_dimension_annotations=non_dimension_annotations[:20],
+                non_dimension_count=len(non_dimension_annotations),
                 verified_clean=False)
         return drawing_ok(
             drawing=doc.GetTitle,
@@ -604,6 +628,8 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
             failed_items=failed[:10],
             remaining_matches=remaining[:40],
             remaining_count=len(remaining),
+            non_dimension_annotations=non_dimension_annotations[:20],
+            non_dimension_count=len(non_dimension_annotations),
             verified_clean=True,
             note=("按值保留（默认容差 0.05 mm）。SolidWorks 无批量删除接口；实测 14 条一次调用 < 5 s。"
                   " `remaining_matches` 是删除后重新枚举的结果——**非空表示没删净**，"

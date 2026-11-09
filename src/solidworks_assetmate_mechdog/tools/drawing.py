@@ -6254,7 +6254,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                     # the cut plane sits exactly on the symmetry plane and no edge appears.
                     "**`offset_m=0` 现在可以切了**（0.8.255 修掉根因）。之前切不开不是偏置问题，是**剖切线长度被 clamp 到「短边一半」，端点正好落在轮廓圆上**，SolidWorks 把这种退化线当成「没穿过实体」，返回一个普通投影。现在线会**外扩 `cut_line_overshoot_m`（默认 4 mm）**，端点一定在轮廓外。\n"
                     "实测（2026-11-08，`offset=0`）：`限位导向套` 前视 46 边 / hatch 4 / ratio 1.000；`小车底部滚轮`（单实体导入件）前视 28 边 / hatch 2 / ratio 1.000 —— **两种零件都过轴**。\n"
-                    "**如果仍然切不开**：① 把 `cut_line_overshoot_m` 加到 0.008；② 检查零件是否赋了材质 —— 同一几何同一参数，**未赋材质时 hatch 恒 0**（`set_part_material` 之后立刻 hatch 2）；③ 还不行就把剖视留给 SolidWorks 手工做，**不要用 `offset_m` 去凑** —— 回转体上偏 2 mm 剖面宽度就从 64 掉到 63.5，标出来的直径是错的。",
+                    "**如果仍然切不开**：① 把 `cut_line_overshoot_m` 加到 0.008；② 看 `sanity.verdict`：`identical_to_source` 说明线没穿过实体，`no_hatch` 才去查剖面线设置（**别再怀疑材质** —— 2026-11-09 实测未赋材质也能 hatch 4，旧结论「未赋材质时 hatch 恒 0」已作废）；③ 还不行就把剖视留给 SolidWorks 手工做，**不要用 `offset_m` 去凑** —— 回转体上偏 2 mm 剖面宽度就从 64 掉到 63.5，标出来的直径是错的。",
                     # Report 2026-11-08 (P0-1, suggestion 3): a failed section used to be
                     # left on the sheet with no mention in the receipt, so the caller found
                     # an empty `A-A` polluting the layout later. It is still kept — deleting
@@ -8800,7 +8800,20 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             _by_centre = {}
             for _k, _members in grouped.items():
                 _by_centre.setdefault(_k[0], []).append(_k[1])
+            # Both circles of a close pair are excluded, never just the smaller one.
+            #
+            # Report 2026-11-09 (N-3): "discard the SMALLER" is right for an OUTER chamfer
+            # (Ø30 boss vs Ø28 chamfer face -> drop Ø28) and exactly backwards for an INNER
+            # one. On this part the bore wall is Ø16 (r=8) and its chamfer mouth is Ø18
+            # (r=9), so the rule deleted the real bore and annotated the chamfer mouth as a
+            # hole. A missing callout is recoverable by hand; a callout that says a chamfer
+            # is a hole is a wrong part.
+            #
+            # Which circle is the chamfer depends on the feature, and `IEdge` does not
+            # expose that here. So drop BOTH and say so — `ambiguous_chamfer_pairs` in the
+            # receipt names them, so a caller can annotate by hand instead of guessing.
             _chamfers = set()
+            _ambiguous = []
             for _centre, _radii in _by_centre.items():
                 if len(_radii) < 2:
                     continue
@@ -8808,6 +8821,13 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                 for _i in range(len(_rs) - 1):
                     if (_rs[_i + 1] - _rs[_i]) <= 0.0015:       # 1.5 mm in metres
                         _chamfers.add((_centre, _rs[_i]))
+                        _chamfers.add((_centre, _rs[_i + 1]))
+                        _ambiguous.append({
+                            "centre": [round(float(v), 4) for v in _centre],
+                            "narrower_dia_mm": round(_rs[_i] * 2000, 2),
+                            "wider_dia_mm": round(_rs[_i + 1] * 2000, 2),
+                            "gap_mm": round((_rs[_i + 1] - _rs[_i]) * 1000, 2),
+                        })
             if _chamfers:
                 grouped = {k: v for k, v in grouped.items() if k not in _chamfers}
 
@@ -9176,6 +9196,10 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # How many same-diameter groups were folded into one callout. A non-zero value
             # means the sheet has one leader per hole SIZE, not one per hole.
             duplicate_groups_merged=_dropped_groups,
+            # Concentric circle pairs within 1.5 mm of each other. One of the two is a
+            # chamfer face and the other is often the real hole, and which is which cannot
+            # be told from here — so neither is annotated. Annotate these by hand.
+            ambiguous_chamfer_pairs=_ambiguous[:10],
             edges_scanned=edges_scanned,
             rejected_outer_contour=rejected,
             holes_found=groups_total,
