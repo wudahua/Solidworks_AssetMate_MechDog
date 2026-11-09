@@ -55,10 +55,28 @@ class FixtureMissing(Exception):
 
 
 class Runner:
-    def __init__(self):
+    def __init__(self, only=None):
         self.results = []
+        # `--only` takes one or more case-insensitive substrings. A full run is 46 cases
+        # and took 72 minutes on 2026-11-09 (docs/2026-11-09-smoke-timing.md), so checking
+        # one tool meant waiting an hour. Non-matching cases are NOT executed at all.
+        #
+        # Caveat: several cases reuse a drawing built by an earlier case. Running one of
+        # those alone raises FixtureMissing and reports SKIP — that is the correct answer,
+        # not a failure. Run the drawing chain too when you need it:
+        #     python tests/smoke.py --only "drawing chain" --only "reconcile ledger"
+        self.only = [p.lower() for p in (only or []) if p]
+
+    def _selected(self, name):
+        if not self.only:
+            return True
+        low = name.lower()
+        return any(pat in low for pat in self.only)
 
     def check(self, name, fn):
+        if not self._selected(name):
+            self.results.append((name, "SKIPPED", 0.0, "not selected by --only"))
+            return True
         start = time.time()
         status = "PASS"
         try:
@@ -80,13 +98,17 @@ class Runner:
         failed = [r for r in self.results if r[1] == "FAIL"]
         skipped = [r for r in self.results if r[1] == "SKIP"]
         passed = [r for r in self.results if r[1] == "PASS"]
+        not_selected = [r for r in self.results if r[1] == "SKIPPED"]
+        ran = len(passed) + len(skipped) + len(failed)
         print("-" * 78)
         line = "%d passed" % len(passed)
         if skipped:
             line += ", %d skipped (fixture missing)" % len(skipped)
         if failed:
             line += ", %d FAILED" % len(failed)
-        print(line + "  / %d total" % len(self.results))
+        # `--only` runs report against what they actually ran, not against all 46.
+        print(line + "  / %d run" % ran
+              + ("  (%d not selected)" % len(not_selected) if not_selected else ""))
         for name, _, _, detail in failed:
             print("  FAIL %s -> %s" % (name, detail))
         for name, _, _, detail in skipped:
@@ -107,6 +129,11 @@ def main():
     parser.add_argument("--assembly", default=DEFAULT_ASSEMBLY)
     parser.add_argument("--part", default=DEFAULT_PART)
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument(
+        "--only", action="append", default=[], metavar="SUBSTR",
+        help="run only cases whose name contains SUBSTR (repeatable, case-insensitive). "
+             "Cases that need a drawing built by an earlier case will report SKIP — add "
+             "that case to the filter too, e.g. --only 'drawing chain' --only 'reconcile'.")
     parser.add_argument("--skip-export", action="store_true", help="skip STEP export (slow)")
     parser.add_argument("--skip-drawing", action="store_true", help="skip drawing chain (slow)")
     parser.add_argument(
@@ -192,7 +219,7 @@ def main():
     print("output  : %s" % workdir)
     print("-" * 78)
 
-    r = Runner()
+    r = Runner(only=args.only)
 
     def _static():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
