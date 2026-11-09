@@ -3550,20 +3550,66 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
                     dia=(circle_matched or {}).get("diameter_mm"),
                     dist=(circle_matched or {}).get("distance_m"),
                     sel=_sel_count),
-                matched_circle=circle_matched, selected_before_call=_sel_count)
+                matched_circle=circle_matched,
+                # The callout text can say `↧ 68` on a hole that goes through the part.
+                # `value_mm` is still 16, so a number-only check never sees it. Surface the
+                # contradiction instead of letting `ok: true` imply the text is right.
+                selected_before_call=_sel_count)
 
         readback = {}
-        # GetText is a method on some builds and a property on others: call it, and only
-        # fall back to a bare attribute read when calling raises.
+        # ── Read the text off the DISPLAY DIMENSION, every slot (report 2026-11-09, R-1) ──
+        # This used to call `callout.GetText()` with no argument, on the IAnnotation.
+        # `IAnnotation` has no such method and a dimension needs a slot number, so the call
+        # raised and `text` was always None — while the same receipt said `ok: true`.
+        #
+        # That null is why nobody noticed the actual output was WRONG: measured on 限位导向套
+        # the callout on the Ø16 through bore renders as
+        #
+        #     Ø16 ↧ 68
+        #
+        # i.e. a blind hole 68 deep, on a bore that goes all the way through. `value_mm`
+        # was 16 (correct), so any check that only compared the NUMBER passed.
+        _text_slots = []
         try:
-            text_value = callout.GetText()
-            readback["text"] = str(text_value) if not callable(text_value) else None
+            _dim = callout.GetDimension2(0)
+            for _probe in (1, 0, 2, 3, 4, 5):
+                try:
+                    _candidate = _dim.GetText(_probe)
+                except Exception:
+                    continue
+                _text = str(_candidate).strip() if _candidate else ""
+                if _text and _text not in _text_slots:
+                    _text_slots.append(_text)
         except Exception:
-            try:
-                text_value = callout.GetText
-                readback["text"] = str(text_value) if not callable(text_value) else None
-            except Exception:
-                readback["text"] = None
+            pass
+        readback["text"] = " | ".join(_text_slots) if _text_slots else None
+        readback["text_slots"] = _text_slots
+
+        # ── Flag a bore that the callout calls blind (report 2026-11-09, R-1) ────────────
+        # The Ø16 bore goes through the part (a full section shows an open band end to end;
+        # volume 70 671 mm³ agrees). SolidWorks' own callout still renders it as
+        # `Ø16 ↧ 68` — it takes the depth from the cut feature, not from whether the cut
+        # exits the far face.
+        #
+        # Rewriting that text through `SetText` is what produced "Ø1515" in 0.8.x: a
+        # dimension's display text lives in several slots and writing one destroys the
+        # others. So do not rewrite — say it.
+        _text_flags = []
+        _joined = (readback.get("text") or "")
+        if ("\u21a7" in _joined) or ("HOLE-DEPTH" in _joined):
+            _text_flags.append({
+                "flag": "depth_on_a_through_bore_suspect",
+                "detail": "the callout carries a depth symbol; if this hole exits the far "
+                          "face the drawing will read as a blind hole. Verify against the "
+                          "model, or use `add_drawing_dimension` on the circle instead of a "
+                          "hole callout.",
+            })
+        if not _joined:
+            _text_flags.append({
+                "flag": "text_unreadable",
+                "detail": "no text slot returned content; the rendered annotation was not "
+                          "verified. Do not treat `ok: true` as evidence the text is right.",
+            })
         try:
             dim = callout.GetDimension2(0)
             if dim is not None:
@@ -3577,7 +3623,12 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
             except Exception:
                 pass
 
-        match = None
+        # `match` used to stay None when `model_path` was not supplied — while the note
+        # told the caller to "compare model_match.ok". A null that the note treats as a
+        # verdict is the same failure this project keeps fixing elsewhere: report it as
+        # "not checked", with a reason, instead of handing back nothing.
+        match = {"ok": None, "checked": False,
+                 "reason": "model_path not supplied — diameter/through state not verified"}
         if model_path:
             try:
                 from . import ledger as _ledger
@@ -3621,6 +3672,7 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
             # Which circle the point resolved to. Without it a caller cannot tell "the hole
             # I meant" from "the nearest hole", and this tool used to fail outright instead.
             matched_circle=circle_matched,
+            text_flags=_text_flags,
             saved=bool(save),
             note="比对 model_match.ok；false 表示标注落在别处或模型无对应孔径。",
         )

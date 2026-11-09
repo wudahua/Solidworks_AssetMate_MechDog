@@ -8737,6 +8737,59 @@ def assert_a_callout_receipt_reads_every_text_slot():
     assert "(1, 0, 2, 3" in body, "slot 3 is where the through-hole line lives"
     return "the receipt concatenates every text slot and flags a partial read"
 
+def assert_a_single_callout_does_not_fake_a_verdict():
+    """0.8.279 — `add_hole_callout` returned ok:true with every verification field null.
+
+    Report 2026-11-09 (R-1), the most damaging finding of this round. The plural tool's
+    `unannotated_note` told the caller to fix the missing Ø16 bore by hand:
+
+        "请对照模型手工补 `add_hole_callout(x, y)`"
+
+    Following that advice produced this on the sheet:
+
+        Ø16 ↧ 68
+
+    — a blind hole 68 deep, on a bore that goes all the way through. Meanwhile the receipt
+    was:
+
+        {"ok": true, "created": true,
+         "readback": {"text": null, "value_mm": 16.0},
+         "model_match": null, "matched_circle": null}
+
+    `value_mm` was right (16), so any number-only check passed. `text` was null because the
+    code called `callout.GetText()` with no slot on an `IAnnotation`; `model_match` was null
+    because `model_path` is optional; and the `note` told the caller to "compare
+    model_match.ok" — against a null.
+
+    Fixed here:
+    * text is read off the display dimension, every slot; when nothing answers the receipt
+      carries `text_flags: [{flag: "text_unreadable"}]` instead of silence
+    * `model_match` is always a dict — `{"ok": None, "checked": false, "reason": ...}` when
+      no model was supplied
+    * a depth symbol on a callout that might be a through bore raises
+      `depth_on_a_through_bore_suspect` with the alternative path (`add_drawing_dimension`)
+
+    NOT fixed: the `↧ 68` text itself. Rewriting a dimension's display text via `SetText`
+    is what produced "Ø1515" earlier — the value lives across slots and writing one destroys
+    the others. SolidWorks derives the depth from the cut feature, not from whether it exits
+    the far face, and `IEdge` cannot tell us which.
+
+    STILL SOURCE-LEVEL: measured on 限位导向套 2026-11-09 (`text=None`,
+    `flags=['text_unreadable']`), not asserted against a rendered sheet.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callout")) or ""
+    assert "text_flags" in body, "a callout can return ok:true with nothing verified again"
+    assert "text_unreadable" in body, (
+        "an unreadable text slot is silent again; the receipt looks like a success")
+    assert '"checked": False' in body or "'checked': False" in body, (
+        "model_match can be null again while the note tells the caller to read model_match.ok")
+    assert "depth_on_a_through_bore_suspect" in body, (
+        "a depth symbol on a possible through bore is not flagged")
+    assert "GetText(_probe)" in body, "the display-dimension text slots are not read"
+    return "a single callout reports what it could not verify"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8972,6 +9025,7 @@ STATIC_REGRESSIONS = [
     ("0.8.277 no duplicate capability keys", assert_capability_entries_have_no_duplicate_keys),
     ("0.8.278 one callout per coaxial hole", assert_coaxial_holes_produce_one_callout),
     ("0.8.278 callout text reads all slots", assert_a_callout_receipt_reads_every_text_slot),
+    ("0.8.279 a callout reports what it could not verify", assert_a_single_callout_does_not_fake_a_verdict),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
