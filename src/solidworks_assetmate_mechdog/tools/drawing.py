@@ -4506,6 +4506,18 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
                     try:
                         edge = win.Dispatch(raw)
                         curve = win.Dispatch(call_method(edge, "GetCurve"))
+                        # Cheap gate before the expensive call. `CircleParams` allocates a
+                        # 7+ element array through COM for every edge that asks; on the track
+                        # part (147 edges, 12 of them circles) that was 15.3 s of the 76 s
+                        # total. `IsCircle` reads one boolean and skips the other 135.
+                        _is_circle = True
+                        try:
+                            _raw_flag = curve.IsCircle
+                            _is_circle = bool(_raw_flag() if callable(_raw_flag) else _raw_flag)
+                        except Exception:
+                            _is_circle = True     # unknown -> keep the old behaviour
+                        if not _is_circle:
+                            raise StopIteration
                         params = list(curve.CircleParams or ())
                         if len(params) >= 7:
                             centre_pt = [float(params[0]), float(params[1]), float(params[2])]
@@ -4515,6 +4527,8 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
                             item["is_circle"] = True
                             item["model_start"] = [round(v, 4) for v in centre_pt]
                             item["model_end"] = [round(v, 4) for v in centre_pt]
+                    except StopIteration:
+                        item["is_circle"] = False
                     except Exception:
                         pass
             rows.append(item)

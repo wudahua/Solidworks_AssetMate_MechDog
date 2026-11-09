@@ -8374,6 +8374,36 @@ def assert_delivery_check_does_not_walk_every_face():
     assert "include_faces" in server, "the MCP tool does not expose the switch"
     return "delivery_check skips face enumeration by default; the single callout still needs it"
 
+def assert_circle_detection_is_gated_before_the_array_call():
+    """0.8.271 — `CircleParams` was called on every edge to find the 12 that were circles.
+
+    Measured on the track part (`P05_karetku`, 147 visible edges):
+
+        GetVisibleEntities2     3.3 s
+        GetStartVertex  x147    5.8 s
+        GetCurve        x147    5.0 s
+        GetPoint pairs  x147   27.2 s    <- unavoidable: two COM round trips per edge
+        CircleParams    x147   15.3 s    <- only 12 edges are circles
+
+    `ICurve.IsCircle` reads one boolean, so the 135 straight edges no longer pay for a
+    7-element array. Wall clock for the whole call: 76.5 s -> 56.6 s.
+
+    What is left is `GetPoint` — two COM round trips per edge, 0.09 s each. `IGetPoint`
+    was tried and fails outright on this binding (147 attempts, 0 returns), so there is no
+    cheaper vertex read. `include_points=False` skips it entirely when coordinates are not
+    needed.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "list_drawing_edges")) or ""
+    assert "IsCircle" in body, (
+        "every edge pays for CircleParams again — 15 s to find 12 circles")
+    assert "StopIteration" in body, (
+        "the non-circle path is not short-circuited")
+    assert 'item["is_circle"] = False' in body, (
+        "a straight edge no longer says so, so callers cannot filter")
+    return "circle detection is gated behind IsCircle and straight edges say so"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8601,6 +8631,7 @@ STATIC_REGRESSIONS = [
     ("0.8.268 the clamp has a budget", assert_the_clamp_has_a_travel_budget),
     ("0.8.269 layout reserves room", assert_the_layout_reserves_room_for_dimensions),
     ("0.8.270 delivery skips faces", assert_delivery_check_does_not_walk_every_face),
+    ("0.8.271 circle detection is gated", assert_circle_detection_is_gated_before_the_array_call),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
