@@ -9172,6 +9172,46 @@ def assert_no_receipt_recommends_a_known_dead_path():
         "the pipeline warning does not say why the automatic paths fail")
     return "neither receipt recommends a path this project has proved broken"
 
+def assert_require_distinguishes_failure_from_partial():
+    """0.8.290 — `require()` treated "worked with gaps" as "call failed".
+
+    `ok:false` has two meanings in this codebase since v0.8.281:
+
+        failed          -> `error` is set, nothing was produced
+        partial         -> `verdict: "partial"`, something WAS produced
+
+    `require()` only looked at `ok`, so a good partial run raised
+    "call failed: None None" — error and message both None, because nothing had failed.
+    Measured 2026-11-10: it sent me hunting for a pipeline bug that did not exist and
+    nearly produced a new fixture for a problem that was in the test helper.
+
+    `allow_partial=True` accepts a partial result, defined by top-level `partial_steps`
+    (the top-level `verdict` is the delivery judgement, not the run status). It still
+    rejects anything carrying an `error`, so it cannot mask a real failure, and the default
+    stays strict for the other 49 checks.
+
+    Measured both fixtures:
+
+        限位导向套 --part  -> PASS 34.1s  partial reached every layer, skipped=[16,18,28,30]
+        P05_karetku        -> PASS 37.7s  not triggered (no chamfer ambiguity)
+    """
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+
+    i = sm.find("def require(")
+    assert i > 0, "require is gone"
+    j = sm.find("\ndef ", i + 10)
+    body = sm[i:j]
+    assert "allow_partial" in body, (
+        "require rejects a partial run again; the two meanings are conflated")
+    assert 'payload.get("partial_steps")' in body, (
+        "require keys off the wrong field — top-level `verdict` is the delivery judgement")
+    assert 'payload.get("error")' in body, (
+        "allow_partial no longer excludes real failures")
+    assert "allow_partial=False" in body, (
+        "the default is permissive; 49 existing checks would stop catching failures")
+    return "require separates a failed call from a partial one, and defaults to strict"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9416,6 +9456,7 @@ STATIC_REGRESSIONS = [
     ("0.8.285 partial survives the pipeline", assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths),
     ("0.8.286 README documents the release mechanics", assert_readme_documents_the_release_mechanics),
     ("0.8.287 no receipt recommends a dead path", assert_no_receipt_recommends_a_known_dead_path),
+    ("0.8.290 require separates failure from partial", assert_require_distinguishes_failure_from_partial),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

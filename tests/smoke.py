@@ -116,9 +116,34 @@ class Runner:
         return 0 if not failed else 1
 
 
-def require(payload, key=None, value=None):
+def require(payload, key=None, value=None, allow_partial=False):
+    """Assert a tool call succeeded.
+
+    `ok:false` carries TWO meanings in this codebase, and they need different handling:
+
+    * the call failed            -> `error` is set, nothing was produced
+    * the call worked, with gaps -> `verdict: "partial"`, something WAS produced
+
+    The second kind became real in v0.8.281 (`add_hole_callouts` reports it) and v0.8.285
+    pushed it up to `produce_drawing`. This helper only looked at `ok`, so a perfectly good
+    partial run raised "call failed: None None" — the error and message are both None
+    precisely because nothing failed. Measured 2026-11-10: it sent me looking for a pipeline
+    bug that did not exist.
+
+    `allow_partial=True` says "expect a partial result". It still rejects a run with an
+    `error`, so it cannot hide a genuine failure. Default stays strict, so the other 48
+    checks are unaffected.
+    """
     assert isinstance(payload, dict), "expected dict, got %r" % type(payload)
-    assert payload.get("ok") is True, "call failed: %s %s" % (payload.get("error"), payload.get("message"))
+    # `verify` lives in the sub-dicts (`callouts.verdict`), not at the top level — the
+    # top-level `verdict` is the delivery judgement ("待设计审核"). What marks a run as
+    # partial at this level is `partial_steps`, added in v0.8.285.
+    _partial_ok = (allow_partial
+                   and bool(payload.get("partial_steps"))
+                   and not payload.get("error"))
+    if not _partial_ok:
+        assert payload.get("ok") is True, (
+            "call failed: %s %s" % (payload.get("error"), payload.get("message")))
     if key is not None:
         assert payload.get(key) == value, "%s = %r, expected %r" % (key, payload.get(key), value)
     return payload
@@ -1107,7 +1132,9 @@ def main():
             # False BY DESIGN (0.8.285), and `require` treats that as a failed call —
             # "call failed: None None", which sent me hunting for a pipeline bug that
             # was not there. A partial drawing is a successful run with a known gap.
-            payload = pipeline.produce_drawing(args.part, output_path=out, overwrite=True)
+            payload = require(pipeline.produce_drawing(args.part, output_path=out,
+                                                       overwrite=True),
+                              allow_partial=True)
         finally:
             try:
                 drawing.close_document(out)
