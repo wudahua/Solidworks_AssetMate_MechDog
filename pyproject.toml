@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solidworks-assetmate-mechdog"
-version = "0.8.279"
+version = "0.8.280"
 description = "SolidWorks MCP toolkit: recolor assemblies, inspect structure, export previews — with the COM pitfalls documented."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,6 +36,12 @@ Homepage = "https://github.com/wudahua/Solidworks_AssetMate_MechDog"
 
 [project.scripts]
 solidworks-assetmate-mechdog = "solidworks_assetmate_mechdog.server:main"
+
+[tool.setuptools.package-data]
+# `_build_meta.json` carries the tag for installs without `.git` (tarball, wheel, sdist).
+# Report 2026-11-09: a wheel built from the previous config had 30 files and NONE of them
+# was this one, so the tag guard had no source and — at the time — silently passed.
+"solidworks_assetmate_mechdog" = ["_build_meta.json"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

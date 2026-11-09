@@ -536,8 +536,39 @@ def main():
                 pass
 
         if _ver is None:
-            print("tag_compare: SKIPPED (no tag source: no CI env var, no "
-                  "_build_meta.json, no .git)")
+            # ── fail closed, not open (report 2026-11-09, round 2) ─────────────────────
+            # This branch used to print SKIPPED and fall through to "static check OK" with
+            # RC 0. Three separate probes on a real install showed that: no tag source,
+            # exit code 0, banner says everything is fine. A gate that cannot check must
+            # not report success — that is the same fail-open this project keeps finding
+            # in its own receipts.
+            #
+            # The one legitimate skip is a working tree whose HEAD is between tags (the
+            # normal mid-release state). That is detectable only with git; without git we
+            # cannot tell "mid-release" from "unverifiable install", so we fail.
+            _on_tag = None
+            try:
+                import subprocess as _sp
+                _probe = _sp.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
+                                 capture_output=True, text=True, timeout=10)
+                if _probe.returncode == 0:
+                    _on_tag = True
+                elif "not a git repository" in (_probe.stderr or "").lower():
+                    # No repository at all. Measured: a copy in /tmp with no .git made
+                    # `git describe` exit 128, which the first version read as "HEAD is not
+                    # on a tag" and skipped — the exact fail-open this branch exists to stop.
+                    _on_tag = None
+                else:
+                    _on_tag = False
+            except Exception:
+                _on_tag = None
+
+            if _on_tag is False:
+                print("tag_compare: SKIPPED (HEAD is not on a tag — mid-release state)")
+            else:
+                problems.append(
+                    "tag_compare: no tag source (no CI env var, no _build_meta.json) and "
+                    "HEAD cannot be shown to be between tags — version not verifiable")
         elif _declared is None:
             problems.append("tag_compare: pyproject has no version line to compare against")
         elif _ver != _declared:

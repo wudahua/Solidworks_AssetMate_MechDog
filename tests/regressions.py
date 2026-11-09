@@ -8790,6 +8790,58 @@ def assert_a_single_callout_does_not_fake_a_verdict():
     assert "GetText(_probe)" in body, "the display-dimension text slots are not read"
     return "a single callout reports what it could not verify"
 
+def assert_static_check_fails_when_it_cannot_check():
+    """0.8.280 — no tag source meant "print SKIPPED, exit 0, banner says OK".
+
+    Report 2026-11-09 (second document, P1, open two rounds). Three probes on a real
+    install, all reproduced on v0.8.278:
+
+        1. delete _build_meta.json, run in a copy with no .git
+           -> "tag_compare: SKIPPED (no tag source…)" + "static check OK" + RC 0
+        2. build a wheel -> 30 files, `_build_meta.json` not among them
+        3. call the script from a cwd outside the repo root -> SKIPPED + OK
+
+    A gate that cannot check must not report success. That is the same fail-open this
+    project spent a dozen versions fixing inside its own receipts, except here it was the
+    gate itself.
+
+    Fixed:
+    * no tag source now becomes a `problems` entry -> RC 1, unless HEAD can be shown to be
+      BETWEEN tags (the legitimate mid-release state, detectable only with git)
+    * `git describe` failing with "not a git repository" is not "HEAD is not on a tag".
+      The first version conflated them and skipped — measured in /tmp with no .git:
+      the gate passed. Now exit 128 is treated as "cannot determine".
+    * `[tool.setuptools.package-data]` ships `_build_meta.json`, so the packaged tag
+      source actually exists in a wheel
+
+    Measured four shapes 2026-11-09:
+
+        tarball + meta   -> RC 0, "v0.8.280 == pyproject 0.8.280 [packaged …]"
+        tarball, no meta -> RC 1, "no tag source … version not verifiable"
+        local with .git  -> RC 0
+        meta says 0.8.999-> RC 1, "MISMATCH v0.8.999 … vs 0.8.279"
+
+    STILL SOURCE-LEVEL: reads `static_check.py` and `pyproject.toml`; the four shapes were
+    measured by hand, not in this suite.
+    """
+    with open(os.path.join(ROOT, "tests", "static_check.py"), encoding="utf-8") as fh:
+        sc = fh.read()
+    i = sc.find("tag must AGREE")
+    j = sc.find("if problems:", i)
+    assert i > 0 and j > i, "the tag check is after the early return again"
+    block = sc[i:j]
+    assert "problems.append" in block, "no tag source still cannot fail the gate"
+    assert "not a git repository" in block, (
+        "a non-repo directory is read as 'HEAD is not on a tag' and skipped")
+    assert "_on_tag is False" in block, (
+        "the mid-release skip is not restricted to a real git tree")
+
+    with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as fh:
+        pp = fh.read()
+    assert "package-data" in pp and "_build_meta.json" in pp, (
+        "the packaged tag source is not shipped in a wheel/sdist")
+    return "the gate fails closed, and the packaged tag source ships"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9026,6 +9078,7 @@ STATIC_REGRESSIONS = [
     ("0.8.278 one callout per coaxial hole", assert_coaxial_holes_produce_one_callout),
     ("0.8.278 callout text reads all slots", assert_a_callout_receipt_reads_every_text_slot),
     ("0.8.279 a callout reports what it could not verify", assert_a_single_callout_does_not_fake_a_verdict),
+    ("0.8.280 the gate fails closed", assert_static_check_fails_when_it_cannot_check),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
