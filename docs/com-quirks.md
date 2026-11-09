@@ -2645,11 +2645,46 @@ RD1 | type=5（直径）| text='Ø' | value=16.0
 **也说明「改用 `add_drawing_dimension` 补 Ø16」这个建议（报告 2026-11-09 §3.3 第 5 点）
 没那么简单**：工具的 API 层是通的，断在渲染/文字这一层。
 
-### 没查清的
+### 根因：槽里只有 `<MOD-DIAM>`，没有 `<DIM>`
 
-- 文字是被 `offset_y=-0.015` 推出视图外，还是被隐藏属性关掉
-- `IDisplayDimension.GetText` 只回格式码是普遍现象还是这条路径特例
-- 同一工具标**线性**尺寸（`style` 非 diameter）时文字是否正常
+2026-11-10 探测同一条尺寸的显示属性：
 
-**下一个人接着查时，先只标一条线性尺寸做对照** —— 能立刻分出「直径特有的问题」还是
-「文字渲染的普遍问题」。
+```
+GetText(0) = ''
+GetText(1) = '<MOD-DIAM>'      <- 只有 Ø 格式码
+GetText(5) = '<MOD-DIAM>'
+ShowDimensionValue = True      <- 显示值是开的，不是被关掉
+IsHoleCallout = False
+```
+
+**`<DIM>` 是数值占位符。** 没有它，渲染器不知道该往 `Ø` 后面填什么，于是只画引线和箭头。
+
+**不是直径特有的** —— 用 `style="linear"` 去标 Ø63 那条圆边，结果一样
+（`type=5`、`text='Ø'`），因为边是圆时 SolidWorks 仍按直径建。
+
+### 修法：`SetText` 补回 `<DIM>`
+
+```python
+disp.SetText(1, "<MOD-DIAM><DIM>")     # 返回 None（不是 False）
+# 回读：GetText(1) == '<MOD-DIAM><DIM>'
+# 渲染：圆下方出现 Ø 与 16
+```
+
+**`SetText` 返回 `None` 不等于失败** —— 必须回读确认，这是本项目反复踩的同一个坑。
+
+### 补出来之后：文字是竖排的
+
+渲染图上 `Ø` 和 `16` 旋转 90°、竖排在箭头下方，不是 GB 习惯的水平标注。
+
+**没调**：可能是 `ArrowSide=3` 或标注方向继承自竖直的直径线。**下次改这里之前先试
+`offset_x/offset_y` 把文字挪到视图外，再看是否需要旋转。**
+
+### 对「补标 Ø16」的意义
+
+`add_drawing_dimension` **能建、能补文字**，路径是通的：
+
+1. `add_drawing_dimension(edge_index=..., style="diameter")` -> `type=5`、`value_m` 正确
+2. `SetText(1, "<MOD-DIAM><DIM>")` -> 图面出现数字
+3. 排版方向仍需调整
+
+**比 `add_hole_callout` 的 `Ø16 ↧ 68` 好** —— 那个把通孔写成盲孔，这个是方向难看但数值对。
