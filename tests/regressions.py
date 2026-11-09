@@ -8334,6 +8334,46 @@ def assert_the_layout_reserves_room_for_dimensions():
     assert "annotation_band_m" in server, "the MCP tool does not expose the band"
     return "the layout reserves 18 mm per side for dimensions"
 
+def assert_delivery_check_does_not_walk_every_face():
+    """0.8.270 — 150 of delivery_check's 215 seconds went into counting holes.
+
+    Found while chasing the smoke slowdown (docs/2026-11-09-smoke-timing.md). On the track
+    part `P05_karetku` (147 visible edges):
+
+        build_feature_ledger(include_faces=True)    209 s
+        build_feature_ledger(include_faces=False)    19.7 s    10x
+
+    and inside `delivery_check`:
+
+        delivery(include_faces=False)   41.6 s   ok=True
+        delivery(include_faces=True)   192.5 s   ok=True
+
+    The `holes` list is the only thing that needs faces, and `delivery_check` uses it for a
+    truthiness test plus one number in a message ("N 处孔候选"). Everything else — stats,
+    category, doubts, bbox_mm — comes without faces, so the verdict is identical either way.
+
+    `include_faces` is now a parameter, default False.
+
+    IMPORTANT: `add_hole_callout` (the single-hole variant) still passes True on purpose —
+    it genuinely needs `led["holes"]` to resolve the diameter list. Do not "optimise" that
+    one the same way; it would silently produce empty callouts.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delivery_check")) or ""
+    assert "include_faces=bool(include_faces)" in body, (
+        "delivery_check walks every face again — 150 s for one number")
+    assert "include_faces=False" in body, "the parameter is not defaulted to False"
+    # the single-hole callout must keep faces
+    single = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "add_hole_callout")) or ""
+    assert "include_faces=True" in single, (
+        "add_hole_callout needs the holes list; turning faces off there yields empty "
+        "diameter matching")
+    server = _read("server.py")
+    assert "include_faces" in server, "the MCP tool does not expose the switch"
+    return "delivery_check skips face enumeration by default; the single callout still needs it"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8560,6 +8600,7 @@ STATIC_REGRESSIONS = [
     ("0.8.267 callouts are not dimensions", assert_a_hole_callout_is_not_a_deletable_dimension),
     ("0.8.268 the clamp has a budget", assert_the_clamp_has_a_travel_budget),
     ("0.8.269 layout reserves room", assert_the_layout_reserves_room_for_dimensions),
+    ("0.8.270 delivery skips faces", assert_delivery_check_does_not_walk_every_face),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

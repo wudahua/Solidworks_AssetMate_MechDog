@@ -7815,7 +7815,7 @@ def list_drawing_annotations(drawing_path, view_name=None):
 
 @perf_hooks.timed("delivery_check")
 def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False,
-                   strict_attachments=False):
+                   strict_attachments=False, include_faces=False):
     """Aggregate model ledger + drawing audit + annotation inventory into a verdict.
 
     Process §7 asks for exactly three outcomes, and forbids calling a drawing
@@ -7861,7 +7861,13 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
 
         # ---- model side -------------------------------------------------------
         # Faces are needed to count hole candidates; the extra scan costs a few seconds.
-        led = _ledger.build_feature_ledger(model_path, include_faces=True)
+        # Faces are expensive and only feed one number (2026-11-09).
+        # `include_faces=True` walks every face: measured on the track part (P05_karetku,
+        # 147 visible edges) it costs 209 s vs 19.7 s without — 10x. The ledger's `holes`
+        # list is the only thing here that needs faces, and this function uses it for a
+        # truthiness test plus one number in a message. Default False; pass True to pay
+        # for the hole count.
+        led = _ledger.build_feature_ledger(model_path, include_faces=bool(include_faces))
         if not led.get("ok"):
             return error("model_unreadable", led.get("message") or "ledger failed",
                          "Check the model opens and rebuilds before delivering a drawing.")

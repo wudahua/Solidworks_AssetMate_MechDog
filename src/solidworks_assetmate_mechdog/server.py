@@ -1089,6 +1089,7 @@ def delivery_check(
     ai_supplied: Annotated[list[str] | None, Field(description="Values you decided yourself (not derivable from the model); listed back so the receipt separates fact from judgement.")] = None,
     require_gdt: Annotated[bool, Field(description="Treat a missing geometric tolerance as a pending item.")] = False,
     strict_attachments: Annotated[bool, Field(description="Count every detached dimension as pending, without the orphan-suspected excuse.")] = False,
+    include_faces: Annotated[bool, Field(description="Also enumerate every model face (default False). Only the hole-candidate COUNT needs faces, and on a part with many faces that costs 10x: measured 209 s vs 19.7 s on a track link. Everything else in the verdict is available without them.")] = False,
 ) -> str:
     """Aggregate ledger + audit + annotations into a delivery verdict (process §7).
 
@@ -1099,11 +1100,13 @@ def delivery_check(
     return _json(drawing.delivery_check(
         model_path, drawing_path, ai_supplied=ai_supplied, require_gdt=require_gdt,
         strict_attachments=strict_attachments,
+        include_faces=include_faces,
     ))
 
 
 @mcp.tool()
 @_reject_unknown_arguments
+
 def list_drawing_annotations(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None) -> str:
     """Inventory every annotation: dimensions (with value + tolerance), notes,
     geometric tolerances (frame content), center marks, hole callouts.
