@@ -8928,6 +8928,51 @@ def assert_the_failure_logger_never_touches_com():
         "nothing refreshes the snapshot; the log would always say None")
     return "the failure logger reads a snapshot and never re-enters COM"
 
+def assert_solidworks_calls_are_serialised():
+    """0.8.283 — nothing stopped two tools entering the same COM session at once.
+
+    Architecture review 2026-11-09 (P0). Every tool shares `_SW` (one dispatcher),
+    `_LAST_CALL`, and SolidWorks' session-level ActiveDoc/Selection. FastMCP can enter two
+    synchronous tool bodies concurrently, so two requests could interleave document
+    switches, selections, and writes. The review's wording is the right one:
+
+        "This does not prove every concurrent call fails, but a desktop COM automation
+         should not rest its correctness on 'clients usually don't do that'."
+
+    Fixed with the transitional gate the review asked for: `_guarded` in
+    `_install_argument_guard` is the single entry point for `tools/call`, so wrapping
+    `await original(request)` in `_COM_LOCK` covers all 70 tools by construction —
+    including `ping` / `health_check`, which the review named as paths that must not
+    bypass it.
+
+    Measured 2026-11-09, five coroutines contending for the lock:
+
+        tasks=5  overlap=False  serialized=True
+        within-lock spans (ms): [57, 64, 60, 63, 60]
+
+    Not the long-term answer (that is a dedicated STA executor) and it does not make
+    cancellation safe — `_COM_LOCK_STATS` counts acquisitions so a field report can show
+    whether waits actually happen.
+    """
+    with open(os.path.join(SRC, "server.py"), encoding="utf-8") as fh:
+        srv = fh.read()
+
+    assert "_COM_LOCK" in srv, "no serial gate; two tools can share the COM session"
+    assert "async with _COM_LOCK" in srv, "the lock exists but does not wrap the call"
+    assert "_COM_LOCK_STATS" in srv, "no evidence the gate is ever contended"
+
+    i = srv.find("async def _guarded(")
+    assert i > 0, "the tools/call entry point is gone"
+    j = srv.find("handlers[key] = _guarded", i)
+    body = srv[i:j]
+    assert "async with _COM_LOCK" in body, (
+        "the lock is not on the path every tool call takes")
+    # the lock must wrap the ORIGINAL call, not sit next to it
+    lock_at = body.find("async with _COM_LOCK")
+    call_at = body.find("await original(request)")
+    assert 0 < lock_at < call_at, "the lock does not enclose the tool invocation"
+    return "every tools/call runs under one lock, and the receipt can show contention"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9167,6 +9212,7 @@ STATIC_REGRESSIONS = [
     ("0.8.280 the gate fails closed", assert_static_check_fails_when_it_cannot_check),
     ("0.8.281 partial is not success", assert_partial_work_is_not_reported_as_success),
     ("0.8.282 the failure logger never touches COM", assert_the_failure_logger_never_touches_com),
+    ("0.8.283 COM calls are serialised", assert_solidworks_calls_are_serialised),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

@@ -1650,6 +1650,21 @@ def export_preview(
     ))
 
 
+# ── One call at a time (architecture review 2026-11-09, P0) ──────────────────────────
+# Every tool shares `_SW`, `_LAST_CALL` and SolidWorks' session-level ActiveDoc/Selection.
+# Nothing serialised them: FastMCP can enter two synchronous tool bodies at once, and a
+# desktop COM automation must not rest its correctness on "clients don't usually do that".
+#
+# This is the transitional gate the review asked for, not the long-term answer (that is a
+# dedicated STA executor). It covers every tool by construction, because `_guarded` below
+# is the single entry point for `tools/call` — including `ping` and `health_check`, which
+# the review explicitly called out as paths that must not bypass it.
+import asyncio as _asyncio
+
+_COM_LOCK = _asyncio.Lock()
+_COM_LOCK_STATS = {"acquired": 0, "max_wait_ms": 0.0}
+
+
 def _install_argument_guard(app):
     """Reject unknown keys at the MCP request entry, BEFORE pydantic drops them.
 
@@ -1720,7 +1735,16 @@ def _install_argument_guard(app):
             except Exception:
                 # Never let the guard itself break a call it does not understand.
                 pass
-            return await original(request)
+            # Serialise the actual tool body. The argument check above is pure Python and
+            # needs no lock; the call it guards does.
+            import time as _time
+            _t0 = _time.perf_counter()
+            async with _COM_LOCK:
+                _waited = (_time.perf_counter() - _t0) * 1000.0
+                _COM_LOCK_STATS["acquired"] += 1
+                if _waited > _COM_LOCK_STATS["max_wait_ms"]:
+                    _COM_LOCK_STATS["max_wait_ms"] = round(_waited, 1)
+                return await original(request)
 
         handlers[key] = _guarded
         return True
