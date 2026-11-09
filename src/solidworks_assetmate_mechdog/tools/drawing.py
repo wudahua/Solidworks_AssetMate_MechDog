@@ -2294,7 +2294,7 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                    dimension_filter=None, place_outside=True, detect_same_value=False,
                    save=True, audit=True,
                    outside_gap_m=0.012, outside_step_m=0.008, prefer_view=None,
-                   sheet=None):
+                   sheet=None, max_clamp_travel_m=0.030):
     """Insert the model's driving dimensions into the drawing views.
 
     Equivalent to SolidWorks "Insert Model Items > Dimensions". Marked-for-drawing
@@ -2693,6 +2693,29 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                     _column = i // _col
                     nx = min(lo_x + _column * 0.045, hi_x)
                     ny = min(lo_y + _band * step, hi_y)
+                    # ── How far is too far? (report 2026-11-08, P0-3) ────────────────
+                    # On a sheet whose views had been placed at x=0 (the P0-2 bug) every
+                    # dimension sat outside the frame, and this clamp dragged all eight of
+                    # them to the left edge of the safe area — leaders crossing the whole
+                    # A3. The report's ask: give the move a distance budget and refuse
+                    # beyond it, rather than relocate an annotation to the other side of
+                    # the sheet.
+                    #
+                    # 30 mm is roughly a dimension line plus text plus gap. Beyond that the
+                    # annotation no longer points at what it measures, which is worse than
+                    # leaving it where it was: a leader you cannot follow at least shows
+                    # where the number belongs.
+                    _travel = ((nx - pos[0]) ** 2 + (ny - pos[1]) ** 2) ** 0.5
+                    if _travel > float(max_clamp_travel_m):
+                        clamped.append({"name": name,
+                                        "from_m": [round(pos[0], 4), round(pos[1], 4)],
+                                        "error": "travel_exceeds_limit",
+                                        "travel_mm": round(_travel * 1000, 1),
+                                        "limit_mm": round(float(max_clamp_travel_m) * 1000, 1),
+                                        "note": "尺寸离安全区太远，多半是父视图没摆进安全区。"
+                                                "先修视图位置（set_view / place_views）再标尺寸，"
+                                                "不要靠 clamp 把标注拖回图框。"})
+                        continue
                     if not (lo_x <= nx <= hi_x and lo_y <= ny <= hi_y):
                         clamped.append({"name": name,
                                         "from_m": [round(pos[0], 4), round(pos[1], 4)],

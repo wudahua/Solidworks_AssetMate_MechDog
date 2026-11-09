@@ -8263,6 +8263,45 @@ def assert_a_hole_callout_is_not_a_deletable_dimension():
         "the receipt does not say which annotations were excluded")
     return "hole callouts are excluded from the delete check"
 
+def assert_the_clamp_has_a_travel_budget():
+    """0.8.268 — the safe-area clamp dragged dimensions across the whole sheet.
+
+    Report 2026-11-08 (P0-3):
+
+        clamped_into_safe_area:
+          D1 from [-0.035, 0.293] -> [0.0588, 0.065]
+          D2 from [ 0.0588, 0.3325] -> [0.0588, 0.107]
+
+    Dimensions sat outside the frame (because of P0-2, which placed every view at x=0) and
+    the clamp "fixed" them by relocating all eight to the left edge of the safe area —
+    leaders crossing the entire A3. The report asked for a distance budget instead of an
+    unbounded move.
+
+    Measured 2026-11-08, view pushed to x=0.010 then `auto_dimension(place_outside=True)`:
+
+        clamped=2  travel_limited=2
+        D1 from=[0.0588, 0.2775] travel=212mm   limit=30.0
+        D1 from=[0.0588, 0.1805] travel=102mm   limit=30.0
+
+    212 mm is half of an A3. Beyond the budget the entry is named with
+    `error: travel_exceeds_limit` and the annotation stays put — a leader you cannot follow
+    at least shows where the number belongs, while a dimension across the sheet points at
+    nothing.
+
+    NOTE: this treats the symptom. The real fix for those sheets is placing the views
+    inside the safe area first; the hint says so.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "auto_dimension")) or ""
+    assert "max_clamp_travel_m" in body, "the clamp moves an annotation any distance again"
+    assert "travel_exceeds_limit" in body, (
+        "an over-long move is not named in the receipt")
+    assert "_travel" in body, "the distance is not measured"
+    server = _read("server.py")
+    assert "max_clamp_travel_m" in server, "the MCP tool does not expose the budget"
+    return "the clamp refuses to move an annotation more than 30 mm"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8487,6 +8526,7 @@ STATIC_REGRESSIONS = [
     ("0.8.263 the material slot is the material cell", assert_the_material_slot_is_the_material_cell),
     ("0.8.267 chamfer pair both skipped", assert_both_circles_of_a_chamfer_pair_are_skipped),
     ("0.8.267 callouts are not dimensions", assert_a_hole_callout_is_not_a_deletable_dimension),
+    ("0.8.268 the clamp has a budget", assert_the_clamp_has_a_travel_budget),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

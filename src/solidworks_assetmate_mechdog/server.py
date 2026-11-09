@@ -1401,6 +1401,7 @@ def auto_dimension(
     audit: Annotated[bool, Field(description="Run the post-insert audit (overlaps, off-sheet, unresolved text) as part of this call. Costs a second pass over every annotation.")] = True,
     detect_same_value: Annotated[bool, Field(description="Group dimensions by (value, type) to flag same-value duplicates. OFF by default: it reads every annotation on every view and measured 18.4 s of auto_dimension's 27.0 s (68%) on 旋转轴. It only reports — it never deletes. Turn on when a sheet shows two identical values and you need the candidates.")] = False,
     sheet: Annotated[str | int | None, Field(description="Target sheet: name (e.g. '图纸2') or 1-based index. Omit to use whatever page is active. Every write edits the ACTIVE page, so pass this rather than relying on a previous activate_sheet call.")] = None,
+    max_clamp_travel_m: Annotated[float, Field(description="How far the safe-area clamp may move an annotation, in sheet metres (default 0.030). Beyond this the clamp refuses and the entry carries `error: travel_exceeds_limit` with `travel_mm`. A dimension dragged across the sheet no longer points at what it measures — a leader you cannot follow at least shows where the number belongs. If many entries report this, the VIEWS are outside the safe area: fix their position instead of raising this limit.")] = 0.030,
 ) -> str:
     """Insert the model's driving dimensions into the drawing (Insert Model Items).
 
@@ -1420,11 +1421,12 @@ def auto_dimension(
         eliminate_duplicates=eliminate_duplicates, dimension_filter=dimension_filter,
         place_outside=place_outside, outside_gap_m=outside_gap_m,
         outside_step_m=outside_step_m, audit=audit,
-        detect_same_value=detect_same_value, prefer_view=prefer_view, sheet=sheet))
+        detect_same_value=detect_same_value, prefer_view=prefer_view, sheet=sheet, max_clamp_travel_m=max_clamp_travel_m))
 
 
 @mcp.tool()
 @_reject_unknown_arguments
+
 def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
                        include_points: Annotated[bool, Field(description="Include start/end coordinates. False returns indices only and is much faster.")] = True,
     flip_x: Annotated[bool, Field(description="Mirror every sheet X about the view centre. Use when a side view comes back left-right reversed — verify by exporting a PDF and measuring one known feature, then pass true. Measured 2026-11-03 on 旋转轴 at 2:1: unflipped reported the Ø14 collar at x=0.1288 while the page has it at 0.0487; flipped matches.")] = False,
