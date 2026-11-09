@@ -2764,8 +2764,21 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 perf_hooks.bump("rebuild_calls")
             except Exception:
                 pass
-            notes.append("有 %d 条尺寸原本在图框外，已拉回安全区并按 %.0f mm 错开。"
-                         % (len(clamped), 14))
+            # Report 2026-11-09 (Q-5): this said "已拉回安全区" while BOTH entries in
+            # `clamped` carried `error: travel_exceeds_limit` — i.e. nothing was moved. The
+            # sentence counted attempts and called them successes.
+            _moved = [c for c in clamped if "to_m" in c]
+            _refused = [c for c in clamped if c.get("error") == "travel_exceeds_limit"]
+            if _moved:
+                notes.append("有 %d 条尺寸原本在图框外，已拉回安全区并按 %.0f mm 错开。"
+                             % (len(_moved), 14))
+            if _refused:
+                notes.append("有 %d 条尺寸超出移动上限（%s mm > %.0f mm）未拉回 —— "
+                             "它们多半是因为父视图没摆进安全区。先 `set_view` 修视图位置，"
+                             "不要靠 clamp 把标注拖回图框。"
+                             % (len(_refused),
+                                "、".join("%.0f" % c.get("travel_mm", 0) for c in _refused),
+                                float(max_clamp_travel_m) * 1000))
 
         return ok(
             drawing=doc.GetTitle,
@@ -9323,6 +9336,27 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # chamfer face and the other is often the real hole, and which is which cannot
             # be told from here — so neither is annotated. Annotate these by hand.
             ambiguous_chamfer_pairs=_ambiguous[:10],
+            # ── Say what was left out, and what it might be (report 2026-11-09, Q-1) ─────
+            # The pairs above are skipped because "which of the two is the chamfer" cannot
+            # be answered from an edge. On 限位导向套 that silently dropped Ø16 — the main
+            # through bore — leaving `created_count: 2, ok: true`, which reads as "two holes,
+            # done". The receipt named the pair but never said a real hole might be missing.
+            #
+            # These fields make the omission countable: every skipped diameter is listed,
+            # with a flag when the pair is concentric with the view centre (the usual shape
+            # of a main bore or its boss).
+            excluded_diameters_mm=sorted(
+                {a["narrower_dia_mm"] for a in _ambiguous}
+                | {a["wider_dia_mm"] for a in _ambiguous}),
+            unannotated_note=(
+                ("%d 个直径因倒角配对无法判定而未标注：%s。"
+                 "其中可能有主孔 —— 请对照模型手工补 `add_hole_callout(x, y)`。"
+                 % (len({a["narrower_dia_mm"] for a in _ambiguous}
+                        | {a["wider_dia_mm"] for a in _ambiguous}),
+                    "、".join("Ø%s" % d for d in sorted(
+                        {a["narrower_dia_mm"] for a in _ambiguous}
+                        | {a["wider_dia_mm"] for a in _ambiguous}))))
+                if _ambiguous else None),
             edges_scanned=edges_scanned,
             rejected_outer_contour=rejected,
             holes_found=groups_total,

@@ -8623,6 +8623,51 @@ def assert_static_check_actually_compares_the_tag():
     assert "_declared" in block, "the comparison has nothing to compare against"
     return "static_check fails on a tag mismatch instead of printing a line"
 
+def assert_capability_entries_have_no_duplicate_keys():
+    """0.8.277 — two `workaround` keys meant the fix was unreachable.
+
+    Report 2026-11-09 (Q-4) called `check_capabilities(operation="section_view")` and got
+    back the OLD `axes_ambiguous` text, while the same entry's `summary` quoted the text
+    written in the same round. The entry had:
+
+        "workaround": <the overshoot root cause, written this round>
+        ...
+        "workaround": <the older axes_ambiguous note>
+
+    Python keeps the last one. So the entire N-1 fix — the overshoot explanation and the
+    retired material claim — never reached a caller. `add_section_view`'s hint was fixed
+    and visible; this half was silently dropped.
+
+    Fixed by renaming the second key to `workaround_axes_ambiguous`, and the summary no
+    longer says hatching depends on material.
+
+    Measured 2026-11-09 after the fix:
+
+        keys: [... 'workaround', 'workaround_axes_ambiguous']
+        has overshoot: True     has 作废: True
+    """
+    import re as _re
+    from collections import Counter as _Counter
+
+    with open(os.path.join(SRC, "tools", "capabilities.py"), encoding="utf-8") as fh:
+        text = fh.read()
+
+    # Walk every entry dict in CAPABILITIES and count its top-level keys.
+    offenders = []
+    for match in _re.finditer(r'^\s*"id": "([a-z_]+)",', text, _re.M):
+        start = match.start()
+        nxt = text.find('"id": "', start + 10)
+        block = text[start:nxt if nxt > 0 else len(text)]
+        keys = _re.findall(r'^\s{8}"([a-z_]+)":', block, _re.M)
+        dups = {k: n for k, n in _Counter(keys).items() if n > 1}
+        if dups:
+            offenders.append("%s: %s" % (match.group(1), dups))
+
+    assert not offenders, (
+        "a capability entry repeats a key; Python keeps the last one and everything "
+        "written in the first is unreachable: %s" % offenders[:3])
+    return "no capability entry repeats a key"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -8855,6 +8900,7 @@ STATIC_REGRESSIONS = [
     ("0.8.274 the tag guard sees the tag", assert_the_tag_guard_can_see_the_tag),
     ("0.8.275 the report says what it verified", assert_the_report_says_what_it_verified),
     ("0.8.276 static_check compares the tag", assert_static_check_actually_compares_the_tag),
+    ("0.8.277 no duplicate capability keys", assert_capability_entries_have_no_duplicate_keys),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

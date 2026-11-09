@@ -499,7 +499,8 @@ CAPABILITIES = [
         "id": "section_view",
         "status": "partial",
         "summary": ("剖视图（模型坐标剖切面 + 剖切 sanity 校验）· `offset_m=0` 可切；"
-                    "剖面线取决于**剖切线是否伸出轮廓**与**零件是否赋材质**，不是「看运气」"),
+                    "剖面线取决于**剖切线是否伸出轮廓**（`cut_line_overshoot_m`），"
+                    "不是「看运气」，也和材质无关"),
         # Report 2026-11-07 (P0-1): a revolved part (wheel / shaft / sleeve / flange) needs
         # an AXIAL full section, and taking it from the front view silently produced an
         # uncut projection — `edge_count` equal to the parent's, `hatch_count 0`, and
@@ -547,7 +548,13 @@ CAPABILITIES = [
                 "0.8.56 起这种情况**如实返回 `hatch_missing` 而不是 `ok:true`**，"
                 "能力状态因此是 `partial`：视图能建、剖切面能定位，但**剖面线不保证**。"
                 "需要剖面线时请换一个能切出实体截面的视图或零件。"),
-        "workaround": ("映射靠尺寸匹配，正立方体这类各向等长的零件会 `axes_ambiguous`，"
+        # Was a SECOND "workaround" key in the same dict — Python keeps the last one, so
+        # everything written in the first `workaround` (the overshoot root cause and the
+        # retired material claim) was unreachable from `check_capabilities`.
+        # Report 2026-11-09 (Q-4) proved it by calling the tool: the receipt showed the
+        # `axes_ambiguous` text while the summary quoted the new one, contradicting itself.
+        "workaround_axes_ambiguous": (
+                       "映射靠尺寸匹配，正立方体这类各向等长的零件会 `axes_ambiguous`，"
                        "此时改传 orientation + offset_m；部分剖（depth>0）尺寸本就缩小，"
                        "sanity 记 checked=false 不判定"),
         "evidence": ("2026-10-31 实测 灌装阀阀体 59×28×80：法向 +Y 过中心 → 轴映射 [0,1]、"
