@@ -9479,8 +9479,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                 {a["narrower_dia_mm"] for a in _ambiguous}
                 | {a["wider_dia_mm"] for a in _ambiguous}),
             unannotated_note=(
-                ("%d 个直径因倒角配对无法判定而未标注：%s。"
-                 "其中可能有主孔 —— 请对照模型手工补 `add_hole_callout(x, y)`。"
+                ("%d 个直径因倒角配对无法判定而未标注：%s。其中可能有主孔。"
+                 "**请在 SolidWorks 里手工标** —— 两条自动路径都试过，都不对："
+                 "`add_hole_callout` 会把贯通孔写成「深 68」的盲孔（数值错），"
+                 "`add_drawing_dimension(style=\"diameter\")` 的尺寸文字渲染不出来"
+                 "（写 `<MOD-DIAM><DIM>` 得到 `Ø<DIM>16`，写数值得到 `Ø1616`）。"
+                 "位置见 `ambiguous_chamfer_pairs[].centre`（模型坐标，米）。"
                  % (len({a["narrower_dia_mm"] for a in _ambiguous}
                         | {a["wider_dia_mm"] for a in _ambiguous}),
                     "、".join("Ø%s" % d for d in sorted(

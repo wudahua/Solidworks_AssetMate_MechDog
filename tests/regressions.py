@@ -9128,6 +9128,50 @@ def assert_readme_documents_the_release_mechanics():
         "the two-suite banner is not documented")
     return "README explains how releases are versioned, gated and reported"
 
+def assert_no_receipt_recommends_a_known_dead_path():
+    """0.8.287 — two receipts told the caller to do things this project had proved broken.
+
+    Timeline, all of it mine:
+
+    * v0.8.277 `unannotated_note`: "请对照模型手工补 `add_hole_callout(x, y)`"
+    * v0.8.279 the receipt itself gained `depth_on_a_through_bore_suspect` because that
+      call writes `Ø16 ↧ 68` — a through bore rendered as a blind hole. The note was
+      never updated.
+    * v0.8.285 `_callout_warning` (pipeline) recommended `add_drawing_dimension` instead.
+    * 2026-11-10 measured that path: the dimension is created (`type=5`, `value_m` right)
+      but no text renders. `SetText(1, "<MOD-DIAM><DIM>")` prints `Ø<DIM>16`; writing the
+      value gives `Ø1616`; leaving it alone gives nothing.
+
+    So for two versions the tools advised callers to take a path the tools themselves knew
+    was broken. That is worse than silence: it spends the caller's time and ends in a wrong
+    or empty annotation.
+
+    Both now say "手工标" and name the reason, plus the model-space centre so the human
+    does not have to hunt for the hole.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    note_start = body.find("unannotated_note=")
+    note = body[note_start:note_start + 900]
+    assert "手工标" in note, "the note no longer says the work is manual"
+    assert "add_hole_callout(x, y)" not in note, (
+        "the note recommends add_hole_callout again — that path writes Ø16 as a blind hole")
+    assert "add_drawing_dimension" in note and "文字渲染不出来" in note, (
+        "the note does not explain why the dimension path also fails")
+    assert "ambiguous_chamfer_pairs[].centre" in note, (
+        "the note does not say where the skipped diameters are")
+
+    with open(os.path.join(SRC, "tools", "pipeline.py"), encoding="utf-8") as fh:
+        pipe = fh.read()
+    i = pipe.find('callouts.get("verdict") == "partial"')
+    j = pipe.find("if exceeded", i)
+    warn = pipe[i:j]
+    assert "手工标" in warn, "the pipeline warning still points at an automatic path"
+    assert "渲染不出来" in warn or "盲孔" in warn, (
+        "the pipeline warning does not say why the automatic paths fail")
+    return "neither receipt recommends a path this project has proved broken"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9371,6 +9415,7 @@ STATIC_REGRESSIONS = [
     ("0.8.284 profiles are advisory", assert_tool_profiles_are_advisory_only),
     ("0.8.285 partial survives the pipeline", assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths),
     ("0.8.286 README documents the release mechanics", assert_readme_documents_the_release_mechanics),
+    ("0.8.287 no receipt recommends a dead path", assert_no_receipt_recommends_a_known_dead_path),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),
