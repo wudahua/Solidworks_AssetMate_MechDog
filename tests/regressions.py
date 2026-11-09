@@ -8882,6 +8882,52 @@ def assert_partial_work_is_not_reported_as_success():
     assert "partial_reason" in body, "a partial run does not say what it skipped"
     return "a run with excluded diameters reports ok=false and names them"
 
+def assert_the_failure_logger_never_touches_com():
+    """0.8.282 — the failure handler made two more COM calls, from inside `except`.
+
+    Architecture review 2026-11-09 (P0). `log_failure` enriched its record with:
+
+        "sw_version": sw_version(),     # get_sw() + RevisionNumber
+        "health": health(),             # probe + ActiveDoc
+
+    So every logged failure re-entered COM. In the exact situation the logger exists for —
+    a modal dialog, a dead RPC, a stale dispatcher — those two calls can hang, and the tool
+    looks busy while doing nothing. The record that was supposed to explain the outage
+    becomes part of it.
+
+    Fixed: `_LAST_VERSION` / `_LAST_HEALTH` are refreshed on the liveness probe that
+    `get_sw()` already performs (the revision is already in hand there), and `log_failure`
+    reads those. The record says `state_source: "cached_at_last_success — NOT probed"`.
+
+    Measured 2026-11-09 with SW running:
+
+        warm version = '32.4.0'
+        probe_timestamp_unchanged = True    (log_failure did not probe)
+        snapshot_version = '32.4.0'
+    """
+    with open(os.path.join(SRC, "sw_session.py"), encoding="utf-8") as fh:
+        sess = fh.read()
+
+    i = sess.find("def log_failure(")
+    assert i > 0, "log_failure is gone"
+    j = sess.find("\ndef ", i + 10)
+    body = sess[i:j]
+    # Strip comments before checking, or the explanatory text trips the assertion.
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    assert "sw_version()" not in code, (
+        "log_failure calls sw_version() again — a COM call from the failure path")
+    assert "health()" not in code, (
+        "log_failure calls health() again — a COM call from the failure path")
+    assert "_LAST_VERSION" in code and "_LAST_HEALTH" in code, (
+        "the logger does not read the snapshot")
+    assert "state_source" in code, (
+        "the record does not say the state is a snapshot rather than a probe")
+
+    # the snapshot has to be refreshed somewhere, or it stays None forever
+    assert "_LAST_VERSION = str(_revision)" in sess, (
+        "nothing refreshes the snapshot; the log would always say None")
+    return "the failure logger reads a snapshot and never re-enters COM"
+
 STATIC_REGRESSIONS = [
 
     ("0.8.3 row/text ordering", assert_row_before_text),
@@ -9120,6 +9166,7 @@ STATIC_REGRESSIONS = [
     ("0.8.279 a callout reports what it could not verify", assert_a_single_callout_does_not_fake_a_verdict),
     ("0.8.280 the gate fails closed", assert_static_check_fails_when_it_cannot_check),
     ("0.8.281 partial is not success", assert_partial_work_is_not_reported_as_success),
+    ("0.8.282 the failure logger never touches COM", assert_the_failure_logger_never_touches_com),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

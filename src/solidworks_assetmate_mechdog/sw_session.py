@@ -30,6 +30,17 @@ _BRIDGE_STATE = {"stale_drops": 0, "reconnects": 0, "last_error": None,
 # exactly when no tool has called note_last_call() yet. Without this default the failure
 # logger itself raised NameError and wrote to _logger_error.log instead of mcp-*.log.
 _LAST_CALL = {"tool": None, "args": None}
+
+# ── Snapshot of the last known-good session state (report 2026-11-09, P0) ─────────────
+# `log_failure` used to call `sw_version()` and `health()` to enrich its record. Both go
+# through `get_sw()` and touch COM. So the failure path — the one that runs WHEN COM is
+# already misbehaving — made two more COM calls, and a modal dialog or a dead RPC could
+# hang the logger itself. The tool would look busy while doing nothing.
+#
+# These hold whatever was true at the last successful call. `log_failure` reads them and
+# says so in the record (`state_source`), so nobody mistakes a snapshot for a probe.
+_LAST_VERSION = None
+_LAST_HEALTH = {"alive": None, "sw_reachable": None, "note": "no successful call yet"}
 # Measured: GetComponents costs ~130 s on a 46-component assembly (2026-10-26).
 # Cache per document path so tree -> dry-run -> apply -> tree stays interactive.
 # Pass refresh=True after the user adds/removes components outside this server.
@@ -87,7 +98,16 @@ def get_sw(probe=True):
             return _SW
         _LAST_PROBE = time.time()
         try:
-            _SW.RevisionNumber
+            _revision = _SW.RevisionNumber
+            # Refresh the snapshot that `log_failure` reads. Doing it HERE, on a probe that
+            # was happening anyway, costs nothing: the call already returned the revision.
+            # (A tool call that skips the probe leaves the snapshot slightly older — that
+            # is the point. A stale snapshot beats a failure handler that re-enters COM.)
+            global _LAST_VERSION, _LAST_HEALTH
+            _LAST_VERSION = str(_revision)
+            _LAST_HEALTH = {"alive": True, "sw_reachable": True,
+                            "revision": str(_revision),
+                            "note": "snapshot from the last successful liveness probe"}
             return _SW
         except Exception as exc:
             _BRIDGE_STATE["stale_drops"] = _BRIDGE_STATE.get("stale_drops", 0) + 1
@@ -235,8 +255,12 @@ def log_failure(tool, payload, exc=None, extra=None, args=None):
             "args": args if args is not None else _LAST_CALL.get("args"),
             "payload": payload if isinstance(payload, dict) else str(payload)[:400],
             "last_call_before": _LAST_CALL,
-            "sw_version": sw_version(),
-            "health": health(),
+            # Snapshots, not probes. Calling `sw_version()` / `health()` here re-enters COM
+            # from inside the failure handler (report 2026-11-09, P0) — measured on this
+            # very function: two COM calls per logged failure.
+            "sw_version": _LAST_VERSION,
+            "health": _LAST_HEALTH,
+            "state_source": "cached_at_last_success — NOT probed during logging",
         }
         if exc is not None:
             record["exception"] = "%s: %s" % (type(exc).__name__, str(exc)[:300])
