@@ -1226,6 +1226,67 @@ def main():
 
     r.check("tool profiles cover every tool", _tool_profiles)
 
+    def _input_schemas_are_sealed():
+        """Every TOP-LEVEL inputSchema declares additionalProperties:false (v0.8.292).
+
+        Pure Python — no SolidWorks. Deliberately a REAL `mcp.list_tools()` rather than
+        a source-text check: report 2026-11-10 found a check that had died with NameError
+        for six releases because `check_all.py` only COUNTS `r.check` lines. "A check
+        exists" is not "the check ran". Prove this one actually executes with:
+
+            python tests/smoke.py --only "input schemas"
+
+        Ten reports in a row (2026-11-08 .. 2026-11-10) listed the missing declaration;
+        the runtime guard was fixed but the published contract never was.
+        """
+        import asyncio as _asyncio
+        import json as _json
+
+        # Local import: server.py pulls in the MCP SDK, which the other checks avoid.
+        from solidworks_assetmate_mechdog import server as _server
+
+        listed = _asyncio.run(_server.mcp.list_tools())
+        assert listed, "tools/list returned no tools"
+        missing = [t.name for t in listed
+                   if (t.inputSchema or {}).get("additionalProperties") is not False]
+        assert not missing, (
+            "%d/%d tools lack a top-level additionalProperties:false: %s"
+            % (len(missing), len(listed), missing[:5]))
+
+        # Nested dict-typed parameters keep Pydantic's own `true`. Recursively sealing
+        # them would break `palette` on the recolor tools. No hard-coded count here:
+        # the number of nested declarations varies with the SDK and the tool set.
+        nested = [
+            (t.name, k, prop.get("additionalProperties"))
+            for t in listed
+            for k, prop in (t.inputSchema.get("properties") or {}).items()
+            if isinstance(prop, dict) and "additionalProperties" in prop
+        ]
+        assert all(v is True for _, _, v in nested), (
+            "a NESTED schema was rewritten: %r"
+            % [n for n in nested if n[2] is not True][:5])
+
+        # The receipt must say what actually happened. A seal that touched 0 tools must
+        # NOT be able to report ok:true — the 2026-11-10 "no silent no-op" rule.
+        payload = _json.loads(_server.list_tool_profiles())
+        seal = payload.get("input_schema_seal") or {}
+        assert seal.get("ok") is True, ("seal did not cover the registry: %r" % seal)
+        assert seal.get("sealed") == len(listed) == seal.get("registered"), (
+            "seal count disagrees with tools/list: %r" % seal)
+
+        # A normal call still passes schema validation. `list_tool_profiles` is pure
+        # Python (no COM), so this check never depends on SolidWorks being up.
+        _res = _asyncio.run(_server.mcp.call_tool("list_tool_profiles", {}))
+        _seq = _res[0] if isinstance(_res, tuple) else _res
+        _txt = _seq[0].text if _seq else ""
+        assert _json.loads(_txt).get("ok") is True, (
+            "a normal tools/call no longer validates: %r" % _txt[:200])
+
+        return "%d/%d schemas sealed, %d nested declarations preserved" % (
+            len(listed), len(listed), len(nested))
+
+    r.check("top-level input schemas are sealed", _input_schemas_are_sealed)
+
     def _eccentric_section_is_refused():
         """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.
 

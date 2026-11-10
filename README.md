@@ -249,9 +249,18 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py     # 秒级：语法 + 结构 + 273 条历史回归
-python tests/smoke.py         # 需 SolidWorks：行为层（仓库不含测试模型，见下）
+python tests/check_all.py       # 秒级：语法 + 结构 + 274 条历史回归
+python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
+python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
+
+`stdio_contract.py` 起一个真进程走 MCP 握手，验证 `tools/list` 中每个 tool 顶层
+`inputSchema.additionalProperties` 都是 `false`、pydantic 生成的嵌套声明未被误改、
+正常调用仍能通过校验、未知参数被 `_install_argument_guard` 拒绝。**schema 声明与
+运行时守卫是两件事**：mcp 1.30.0 下只有声明、没有守卫时，`ping({"bogus_param":123})`
+照样 `ok:true`（pydantic `extra="ignore"` 丢键）；而客户端也可能在发送前按 schema
+本地过滤，让服务端守卫看不到原始参数。两者不能互相替代，详见
+[docs/com-quirks.md](docs/com-quirks.md) 的 2026-11-10（v0.8.292）一节。
 
 ---
 

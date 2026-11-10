@@ -2846,3 +2846,69 @@ view_positions=[[0.12,0.18]], paper="A3")` + `add_hole_callout(0.128, 0.18)`：
 就因 `server` 从未导入而恒 `NameError`；`check_all.py` 只数 `r.check` 行、不执行，
 所以一直被算作覆盖。用 `smoke.py --only 'tool profiles'` 才暴露。已改为局部导入
 `server`，并加源码级断言防止重现。**「有个 check」不等于「check 跑过」。**
+
+---
+
+## 2026-11-10（v0.8.292）顶层 `inputSchema.additionalProperties:false`：声明与守卫不是一回事
+
+连续 10 轮反馈（v0.8.235 → v0.8.290）都列了同一条 P3：`tools/list` 里所有 tool 的
+顶层 `inputSchema` 都是 `additionalProperties: <absent>`，而 `server.py` 全文检索
+`additionalProperties` 命中 0。期间修的一直是**运行时拒绝**
+（`_install_argument_guard` 挂在 `request_handlers[CallToolRequest]`，7/7、12/12 实测
+拒绝未知参数），始终没补**对外发布的契约**。这是两件事：
+
+| | 作用位置 | 能挡住什么 |
+|---|---|---|
+| `_install_argument_guard` | 服务端 MCP 请求入口，看到**原始** `params.arguments` | 已发到服务端的未知键 → `isError:true / unknown_argument` |
+| `additionalProperties:false` | `tools/list` 发布的 JSON Schema | 客户端**发送前**的本地校验；以及告诉调用方哪些参数真实存在 |
+
+报告 v0.8.247 第四节指出：部分 MCP 客户端会先按 schema 在本地过滤未知键，
+守卫根本看不到原始 `arguments`。所以声明覆盖的是守卫够不到的那一段，不是锦上添花。
+
+### 实测：声明不是运行时守卫
+
+mcp 1.30.0 的 `FastMCP.list_tools()` 直接把 `Tool.parameters` 作为 `inputSchema` 发布
+（`inputSchema=info.parameters`），因此改 `Tool.parameters` 是最小注入点，
+无需改动任何 decorator 或函数签名：
+
+```python
+# 装了 seal、但没装 _install_argument_guard
+ping({})                      -> ok=true
+ping({"bogus_param": 123})    -> ok=true   # 仍然静默丢弃！
+```
+
+FastMCP/pydantic 默认 `extra="ignore"`，`additionalProperties:false` 在这个版本
+**不会**触发服务端校验错误。结论：**`main()` 里的 `_install_argument_guard(mcp)`
+绝不能因为补了声明就删掉**；反过来，也不能因为守卫能拦就不发声明。
+
+### 只改顶层，别碰嵌套
+
+Pydantic 会对 dict 类型参数生成 `additionalProperties: true`（当前构建的
+`recolor_assembly.palette` / `recolor_bodies.palette` 等；数量随 SDK 和工具集变化，
+**不要写死数字**）。递归改成 false 会直接破坏这些参数。实现里只有一次下标赋值：
+`params["additionalProperties"] = False`，`params` 取自
+`getattr(tool, "parameters", None)`。回归断言锁死「恰好一个 Subscript 写、
+slice 是 `additionalProperties`、值是字面量 `False`、函数体不出现 `properties"]`」。
+
+### 模块级 seal，而不是放进 `main()`
+
+`import server; mcp.list_tools()`（测试与进程内客户端走的路径）不经过 `main()`。
+所以 `_SCHEMA_SEAL = _seal_input_schemas(mcp)` 放在所有 `@mcp.tool()` 装饰器之后的
+模块级；`main()` 只保留 `_install_argument_guard(mcp)`。
+
+### 失败必须可区分
+
+seal 返回 `{registered, sealed, ok}`，而不是静默返回 `None` 或只丢一个计数；
+`list_tool_profiles()` 回执新增 `input_schema_seal`。封了 0 个工具时 `ok=false`，
+不会看起来像一次干净的空操作 —— 沿用 2026-11-10 的通用规则：
+**任何可能被吞掉或空转的分支，失败与空操作必须可区分。**
+
+### 验证
+
+* `smoke.py --only "input schemas"` 真跑 `asyncio.run(mcp.list_tools())`：
+  `71/71 schemas sealed, 2 nested declarations preserved`，并通过
+  `mcp.call_tool("list_tool_profiles", {})` 确认正常调用的校验路径没被破坏。
+  check 局部导入 `server`，避免重演上一轮「check 恒 NameError 却被算作覆盖」。
+* 真实 stdio 进程 `tools/list` + 未知参数拒绝：见 v0.8.292 发布记录。
+* 源码级断言 `0.8.292 top-level input schemas are sealed`：模块级调用位置、
+  顶层唯一写入、`main()` 守卫仍在、回执自证、smoke check 已注册，一次全查。

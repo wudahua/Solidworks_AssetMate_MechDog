@@ -9471,7 +9471,123 @@ def assert_require_distinguishes_failure_from_partial():
         "the default is permissive; 49 existing checks would stop catching failures")
     return "require separates a failed call from a partial one, and defaults to strict"
 
+
+def assert_top_level_input_schemas_are_sealed():
+    """0.8.292 — ten consecutive reports: the published schema allowed anything.
+
+    `tools/list` showed `additionalProperties: <absent>` on EVERY tool from 0.8.235 to
+    0.8.291 while the runtime guard `_install_argument_guard` was being fixed. The two
+    are not interchangeable: some MCP clients filter `arguments` locally against the
+    schema BEFORE our request handler sees them, so the declaration has independent
+    value. Conversely, measured with mcp 1.30.0, sealing the schema WITHOUT the guard
+    still lets `ping({"bogus_param": 123})` return ok:true — pydantic's `extra="ignore"`
+    drops the key. Do not let one fix be used as an excuse to remove the other.
+
+    Four things are locked down here, all source-level:
+      1. exactly ONE subscript write, to the TOP-LEVEL `["additionalProperties"]`, with
+         the literal False — recursing into `properties` would rewrite Pydantic's nested
+         `additionalProperties: true` on dict-typed params such as `palette`;
+      2. the seal runs at MODULE level AFTER the last `@mcp.tool()` decorator, so an
+         in-process `import server; mcp.list_tools()` sees it too, not just `main()`;
+      3. `main()` still installs the runtime guard;
+      4. the receipt self-reports the seal, and a real `mcp.list_tools()` check exists.
+    """
+    src = _read("server.py")
+    tree = _tree("server.py")
+    node = _function_node(tree, "_seal_input_schemas")
+    assert node is not None, "_seal_input_schemas is gone"
+    body = ast.get_source_segment(src, node) or ""
+    assert 'getattr(tool, "parameters", None)' in body, (
+        "the seal is no longer reading the generated Tool.parameters")
+
+    # 1) Only the top-level dict is written. A recursive seal needs a second subscript
+    #    store (or a write through `properties`), so counting them is a real guard.
+    writes = []
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Assign):
+            continue
+        for target in sub.targets:
+            if isinstance(target, ast.Subscript):
+                try:
+                    key = ast.literal_eval(target.slice)
+                except Exception:
+                    key = None
+                writes.append((key, sub.value))
+    assert len(writes) == 1, (
+        "expected exactly one schema write (top-level only), got %d: %r"
+        % (len(writes), [k for k, _ in writes]))
+    key, value = writes[0]
+    assert key == "additionalProperties", (
+        "the seal writes %r instead of the top-level additionalProperties" % key)
+    assert isinstance(value, ast.Constant) and value.value is False, (
+        "additionalProperties must be the literal False, not %r" % getattr(value, "value", None))
+    assert '"properties"]' not in body, (
+        "the seal reaches into `properties` — nested dict schemas would be rewritten")
+
+    # 2) Module level, after every tool registration.
+    last_tool_line = 0
+    for n in tree.body:
+        if not isinstance(n, ast.FunctionDef):
+            continue
+        for dec in n.decorator_list:
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            if isinstance(target, ast.Attribute) and target.attr == "tool":
+                last_tool_line = max(last_tool_line, n.lineno)
+    assert last_tool_line > 0, "no @mcp.tool() decorators found"
+    seal_call = None
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call) \
+                and isinstance(n.value.func, ast.Name) \
+                and n.value.func.id == "_seal_input_schemas":
+            seal_call = n
+    assert seal_call is not None, (
+        "the seal is not invoked at module level — in-process list_tools() would be unsealed")
+    assert seal_call.lineno > last_tool_line, (
+        "the seal runs at line %d, before the last tool at %d — later registrations "
+        "would be missed" % (seal_call.lineno, last_tool_line))
+    assert any(isinstance(t, ast.Name) and t.id == "_SCHEMA_SEAL" for t in seal_call.targets), (
+        "the seal result is discarded; nothing can observe a partial seal")
+
+    # 3) Declaration != enforcement.
+    main_body = ast.get_source_segment(src, _function_node(tree, "main")) or ""
+    assert "_install_argument_guard(mcp)" in main_body, (
+        "the runtime guard was removed on the strength of a schema declaration")
+    assert "_seal_input_schemas" not in main_body, (
+        "the seal moved back into main(); import-time list_tools() would be unsealed")
+
+    # 4) Receipt + a check that actually executes.
+    prof = ast.get_source_segment(src, _function_node(tree, "list_tool_profiles")) or ""
+    assert '"input_schema_seal": dict(_SCHEMA_SEAL)' in prof, (
+        "the seal result is not observable; a 0-tool seal would look like success")
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    i = sm.find("def _input_schemas_are_sealed():")
+    assert i > 0, "the live schema check is gone"
+    blk = sm[i:sm.find("\n    def ", i + 10)]
+    assert "import server as _server" in blk, (
+        "server is not imported locally again — the NameError that hid a check for six "
+        "releases would come back")
+    assert "mcp.list_tools()" in blk, "the check reads source text instead of the real registry"
+    assert "nested" in blk, "nested schemas are no longer protected"
+    assert 'r.check("top-level input schemas are sealed"' in sm, (
+        "the check is defined but never registered with the runner")
+
+    # The in-process check cannot see what main() installs. Ten rounds of this finding
+    # came from a hand-run stdio client, so that probe is now a file we can guard.
+    probe_path = os.path.join(ROOT, "tests", "stdio_contract.py")
+    assert os.path.isfile(probe_path), "the real stdio contract probe is gone"
+    with open(probe_path, encoding="utf-8") as fh:
+        probe = fh.read()
+    assert "stdio_client(" in probe and "session.list_tools()" in probe, (
+        "the probe no longer drives a real subprocess over stdio")
+    assert "bogus_param" in probe and '"unknown_argument"' in probe, (
+        "the probe no longer proves the runtime guard survives the schema declaration")
+    return ("module-level seal after last tool at line %d, one top-level write, "
+            "guard intact, stdio probe present" % last_tool_line)
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.292 top-level input schemas are sealed", assert_top_level_input_schemas_are_sealed),
 
     ("0.8.3 row/text ordering", assert_row_before_text),
     ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),

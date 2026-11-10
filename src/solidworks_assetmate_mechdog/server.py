@@ -270,6 +270,10 @@ def list_tool_profiles() -> str:
                       and n not in _TOOL_PROFILES["drawing"]
                       and n not in _TOOL_PROFILES["expert"]],
         "unknown_names": _stale,
+        # Self-report the schema contract, not just the grouping. A seal that silently
+        # sealed 0 tools must be DISTINGUISHABLE from a clean run — the 2026-11-10 rule
+        # "a swallowed branch must never look like an empty no-op" applies here too.
+        "input_schema_seal": dict(_SCHEMA_SEAL),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -1867,7 +1871,63 @@ def _install_argument_guard(app):
         return False
 
 
+def _seal_input_schemas(app):
+    """Declare `additionalProperties:false` on EVERY top-level tool inputSchema.
+
+    Ten consecutive reports (2026-11-08 .. 2026-11-10) listed this as the one-line P3
+    that never landed, while `tools/list` showed `<absent>` on all tools. The runtime
+    side was already fixed by `_install_argument_guard`, so it is tempting to call this
+    cosmetic. It is not, for two reasons:
+
+      1. Some MCP clients validate/filter `params.arguments` LOCALLY against inputSchema
+         before sending. Without the declaration those clients drop an unknown key before
+         our request-level guard can ever see it (report 0.8.247, section on the guard's
+         blind spot). The declaration tells the client what the server actually accepts.
+      2. A schema that says "anything else is allowed" is a false contract: it invites
+         callers to pass `drw_path=` and believe it worked.
+
+    This is a CONTRACT DECLARATION, NOT a runtime guard. Measured with mcp 1.30.0: with
+    `additionalProperties:false` set but `_install_argument_guard` NOT installed,
+    `ping({"bogus_param": 123})` still returns `ok:true` — FastMCP/pydantic validate with
+    `extra="ignore"` and drop the key. `_install_argument_guard` in `main()` remains the
+    only thing that actually REFUSES the call. Do not delete it on the strength of this.
+
+    Scope discipline: only the TOP-LEVEL dict is touched. Pydantic legitimately generates
+    `additionalProperties: true` on SOME nested dict-typed parameters (e.g. `palette` on
+    the recolor tools); recursively forcing false there would break those parameters.
+    The count of nested declarations varies with the SDK and the tool set, so it is
+    deliberately not written down here — a stale number in a comment is how the
+    2026-11-10 profile-count drift started.
+    `Tool.parameters` is the generated schema object that `FastMCP.list_tools()` publishes
+    verbatim as `inputSchema`, so writing to it is enough — no decorator edits, no
+    signature changes, no change to any existing call.
+
+    Returns a report rather than a bare count so a partial seal is observable.
+    """
+    manager = getattr(app, "_tool_manager", None)
+    tools = getattr(manager, "_tools", None) or {}
+    sealed = 0
+    for tool in tools.values():
+        params = getattr(tool, "parameters", None)
+        if isinstance(params, dict):
+            params["additionalProperties"] = False
+            sealed += 1
+    return {
+        "registered": len(tools),
+        "sealed": sealed,
+        "ok": bool(tools) and sealed == len(tools),
+    }
+
+
+# Module level, AFTER every @mcp.tool() decorator has fired. Doing this in main() would
+# leave `import server; mcp.list_tools()` — the path used by tests and by in-process
+# clients — showing the unsealed schemas. `_SCHEMA_SEAL` is read at CALL time by
+# `list_tool_profiles`, so the receipt reports what actually happened at import.
+_SCHEMA_SEAL = _seal_input_schemas(mcp)
+
+
 def main():
+    # Still required: the seal above is a declaration, this is the enforcement.
     _install_argument_guard(mcp)
     mcp.run()
 
