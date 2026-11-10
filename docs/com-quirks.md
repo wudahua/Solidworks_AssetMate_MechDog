@@ -3000,3 +3000,60 @@ tarball / wheel 里 `head` / `prev_commit` 皆空，重复 tag 检查被整段�
 
 `check_all.py` 278/278，`static_check` RC=0，`stdio_contract.py` 6/6。
 **全量 `smoke.py` 本轮未跑**（历史 42–69 min）；本轮改动不触碰任何 COM 调用路径。
+
+---
+
+## 2026-11-10（v0.8.294）同轴沉孔合并不再拿半径阈值兼做倒角判定
+
+### 1. 反馈与反例
+
+报告 2026-11-09 §4：0.8.278 为「同轴沉孔产生两条逐字相同 callout」加了
+`_same_axis`，但合并条件是 `(_keep_r - _k[1]) > 0.0015`（半径差 > 1.5 mm），
+注释说是为避开 chamfer。**Ø11 沉孔配 Ø9.8 通孔径向差 0.6 mm 会绕过合并**，
+图纸仍然出两条相同标注。
+
+根因不是阈值取小了，而是**同一个 1.5 mm 被两个不同语义复用**：
+
+| 位置 | 判定 | 语义 |
+|---|---|---|
+| `_chamfers` 过滤器 | `半径差 <= 1.5 mm`（且 3D 中心邻近） | 「这一对可能是倒角口」 |
+| coaxial 合并 | `半径差 > 1.5 mm` | 「这一对不是倒角，可以合并」 |
+
+第二条只是对第一条的反向猜测，不是独立事实。倒角对和浅沉孔在半径维度上
+本来就重叠，用同一个数切不出两类。
+
+### 2. 改法：把「是否 chamfer 对」从事实来源传下来
+
+* 常量 `CHAMFER_RADIUS_GAP_M = 0.0015` **只**服务于 chamfer 过滤器；`_near` 的
+  1.5 mm 是 3D 中心聚类，语义不同，保留自己的字面量。
+* 过滤器判定一对时，把参与的两个半径对应的**全部 key** 写入
+  `_chamfer_pair_keys`（被删的、被 through-bore 保护留下的都算「它判过」）。
+* 新增纯函数 `_coaxial_merge_plan(axis_keys, chamfer_pair_keys)`：
+  `clean = 不在集合里的 key`，**不做任何半径比较**；`clean` 中保留最大半径的 key，
+  其余半径不同者 drop。等半径 key 是不同孔位，永不 drop。
+* 回执新增 `coaxial_chamfer_protected`：被 chamfer 判定保护而没参与合并的 key 数。
+  「保护生效」和「没有触发保护」必须可区分，不能都显示 0 而无人知道有没有跑过。
+
+### 3. 为什么仍然保守（已知边界）
+
+`_chamfer_pair_keys` 会保护同簇内被 `ambiguous_chamfer_pairs` 报告的圆对。
+一个 3D 中心差 ≤1.5 mm 的**极浅沉孔**在几何上与 45° 倒角口不可分
+（轴向深度 ≈ 径向增量），本实现宁可让它们继续走 `ambiguous_chamfer_pairs` +
+`ok:false` 的人工标注路径，也不冒险把真实孔 Ø16 折进倒角口 Ø18 里删掉
+（那正是 0.8.266 / N-3 的 P0：漏标可手工补，把倒角标成孔是错的零件）。
+常规沉孔两端 Z 差等于沉孔深度（实测 6.8 mm），落在**不同** `_by_centre` 簇，
+过滤器不会判过，直接按同轴合并 —— 这才是反馈反例的实际结构。
+
+### 4. 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 280/280（新增 `coaxial merge ignores radius gap` / `coaxial merge has live replay`） |
+| `smoke.py --only "shallow coaxial counterbores still merge"` | PASS：真调纯函数回放 Ø11/Ø9.8 = 0.6 mm、Ø11/Ø6.6 = 2.2 mm、Ø16/Ø18 保护、等半径不误删 |
+| 真机 smoke（3 个针对性 check） | 3/3 PASS：`list_drawing_annotations with hole callouts (P0)` 47.3 s、`hole callout leader anchor (P1-7)` 38.8 s、纯 Python 回放 0.0 s；前者断言 `coaxial_chamfer_protected` 是**真回执里的整数**、`coaxial_duplicates_dropped` 是 list |
+| `stdio_contract.py` | 6/6 |
+
+旧断言 `0.8.278 one callout per coaxial hole` 曾要求源码里必须有
+`(_keep_r - _k[1]) > 0.0015`；0.8.294 起该字面量**出现即为回归**，断言已重写
+并标为历史作废。教训与 0.8.293 的 `text` 语义漂移同类：
+**改动判据时必须同步枚举所有以旧判据为守卫的回归断言，否则旧断言会反过来锁死修复。**

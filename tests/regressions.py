@@ -8105,7 +8105,9 @@ def assert_one_callout_per_hole_size():
         "makes it count holes")
     assert "quantity_source" in body, (
         "the receipt does not say the count came from distinct centres")
-    assert "0.0015" in body, (
+    # 0.8.294 named the chamfer RADIUS test; the 3D centre cluster keeps its own
+    # literal 1.5 mm tolerance in `_near`. Both must still be present.
+    assert "CHAMFER_RADIUS_GAP_M" in body and "_near" in body, (
         "the 1.5 mm concentric test is gone; chamfers will pass as holes")
     return "one callout per hole size, and chamfer faces are skipped"
 
@@ -8710,18 +8712,11 @@ def assert_capability_entries_have_no_duplicate_keys():
     return "no capability entry repeats a key"
 
 def assert_coaxial_holes_produce_one_callout():
-    """0.8.278 — a counterbored hole got two identical callouts, each saying 4×.
+    """0.8.278 -> 0.8.294 — one callout per coaxial hole, judged by chamfer membership.
 
-    Report 2026-11-09 (Q-2), with a 2x enlarged screenshot as evidence:
-
-        4 × Ø 6.60 完全贯穿
-           ⌴ Ø 11 ↧ 6.80
-        4 × Ø 6.60 完全贯穿        <- same words, second leader
-           ⌴ Ø 11 ↧ 6.80
-
-    One hole feature produced two annotations because the counterbore circle (Ø11) and the
-    through circle (Ø6.6) are different RADII, so the existing "merge by radius" pass saw
-    them as unrelated. Both carried `4 ×`, which reads as eight holes.
+    Report 2026-11-09 (Q-2): a counterbored hole got two identical callouts, each saying
+    4×. The counterbore circle (Ø11) and the through circle (Ø6.6) are different RADII, so
+    the "merge by radius" pass saw them as unrelated.
 
     Grouping them needed the right notion of "coaxial", and the first attempt got it wrong:
 
@@ -8729,13 +8724,15 @@ def assert_coaxial_holes_produce_one_callout():
         Ø6.6 centre [ 0.024, 0, 0.0082]   <- 6.8 mm down, the counterbore depth
 
     Z differs by exactly the counterbore depth, so the 1.5 mm 3D clustering used for
-    chamfers never paired them. Same axis means same X/Y, Z irrelevant — and the radius gap
-    must exceed the chamfer tolerance, or Ø16/Ø18 would be collapsed here as well.
+    chamfers never paired them. Same axis means same X/Y, Z irrelevant.
 
-    Measured 2026-11-09:
-
-        created=[(11.0, 4)]
-        coaxial_duplicates_dropped: dropped Ø6.6 (kept Ø11.0) x4
+    HISTORICALLY VOID (0.8.294): this assertion used to require
+    `(_keep_r - _k[1]) > 0.0015` in the source, on the theory that a chamfer pair must not
+    be collapsed. Report 2026-11-09 §4 showed the gate was a SECOND guess at the same
+    tolerance: a shallow counterbore Ø11 over Ø9.8 has a 0.6 mm radial gap, so both circles
+    survived and the sheet got two identical callouts again. Keeping that literal is now a
+    REGRESSION, not a guard. The chamfer filter publishes `_chamfer_pair_keys`, and the
+    merge consumes that membership decision instead of measuring a radius.
     """
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
@@ -8743,9 +8740,15 @@ def assert_coaxial_holes_produce_one_callout():
     assert "_coaxial_dropped" in body, "coaxial duplicates are created again"
     assert "_same_axis" in body, (
         "coaxial is judged by 3D centre again; a counterbore is 6.8 mm deep and never pairs")
-    assert "(_keep_r - _k[1]) > 0.0015" in body, (
-        "the radius-gap guard is gone; a chamfer pair would be collapsed here too")
-    return "one callout per coaxial hole, and the dropped diameters are named"
+    assert "(_keep_r - _k[1]) > 0.0015" not in body, (
+        "the radius-gap gate is back; an Ø11/Ø9.8 shallow counterbore gets two callouts")
+    assert "_coaxial_merge_plan(_alive, _chamfer_pair_keys)" in body, (
+        "the merge no longer consumes the chamfer filter's decision")
+    assert "_chamfer_pair_keys.update" in body, (
+        "the chamfer filter does not publish the keys it adjudicated")
+    assert "coaxial_chamfer_protected=" in body, (
+        "the protection decision is not countable in the receipt")
+    return "one callout per coaxial hole; chamfer membership, not a radius gap, decides"
 
 
 def assert_a_callout_receipt_reads_every_text_slot():
@@ -9749,7 +9752,55 @@ def assert_no_composite_text_dialect_and_new_checks_really_run():
     return "4 live pure-Python checks registered; no composite text dialect in either tool"
 
 
+def assert_coaxial_merge_is_radius_agnostic():
+    """0.8.294 — the pure merge helper must not measure a radius gap at all.
+
+    Report 2026-11-09 §4 asked for "is it a chamfer pair" rather than a radius
+    threshold. A helper that silently reintroduces `keep_r - r > tol` would still
+    pass the original Ø11/Ø6.6 fixture (2.2 mm) and fail again on Ø11/Ø9.8 (0.6 mm).
+    Inspect the CODE, not the docstring: the docstring deliberately names the old
+    gate when explaining why it was removed.
+    """
+    src = _read("tools/drawing.py")
+    fn = _function_node(ast.parse(src), "_coaxial_merge_plan")
+    stmts = [s for s in fn.body
+             if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
+                     and isinstance(s.value.value, str))]
+    code = "\n".join(ast.unparse(s) for s in stmts)
+    assert "chamfer_pair_keys" in code, "membership is not the discriminator"
+    assert "CHAMFER_RADIUS_GAP_M" not in code and "0.0015" not in code, (
+        "the merge helper measures a radius gap again; shallow counterbores regress")
+    assert ">" not in code, "a magnitude comparison crept back into the merge decision"
+    assert "coaxial_chamfer_protected=" in src, (
+        "the protection decision is not countable in the receipt")
+    return "merge helper has no radius comparison; protection is a countable receipt field"
+
+
+def assert_coaxial_merge_has_live_replay():
+    """0.8.294 — the Ø11/Ø9.8 case must be REPLAYED, not asserted from source text.
+
+    `check_all.py` only COUNTS `r.check` lines. Report 2026-11-10 found a smoke check
+    dead with NameError for six releases while still being counted as coverage, so a
+    source assertion alone is not enough here.
+    """
+    src = _read("tools/drawing.py")
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    name = "shallow coaxial counterbores still merge"
+    assert 'r.check("%s"' % name in sm, "the live replay check is not registered: %r" % name
+    assert "_coaxial_merge_plan(" in sm, (
+        "the check reads source text instead of calling the real pure helper")
+    assert "0.0049" in sm and "0.0055" in sm, (
+        "the reported Ø11 / Ø9.8 fixture is gone from the replay")
+    assert "coaxial_chamfer_protected" in sm, (
+        "the new receipt field has no real-machine assertion")
+    assert "def _coaxial_merge_plan" in src
+    return "live Ø11/Ø9.8 replay registered; real receipt asserts the protection field"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.294 coaxial merge ignores radius gap", assert_coaxial_merge_is_radius_agnostic),
+    ("0.8.294 coaxial merge has live replay", assert_coaxial_merge_has_live_replay),
     ("0.8.293 hw placeholders stripped, raw kept", assert_hw_placeholders_are_stripped_but_kept_raw),
     ("0.8.293 circular-only edges not projected", assert_circular_only_edges_are_not_sheet_projected),
     ("0.8.293 bump --check fails closed", assert_bump_version_check_fails_closed),

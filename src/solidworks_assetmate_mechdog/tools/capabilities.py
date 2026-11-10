@@ -448,7 +448,11 @@ CAPABILITIES = [
                 "`no_native_callout` 表示找到了孔但 `AddHoleCallout2` 全部返回 null——"
                 "实测（阀体）边与相邻面都能选中、锚点就在圆上仍为 null，而同一调用在"
                 "钣金拉伸孔上可用，属几何/构建限制，换 offset 或换视图不会改变，"
-                "`native_callout_note` 会把这一点写清楚。"),
+                "`native_callout_note` 会把这一点写清楚。"
+                "0.8.294 起同轴沉孔合并按 **chamfer 成员身份**判定，不再要求半径差 >1.5 mm："
+                "Ø11 沉孔配 Ø9.8 通孔（径向差 0.6 mm）只出一条标注；"
+                "被倒角过滤器判过的圆由 `ambiguous_chamfer_pairs` 报告并受保护，"
+                "保护数量见回执 `coaxial_chamfer_protected`。"),
         "workaround": ("看到 `no_native_callout` 就不要再调参数重试：改用 Ø 尺寸或手动补标；"
                        "`list_circular_edges`（0.8.24 修好，改用 CircleParams 而非顶点）"
                        "可先列出圆边判断值不值得试"),

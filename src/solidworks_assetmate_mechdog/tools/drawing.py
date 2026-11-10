@@ -3395,6 +3395,44 @@ def _nearest_circle_edge(drawing_path, view_name, x, y, tolerance_m=0.005):
             "distance_m": round(best[0], 5)}, None
 
 
+# ── Coaxial merge policy (report 2026-11-09 §4, fixed 0.8.294) ─────────────────────
+# One radial tolerance used to do TWO unrelated jobs. The chamfer filter used
+# "radius gap <= 1.5 mm" to find a chamfer mouth, and the coaxial merge used
+# "radius gap > 1.5 mm" to avoid folding that same pair into a counterbore. The
+# second gate silently refused EVERY shallow counterbore: Ø11 over Ø9.8 is a 0.6 mm
+# radial gap, so both circles survived and the sheet got two word-for-word identical
+# callouts. Chamfer MEMBERSHIP — not a radius magnitude — is the discriminator, so
+# the filter now publishes the keys it adjudicated and the merge consumes that set.
+CHAMFER_RADIUS_GAP_M = 0.0015
+
+
+def _coaxial_merge_plan(axis_keys, chamfer_pair_keys):
+    """Decide which keys of one co-axial set lose their hole callout.
+
+    PURE: both arguments are plain `(centre, radius)` grouping keys, so smoke can
+    replay report 2026-11-09 §4 without SolidWorks.
+
+    `axis_keys` are the keys still alive in one X/Y axis group. `chamfer_pair_keys`
+    are the keys the chamfer filter already adjudicated: those are NOT counterbores.
+    That filter removed them or reported them in `ambiguous_chamfer_pairs` for manual
+    annotation. Folding one into the widest circle here would delete a real bore
+    (Ø16 bore vs its Ø18 chamfer mouth) and repeat report 2026-11-09 N-3.
+
+    A counterbore and its through hole are ONE feature: SolidWorks' native hole
+    callout on the wider circle already prints both diameters, so keeping both draws
+    two identical annotations (Q-2). Before 0.8.294 the merge required
+    `keep_r - r > CHAMFER_RADIUS_GAP_M`; there is NO radius test now. Keys of equal
+    radius are different holes at different centres and are never dropped.
+    """
+    clean = [k for k in axis_keys if k not in chamfer_pair_keys]
+    protected = len(axis_keys) - len(clean)
+    if len(clean) < 2:
+        return {"keep": None, "drop": [], "chamfer_protected": protected}
+    keep = max(clean, key=lambda k: k[1])
+    drop = [k for k in clean if k[1] != keep[1]]
+    return {"keep": keep, "drop": drop, "chamfer_protected": protected}
+
+
 def _read_native_callout_text(readers):
     """Read every reachable `GetText` slot without inventing a private `text` dialect.
 
@@ -9384,12 +9422,20 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # receipt names them, so a caller can annotate by hand instead of guessing.
             _chamfers = set()
             _ambiguous = []
+            # 0.8.294: publish EVERY key this filter adjudicated. The coaxial merge below
+            # used to re-derive "is this a chamfer?" from the radius gap — but that same
+            # gap describes a shallow counterbore (Ø11 over Ø9.8). Membership is the only
+            # fact this filter actually established, so it is handed down explicitly.
+            _chamfer_pair_keys = set()
             for _centre, _keys in _by_centre.items():
                 if len(_keys) < 2:
                     continue
                 _rs = sorted(_k[1] for _k in _keys)
                 for _i in range(len(_rs) - 1):
-                    if (_rs[_i + 1] - _rs[_i]) <= 0.0015:       # 1.5 mm in metres
+                    if (_rs[_i + 1] - _rs[_i]) <= CHAMFER_RADIUS_GAP_M:
+                        _pair_radii = {_rs[_i], _rs[_i + 1]}
+                        _chamfer_pair_keys.update(
+                            _k for _k in _keys if _k[1] in _pair_radii)
                         # A THROUGH bore shows the same diameter at two distant centres (both
                         # ends of the hole). A chamfer mouth shows up once. So before dropping
                         # the pair, check whether either diameter also appears somewhere else
@@ -9434,14 +9480,20 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             #     Ø6.6 through     centre [ 0.024, 0, 0.0082]   <- 6.8 mm down, the cb depth
             #
             # The 1.5 mm clustering used for chamfers therefore never sees them as one
-            # feature. Here X/Y identity is what matters and Z is irrelevant; the radius
-            # gap must also exceed the chamfer tolerance, or the Ø16/Ø18 pair would be
-            # collapsed here too (it is already handled above).
+            # feature. Here X/Y identity is what matters and Z is irrelevant.
+            #
+            # Report 2026-11-09 §4 (fixed 0.8.294): the old `> 0.0015` radius gate here
+            # was a SECOND chamfer guess. It also rejected shallow counterbores — Ø11
+            # over Ø9.8 is a 0.6 mm radial gap, so both circles survived and produced two
+            # identical callouts. The chamfer filter above already decided which keys are
+            # chamfer members; `_coaxial_merge_plan` consumes that decision and never
+            # looks at a radius magnitude again.
             def _same_axis(_a, _b, tol=0.0005):
                 return abs(float(_a[0]) - float(_b[0])) <= tol and \
                        abs(float(_a[1]) - float(_b[1])) <= tol
 
             _coaxial_dropped = []
+            _coaxial_chamfer_protected = 0
             _axis_groups = []
             for _centre, _keys in _by_centre.items():
                 _alive = [_k for _k in _keys if _k in grouped]
@@ -9455,19 +9507,18 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     _axis_groups.append([_centre, list(_alive)])
 
             for _centre, _alive in _axis_groups:
-                if len(_alive) < 2:
-                    continue
-                _keep_r = max(_k[1] for _k in _alive)
-                for _k in _alive:
-                    if _k[1] != _keep_r and (_keep_r - _k[1]) > 0.0015:
-                        _coaxial_dropped.append({
-                            "dropped_dia_mm": round(_k[1] * 2000, 2),
-                            "kept_dia_mm": round(_keep_r * 2000, 2),
-                            "centre": [round(float(v), 4) for v in _centre],
-                            "reason": "coaxial with a larger circle; its callout already "
-                                      "names both diameters",
-                        })
-                        grouped.pop(_k, None)
+                _plan = _coaxial_merge_plan(_alive, _chamfer_pair_keys)
+                _coaxial_chamfer_protected += _plan["chamfer_protected"]
+                _keep = _plan["keep"]
+                for _k in _plan["drop"]:
+                    _coaxial_dropped.append({
+                        "dropped_dia_mm": round(_k[1] * 2000, 2),
+                        "kept_dia_mm": round(_keep[1] * 2000, 2),
+                        "centre": [round(float(v), 4) for v in _centre],
+                        "reason": "coaxial with a larger circle; its callout already "
+                                  "names both diameters",
+                    })
+                    grouped.pop(_k, None)
 
             # ── One callout per hole SIZE, not per hole (report 2026-11-08, P1-2) ────
             # A pattern of four identical counterbores produced FOUR separate callouts,
@@ -9872,6 +9923,11 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # with a flag when the pair is concentric with the view centre (the usual shape
             # of a main bore or its boss).
             coaxial_duplicates_dropped=_coaxial_dropped[:10],
+            # 0.8.294: a NON-ZERO value means the chamfer filter, not a radius guess,
+            # kept these circles out of the counterbore merge. Report §4 asked for
+            # "is it a chamfer pair" as the discriminator; this makes the decision
+            # countable in a real receipt instead of inferable from source comments.
+            coaxial_chamfer_protected=_coaxial_chamfer_protected,
             # Partial work is not success. See the verdict comment above.
             ok=(not _ambiguous),
             # Report 2026-11-10 (S-3): `ok:false` here means "the drawing is INCOMPLETE",

@@ -502,6 +502,16 @@ def main():
         require(drawing.create_drawing(part, drw, views=["front", "right"], paper="A3"))
         made = drawing.add_hole_callouts(drw, budget_s=40)
         total = made.get("created_count") or 0
+        # 0.8.294: the coaxial/chamfer decision must be visible in a REAL receipt, not
+        # only inferable from source comments. Failure vs. no-op has to be countable.
+        assert isinstance(made.get("coaxial_chamfer_protected"), int), (
+            "coaxial chamfer protection is not countable: %r"
+            % made.get("coaxial_chamfer_protected"))
+        assert isinstance(made.get("coaxial_duplicates_dropped"), list), (
+            "coaxial_duplicates_dropped disappeared from the real receipt")
+        for row_ in made.get("coaxial_duplicates_dropped") or []:
+            assert row_["dropped_dia_mm"] < row_["kept_dia_mm"], (
+                "a coaxial merge kept the narrower circle: %r" % row_)
         listed = require(drawing.list_drawing_annotations(drw))
         totals = listed.get("totals") or {}
         callouts = [a for a in (listed.get("annotations") or [])
@@ -1422,6 +1432,49 @@ def main():
         return "git work tree RC=0; no-.git RC=1 UNVERIFIABLE; mismatch RC=1"
 
     r.check("bump_version --check fails without git", _bump_version_fails_closed)
+
+    def _shallow_coaxial_counterbores_merge():
+        """Replay report 2026-11-09 §4: Ø11 counterbore over an Ø9.8 through hole.
+
+        0.8.278 added `_same_axis` but gated the merge on a 1.5 mm radius gap. A 0.6 mm
+        gap therefore kept BOTH circles and drew two word-for-word identical callouts.
+        0.8.294 replaced that gate with chamfer MEMBERSHIP. This calls the real pure
+        helper with the report's geometry — no COM, no source-text inspection.
+        """
+        from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+        # measured Q-2 geometry: counterbore on the face, through circle 6.8 mm down
+        cb = ((-0.024, 0.0, 0.015), 0.0055)     # Ø11.0
+        th = ((0.024, 0.0, 0.0082), 0.0049)     # Ø9.8 -> radial gap 0.6 mm
+        plan = _drawing._coaxial_merge_plan([cb, th], set())
+        assert [round(k[1] * 2000, 2) for k in plan["drop"]] == [9.8], plan
+        assert round(plan["keep"][1] * 2000, 2) == 11.0, plan
+        assert plan["chamfer_protected"] == 0, plan
+        # Explicitly reproduce the OLD gate: it would have refused this merge.
+        assert (0.0055 - 0.0049) <= _drawing.CHAMFER_RADIUS_GAP_M, (
+            "fixture no longer reproduces the reported boundary")
+
+        # The original Q-2 pair (Ø11 / Ø6.6, 2.2 mm gap) must still merge.
+        wide = _drawing._coaxial_merge_plan(
+            [cb, ((0.024, 0.0, 0.0082), 0.0033)], set())
+        assert [round(k[1] * 2000, 2) for k in wide["drop"]] == [6.6], wide
+
+        # A chamfer-adjudicated pair must NOT be folded into its wider circle: the wider
+        # one is the chamfer mouth (Ø18), the narrower one is the real bore (Ø16).
+        bore = ((0.0, 0.0, 0.0), 0.008)
+        mouth = ((0.0, 0.0, 0.001), 0.009)
+        protected = _drawing._coaxial_merge_plan([bore, mouth], {bore, mouth})
+        assert protected["drop"] == [], protected
+        assert protected["chamfer_protected"] == 2, protected
+
+        # Equal radii at different centres are two HOLES, not a counterbore.
+        a = ((0.0, 0.0, 0.0), 0.0055)
+        b = ((0.05, 0.0, 0.0), 0.0055)
+        assert _drawing._coaxial_merge_plan([a, b], set())["drop"] == []
+        assert _drawing._coaxial_merge_plan([a], set())["drop"] == []
+        return "Ø11/Ø9.8 merges, Ø16/Ø18 protected, equal radii untouched"
+
+    r.check("shallow coaxial counterbores still merge", _shallow_coaxial_counterbores_merge)
 
     def _eccentric_section_is_refused():
         """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.
