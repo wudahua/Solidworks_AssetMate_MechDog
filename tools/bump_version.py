@@ -20,9 +20,14 @@ Usage
 -----
     python tools/bump_version.py            # 0.8.273 -> 0.8.274
     python tools/bump_version.py --to 0.9.0
-    python tools/bump_version.py --check    # print state, change nothing; exit 1 if inconsistent
+    python tools/bump_version.py --check    # print state, change nothing
 
-Exit codes: 0 ok, 1 inconsistent input, 2 write failed to take effect.
+`--check` is FAIL-CLOSED: it exits 1 on a version mismatch, on a HEAD that equals the
+previous tag, AND when there is no git work tree at all (tarball / wheel install), because
+in that last case the duplicate-tag check did not run and must not be reported as
+"safe to tag" (report 2026-11-09 §6, fixed in 0.8.293).
+
+Exit codes: 0 ok, 1 inconsistent or unverifiable input, 2 write failed to take effect.
 """
 
 from __future__ import annotations
@@ -71,13 +76,21 @@ def _rewrite(path: Path, pattern: str, new_version: str) -> None:
     path.write_text(new_text, encoding="utf-8", newline="")
 
 
-def _git(*args: str) -> str:
+def _git(*args: str) -> str | None:
+    """Return stdout, or None when git is unavailable / the command failed.
+
+    The old version returned `""` for BOTH "the command failed" and "it succeeded with
+    empty output". `check_only()` then saw head="" and prev_commit="", skipped the whole
+    duplicate check, and printed `HEAD ? is ahead of (no tag) — safe to tag` in a tarball
+    with no `.git` at all. Report 2026-11-09 §6 called this a false safety signal; it was
+    still present in 0.8.290. A check that cannot run must never report success.
+    """
     try:
         out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True,
                              timeout=15)
-        return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
-        return ""
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
 
 
 def check_only() -> int:
@@ -88,15 +101,40 @@ def check_only() -> int:
         print("MISMATCH — run this script without --check to fix")
         return 1
 
+    # FAIL-CLOSED, same rule as the release gate. Three releases were tagged on a commit
+    # whose version had not moved. `--check` exists to prevent exactly that, so a run that
+    # cannot inspect git is a FAILURE, not a pass with a shrug.
+    in_tree = _git("rev-parse", "--is-inside-work-tree")
+    if in_tree != "true":
+        print("UNVERIFIABLE — this is not a git work tree (no .git, or git unavailable).")
+        # Do NOT print the release-affirming phrase here, even inside a negation:
+        # audits grep for it, and a denial containing it still reads as a pass.
+        print("  The duplicate-tag check was NOT run. Release safety cannot be claimed "
+              "from this checkout.")
+        return 1
     head = _git("rev-parse", "HEAD")
+    if not head:
+        print("UNVERIFIABLE — HEAD could not be read; duplicate-tag check NOT run.")
+        return 1
+
     prev_tag = _git("describe", "--tags", "--abbrev=0", "HEAD^") or _git(
         "describe", "--tags", "--abbrev=0", "HEAD")
-    prev_commit = _git("rev-parse", prev_tag) if prev_tag else ""
-    if head and prev_commit and head == prev_commit:
+    if not prev_tag:
+        # A first release genuinely has no tag to collide with. Say that explicitly
+        # instead of lumping it in with "git did not answer".
+        print("no previous tag — duplicate-tag check not applicable (first release)")
+        print("HEAD %s — safe to tag" % head[:12])
+        return 0
+    prev_commit = _git("rev-parse", prev_tag)
+    if not prev_commit:
+        print("UNVERIFIABLE — could not resolve %s; duplicate-tag check NOT run."
+              % prev_tag)
+        return 1
+    if head == prev_commit:
         print("HEAD (%s) is the SAME commit as %s — tagging again here would create a "
               "duplicate release, which is how v0.8.272 shipped." % (head[:12], prev_tag))
         return 1
-    print("HEAD %s is ahead of %s — safe to tag" % (head[:12] or "?", prev_tag or "(no tag)"))
+    print("HEAD %s is ahead of %s — safe to tag" % (head[:12], prev_tag))
     return 0
 
 

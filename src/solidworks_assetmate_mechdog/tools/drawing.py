@@ -3395,6 +3395,77 @@ def _nearest_circle_edge(drawing_path, view_name, x, y, tolerance_m=0.005):
             "distance_m": round(best[0], 5)}, None
 
 
+def _read_native_callout_text(readers):
+    """Read every reachable `GetText` slot without inventing a private `text` dialect.
+
+    PURE apart from the COM `GetText` calls, so a fake reader can replay report strings in
+    smoke. `readers` is an ordered iterable of `(label, IDisplayDimension-like object)`;
+    the singular tool passes both the Dispatch'd callout and `GetDimension2(0)`, the batch
+    tool passes one.
+
+    Four report-driven rules (2026-11-09 0.8.278 §4 / 0.8.281 §6, 2026-11-10 0.8.290 S-5):
+
+    1. `text` stays ONE native string. Joining the slots with `" | "` made the same field
+       mean different things in `add_hole_callouts` and `list_drawing_annotations`: the
+       latter's `text_is_format_code` / `text_decoded` parse a single native string and
+       silently mis-parse a composite. Every other line goes into `text_lines` (an ARRAY).
+    2. `native_text_complete` is ALWAYS None (unknown), never true/false. Six probed slots
+       cannot PROVE SolidWorks has no seventh line. `len(parts) > 1` produced both false
+       negatives (a correct single-line callout flagged `text_is_partial`) and false
+       positives (two of three lines read -> "complete").
+    3. `<hw-*>` Hole Wizard placeholders are stripped from rendered strings but kept in
+       `text_slots_raw`. Measured: `<HOLE-SPOT><MOD-DIAM> <hw-cbdia> <HOLE-DEPTH>
+       <hw-cbdepth>` in a slot, with nothing for those two tokens on the PDF. They are
+       NOT format codes: `<MOD-DIAM>` is how SolidWorks STORES a diameter and renders as
+       Ø, while `<hw-*>` has no value bound and never renders. Leaving them in `text`
+       makes every "unresolved format code" audit fire on a correct sheet.
+    4. Nothing is silently dropped: `text_slots_raw` holds the unmodified slot text, so a
+       caller can always reconstruct what the binding returned.
+
+    Callers that need to JUDGE the text (e.g. the depth gate) must use `text_lines`, not
+    `text`: on 限位导向套 the depth lives in another slot and taking only the first line
+    would let `Ø16 ↧ 68` through again — the exact P0 fixed in 0.8.291.
+    """
+    import re as _re
+
+    hw = _re.compile(r"<hw-[^>]*>", _re.I)
+    lines, raw_rows, slots_read, placeholders, used = [], [], [], [], []
+    for slot in (1, 0, 2, 3, 4, 5):
+        for label, reader in readers:
+            try:
+                value = reader.GetText(slot)
+            except Exception:
+                continue
+            text = str(value).strip() if value else ""
+            if not text:
+                continue
+            raw_rows.append({"slot": slot, "reader": label, "text": text})
+            found = hw.findall(text)
+            placeholders.extend(found)
+            rendered = " ".join(hw.sub("", text).split()).strip()
+            if rendered and rendered not in lines:
+                lines.append(rendered)
+                slots_read.append(slot)
+                if label not in used:
+                    used.append(label)
+            break                      # one reader answered this slot; do not duplicate it
+    return {
+        "text": lines[0] if lines else None,
+        "text_lines": lines,
+        "text_slots_read": slots_read,
+        "text_slots_raw": raw_rows,
+        "hw_placeholders_stripped": sorted({p.lower() for p in placeholders}),
+        "native_text_complete": None,
+        "text_completeness": "unknown",
+        "text_completeness_reason": (
+            "GetText(slot) was probed over 6 slots, but this binding cannot prove that "
+            "SolidWorks holds no further text line; completeness is unknown rather than "
+            "true or false. Read `text_lines` for everything that WAS read."),
+        "text_reader": (", ".join(used) if used
+                        else "no slot returned content on any reader"),
+    }
+
+
 def _hole_callout_verification(text, model_match_ok=None):
     """May a freshly created hole callout stay on the sheet? PURE — no COM (0.8.291).
 
@@ -3641,33 +3712,26 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
         # So `text_slots: []` was a READER bug, not a SolidWorks limitation. The depth
         # symbol was readable all along; the singular tool just never looked at it. Use the
         # proven Dispatch path first, keep GetDimension2 as a fallback.
-        _text_slots = []
         _readers = []
         try:
             import win32com.client as _win_read
 
-            _readers.append(_win_read.Dispatch(callout))
+            _readers.append(("IDisplayDimension via Dispatch",
+                             _win_read.Dispatch(callout)))
         except Exception:
             pass
         try:
             _dim = callout.GetDimension2(0)
             if _dim is not None:
-                _readers.append(_dim)
+                _readers.append(("GetDimension2(0)", _dim))
         except Exception:
             pass
-        for _probe in (1, 0, 2, 3, 4, 5):
-            for _reader in _readers:
-                try:
-                    _candidate = _reader.GetText(_probe)
-                except Exception:
-                    continue
-                _text = str(_candidate).strip() if _candidate else ""
-                if _text and _text not in _text_slots:
-                    _text_slots.append(_text)
-        readback["text"] = " | ".join(_text_slots) if _text_slots else None
-        readback["text_slots"] = _text_slots
-        readback["text_reader"] = ("IDisplayDimension via Dispatch" if _text_slots
-                                   else "no slot returned content on any reader")
+        # `text` is ONE native line again; `text_lines` carries the rest. The old
+        # composite string leaked into `list_drawing_annotations`, whose
+        # `text_is_format_code` / `text_decoded` parse a single native string.
+        readback.update(_read_native_callout_text(_readers))
+        # Keep the old key for callers, but with the same single-line semantics per entry.
+        readback["text_slots"] = list(readback["text_lines"])
 
         # ── Flag a bore that the callout calls blind (report 2026-11-09, R-1) ────────────
         # The Ø16 bore goes through the part (a full section shows an open band end to end;
@@ -3679,7 +3743,11 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
         # dimension's display text lives in several slots and writing one destroys the
         # others. So do not rewrite — say it.
         _text_flags = []
-        _joined = (readback.get("text") or "")
+        # Judge over EVERY line, not `text`. `text` is one native line again (0.8.293);
+        # on 限位导向套 the depth `<HOLE-DEPTH>68` / `↧` lives in a DIFFERENT slot. Reading
+        # only `text` would let `Ø16 ↧ 68` on a through bore return ok:true again — the
+        # exact P0 that 0.8.291 reverted. `text_lines` is the full read.
+        _joined = " ".join(readback.get("text_lines") or [])
         _has_depth = ("\u21a7" in _joined) or ("HOLE-DEPTH" in _joined)
         if _has_depth:
             _text_flags.append({
@@ -4609,6 +4677,59 @@ _EDGE_CACHE = {}
 EDGE_CACHE_LIMIT = 32
 
 
+def _edge_kind(row):
+    """Classify an edge from what the binding actually returned. PURE (0.8.293).
+
+    `GetVisibleEntities2` returns CONTOUR edges: `GetStartVertex` is None on this build,
+    so a straight silhouette often has no endpoints at all. An arc cannot be told apart
+    from such an unreadable straight edge, so the honest answer is `unknown` rather than
+    a guessed `arc`. Callers must not treat `unknown` as a line they can dimension.
+    """
+    if row.get("is_circle") is True or row.get("radius_m"):
+        return "circle"
+    start, end = row.get("model_start"), row.get("model_end")
+    if start and end and start != end:
+        return "line"
+    return "unknown"
+
+
+def _edge_projection_scope(rows):
+    """PURE: are there projected EDGE ENDPOINTS a caller can pick by index? (0.8.293)
+
+    Four consecutive reports (2026-11-08 P1-3, 2026-11-09 Q-6, 2026-11-10 S-6) measured
+    a right-side view with five edges, ALL circles, `sheet_start == sheet_end ==
+    sheet_center`. The envelope still said `sheet_projected: true` because the CENTRES had
+    been projected. A caller read that as "the edges are usable", tried
+    `add_distance_dimension(edge_a=..., edge_b=...)` for the 70 mm overall length, and
+    could not: no straight edge exists in the payload.
+
+    So `sheet_projected` now means "there is at least one projected edge with DISTINCT
+    start/end points", not "some coordinate was transformed". Circle centres remain
+    available under `sheet_center` / `sheet_point_on_circle`; `sheet_coordinates_present`
+    says they are still there, and `sheet_projection_reason: circular_model_edges_only`
+    explains why selection is not possible. Kept as a pure function so smoke can replay
+    the report's five measured circles without SolidWorks.
+    """
+    kinds = {}
+    for row in rows:
+        kind = _edge_kind(row)
+        kinds[kind] = kinds.get(kind, 0) + 1
+    usable = [
+        row for row in rows
+        if _edge_kind(row) == "line"
+        and row.get("sheet_start") and row.get("sheet_end")
+        and row["sheet_start"] != row["sheet_end"]
+    ]
+    return {
+        "edge_kinds": kinds,
+        "usable_edge_count": len(usable),
+        "usable_for_edge_selection": bool(usable),
+        "circular_model_edges_only": bool(rows) and not usable,
+        "sheet_coordinates_present": any(
+            row.get("sheet_start") or row.get("sheet_center") for row in rows),
+    }
+
+
 def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x=False):
     """List a view's visible edges with stable indices, so dimensions can be added
     without guessing sheet coordinates (which need a model->sheet transform this binding
@@ -4838,19 +4959,33 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
         # know per-edge whether the sheet coordinates are real, without cross-referencing
         # the payload. Report 2026-11-08 (P1-3) read `sheet_projected` per edge and got
         # None on every one.
-        try:
-            for _row in rows:
-                _row["sheet_projected"] = bool(projected)
-                if not projected:
-                    _row["sheet_projection_reason"] = (
-                        "no axis mapping for this view — sheet_* coordinates are absent "
-                        "rather than guessed")
-        except Exception:
-            pass
+        #
+        # 0.8.293: "real" now means USABLE FOR SELECTION, not merely "a centre was
+        # transformed". Four reports in a row measured a side view of five CIRCLES with
+        # `sheet_start == sheet_end == sheet_center` while this flag said true. Circle
+        # centres are still projected and still useful — see `sheet_coordinates_present` —
+        # but `add_distance_dimension` cannot pick an edge with no distinct endpoints.
+        _scope = _edge_projection_scope(rows)
+        _effective_projected = bool(projected) and _scope["usable_for_edge_selection"]
+        if not projected:
+            _reason = projection_reason or "no projection inputs"
+        elif _scope["circular_model_edges_only"]:
+            _reason = "circular_model_edges_only"
+        else:
+            _reason = None
+        for _row in rows:
+            _row["edge_kind"] = _edge_kind(_row)
+            _row["sheet_projected"] = _effective_projected
+            if not _effective_projected:
+                _row["sheet_projection_reason"] = _reason
 
         payload = {"drawing": doc_title, "view": target_name,
                    "edge_count": len(rows), "edges": rows,
-                   "sheet_projected": projected,
+                   "sheet_projected": _effective_projected,
+                   "sheet_coordinates_present": _scope["sheet_coordinates_present"],
+                   "edge_kinds": _scope["edge_kinds"],
+                   "usable_edge_count": _scope["usable_edge_count"],
+                   "usable_for_edge_selection": _scope["usable_for_edge_selection"],
                    # Verified when the direction came from the view's orientation name
                    # (or the caller forced it). Only sizes matched by outline are unverified.
                    "sheet_axis_direction_verified": bool(
@@ -4867,8 +5002,8 @@ def list_drawing_edges(drawing_path, view_name=None, include_points=True, flip_x
                        "届时传 flip_x=True 覆盖。" % ((axis_map or {}).get("orientation") or "未知")
                        if projected and not bool(flip_x) and
                        (axis_map or {}).get("source") != "orientation_name" else None)}
-        if not projected:
-            payload["sheet_projection_reason"] = projection_reason or "no projection inputs"
+        if not _effective_projected:
+            payload["sheet_projection_reason"] = _reason
         if stamp is not None:
             if len(_EDGE_CACHE) >= EDGE_CACHE_LIMIT:
                 _EDGE_CACHE.clear()
@@ -9572,16 +9707,12 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # correct sheet wrong.
             #
             # The sheet was right the whole time. Only the receipt was truncated.
-            _parts = []
-            for _probe in (1, 0, 2, 3, 4, 5):
-                try:
-                    _candidate = dim_obj.GetText(_probe)
-                except Exception:
-                    continue
-                _text = str(_candidate).strip() if _candidate else ""
-                if _text and _text not in _parts:
-                    _parts.append(_text)
-            _native = " | ".join(_parts)
+            # 0.8.293: one shared reader for both callout tools. `text` stays a SINGLE
+            # native line; every other line goes into `text_lines`. See
+            # `_read_native_callout_text` for why the old `" | "` composite and the
+            # `len(_parts) > 1` completeness claim were both wrong.
+            _read = _read_native_callout_text([("IDisplayDimension", dim_obj)])
+            _native = _read["text"]
             # Report 2026-11-04 P1-3, second pass: the native text ALREADY carries the
             # counterbore. Measured on 接槽 with NOTHING rewritten:
             #
@@ -9599,15 +9730,18 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             if _native:
                 item["text"] = _native
                 item["text_source"] = "native"
-                # Completeness now means "every non-empty slot was read". When only one
-                # slot answered, say so rather than claiming completeness.
-                item["native_text_complete"] = len(_parts) > 1
-                if len(_parts) <= 1:
-                    item["text_is_partial"] = True
-                    item["text_note"] = (
-                        "only %d text slot(s) returned content; SolidWorks may hold the "
-                        "other line in a slot `GetText` does not expose on this binding"
-                        % len(_parts))
+                # Every line that answered, as an ARRAY — no synthetic composite string.
+                item["text_lines"] = _read["text_lines"]
+                item["text_slots_read"] = _read["text_slots_read"]
+                item["text_slots_raw"] = _read["text_slots_raw"]
+                item["hw_placeholders_stripped"] = _read["hw_placeholders_stripped"]
+                item["text_reader"] = _read["text_reader"]
+                # UNKNOWN, not false: six probed slots cannot prove there is no seventh
+                # line. The old `len(_parts) > 1` flagged a correct single-line callout as
+                # incomplete (false negative) AND 2-of-3 lines as complete (false positive).
+                item["native_text_complete"] = None
+                item["text_completeness"] = _read["text_completeness"]
+                item["text_completeness_reason"] = _read["text_completeness_reason"]
                 continue
             # The raw "<MOD-DIAM>" must be replaced or it prints literally, but writing only
             # the diameter leaves the DEPTH in another slot: a Ø15 hole then reads "Ø1515"
@@ -9710,7 +9844,10 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         # flag, and the two must never disagree.
         unresolved = [c for c in created
                       if c.get("text_source") != "native"
-                      and not c.get("native_text_complete")
+                      # `native_text_complete` is UNKNOWN (None) even after a full read —
+                      # it must never act as a verdict here. Only text this tool WROTE
+                      # can be unresolved; native text always renders.
+                      and c.get("native_text_complete") is not True
                       and "<MOD-" in str(c.get("text") or "").upper()]
         for item in unresolved:
             item["text_unresolved"] = True

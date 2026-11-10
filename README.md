@@ -249,7 +249,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 秒级：语法 + 结构 + 274 条历史回归
+python tests/check_all.py       # 秒级：语法 + 结构 + 278 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -392,10 +392,15 @@ MCP 注册（不依赖 PATH）：
 ### 版本号只用脚本改
 
 ```bash
-python tools/bump_version.py --check   # 报告状态，不改文件；HEAD 撞上一 tag 时返回 1
+python tools/bump_version.py --check   # 报告状态，不改文件
 python tools/bump_version.py           # 0.8.285 -> 0.8.286
 python tools/bump_version.py --to 0.9.0
 ```
+
+`--check` 是 **fail-closed**：版本两处不一致、HEAD 与上一 tag 相同、**或当前目录不是 git
+工作树**（tarball / wheel 安装无 `.git`）都返回 `1`。最后一种会明确打印
+`UNVERIFIABLE — the duplicate-tag check was NOT run`——旧版在这时会打印
+`HEAD ? is ahead of (no tag) — safe to tag`，一个根本没跑过的检查不能报安全（0.8.293 修）。
 
 `bump_version.py` 做四步：**读当前版本 → 算下一个 → 写入 → 重新读回来断言确实变了**。
 写不进去就 `exit 2`。

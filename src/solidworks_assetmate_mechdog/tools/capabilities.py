@@ -403,7 +403,12 @@ CAPABILITIES = [
                 "而是保留 SolidWorks 原生多槽文字（`text_source=native`，逐槽 0..5 读取）。"
                 "\n\n仍做不到的是**贯通判定**：`AddHoleCallout2` 从切除特征取深度，"
                 "并不判断该切除是否穿出背面。实测 `限位导向套` 的 Ø16 贯通内孔渲染成 "
-                "`Ø16 ↧ 68`。能力状态因此是 `partial`：文字能读回，语义不能信。"),
+                "`Ø16 ↧ 68`。能力状态因此是 `partial`：文字能读回，语义不能信。"
+                "\n\n0.8.293 起回执 `text` 只放**一条**原生文字，其余槽位在 `text_lines` "
+                "数组（不再拼成合成串）；`<hw-*>` 内部占位符图面不显示，已从渲染文字剥离、"
+                "原始内容保留在 `text_slots_raw`；`native_text_complete` 恒为 `null`"
+                "（该 binding 无法证明「已读全」）。判定深度等语义请用 `text_lines` 全部行，"
+                "不要只看 `text`。"),
         "workaround": ("**不要**用 `add_drawing_dimension(style='diameter')` 补主孔 —— "
                        "实测尺寸能建但文字渲染不出来（`<MOD-DIAM><DIM>` → `Ø<DIM>16`，"
                        "写数值 → `Ø1616`）；也**不要**再手工 `SetText` 改孔标注。"

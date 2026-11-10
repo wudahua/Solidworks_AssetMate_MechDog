@@ -2912,3 +2912,91 @@ seal 返回 `{registered, sealed, ok}`，而不是静默返回 `None` 或只丢�
 * 真实 stdio 进程 `tools/list` + 未知参数拒绝：见 v0.8.292 发布记录。
 * 源码级断言 `0.8.292 top-level input schemas are sealed`：模块级调用位置、
   顶层唯一写入、`main()` 守卫仍在、回执自证、smoke check 已注册，一次全查。
+
+---
+
+## 2026-11-10（v0.8.293）四项长期遗留：回执语义 / 占位符 / 侧视图投影 / 版本门禁
+
+这四项分别被 2 / 2 / 4 / 4 轮反馈点名，一直排在优先级表末尾。共同点都是
+**「代码跑通了，但回执在说另一件事」**，所以修法都不是改 COM 行为，而是让字段说真话。
+
+### 1. `native_text_complete` 与 `" | "` 合成串（0.8.278 §4 / 0.8.281 §6）
+
+0.8.278 用 `text = " | ".join(_parts)` 把多槽文字拼成一串，并把
+`native_text_complete` 定义成 `len(_parts) > 1`。两个判据都不成立：
+
+| | 旧行为 | 0.8.293 |
+|---|---|---|
+| `text` | 自造的合成串，`list_drawing_annotations` 的 `text_is_format_code` / `text_decoded` 按单串解析 → 语义漂移 | **一条原生文字**；其余行放 `text_lines` 数组 |
+| 单行标注 | 1 个槽 → `complete:false` + `text_is_partial:true`（假阴性，把正确图纸判成不完整） | `native_text_complete: null` |
+| 只读到 2/3 行 | 2 个槽 → `complete:true`（假阳性） | 仍是 `null`；固定枚举 6 个槽**无法证明**没有第 7 行 |
+| 完备性 | 一个 bool | `text_completeness: "unknown"` + `text_completeness_reason` |
+
+新增共用纯函数 `_read_native_callout_text(readers)`，单/复数两个工具都走它；
+`text_slots_read` / `text_slots_raw` / `text_reader` 让「读到了什么」完全可审计。
+
+**⚠️ 最容易踩回去的坑**：单数工具 `add_hole_callout` 用文字判定深度符号（`↧` /
+`<HOLE-DEPTH>`）来决定是否撤销标注。0.8.291 实测
+`text_slots = ["<MOD-DIAM>", "<HOLE-DEPTH>68"]`——深度在**第二槽**。
+把 `text` 收成单串后若仍用 `text` 判定，`Ø16 ↧ 68` 会重新拿到 `ok:true`，
+把刚堵上的 P0 放回去。所以内部判据是 `_joined = " ".join(text_lines)`，
+并用一条 smoke check 专门回放这个陷阱。**改 `text` 语义必须同步检查所有判据消费者。**
+
+### 2. `<hw-*>` 未解析模板槽位（0.8.278 R-4 / 0.8.290 S-5）
+
+实测第三段：`<HOLE-SPOT><MOD-DIAM> <hw-cbdia> <HOLE-DEPTH> <hw-cbdepth>`。
+`<hw-cbdia>` / `<hw-cbdepth>` 是 Hole Wizard 内部占位符，**没有绑定值、图面不显示**，
+拼进回执后自动核查会判成「文字未解析」。
+
+关键区分：**`<MOD-DIAM>` 是格式码，渲染器会变成 Ø，必须保留**；`<hw-*>` 是死占位符。
+所以只剥 `<hw-[^>]*>`，不做「删掉所有尖括号」——后者会重现 `Ø1515` 那一类事故。
+剥离结果进 `text_lines` / `text`，原始逐槽文本完整留在 `text_slots_raw`，
+并新增 `hw_placeholders_stripped` 明说去掉了哪些 token。
+
+### 3. 侧视图 `sheet_projected:true`（0.8.266 P1-3 / 0.8.276 Q-6 / 0.8.290 S-6）
+
+连续四轮实测同一个右视图：5 条边**全是圆**，
+`sheet_start == sheet_end == sheet_center`、`sheet_start_is_center:true`，
+顶层却写 `sheet_projected:true`。这个 `true` 只表示「圆心被投影过」，
+而 `add_distance_dimension` 需要**两个不同端点**的直线边来按 `edge_index` 选边，
+70 总长因此始终标不出来。
+
+0.8.293 把口径改成「有没有可用于选边的投影边」：
+
+* 新增纯函数 `_edge_kind`（`circle` / `line` / `unknown`）与
+  `_edge_projection_scope(rows)`。顶点拿不到的轮廓边诚实返回 `unknown`——
+  该 binding 无法分辨圆弧与无顶点的直线，**不编 `arc`**。
+* 全圆视图：`sheet_projected:false`（顶层 + 每行）、
+  `sheet_projection_reason:"circular_model_edges_only"`、
+  `usable_for_edge_selection:false`、`usable_edge_count:0`、`edge_kinds`。
+* 圆心坐标**不删**（轴向间距标注要用），新增 `sheet_coordinates_present:true` 明说还在。
+* `axes_ambiguous` 等原有失败原因优先于 `circular_model_edges_only`，不互相覆盖。
+* `server.py` 的 `list_drawing_edges` 描述同步改成新语义。
+
+### 4. `bump_version.py --check` 无 `.git` 假安全（0.8.275 §6 / 0.8.290）
+
+`_git()` 曾把「命令失败」与「成功但输出为空」都返回 `""`。在无 `.git` 的
+tarball / wheel 里 `head` / `prev_commit` 皆空，重复 tag 检查被整段跳过，
+却打印 `HEAD ? is ahead of (no tag) — safe to tag` 并返回 0。
+
+* `_git()` 改为 `str | None`，失败返回 `None`；
+* `--check` 先跑 `git rev-parse --is-inside-work-tree`，不是工作树或读不到 HEAD /
+  解析不到上一 tag，一律打印 `UNVERIFIABLE — the duplicate-tag check was NOT run`
+  并 `return 1`（fail-closed，与项目门禁同一口径）；
+* 首次发版确实没有上一 tag，单独走「duplicate check not applicable」分支；
+* **否定文案里也不能出现 "safe to tag" 字面量**——发布审计按短语 grep，
+  一句「不能声称 safe to tag」会被读成通过。第一版就是这么被自己的断言抓到的。
+
+### 验证
+
+四项全部用**反馈里的实测数据**做纯 Python 回放，不依赖 SolidWorks：
+
+| smoke check（`--only` 可单独跑） | 结果 |
+|---|---|
+| `callout text stays one native string` | 三行实测字符串：单串 `text`、`text_lines` 3 条、`<hw-*>` 剥离、原始槽保留、`<MOD-DIAM>` 保留、完备性 `null` |
+| `a depth in another slot is still refused` | 复现 0.8.291 陷阱：只看 `text` 会 `verified:true`，按全部行判定 `unsupported_through_bore` |
+| `circular-only edges are not sheet-projected` | 5 条实测圆边 → 不可选；加 1 条直线 → 可选；无顶点 → `unknown` |
+| `bump_version --check fails without git` | 真起子进程：git 工作树 RC=0、无 `.git` RC=1 + `UNVERIFIABLE`、版本不一致 RC=1 |
+
+`check_all.py` 278/278，`static_check` RC=0，`stdio_contract.py` 6/6。
+**全量 `smoke.py` 本轮未跑**（历史 42–69 min）；本轮改动不触碰任何 COM 调用路径。

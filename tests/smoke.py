@@ -1287,6 +1287,142 @@ def main():
 
     r.check("top-level input schemas are sealed", _input_schemas_are_sealed)
 
+    # --- 0.8.293: four pure-Python contract checks. No SolidWorks needed; run them
+    # alone with `smoke.py --only "callout text" --only "depth in another slot" ...`.
+    # Each one CALLS the real helper with a fake reader / fake rows / a real subprocess,
+    # instead of inspecting source text: report 2026-11-10 caught a check that had been
+    # dead with NameError for six releases while `check_all.py` counted it as coverage.
+    def _callout_text_contract():
+        """Replay reports 0.8.278 Q-3 / 0.8.290 S-5 measured slot contents."""
+        from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+        class _FakeDim:
+            def __init__(self, slots):
+                self.slots = slots
+
+            def GetText(self, slot):
+                return self.slots.get(slot)
+
+        slots = {
+            1: "<HOLE-SPOT><MOD-DIAM> 11 <HOLE-DEPTH> 6.80",
+            3: "4 x <MOD-DIAM> 6.60 完全贯穿",
+            4: "<HOLE-SPOT><MOD-DIAM> <hw-cbdia> <HOLE-DEPTH> <hw-cbdepth>",
+        }
+        res = _drawing._read_native_callout_text([("fake", _FakeDim(slots))])
+        assert res["text"] == slots[1], "text must be ONE native line: %r" % res["text"]
+        assert " | " not in res["text"], "a composite text dialect is back"
+        assert len(res["text_lines"]) == 3, res["text_lines"]
+        assert res["text_slots_read"] == [1, 3, 4], res["text_slots_read"]
+        assert all("<hw-" not in line for line in res["text_lines"]), res["text_lines"]
+        assert res["hw_placeholders_stripped"] == ["<hw-cbdepth>", "<hw-cbdia>"], res
+        raw = " ".join(row["text"] for row in res["text_slots_raw"])
+        assert "<hw-cbdia>" in raw and "<hw-cbdepth>" in raw, "raw slots were dropped"
+        # <MOD-DIAM> is a FORMAT CODE, not a dead placeholder: it must survive.
+        assert "<MOD-DIAM>" in res["text"], "a format code was stripped with <hw-*>"
+        assert res["native_text_complete"] is None and res["text_completeness"] == "unknown"
+        assert "text_is_partial" not in res and "text_note" not in res
+        # Old false negative: a correct SINGLE-line callout was flagged incomplete.
+        one = _drawing._read_native_callout_text(
+            [("fake", _FakeDim({1: "<MOD-DIAM> 8 完全贯穿"}))])
+        assert one["text"] == "<MOD-DIAM> 8 完全贯穿"
+        assert one["native_text_complete"] is None
+        return "single native text, %d lines, hw stripped, completeness unknown" % (
+            len(res["text_lines"]),)
+
+    r.check("callout text stays one native string", _callout_text_contract)
+
+    def _depth_in_another_slot_is_refused():
+        """P0 guard: 0.8.291 measured text_slots ['<MOD-DIAM>', '<HOLE-DEPTH>68'].
+
+        With `text` reduced to one line (0.8.293), judging only `text` would let the
+        through bore Ø16 ↧68 return ok:true again. The real tool judges `text_lines`.
+        """
+        from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+        class _FakeDim:
+            def GetText(self, slot):
+                return {1: "<MOD-DIAM> 16", 2: "<HOLE-DEPTH>68"}.get(slot)
+
+        res = _drawing._read_native_callout_text([("fake", _FakeDim())])
+        assert res["text"] == "<MOD-DIAM> 16"
+        assert _drawing._hole_callout_verification(res["text"])["verified"] is True, (
+            "the fixture no longer reproduces the 0.8.291 trap")
+        verdict = _drawing._hole_callout_verification(" ".join(res["text_lines"]))
+        assert verdict["verified"] is False, verdict
+        assert verdict["error"] == "unsupported_through_bore", verdict
+        return "depth in slot 2 caught via text_lines: %s" % verdict["error"]
+
+    r.check("a depth in another slot is still refused", _depth_in_another_slot_is_refused)
+
+    def _circular_only_not_projected():
+        """Replay report 2026-11-10 S-6: five circle rows, no straight edge."""
+        from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+        rows = [{"is_circle": True, "radius_m": radius,
+                 "model_start": [0.0, 0.0, 0.0], "model_end": [0.0, 0.0, 0.0],
+                 "sheet_start": [0.1, 0.1], "sheet_end": [0.1, 0.1],
+                 "sheet_center": [0.1, 0.1]}
+                for radius in (0.0315, 0.0325, 0.0325, 0.015, 0.014)]
+        scope = _drawing._edge_projection_scope(rows)
+        assert scope["edge_kinds"] == {"circle": 5}, scope
+        assert scope["usable_for_edge_selection"] is False, scope
+        assert scope["circular_model_edges_only"] is True, scope
+        assert scope["sheet_coordinates_present"] is True, (
+            "circle centres must stay available for axial gap dimensions")
+        assert all(_drawing._edge_kind(r) == "circle" for r in rows)
+        # A real line makes the view selectable again — no blanket false.
+        rows.append({"is_circle": False, "model_start": [0.0, 0.0, 0.0],
+                     "model_end": [0.07, 0.0, 0.0],
+                     "sheet_start": [0.1, 0.1], "sheet_end": [0.24, 0.1]})
+        with_line = _drawing._edge_projection_scope(rows)
+        assert with_line["usable_for_edge_selection"] is True, with_line
+        assert with_line["edge_kinds"]["line"] == 1, with_line
+        assert _drawing._edge_kind({"is_circle": False}) == "unknown"
+        return "5 circles -> not projected; +1 line -> selectable; vertex-less -> unknown"
+
+    r.check("circular-only edges are not sheet-projected", _circular_only_not_projected)
+
+    def _bump_version_fails_closed():
+        """Really RUN --check in a git work tree and in a simulated tarball."""
+        import pathlib as _pathlib
+        import shutil as _shutil
+        import subprocess as _subprocess
+        import tempfile as _tempfile
+
+        script = os.path.join(ROOT, "tools", "bump_version.py")
+        normal = _subprocess.run([sys.executable, script, "--check"], cwd=ROOT,
+                                 capture_output=True, text=True)
+        assert normal.returncode == 0 and "safe to tag" in normal.stdout, (
+            normal.stdout, normal.stderr)
+
+        tmp = _pathlib.Path(_tempfile.mkdtemp(prefix="assetmate_bump_nogit_"))
+        try:
+            (tmp / "tools").mkdir()
+            (tmp / "src" / "solidworks_assetmate_mechdog").mkdir(parents=True)
+            for rel in ("tools/bump_version.py", "pyproject.toml",
+                        "src/solidworks_assetmate_mechdog/__init__.py"):
+                _shutil.copy2(os.path.join(ROOT, rel), tmp / rel)
+            cmd = [sys.executable, str(tmp / "tools" / "bump_version.py"), "--check"]
+            no_git = _subprocess.run(cmd, cwd=str(tmp), capture_output=True, text=True)
+            assert no_git.returncode == 1, no_git.stdout
+            assert "UNVERIFIABLE" in no_git.stdout, no_git.stdout
+            assert "safe to tag" not in no_git.stdout, (
+                "an audit grepping for 'safe to tag' would read this as a pass")
+            import re as _re
+            init = tmp / "src" / "solidworks_assetmate_mechdog" / "__init__.py"
+            text = init.read_text(encoding="utf-8")
+            changed = _re.sub(r'(__version__\s*=\s*")[^"]+(")',
+                              r'\g<1>9.9.9\g<2>', text, count=1)
+            assert changed != text, "the version line was not found in the fixture"
+            init.write_text(changed, encoding="utf-8")
+            mismatch = _subprocess.run(cmd, cwd=str(tmp), capture_output=True, text=True)
+            assert mismatch.returncode == 1 and "MISMATCH" in mismatch.stdout, mismatch.stdout
+        finally:
+            _shutil.rmtree(str(tmp), ignore_errors=True)
+        return "git work tree RC=0; no-.git RC=1 UNVERIFIABLE; mismatch RC=1"
+
+    r.check("bump_version --check fails without git", _bump_version_fails_closed)
+
     def _eccentric_section_is_refused():
         """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.
 
@@ -1744,6 +1880,22 @@ def main():
             assert result.get("verified") is False, result
             assert result.get("callout_revert") is not None, (
                 "an unverified callout was not reverted: %r" % result)
+        # 0.8.293: check the NEW text receipt on a real COM call. A fake reader cannot
+        # produce a composite string or a real `<hw-*>` token, so the pure-Python check
+        # alone would not catch the tool drifting back to its own text dialect.
+        if "verification" in result:
+            rb = result.get("readback") or {}
+            for key in ("text_lines", "text_slots_raw", "text_slots_read",
+                        "hw_placeholders_stripped"):
+                assert key in rb, "the singular callout lost %r: %r" % (key, rb)
+            assert rb.get("native_text_complete") is None, (
+                "completeness was claimed again: %r" % rb)
+            assert rb.get("text_completeness") == "unknown", rb
+            assert " | " not in str(rb.get("text") or ""), (
+                "a composite text dialect is back in a real receipt: %r" % rb.get("text"))
+            for line in rb.get("text_lines") or []:
+                assert "<hw-" not in line, (
+                    "an unbound Hole Wizard token reached a real receipt: %r" % line)
         for name in ("smoke_hole.SLDDRW", "smoke_hole.SLDPRT"):
             try:
                 get_sw().CloseDoc(name)

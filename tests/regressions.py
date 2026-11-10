@@ -8749,34 +8749,50 @@ def assert_coaxial_holes_produce_one_callout():
 
 
 def assert_a_callout_receipt_reads_every_text_slot():
-    """0.8.278 — `text` held one line of a two-line callout, claimed to be complete.
+    """0.8.278 -> 0.8.293 — keep EVERY line, but never invent a composite `text`.
 
-    Report 2026-11-09 (Q-3). The sheet was correct; the receipt was truncated:
+    Report 2026-11-09 (Q-3) found `text` holding only one line of a two-line callout
+    while `native_text_complete:true` claimed otherwise. 0.8.278 "fixed" it by joining
+    all slots with `" | "` and defining completeness as `len(parts) > 1`.
 
-        text: <HOLE-SPOT><MOD-DIAM> 11 <HOLE-DEPTH> 6.80
-        native_text_complete: true
+    Both halves were wrong, and 0.8.281 §6 / 0.8.290 S-5 said so for four rounds:
 
-    The first line — `4 × Ø 6.60 完全贯穿` — lives in slot 3 and was never read, so two
-    callouts of DIFFERENT diameters returned IDENTICAL text. The report explicitly asked
-    that this be treated as "receipt incomplete", not "wrong text on the sheet", so that
-    nobody repairs the drawing.
+      * the composite made `text` mean something different in `add_hole_callouts` than in
+        `list_drawing_annotations`, whose `text_is_format_code` / `text_decoded` parse a
+        SINGLE native string (reported as `" | "` semantic drift);
+      * `len(parts) > 1` is a COUNT, not a completeness proof: it flagged a correct
+        single-line callout as incomplete (false negative) and 2-of-3 lines as complete
+        (false positive);
+      * Hole Wizard `<hw-*>` tokens, which never render, were copied into `text` verbatim.
 
-    Fixed by concatenating every slot that answers, and only claiming completeness when
-    more than one did:
+    0.8.293 keeps `text` as one native line, puts the rest in `text_lines` (an ARRAY),
+    sets `native_text_complete: None` (unknown) and strips `<hw-*>` from rendered lines
+    while keeping them in `text_slots_raw`. The OLD assertions below are retired:
+    `" | ".join(_parts)`, `text_is_partial`, and a hard-coded slot tuple in the tool.
 
-        text: <HOLE-SPOT><MOD-DIAM> 11 <HOLE-DEPTH> 6.80 | 4 x <MOD-DIAM> 6.60 完全贯穿 | ...
-        native_text_complete: true
-
-    STILL SOURCE-LEVEL: reads the slot list, does not compare against a rendered sheet.
+    STILL SOURCE-LEVEL: inspects the helper. The behaviour is replayed against the
+    report's measured strings by a smoke check (fake GetText reader, no SolidWorks).
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "add_hole_callouts")) or ""
-    assert '" | ".join(_parts)' in body, "only one text slot is read again"
-    assert "text_is_partial" in body, (
-        "a one-slot read still claims native_text_complete")
-    assert "(1, 0, 2, 3" in body, "slot 3 is where the through-hole line lives"
-    return "the receipt concatenates every text slot and flags a partial read"
+    tree = ast.parse(src)
+    helper = ast.get_source_segment(src, _function_node(
+        tree, "_read_native_callout_text")) or ""
+    assert helper, "the shared multi-slot reader is gone"
+    assert "for slot in (1, 0, 2, 3, 4, 5)" in helper, (
+        "slot 3 is where the through-hole line lives; the probe list changed")
+    assert '"text_lines"' in helper and '"text_slots_raw"' in helper, (
+        "the extra lines or the unmodified raw slots are no longer returned")
+    assert '" | ".join' not in helper, "a composite `text` dialect is back"
+    assert '"native_text_complete": None' in helper, (
+        "completeness is provably UNKNOWN; a bool here is a false claim")
+    plural = ast.get_source_segment(src, _function_node(
+        tree, "add_hole_callouts")) or ""
+    assert "_read_native_callout_text" in plural and 'item["text_lines"]' in plural, (
+        "the batch tool stopped using the shared reader")
+    assert 'item["native_text_complete"] = None' in plural, (
+        "the batch receipt claims a completeness verdict again")
+    assert "text_is_partial" not in plural, "the false-negative partial flag is back"
+    return "every text line is returned as an array, text stays one native string"
 
 def assert_a_single_callout_does_not_fake_a_verdict():
     """0.8.279 — `add_hole_callout` returned ok:true with every verification field null.
@@ -8836,7 +8852,12 @@ def assert_a_single_callout_does_not_fake_a_verdict():
         "model_match can be null again while the note tells the caller to read model_match.ok")
     assert "depth_on_a_through_bore_suspect" in body, (
         "a depth symbol on a possible through bore is not flagged")
-    assert "_reader.GetText(_probe)" in body, "the display-dimension text slots are not read"
+    assert "_read_native_callout_text" in body, (
+        "the display-dimension text slots are not read through the shared reader")
+    # 0.8.293: `text` is ONE native line again. The depth gate must judge ALL lines, or
+    # a `<HOLE-DEPTH>68` sitting in another slot lets `Ø16 ↧ 68` return ok:true again.
+    assert '" ".join(readback.get("text_lines")' in body, (
+        "the depth gate judges only `text` — the 0.8.291 P0 is back")
     # 0.8.291: a flag alone is not a fix — `ok` must follow verification and the bad ink
     # must come off the sheet.
     assert "ok=_verified" in body, (
@@ -9586,7 +9607,153 @@ def assert_top_level_input_schemas_are_sealed():
             "guard intact, stdio probe present" % last_tool_line)
 
 
+def assert_hw_placeholders_are_stripped_but_kept_raw():
+    """0.8.293 — report 2026-11-09 R-4 / 2026-11-10 S-5, two rounds unfixed.
+
+    `add_hole_callouts.created[0].text` carried a third line:
+
+        <HOLE-SPOT><MOD-DIAM> <hw-cbdia> <HOLE-DEPTH> <hw-cbdepth>
+
+    The `<hw-*>` tokens are Hole Wizard internal placeholders with no bound value: they
+    do NOT appear on the sheet (the report zoomed in to confirm). Reading every slot and
+    joining them into the receipt made any "unresolved format code" audit fire on a
+    perfectly correct drawing.
+
+    The distinction that must not be lost: `<MOD-DIAM>` is a FORMAT CODE the renderer turns
+    into Ø, so it must stay. Only `<hw-*>` is dead weight. Removing every `<...>` token
+    would destroy the diameter again — the 0.8.x `Ø1515` class of bug.
+    """
+    src = _read("tools/drawing.py")
+    helper = ast.get_source_segment(src, _function_node(
+        ast.parse(src), "_read_native_callout_text")) or ""
+    assert r"<hw-[^>]*>" in helper, "the Hole Wizard placeholder pattern is gone"
+    assert "hw.sub(" in helper and "hw.findall(" in helper, (
+        "placeholders are not removed from rendered lines AND counted")
+    assert '"hw_placeholders_stripped"' in helper, (
+        "the receipt cannot say which tokens were removed")
+    assert '"text_slots_raw"' in helper, (
+        "the original slot text was silently discarded — nothing to audit against")
+    assert '"<MOD-DIAM>"' in helper or "<MOD-DIAM>" in helper, (
+        "the format-code vs placeholder distinction is no longer documented")
+    code_only = "\n".join(line.split("#", 1)[0] for line in helper.splitlines())
+    assert "re.sub" not in code_only or "hw.sub(" in code_only, (
+        "a broad token removal would eat <MOD-DIAM> too")
+    return "<hw-*> stripped from rendered text, raw slots kept, format codes preserved"
+
+
+def assert_circular_only_edges_are_not_sheet_projected():
+    """0.8.293 — reports 2026-11-08 P1-3 / 2026-11-09 Q-6 / 2026-11-10 S-6.
+
+    Four rounds measured the same right-side view: five edges, ALL circles,
+    `sheet_start == sheet_end == sheet_center`, top-level `sheet_projected: true`. The
+    flag only meant "a circle centre was transformed". Callers read it as "the edges can
+    be picked by index" and could not produce the 70 mm overall length with
+    `add_distance_dimension`.
+
+    Now `sheet_projected` means "there is a projected edge with DISTINCT endpoints", with
+    `circular_model_edges_only` as the reason, `edge_kind` per row, and
+    `sheet_coordinates_present` to say the centres are still useful. Circle-centre
+    coordinates must NOT be deleted — they drive axial gap dimensions.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    scope = ast.get_source_segment(src, _function_node(
+        tree, "_edge_projection_scope")) or ""
+    assert scope, "the pure projection-scope helper is gone"
+    assert 'row["sheet_start"] != row["sheet_end"]' in scope, (
+        "a circle (start == end == centre) would count as a selectable edge again")
+    assert "circular_model_edges_only" in scope and "usable_for_edge_selection" in scope
+    assert "sheet_coordinates_present" in scope, (
+        "the receipt no longer says circle centres are still projected and usable")
+    kind = ast.get_source_segment(src, _function_node(tree, "_edge_kind")) or ""
+    assert '"circle"' in kind and '"line"' in kind and '"unknown"' in kind, (
+        "edge_kind must admit it cannot classify a vertex-less contour edge")
+    assert '"arc"' not in kind.split('"""')[-1] or "cannot" in kind, (
+        "an arc must not be invented from data the binding cannot provide")
+    body = ast.get_source_segment(src, _function_node(
+        tree, "list_drawing_edges")) or ""
+    assert '"sheet_projected": _effective_projected' in body, (
+        "the envelope still reports the raw centre-only projection as success")
+    assert '"circular_model_edges_only"' in body and '"edge_kind"' in body, (
+        "the reason and the per-row classification are missing")
+    assert 'payload["sheet_projection_reason"] = _reason' in body, (
+        "the envelope does not carry the computed reason")
+    with open(os.path.join(SRC, "server.py"), encoding="utf-8") as fh:
+        srv = fh.read()
+    assert "usable_for_edge_selection" in srv, (
+        "the published tool description still teaches the old meaning")
+    return "circular-only views report sheet_projected:false with a named reason"
+
+
+def assert_bump_version_check_fails_closed():
+    """0.8.293 — report 2026-11-09 §6, carried through 0.8.290.
+
+    Without `.git`, `_git("rev-parse","HEAD")` returned `""`, so `head`/`prev_commit`
+    were both empty, the duplicate-tag check was skipped, and `--check` printed
+    `HEAD ? is ahead of (no tag) — safe to tag` with exit 0. A check that did not run
+    reported success — the same fail-open this project keeps fixing in its own gates.
+
+    The fix has three parts, all guarded here: `_git` must distinguish failure (None)
+    from empty output, `--check` must verify it is inside a work tree, and the negative
+    message must not contain the literal "safe to tag" (release audits grep for it).
+    """
+    with open(os.path.join(ROOT, "tools", "bump_version.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert "-> str | None" in src and "return None" in src, (
+        "_git still collapses 'command failed' and 'empty output' into one value")
+    assert '"--is-inside-work-tree"' in src, "no work-tree check before claiming tag safety"
+    assert 'in_tree != "true"' in src and "UNVERIFIABLE" in src, (
+        "a non-git checkout can still be reported as safe")
+    assert "if head and prev_commit and head == prev_commit" not in src, (
+        "the old skip-the-check-when-both-empty branch is back")
+    # The negative branch must not trip a grep for the positive phrase.
+    i = src.find('in_tree != "true"')
+    branch = src[i:src.find("return 1", i)]   # only the UNVERIFIABLE branch, not later ones
+    assert 'safe to tag' not in branch, (
+        "the UNVERIFIABLE branch contains 'safe to tag'; an audit grep would read it as a pass")
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    assert 'r.check("bump_version --check fails without git"' in sm, (
+        "the real subprocess check is not registered with the runner")
+    return "--check refuses to claim tag safety when git metadata is unavailable"
+
+
+def assert_no_composite_text_dialect_and_new_checks_really_run():
+    """0.8.293 — the four fixes must have LIVE checks, not just source assertions.
+
+    Report 2026-11-10 found a smoke check that had died with NameError for six releases
+    because `check_all.py` only COUNTS `r.check` lines. "A check exists" is not "the check
+    ran". Every new check here is pure Python (fake GetText reader, fake edge rows, a real
+    subprocess) and is run with `smoke.py --only ...` in the release verification.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    for fname in ("add_hole_callouts", "add_hole_callout"):
+        body = ast.get_source_segment(src, _function_node(tree, fname)) or ""
+        assert '" | ".join' not in body, (
+            "%s builds a composite `text` again — cross-tool semantics drift" % fname)
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    expected = (
+        "callout text stays one native string",
+        "a depth in another slot is still refused",
+        "circular-only edges are not sheet-projected",
+        "bump_version --check fails without git",
+    )
+    for name in expected:
+        assert 'r.check("%s"' % name in sm, "the live check %r is not registered" % name
+    assert "def _callout_text_contract" in sm or "_read_native_callout_text" in sm, (
+        "the text check reads source text instead of calling the real helper")
+    assert "def _edge_projection_scope" in src and "_edge_projection_scope(rows)" in sm, (
+        "the edge check does not replay the real pure function")
+    return "4 live pure-Python checks registered; no composite text dialect in either tool"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.293 hw placeholders stripped, raw kept", assert_hw_placeholders_are_stripped_but_kept_raw),
+    ("0.8.293 circular-only edges not projected", assert_circular_only_edges_are_not_sheet_projected),
+    ("0.8.293 bump --check fails closed", assert_bump_version_check_fails_closed),
+    ("0.8.293 new checks really run", assert_no_composite_text_dialect_and_new_checks_really_run),
     ("0.8.292 top-level input schemas are sealed", assert_top_level_input_schemas_are_sealed),
 
     ("0.8.3 row/text ordering", assert_row_before_text),

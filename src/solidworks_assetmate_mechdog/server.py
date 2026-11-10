@@ -1558,10 +1558,18 @@ def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing 
 
     Since 0.8.52 each edge carries `sheet_start` / `sheet_end` in SHEET METRES, projected
     through the view, so they can be fed straight to add_drawing_dimension(x=, y=) — the
-    old model-only output could not be aimed at the sheet. The top-level `sheet_projected`
-    says whether that projection happened; when it is false, `sheet_projection_reason`
-    names the cause (typically `axes_ambiguous` on a part whose two projected axes are
-    equal length, e.g. a turned shaft).
+    old model-only output could not be aimed at the sheet.
+
+    Since 0.8.293 `sheet_projected` means "there is at least one projected edge with
+    DISTINCT start/end points that add_distance_dimension can pick by edge_index", NOT
+    merely "some coordinate was transformed". A side view whose visible entities are only
+    circles has `sheet_start == sheet_end == sheet_center`: the centres ARE projected and
+    still usable, but there is no straight edge to select. That case reports
+    `sheet_projected:false`, `sheet_projection_reason:"circular_model_edges_only"`,
+    `sheet_coordinates_present:true`. Check `usable_for_edge_selection`, `edge_kinds` and
+    each row's `edge_kind` (`circle` / `line` / `unknown`) before choosing an edge-based
+    dimension. Other false causes include `axes_ambiguous` on a part whose two projected
+    axes are equal length, e.g. a turned shaft.
 
     `include_points=False` returns indices only (much faster); coordinates are what makes
     a large view slow.
