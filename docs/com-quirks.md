@@ -2702,8 +2702,14 @@ disp.SetText(1, "<MOD-DIAM><DIM>")     # 返回 None（不是 False）
 
 **能建尺寸、能定位、能控制方向，但文字无法稳定输出「Ø16」。**
 
-**维持现状**：`add_hole_callout` + `text_flags` 警告「可能是盲孔」，让人自己决定；
+**当前处置（v0.8.291 起）**：不再是「贴个警告、错字留在图上」。`add_hole_callout`（单数）
+在读到深度符号或读不到文字时**撤销刚创建的标注**，返回
+`ok:false / verified:false / drawing_safe:false / created:false`，并给出 `callout_revert`；
+`add_hole_callouts`（复数）对无法判定的直径返回 `ok:false / verdict:partial`，同时用
+`execution_ok:true / completeness:incomplete` 区分「图纸不完整」与「调用失败」。
+`model_match.through_state` 如实为 `unknown`（ledger 只有圆柱面清单，判不出贯通）。
 **不要**自动用 `add_drawing_dimension` 补标 —— 会得到 `Ø1616` 或 `Ø<DIM>16`。
+贯通主孔请在 SolidWorks 界面手工标。
 
 ### 补出来之后（旧记录，已作废）：文字是竖排的
 
@@ -2712,7 +2718,11 @@ disp.SetText(1, "<MOD-DIAM><DIM>")     # 返回 None（不是 False）
 **没调**：可能是 `ArrowSide=3` 或标注方向继承自竖直的直径线。**下次改这里之前先试
 `offset_x/offset_y` 把文字挪到视图外，再看是否需要旋转。**
 
-### 对「补标 Ø16」的意义
+### 对「补标 Ø16」的意义（旧结论，已作废，仅存档）
+
+> ⚠️ 本节写于 `SetText` 实验早期，**结论已被上面「文字无法稳定输出 Ø16」推翻**。
+> `SetText(1, "<MOD-DIAM><DIM>")` 渲染成 `Ø<DIM>16`，写数值渲染成 `Ø1616`，
+> 不写则完全没有文字。路径**不通**。保留只为说明当时的判断轨迹。
 
 `add_drawing_dimension` **能建、能补文字**，路径是通的：
 
@@ -2721,3 +2731,118 @@ disp.SetText(1, "<MOD-DIAM><DIM>")     # 返回 None（不是 False）
 3. 排版方向仍需调整
 
 **比 `add_hole_callout` 的 `Ø16 ↧ 68` 好** —— 那个把通孔写成盲孔，这个是方向难看但数值对。
+
+---
+
+## 2026-11-10（v0.8.291）：三份验收反馈里三个「看起来修了其实没修」的根因
+
+### 1. `list_tool_profiles` 自己就是第 71 个工具，却写着 `all 70`
+
+`profiles.full` 曾是一句英文说明 `["* all 70 — this is what is registered today"]`，
+而同一份回执里 `counts.full` 与 `registered` 都由运行时 registry 算出，等于 71。
+新增的 smoke check 只断言 `ungrouped == []` 和 `registered >= 71` —— **下界永远不会发现
+说明文字里的静态数字**。`full` 现在就是 `names` 本身（真工具名数组），`counts` 统一
+`len(v)` 无特例，另加 `unknown_names` 检测分组里残留的不存在工具名。守护分两层：
+源码级禁止 `all NN` / `NN tools` 这类短语，运行时断言 `counts[k] == len(profiles[k])`、
+`_union == set(full)`。
+
+### 2. `section_off_axis` 名不副实：偏心改的是被丢弃的那一维
+
+`_section_sanity` 的 `kept_dimension` 判据基于几何事实：垂直于水平轴的剖切不能改变宽度。
+但**回转体的偏心弦剖缩短的是高度**，恰好是被丢掉的那一维。实测（凹槽滚轮 2:1，
+`offset_m=0.004`）：
+
+```text
+kept width   51.98 -> 51.98   ratio 1.000   （旧版甚至比上轮的 0.998 更像「正常」）
+other height 127.98 -> 127.73  差 0.25 mm = 0.195%
+```
+
+任何按百分比的门（0.5%、1%、10%）都放行。现在两条轴都进回执，非 kept 维用
+**绝对 0.1 mm** 阈值判定；判定逻辑抽成 `_section_off_axis_from_sanity(sanity)`（纯函数，
+无 COM），smoke 用上面这组实测数字回放。`depth>0` 部分剖与 cross-section 仍是
+`checked=false`，不参与判定。另给 `eccentricity_mm = |offset_m| / view.ScaleDecimal`
+作**诊断**（不是判据 —— 错的 scale 不该把坏剖切说成好的）。
+
+`auto_nudge_zero_offset` 默认已是 `False`（`cut_line_overshoot_m` 修掉根因后这个
+workaround 就是冗余的）；显式开启时 `offset_nudged` 提升为顶层 `warning`。
+旧 hint 里「偏 2 mm 从 64 掉到 63.5」也不准，正确弦长是 `2·√(32²−2²) = 63.875`。
+
+### 3. `Ø16 ↧ 68` 一直能被读到，是读法选错了对象
+
+复数工具 `add_hole_callouts` 这样读，能读到：
+
+```python
+dim = win32com.client.Dispatch(display)   # AddHoleCallout2 的返回值
+dim.GetText(slot)                         # -> "<MOD-DIAM> 16 <HOLE-DEPTH> 68"
+```
+
+单数工具 `add_hole_callout` 却用了 `callout.GetDimension2(0).GetText(slot)`，
+所有槽都空 → `text_slots: []` → `text_unreadable`。于是 0.8.279 的结论
+「SolidWorks 没给出可读文字」是**读法 bug**，不是 API 限制。
+
+v0.8.290 的问题不是不诚实：`text_flags` 明写「不要把 ok:true 当文字正确的证据」，
+而工具仍然返回 `ok:true`；`model_match.ok:true / delta_mm:0.0` 只证明 16.0 == 16.0，
+反而制造了更强的安全感；警告写在复数工具的 note 里，单数调用者根本看不到。
+**贴告示不等于堵坑。**
+
+0.8.291 的做法：
+
+* 用复数工具已验证的 Dispatch 路径读文字；
+* `_hole_callout_verification(text, model_match_ok)` 纯函数决定 `ok`，
+  带深度符号 → `unsupported_through_bore`，读不到 → `hole_callout_unverifiable`；
+* 未验证时用 `GetAnnotation` / `Select(False)` / `EditDelete` / `EditRebuild3`
+  **撤销刚创建的标注**（与复数工具 `_discard` 同一条已验证路径），回执给
+  `created:false / ok:false / verified:false / drawing_safe:false / callout_revert`；
+* `model_match` 增 `through_state:"unknown"`、`depth_text_consistent:null`、
+  `ok_means`，明确 `ok:true` 只表示直径匹配；`note` 同步解释 `ok:null` / `ok:true` / `ok:false`。
+
+**仍不做**：改写文字（`SetText` 会毁掉其它槽，历史 `Ø1515`）；猜贯通状态
+（图纸与 ledger 都判不出，猜了就是编数据）。主孔留给人手工标。
+
+### 4. 顺带更正的旧结论
+
+* `check_capabilities(section_view).why` 的「剖面线取决于零件几何、因此 partial」是
+  2026-11-05 的误判，真根因是剖切线端点退化；已标为历史存档。
+* `advice` 不再对 `status:partial` 说「全部可做」。
+* `hole_callout_text_slots.workaround` 不再推荐已证伪的 `add_drawing_dimension`。
+* `add_sheet_line` 的 `line_style` schema 补上数字码：`solid` 名义实线实测是 Style 1
+  细虚线，`dashdot` 名义 GB 细点划线实测是 Style 5 的 194 个稀点；要轴线传 `"4"`，
+  要连续实线传 `"7"`。映射**不改**（单一构建的证据不足以改默认值），但回执新增
+  `line_style_warning`。过时的「图纸草图不渲染」hint 也已撤回。
+
+### 5. 本机真机复核（2026-11-10，SW 32.4.0，`限位导向套.SLDPRT`）
+
+按反馈文档的复现坐标 `create_drawing(views=["front"], scale=1, auto_fit=False,
+view_positions=[[0.12,0.18]], paper="A3")` + `add_hole_callout(0.128, 0.18)`：
+
+```json
+"readback": {"text": "<MOD-DIAM> | <HOLE-DEPTH>68",
+             "text_slots": ["<MOD-DIAM>", "<HOLE-DEPTH>68"],
+             "text_reader": "IDisplayDimension via Dispatch", "value_mm": 16.0}
+"ok": false, "created": false, "error": "unsupported_through_bore",
+"verified": false, "verdict": "unverified", "drawing_safe": false,
+"callout_revert": {"reverted": true},
+"annotations_before": 2, "annotations_after": 2
+```
+
+`text` 能读出 `<HOLE-DEPTH>68` 是对「旧版读不到文字」的**直接反证**；
+注解数 `2 → 2` 证明错误标注确实被撤销，没有留在图上。
+
+带 `model_path` 再调一次（旧版 `model_match.ok:true / delta_mm:0.0` 的双重放行）：
+
+```json
+{"ok": false, "created": false, "verified": false,
+ "model_match_ok": true, "model_match_delta": 0.0,
+ "through_state": "unknown", "reverted": true, "annotations": [2, 2]}
+```
+
+`model_match` 仍然只证明直径匹配，但它不再能把 `ok` 拉回 `true`。
+
+`add_sheet_line(line_style="dashdot")` 真机同样给出
+`line_style_applied:5` / `very sparse dots` / 194 笔，并附顶层
+`line_style_warning` 指向 `"4"` 与 `"7"`。
+
+**另一处真机发现**：`smoke.py` 的 `tool profiles cover every tool` 从 v0.8.284 起
+就因 `server` 从未导入而恒 `NameError`；`check_all.py` 只数 `r.check` 行、不执行，
+所以一直被算作覆盖。用 `smoke.py --only 'tool profiles'` 才暴露。已改为局部导入
+`server`，并加源码级断言防止重现。**「有个 check」不等于「check 跑过」。**

@@ -1797,14 +1797,20 @@ def assert_callout_depth_limit_declared():
     assert '"hole_callout_text_slots"' in caps, (
         "the slot limitation is undeclared — the next user will report Ø9 -> Θ99 again")
     index = caps.index('"hole_callout_text_slots"')
-    segment = caps[index:index + 1600]
-    assert "SetText" in segment and "depth" in segment.lower(), (
+    segment = caps[index:index + 2600]
+    # 0.8.291: this entry was rewritten. It still explains the slot collision, but it no
+    # longer recommends `add_drawing_dimension` (proved dead on 2026-11-09) and it now
+    # documents the through-bore / revert behaviour that replaced the old workaround.
+    assert "SetText" in segment and "文字槽" in segment, (
         "the entry does not explain which slots collide")
-    assert "add_drawing_dimension" in segment, "no workaround for depth holes"
+    assert "add_drawing_dimension" in segment and "**不要**" in segment, (
+        "the entry recommends the dead dimension path again")
+    assert "through_state" in segment and "ok:false" in segment, (
+        "the entry does not describe the current revert behaviour")
     src = _read("tools/drawing.py")
-    assert "SetText_depth_may_trail" in src, (
-        "the receipt does not flag that the depth may trail the diameter")
-    return "slot limit declared with a workaround"
+    assert "SetText_depth_may_trail" in src and 'text_source"] = "native"' in src, (
+        "the receipt no longer distinguishes native text from a rewritten one")
+    return "slot limit declared; native text kept; dead workaround retired"
 
 
 def assert_model_clean_rechecks_after_rebuild():
@@ -7868,15 +7874,23 @@ def assert_an_eccentric_section_is_refused():
     KNOWN GAP: offset 0.020 still returns ok, because that call loses `section_kept_mm`
     entirely (`ratio: None`) and the check has nothing to compare. Recorded rather than
     papered over.
+
+    0.8.291: the decision was lifted into `_section_off_axis_from_sanity` (pure, so
+    smoke.py can replay measured numbers) and extended with the DISCARDED axis — see
+    `assert_eccentric_sections_are_refused_and_line_styles_are_documented`. This assertion
+    still guards the original 0.5% kept-axis threshold, now in that helper.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "add_section_view")) or ""
+    tree = ast.parse(src)
+    body = ast.get_source_segment(src, _function_node(tree, "add_section_view")) or ""
+    decision = ast.get_source_segment(
+        src, _function_node(tree, "_section_off_axis_from_sanity")) or ""
+    assert decision, "the pure off-axis decision helper is gone"
     assert "section_off_axis" in body, (
         "an eccentric chord passes as a full section again")
-    assert "_off_axis" in body and "shrunk_mm" in body, (
+    assert "_off_axis" in body and "shrunk_mm" in decision, (
         "the receipt does not report how much narrower the section is")
-    assert "0.005 * float(_src)" in body, (
+    assert "0.005 * float(src)" in decision, (
         "the 0.5% threshold is gone; the 10% SECTION_KEEP_TOLERANCE is too loose for this")
     return "a chord section is refused with the amount it shrank"
 
@@ -8794,12 +8808,19 @@ def assert_a_single_callout_does_not_fake_a_verdict():
     * `model_match` is always a dict — `{"ok": None, "checked": false, "reason": ...}` when
       no model was supplied
     * a depth symbol on a callout that might be a through bore raises
-      `depth_on_a_through_bore_suspect` with the alternative path (`add_drawing_dimension`)
+      `depth_on_a_through_bore_suspect`
 
-    NOT fixed: the `↧ 68` text itself. Rewriting a dimension's display text via `SetText`
-    is what produced "Ø1515" earlier — the value lives across slots and writing one destroys
-    the others. SolidWorks derives the depth from the cut feature, not from whether it exits
-    the far face, and `IEdge` cannot tell us which.
+    NOT fixed in 0.8.279: the `↧ 68` text itself, AND the `ok:true`. Rewriting a dimension's
+    display text via `SetText` is what produced "Ø1515" earlier — the value lives across
+    slots and writing one destroys the others.
+
+    0.8.291 (report 2026-11-10 S-1) closed the loop differently. It found the text was
+    READABLE all along — `GetDimension2(0)` was the wrong reader, the batch tool's
+    `win.Dispatch(display).GetText(slot)` works — so `↧ 68` can now be detected. Rather than
+    rewrite the text, the tool REVERTS the whole callout and returns
+    `ok:false / verified:false / drawing_safe:false / created:false`, with `model_match`
+    extended by `through_state:"unknown"` and `ok_means`. The dead
+    `add_drawing_dimension` recommendation is gone.
 
     STILL SOURCE-LEVEL: measured on 限位导向套 2026-11-09 (`text=None`,
     `flags=['text_unreadable']`), not asserted against a rendered sheet.
@@ -8810,12 +8831,23 @@ def assert_a_single_callout_does_not_fake_a_verdict():
     assert "text_flags" in body, "a callout can return ok:true with nothing verified again"
     assert "text_unreadable" in body, (
         "an unreadable text slot is silent again; the receipt looks like a success")
-    assert '"checked": False' in body or "'checked': False" in body, (
+    assert ("checked=False" in body or '"checked": False' in body
+            or "'checked': False" in body), (
         "model_match can be null again while the note tells the caller to read model_match.ok")
     assert "depth_on_a_through_bore_suspect" in body, (
         "a depth symbol on a possible through bore is not flagged")
-    assert "GetText(_probe)" in body, "the display-dimension text slots are not read"
-    return "a single callout reports what it could not verify"
+    assert "_reader.GetText(_probe)" in body, "the display-dimension text slots are not read"
+    # 0.8.291: a flag alone is not a fix — `ok` must follow verification and the bad ink
+    # must come off the sheet.
+    assert "ok=_verified" in body, (
+        "the singular tool can return ok:true for an unverified callout again")
+    assert "_reject_unverified_callout" in body and "callout_revert" in body, (
+        "an unverified callout is left on the sheet again")
+    assert "verified=_verified" in body and "drawing_safe=_verified" in body, (
+        "the machine-readable verification state is gone")
+    assert "through_state" in body and "ok_means" in body, (
+        "model_match still only checks the diameter")
+    return "a single callout reports what it could not verify and reverts unverified ink"
 
 def assert_static_check_fails_when_it_cannot_check():
     """0.8.280 — no tag source meant "print SKIPPED, exit 0, banner says OK".
@@ -8968,7 +9000,7 @@ def assert_solidworks_calls_are_serialised():
 
     Fixed with the transitional gate the review asked for: `_guarded` in
     `_install_argument_guard` is the single entry point for `tools/call`, so wrapping
-    `await original(request)` in `_COM_LOCK` covers all 70 tools by construction —
+    `await original(request)` in `_COM_LOCK` covers every registered tool by construction —
     including `ping` / `health_check`, which the review named as paths that must not
     bypass it.
 
@@ -9010,8 +9042,8 @@ def assert_tool_profiles_are_advisory_only():
 
     * nothing in five rounds of feedback says a model picks the WRONG tool. Every reported
       problem was "the tool answered incorrectly", never "I could not find the tool";
-    * filtering needs either 70 edited decorators or a poked `_tool_manager._tools`, and
-      the review's own acceptance criterion ("common flows must not depend on hidden
+    * filtering needs one edited decorator per tool or a poked `_tool_manager._tools`,
+      and the review's own acceptance criterion ("common flows must not depend on hidden
       expert tools") is a risk nobody has measured.
 
     So `list_tool_profiles()` returns the grouping as data. Every tool stays registered —
@@ -9042,6 +9074,233 @@ def assert_tool_profiles_are_advisory_only():
     assert "_tools.pop" not in body and "del _tools" not in body, (
         "the advisory tool mutates the registry — that is a filter, not a table")
     return "the profile table is published as data; nothing is unregistered"
+
+def assert_tool_profile_counts_come_from_the_registry():
+    """0.8.291 — report 2026-11-10 P1: a hard-coded count inside the profile receipt.
+
+    `list_tool_profiles` shipped with `profiles["full"] = ["* all 70 — ..."]` while the
+    SAME JSON said `registered=71` and `counts.full=71`. The tool itself was the extra
+    registration, so the number was wrong on its first release. Its dedicated smoke check
+    passed because it only asserted `ungrouped == []` and `registered >= 71` — a lower
+    bound cannot notice a stale number in prose, and it stays green at 72, 73, ...
+
+    Three defences, in increasing order of strength:
+
+      * no static tool count anywhere in the grouping module (prose OR comment);
+      * `counts` is a uniform `len(v)` with no `full` special case, and `full` is
+        injected from the live `names` list — every profile is now a name list;
+      * the live check asserts `counts[k] == len(profiles[k])`, that `full` holds only
+        tool names, and that the groups equal the registry in BOTH directions.
+    """
+    import re as _re
+    with open(os.path.join(SRC, "server.py"), encoding="utf-8") as fh:
+        srv = fh.read()
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        smoke = fh.read()
+
+    # 1) No static count: "all 70", "70 tools", "69 of 70" are all drift sources.
+    # Deliberately narrow: "keep 8 of 41" and "18+29+3+10 mm" are geometry notes, not
+    # tool counts. Only phrases that state a NUMBER OF TOOLS are drift sources.
+    _stale = _re.findall(
+        r"\ball\s+\d{2,3}\b|\b\d{2,3}\s+(?:registered\s+)?tools?\b"
+        r"|\b\d{2,3}\s+of\s+\d{2,3}\s+tools?\b",
+        srv, _re.I)
+    assert not _stale, "static tool count(s) in server.py: %s" % _stale[:5]
+
+    # 2) `full` is the live registry; counts have no special case.
+    i = srv.find("def list_tool_profiles(")
+    assert i > 0, "list_tool_profiles is gone"
+    j = srv.find("\ndef ", i + 10)
+    body = srv[i:j]
+    assert '_profiles["full"] = list(names)' in body, (
+        "`full` is not the live registry — a hand-maintained list will drift again")
+    assert "counts\": {k: len(v) for k, v in _profiles.items()}" in body, (
+        "counts is not a uniform len(v) over every profile")
+    assert '!= "full"' not in body, "a `full` special case reappeared in counts"
+    assert '"unknown_names"' in body, (
+        "drift in the other direction (stale names in a group) is invisible again")
+    _table = srv[srv.find("_TOOL_PROFILES = {"):i]
+    assert '"full"' not in _table, (
+        "`full` is back in the static table as a sentence/list")
+
+    # 3) The live check must assert the three invariants, not a lower bound.
+    k = smoke.find("def _tool_profiles():")
+    assert k > 0, "the profile smoke check is gone"
+    live = smoke[k:smoke.find("\n    r.check(", k)]
+    assert "counts[k] == len(v)" in live, "the live check does not verify counts"
+    assert 'not n.startswith("*")' in live, "the live check does not reject prose in full"
+    assert "_union == set(full)" in live, "the live check does not compare groups to registry"
+    assert "unknown_names" in live, "the live check ignores stale group names"
+    assert ">= 71" not in live, "the hard-coded lower bound is back"
+    # A check that NameErrors is not a check. `server` was a bare, never-imported name in
+    # smoke.py from 0.8.284 until 0.8.291; `check_all.py` counted the `r.check` line and
+    # reported it as coverage anyway. Found by `smoke.py --only 'tool profiles'`.
+    assert "import server as _server" in live, (
+        "the profile smoke check calls server without importing it — it can never pass")
+    # `_server.list_tool_profiles()` contains the literal substring
+    # "server.list_tool_profiles(", so a plain `not in` gives a false alarm. Match only a
+    # BARE name: no word character immediately before `server`.
+    import re as _re_live
+    assert not _re_live.search(r"(?<!\w)server\.list_tool_profiles\(", live), (
+        "a bare `server` reference is back; the check would NameError again")
+    return "no static count; full=live registry; live check imports server and covers 3 invariants"
+
+def assert_eccentric_sections_are_refused_and_line_styles_are_documented():
+    """0.8.291 — report 2026-11-10: P0 eccentric cut, P1 nudge, P2 line styles.
+
+    P0 was NOT a missing check: `section_off_axis` already existed, but it compared only
+    `kept_dimension`, which is CONSTANT for an eccentric chord of a revolved part. The
+    receipt carried `ratio: 1.000` next to `127.98 -> 127.73` and still said `ok:true`.
+    The fix measures the DISCARDED axis too, on an ABSOLUTE 0.1 mm threshold (0.25/127.98
+    = 0.195% defeats any proportional gate), and lifts the decision into a pure function
+    so smoke.py can replay the report's measured numbers.
+
+    Also guarded here: the default nudge is OFF (and a manual nudge raises a TOP-LEVEL
+    warning), `eccentricity_mm` reaches the receipt, the wrong 63.5 mm hint is corrected,
+    the capability table stops saying "全部可做" for a partial status and retires the
+    obsolete material/geometry claim, and the `line_style` schema finally documents the
+    numeric styles that the report proved are the only correct way to draw an axis.
+    """
+    def _read(*parts):
+        with open(os.path.join(*parts), encoding="utf-8") as fh:
+            return fh.read()
+
+    drw = _read(SRC, "tools", "drawing.py")
+    cap = _read(SRC, "tools", "capabilities.py")
+    lay = _read(SRC, "tools", "layout.py")
+    srv = _read(SRC, "server.py")
+    smoke = _read(ROOT, "tests", "smoke.py")
+
+    # ── P0: both axes measured; the discarded one judged in absolute millimetres ─────
+    assert "SECTION_OFF_AXIS_TOLERANCE_MM = 0.1" in drw, (
+        "the absolute off-axis threshold is gone")
+    i = drw.find("def _section_sanity(")
+    j = drw.find("def _section_off_axis_from_sanity(", i)
+    k = drw.find("def add_section_view(", j)
+    assert 0 < i < j < k, "the section geometry helpers were merged or reordered"
+    sanity_body = drw[i:j]
+    assert "off_axis_shrink_mm" in sanity_body and "off_axis_dimension" in sanity_body, (
+        "`_section_sanity` no longer measures the discarded axis")
+    decide = drw[j:k]
+    assert "off_axis_shrink_mm" in decide, "the decision ignores the discarded axis"
+    assert "> SECTION_OFF_AXIS_TOLERANCE_MM" in decide, (
+        "the absolute threshold is not what rejects an eccentric chord")
+    assert 'detected_on' in decide and "off_axis_dimension" in decide, (
+        "the receipt cannot say WHICH axis failed")
+    assert 'sanity.get("checked")' in decide, "unchecked sections would be judged"
+    m = drw.find("_off_axis = _section_off_axis_from_sanity(sanity)")
+    assert m > k, "add_section_view does not use the pure decision"
+    assert "section_off_axis" in drw[m:m + 300] and "return error(" in drw[m:m + 300], (
+        "an off-axis verdict no longer rejects the call")
+
+    # ── P1: no silent nudge; eccentricity visible; the chord number corrected ────────
+    assert "auto_nudge_zero_offset=False" in drw, (
+        "the zero-offset workaround is back ON by default, contradicting its own hint")
+    assert "if _offset_nudged:" in drw and '_nudge_warning' in drw, (
+        "a manual nudge no longer raises a top-level warning")
+    assert 'diag["warning"]' in drw, "the nudge warning does not reach the receipt"
+    assert "eccentricity_mm" in drw and "ScaleDecimal" in drw, (
+        "the receipt no longer converts the requested offset to model millimetres")
+    assert "63.875" in drw, "the corrected chord length is gone"
+
+    # ── capability table: no more "全部可做" for partial; old claim retired ──────────
+    assert "已作废" in cap and "材质/几何决定论作废" in cap, (
+        "the obsolete 'hatch depends on geometry/material' claim is still current text")
+    assert "`status:partial` 不等于「全部可做」" in cap, (
+        "advice still says everything is possible for a partial capability")
+    assert "0.1 mm" in cap, "the capability entry does not describe the new threshold"
+
+    # ── P2: schema documents numeric styles; stale hint retired ─────────────────────
+    assert "def _line_style_warning(" in lay, "no warning for a misleading line style"
+    assert "line_style_warning=_line_style_warning(" in lay, (
+        "the warning is defined but not returned")
+    assert "Drawing-sheet sketches are NOT rendering on this build" not in lay, (
+        "the obsolete global 'sketches never render' hint is back")
+    assert "PREFER THE NUMBER" in srv and "for an AXIS pass '4'" in srv \
+        and "for a real solid line pass '7'" in srv, (
+        "the schema still hides the only styles that actually work")
+    assert "eccentric section is refused" in smoke, "CI smoke #3 is missing"
+    return "both axes + absolute 0.1 mm; nudge off/warned; styles 4/7 documented"
+
+def assert_single_callout_reverts_unverified_ink():
+    """0.8.291 — report 2026-11-10 S-1: `Ø16 ↧ 68` with `ok:true` was still shipping.
+
+    v0.8.290 was HONEST but not SAFE: `text_flags` said "do not treat ok:true as evidence",
+    `model_match.ok:true` compared only the diameter (`delta_mm: 0.0` made the wrong text
+    look even more credible), and the singular tool kept returning `created:true / ok:true`
+    with the annotation on the sheet. The warning lived in the PLURAL tool's note, which a
+    singular-tool caller never sees.
+
+    Two root causes fixed here:
+
+      * the text was readable all along — `GetDimension2(0)` is the wrong reader, the
+        batch tool's `win.Dispatch(display).GetText(slot)` works. So `↧ 68` is detectable;
+      * verification is now a PURE decision (`_hole_callout_verification`) that gates `ok`,
+        and unverified ink is REVERTED via the same `GetAnnotation`/`EditDelete` path the
+        batch tool already proved. No "created but wrong" path remains.
+
+    `model_match` gains `through_state:"unknown"` (the ledger has no through/blind flag),
+    `depth_text_consistent:null` and `ok_means`, so a diameter match can never again be
+    read as "the text is right".
+    """
+    def _read(*parts):
+        with open(os.path.join(*parts), encoding="utf-8") as fh:
+            return fh.read()
+
+    drw = _read(SRC, "tools", "drawing.py")
+    cap = _read(SRC, "tools", "capabilities.py")
+    pipe = _read(SRC, "tools", "pipeline.py")
+    smoke = _read(ROOT, "tests", "smoke.py")
+
+    # ── the pure contract ───────────────────────────────────────────────────────────
+    i = drw.find("def _hole_callout_verification(")
+    j = drw.find("def _reject_unverified_callout(", i)
+    k = drw.find("def add_hole_callout(", j)
+    assert 0 < i < j < k, "the verification/revert helpers were merged or removed"
+    contract = drw[i:j]
+    assert "HOLE-DEPTH" in contract and "\\u21a7" in contract, (
+        "the depth symbol is no longer detected")
+    assert "model_match_ok is not False" in contract, (
+        "a wrong diameter can pass again")
+    assert "unsupported_through_bore" in contract and "hole_callout_unverifiable" in contract, (
+        "the two measured failure modes are not named")
+    revert = drw[j:k]
+    assert 'GetAnnotation' in revert and "EditDelete" in revert, (
+        "the revert does not use the proven delete path")
+    assert "EditRebuild3" in revert, "annotation counts will not refresh after the delete"
+    assert '"reverted": False' in revert, (
+        "a failed revert can be swallowed into a success")
+
+    # ── the singular tool wires it in ───────────────────────────────────────────────
+    drw_ast = ast.parse(drw)
+    body = ast.get_source_segment(drw,
+                                  _function_node(drw_ast, "add_hole_callout")) or ""
+    assert "_win_read.Dispatch(callout)" in body, (
+        "the text reader is back on GetDimension2(0), which reads nothing")
+    assert "ok=_verified" in body and "verified=_verified" in body, (
+        "`ok` is hard-coded True again — a batch pipeline would pass a wrong drawing")
+    assert "drawing_safe=_verified" in body and "created=(not _reverted)" in body, (
+        "the receipt no longer says whether bad ink stayed on the sheet")
+    assert "callout_revert=_revert" in body and "verification=_verification" in body, (
+        "the revert/verification evidence is missing from the receipt")
+    assert "through_state" in body and "ok_means" in body \
+        and "depth_text_consistent" in body, (
+        "model_match is back to diameter-only")
+    assert "ok：null=未校验" in body, "the note still describes fields that no longer exist"
+
+    # ── no receipt recommends a path this project proved dead ───────────────────────
+    assert "**不要**用 `add_drawing_dimension" in cap, (
+        "the capability table again recommends the dead dimension path")
+    assert "撤销标注并返回 `ok:false`" in pipe, (
+        "the pipeline warning still describes the pre-0.8.291 singular tool")
+    assert "撤销该标注并返回 `ok:false / verified:false`" in drw, (
+        "the batch note still describes a tool that leaves wrong ink on the sheet")
+    assert "single callout refuses unverified ink" in smoke, (
+        "the S-1 smoke check is missing")
+    # S-3: `ok:false` means "incomplete", not "the call failed".
+    assert "execution_ok=True" in drw and 'completeness=("incomplete"' in drw, (
+        "the plural tool encodes 'incomplete drawing' only as 'call failed' again")
+    return "depth detected, ok gated, bad ink reverted, model_match no longer fakes safety"
 
 def assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths():
     """0.8.285 — two fixes each stopped one layer short.
@@ -9457,6 +9716,9 @@ STATIC_REGRESSIONS = [
     ("0.8.286 README documents the release mechanics", assert_readme_documents_the_release_mechanics),
     ("0.8.287 no receipt recommends a dead path", assert_no_receipt_recommends_a_known_dead_path),
     ("0.8.290 require separates failure from partial", assert_require_distinguishes_failure_from_partial),
+    ("0.8.291 profile counts come from the registry", assert_tool_profile_counts_come_from_the_registry),
+    ("0.8.291 eccentric cut refused + styles", assert_eccentric_sections_are_refused_and_line_styles_are_documented),
+    ("0.8.291 single callout reverts bad ink", assert_single_callout_reverts_unverified_ink),
     ("0.8.137 ledger dedupes by full_name", assert_ledger_dedupes_by_full_name),
     ("0.8.135 callout quantity", assert_hole_callouts_carry_a_quantity),
     ("0.8.134 no dimension off-sheet", assert_no_dimension_is_left_off_the_sheet),

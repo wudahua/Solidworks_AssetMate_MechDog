@@ -2131,6 +2131,32 @@ _LINE_STYLE_MEASURED = {
 }
 
 
+def _line_style_warning(requested, applied):
+    """Say it when a semantic name silently produces the wrong line (2026-11-10, P2).
+
+    Report 2026-11-10 §4 measured all seven styles on SW2024 SP4: `solid` -> Style 1 ->
+    fine dashes, `dashdot` (whose schema description says "GB fine dash-dot, use this for
+    an axis") -> Style 5 -> 194 very sparse dots that are nearly invisible. The correct
+    styles are reachable, but only through numeric strings (`"4"` / `"7"`) that the schema
+    never mentioned — so following the documentation was guaranteed to be wrong.
+
+    The mapping is NOT changed: it is one build's evidence, and switching a default used by
+    every existing caller is a bigger risk than a documented oddity. Instead the receipt
+    now warns whenever the applied style is one of the two misleading values.
+    """
+    _m = _LINE_STYLE_MEASURED.get(applied) or {}
+    if applied == 5:
+        return ("`%s` 落在 Style 5：本机实测 %d 笔极稀的点（coverage %.3f），"
+                "视觉上几乎不可见，不能当轴线用。要 GB 细点划线请传 "
+                "`line_style=\"4\"`，要连续实线请传 `\"7\"`。"
+                % (requested, _m.get("strokes", 0), _m.get("coverage", 0)))
+    if applied == 1:
+        return ("`%s` 落在 Style 1：名义是实线，本机实测却是细虚线（coverage %.3f）。"
+                "要真正连续的实线请传 `line_style=\"7\"`。"
+                % (requested, _m.get("coverage", 0)))
+    return None
+
+
 def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
                    verify_render=True, line_style="solid", view_name=None):
     """Draw a line in TRUE sheet space.
@@ -2288,10 +2314,19 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
             return error(
                 "line_not_rendered",
                 "the sheet line did not change a single pixel on the exported page",
-                "Drawing-sheet sketches are NOT rendering on this build — `CreateLine` "
-                "returns an object and `SketchSegment.Style` is writable, but nothing is "
-                "drawn. Do not rely on add_sheet_line for frames or centre lines until "
-                "this is solved; see docs/com-quirks.md section 55.",
+                # Report 2026-11-10 §4.3: this hint used to claim "drawing-sheet sketches
+                # are NOT rendering on this build", which contradicts the AddToDB fix in
+                # this very function (sheet sketches DO render). The observed 0-pixel case
+                # was `line_style="solid"` + `view_name=` — the same call without a view
+                # name drew 434 px, and with `dashdot` drew 436 px. That is a narrow
+                # view-sketch / Style-1 diff-window problem, NOT a global capability loss.
+                "**局部失败，不是「草图不渲染」**（旧 hint 已作废）。同一构建上图纸草图"
+                "`SketchManager.AddToDB=True` 后能正常画线上像素。0 像素多见于"
+                "「`view_name` 指向视图草图 + `line_style='solid'`（Style 1 细虚线）」"
+                "这一组合的差分窗口。排查顺序：① 改传 `line_style=\"7\"`（唯一连续实线）；"
+                "② 去掉 `view_name` 在图纸草图上对照；③ 看回执 `line_style_measured` / "
+                "`line_style_warning` 与 `attached_to`。若 `visibility.checked=false`，"
+                "那是渲染器不可用（未验证），与「没画上」不是一回事。",
                 line_m=[[round(float(x1_m), 4), round(float(y1_m), 4)],
                         [round(float(x2_m), 4), round(float(y2_m), 4)]],
                 visibility=visibility)
@@ -2318,6 +2353,8 @@ def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
                           # `style=7` is continuous. A caller asking for an axis should not
                           # have to discover that by looking at the sheet.
                           line_style_measured=_LINE_STYLE_MEASURED.get(style_applied),
+                          line_style_warning=_line_style_warning(
+                              str(line_style or "solid").lower(), style_applied),
                           note=("坐标为图纸空间米；图纸草图不接受毫米。"
                                 "verify_render=True 时用前后 PDF 像素差分证明线真的出现了；"
                                 "0 像素=线没画上，返回 line_not_rendered。"))

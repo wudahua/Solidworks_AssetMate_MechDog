@@ -3395,6 +3395,71 @@ def _nearest_circle_edge(drawing_path, view_name, x, y, tolerance_m=0.005):
             "distance_m": round(best[0], 5)}, None
 
 
+def _hole_callout_verification(text, model_match_ok=None):
+    """May a freshly created hole callout stay on the sheet? PURE — no COM (0.8.291).
+
+    Report 2026-11-10 (S-1) measured `Ø16 ↧ 68` on a THROUGH bore while the receipt said
+    `created:true / ok:true / model_match.ok:true / delta_mm:0.0`. Three separate gates all
+    missed it: `ok` was hard-coded, `model_match` compared only the diameter, and the text
+    reader looked at the wrong object. The rule below is the whole contract in one place,
+    so smoke.py can replay the report's strings without SolidWorks:
+
+        "<MOD-DIAM> 16 <HOLE-DEPTH> 68"  -> unverified / unsupported_through_bore
+        None                             -> unverified / hole_callout_unverifiable
+        "Ø16 完全贯穿"                    -> verified
+        any text + model_match_ok=False  -> unverified / diameter_mismatch
+
+    We do NOT try to decide whether the hole is really through: the drawing cannot prove
+    that. A depth symbol is therefore refused rather than judged.
+    """
+    joined = str(text or "")
+    has_depth = ("\u21a7" in joined) or ("HOLE-DEPTH" in joined)
+    readable = bool(joined.strip())
+    verified = readable and not has_depth and model_match_ok is not False
+    if verified:
+        return {"verified": True, "verdict": "verified", "error": None}
+    if has_depth:
+        code = "unsupported_through_bore"
+    elif model_match_ok is False:
+        code = "diameter_mismatch"
+    else:
+        code = "hole_callout_unverifiable"
+    return {"verified": False, "verdict": "unverified", "error": code}
+
+
+def _reject_unverified_callout(doc, callout):
+    """Remove a just-created hole callout whose rendered text cannot be trusted.
+
+    Report 2026-11-10 (S-1): `add_hole_callout` created `Ø16 ↧ 68` on a THROUGH bore and
+    returned `created:true / ok:true`. The batch tool's `unannotated_note` warned about it,
+    but a caller using the singular tool never saw that note — the wrong annotation stayed
+    on the sheet. "Put up a sign" was not a fix.
+
+    Deleting is the same verified path `add_hole_callouts._discard` uses: get the
+    IAnnotation through a late-bound `GetAnnotation` CALL, select it, `EditDelete`.
+    Returns a dict — a failed revert must be reported, never swallowed into `reverted:True`.
+    """
+    try:
+        import win32com.client as _win_revert
+
+        dim = _win_revert.Dispatch(callout)
+        ann = _win_revert.Dispatch(_call_method(dim, "GetAnnotation"))
+        doc.ClearSelection2(True)
+        if not ann.Select(False):
+            return {"reverted": False,
+                    "reason": "IAnnotation.Select(False) returned False"}
+        _call_method(doc, "EditDelete")
+        # `view.GetAnnotations` / GetAnnotationCount do not refresh until a real rebuild —
+        # the same trap as `auto_dimension`'s duplicate removal (0.8.19).
+        try:
+            _call_method(doc, "EditRebuild3")
+        except Exception:
+            pass
+        return {"reverted": True}
+    except Exception as exc:
+        return {"reverted": False, "reason": "%s: %s" % (type(exc).__name__, str(exc)[:140])}
+
+
 def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
                      save=True):
     """Insert a NATIVE hole callout at a sheet point (meters) on a hole edge, then read
@@ -3557,33 +3622,52 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
                 selected_before_call=_sel_count)
 
         readback = {}
-        # ── Read the text off the DISPLAY DIMENSION, every slot (report 2026-11-09, R-1) ──
-        # This used to call `callout.GetText()` with no argument, on the IAnnotation.
-        # `IAnnotation` has no such method and a dimension needs a slot number, so the call
-        # raised and `text` was always None — while the same receipt said `ok: true`.
+        # ── Read the text off the DISPLAY DIMENSION, every slot ─────────────────────────
+        # 2026-11-09 (R-1): this used `callout.GetText()` with no argument on the
+        # IAnnotation — no such method, so `text` was always None while the receipt said
+        # `ok:true`. That null hid the real output, measured on 限位导向套:
         #
-        # That null is why nobody noticed the actual output was WRONG: measured on 限位导向套
-        # the callout on the Ø16 through bore renders as
+        #     Ø16 ↧ 68          <- a blind 68 mm hole, on a bore that goes THROUGH
         #
-        #     Ø16 ↧ 68
+        # `value_mm` was 16 (correct), so any number-only check passed.
         #
-        # i.e. a blind hole 68 deep, on a bore that goes all the way through. `value_mm`
-        # was 16 (correct), so any check that only compared the NUMBER passed.
+        # 2026-11-10 (S-1, the actual root cause): the 0.8.279 "fix" switched to
+        # `callout.GetDimension2(0).GetText(slot)`, which ALSO returns nothing here. The
+        # batch tool reads the SAME object differently and succeeds:
+        #
+        #     dim = win32com.client.Dispatch(display)   # AddHoleCallout2 return value
+        #     dim.GetText(slot)                         # -> "<MOD-DIAM> 16 <HOLE-DEPTH> 68"
+        #
+        # So `text_slots: []` was a READER bug, not a SolidWorks limitation. The depth
+        # symbol was readable all along; the singular tool just never looked at it. Use the
+        # proven Dispatch path first, keep GetDimension2 as a fallback.
         _text_slots = []
+        _readers = []
+        try:
+            import win32com.client as _win_read
+
+            _readers.append(_win_read.Dispatch(callout))
+        except Exception:
+            pass
         try:
             _dim = callout.GetDimension2(0)
-            for _probe in (1, 0, 2, 3, 4, 5):
+            if _dim is not None:
+                _readers.append(_dim)
+        except Exception:
+            pass
+        for _probe in (1, 0, 2, 3, 4, 5):
+            for _reader in _readers:
                 try:
-                    _candidate = _dim.GetText(_probe)
+                    _candidate = _reader.GetText(_probe)
                 except Exception:
                     continue
                 _text = str(_candidate).strip() if _candidate else ""
                 if _text and _text not in _text_slots:
                     _text_slots.append(_text)
-        except Exception:
-            pass
         readback["text"] = " | ".join(_text_slots) if _text_slots else None
         readback["text_slots"] = _text_slots
+        readback["text_reader"] = ("IDisplayDimension via Dispatch" if _text_slots
+                                   else "no slot returned content on any reader")
 
         # ── Flag a bore that the callout calls blind (report 2026-11-09, R-1) ────────────
         # The Ø16 bore goes through the part (a full section shows an open band end to end;
@@ -3596,19 +3680,24 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
         # others. So do not rewrite — say it.
         _text_flags = []
         _joined = (readback.get("text") or "")
-        if ("\u21a7" in _joined) or ("HOLE-DEPTH" in _joined):
+        _has_depth = ("\u21a7" in _joined) or ("HOLE-DEPTH" in _joined)
+        if _has_depth:
             _text_flags.append({
                 "flag": "depth_on_a_through_bore_suspect",
-                "detail": "the callout carries a depth symbol; if this hole exits the far "
-                          "face the drawing will read as a blind hole. Verify against the "
-                          "model, or use `add_drawing_dimension` on the circle instead of a "
-                          "hole callout.",
+                "detail": "the callout carries a depth symbol (`↧` / <HOLE-DEPTH>). "
+                          "SolidWorks takes it from the cut feature, not from whether the "
+                          "cut exits the far face; on 限位导向套 a Ø16 THROUGH bore rendered "
+                          "as `Ø16 ↧ 68`. This tool cannot prove through/blind from the "
+                          "drawing, so the callout is reverted and `ok:false` is returned. "
+                          "Do NOT retry via `add_drawing_dimension(style='diameter')` — "
+                          "that path's dimension text does not render either (com-quirks.md).",
             })
         if not _joined:
             _text_flags.append({
                 "flag": "text_unreadable",
-                "detail": "no text slot returned content; the rendered annotation was not "
-                          "verified. Do not treat `ok: true` as evidence the text is right.",
+                "detail": "no text slot returned content on either reader; the rendered "
+                          "annotation was not verified. Returns `ok:false` and reverts the "
+                          "callout — an unreadable annotation must not be left on a sheet.",
             })
         try:
             dim = callout.GetDimension2(0)
@@ -3627,8 +3716,27 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
         # told the caller to "compare model_match.ok". A null that the note treats as a
         # verdict is the same failure this project keeps fixing elsewhere: report it as
         # "not checked", with a reason, instead of handing back nothing.
-        match = {"ok": None, "checked": False,
-                 "reason": "model_path not supplied — diameter/through state not verified"}
+        # Report 2026-11-10 (S-1, suggestions 3/4): `model_match.ok:true` was being read as
+        # "the callout is correct" when all it proved was 16.0 == 16.0. The depth `↧ 68`
+        # sailed through with `delta_mm: 0.0`, making the diameter match a FALSE SAFETY
+        # SIGNAL. `build_feature_ledger` inventories CYLINDRICAL FACES only (diameter /
+        # axis / centre) — there is no through/blind flag, so the through state genuinely
+        # cannot be derived here. Say `unknown` instead of inventing a verdict, and state
+        # in the receipt exactly what `ok` means.
+        _through_unknown = {
+            "through_state": "unknown",
+            "through_state_reason": (
+                "build_feature_ledger() inventories cylindrical faces only; it has no "
+                "through/blind flag, so a depth symbol cannot be checked against the model"),
+            "depth_text_present": _has_depth,
+            "depth_text_consistent": None,
+            "depth_text_consistent_reason": (
+                "through_state is unknown — consistency is NOT judged; `null` is not `true`"),
+            "ok_means": ("diameter match ONLY — never evidence that the rendered text, "
+                         "depth or through state is correct"),
+        }
+        match = dict(_through_unknown, ok=None, checked=False,
+                     reason="model_path not supplied — diameter/through state not verified")
         if model_path:
             try:
                 from . import ledger as _ledger
@@ -3638,15 +3746,40 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
                 got = readback.get("value_mm")
                 if got is not None and values:
                     nearest = min(values, key=lambda v: abs(v - got))
-                    match = {
-                        "read_mm": got,
-                        "nearest_model_diameter_mm": nearest,
-                        "delta_mm": round(got - nearest, 3),
-                        "ok": abs(got - nearest) <= max(0.2, nearest * 0.02),
-                        "model_diameters_mm": values[:20],
-                    }
+                    match = dict(
+                        _through_unknown,
+                        read_mm=got,
+                        nearest_model_diameter_mm=nearest,
+                        delta_mm=round(got - nearest, 3),
+                        ok=abs(got - nearest) <= max(0.2, nearest * 0.02),
+                        checked=True,
+                        model_diameters_mm=values[:20])
             except Exception as exc:
-                match = {"error": str(exc)[:120]}
+                match = dict(_through_unknown, error=str(exc)[:120])
+
+        # ── Verification gate (report 2026-11-10, S-1 — the core fix) ────────────────
+        # Before this version EVERY path returned `ok:true`: the one whose rendered text
+        # was `Ø16 ↧ 68` on a through bore, AND the one where no text could be read at all.
+        # `text_flags` even said "do not treat ok:true as evidence the text is right" while
+        # the tool kept handing out `ok:true`. A warning no batch pipeline can act on is
+        # not a fix — the report called it "坑没被堵，只是被贴了告示".
+        #
+        # Now anything unverifiable is REVERTED and reported as `ok:false` / `verified:false`.
+        # This is deliberately stricter than "keep it but warn": both automatic paths for
+        # the main bore were measured and retired (com-quirks.md), so a "created but wrong"
+        # path is the bug, not a capability worth preserving.
+        _verification = _hole_callout_verification(_joined, match.get("ok"))
+        _verified = _verification["verified"]
+        if _verification["error"] == "diameter_mismatch":
+            _text_flags.append({
+                "flag": "diameter_mismatch",
+                "detail": "model_match.ok is False — the callout's value does not match any "
+                          "model diameter. Reverted.",
+            })
+        _revert = None
+        if not _verified:
+            _revert = _reject_unverified_callout(doc, callout)
+        _reverted = bool(_revert and _revert.get("reverted"))
 
         after = 0
         if target is not None:
@@ -3661,9 +3794,22 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
             pass
         if save:
             _save_drawing(doc)
+
+        _extra = {}
+        if not _verified:
+            _extra["error"] = _verification["error"]
+            _extra["hint"] = (
+                "SolidWorks 的 HoleCallout 会把贯通孔写成带深度的盲孔（实测 "
+                "`Ø16 ↧ 68`），而 `SetText` 改写文字会毁掉其它槽位（历史 `Ø1515`），"
+                "`add_drawing_dimension(style='diameter')` 的尺寸文字也渲染不出来。"
+                "本工具不再把无法验证的标注留在图纸上：请在 SolidWorks 界面手工标该孔。"
+                "复数工具 `add_hole_callouts.unannotated_note` 给出同样结论。")
         return drawing_ok(
-            drawing=doc.GetTitle,
-            created=True,
+            ok=_verified,
+            # `created` reflects the SHEET, not the API call: a reverted callout was never
+            # really delivered. A failed revert leaves `created:true` with `ok:false` and
+            # `drawing_safe:false`, so nobody can mistake it for a good annotation.
+            created=(not _reverted),
             view=target.Name if target is not None else None,
             annotations_before=before,
             annotations_after=after,
@@ -3673,8 +3819,18 @@ def add_hole_callout(drawing_path, x, y, view_name=None, model_path=None,
             # I meant" from "the nearest hole", and this tool used to fail outright instead.
             matched_circle=circle_matched,
             text_flags=_text_flags,
+            verification=_verification,
+            verified=_verified,
+            verdict=_verification["verdict"],
+            drawing_safe=_verified,
+            callout_revert=_revert,
             saved=bool(save),
-            note="比对 model_match.ok；false 表示标注落在别处或模型无对应孔径。",
+            note=("model_match.ok：null=未校验（未传 model_path）；true=仅直径匹配；"
+                  "false=直径不匹配。三者都不代表图面文字/深度/贯通状态正确"
+                  "（见 model_match.ok_means，through_state 恒为 unknown）。"
+                  "v0.8.291 起：文字不可读或带深度符号时撤销标注并返回 "
+                  "ok:false / verified:false；贯通主孔请在 SolidWorks 里手工标。"),
+            **_extra
         )
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -5723,6 +5879,19 @@ LOW_CONFIDENCE_MATCH_LIMIT = 50
 
 SECTION_KEEP_TOLERANCE = 0.10
 
+# Report 2026-11-10 (P0): an eccentric chord of a revolved part shrinks the dimension
+# that `kept_dimension` THROWS AWAY. Measured on 凹槽滚轮 (Ø64×26, front view 2:1):
+#
+#     offset_m=0     source [51.98, 127.98]  section [51.98, 127.98]  ratio 1.000
+#     offset_m=0.004 source [51.98, 127.98]  section [51.98, 127.73]  ratio 1.000
+#
+# `horizontal` keeps the width (51.98, constant by construction) and discards the height,
+# where the 0.25 mm chord loss lives. A PROPORTIONAL threshold cannot catch this:
+# 0.25 / 127.98 = 0.195%, well under the 0.5% the old check advertised. Hence an absolute
+# millimetre threshold on the non-kept axis. A correct through-axis cut matches to
+# rounding (0.00 mm measured on both parts), so 0.1 mm leaves real headroom.
+SECTION_OFF_AXIS_TOLERANCE_MM = 0.1
+
 
 def _section_sanity(source_view, section, orientation, depth,
                     hatch_count=None, edge_count=None, source_edge_count=None):
@@ -5821,6 +5990,23 @@ def _section_sanity(source_view, section, orientation, depth,
     info["source_kept_mm"] = round(keep_src * 1000, 2)
     info["section_kept_mm"] = round(keep_sec * 1000, 2)
     info["ratio"] = round(ratio, 3)
+    # Report 2026-11-10 (P0): measure the OTHER axis too. `section_off_axis` was named
+    # after this failure but only ever compared `kept_dimension` — on a revolved part an
+    # eccentric chord leaves that axis untouched and shortens the discarded one, so the
+    # check was structurally blind to the exact case it was written for. Both axes are now
+    # in the receipt; the caller (add_section_view) decides on the non-kept one.
+    #
+    # This is reached only for a full-depth longitudinal section: `depth>0` (partial
+    # section, legitimately smaller) and `cross_section` (smaller in BOTH axes) returned
+    # above with `checked=False`, so a chord is not confused with either of those.
+    if str(orientation) == "vertical":
+        off_src, off_sec, off_which = src_w, sec_w, "width"
+    else:
+        off_src, off_sec, off_which = src_h, sec_h, "height"
+    info["off_axis_dimension"] = off_which
+    info["source_off_axis_mm"] = round(off_src * 1000, 2)
+    info["section_off_axis_mm"] = round(off_sec * 1000, 2)
+    info["off_axis_shrink_mm"] = round((off_src - off_sec) * 1000, 3)
     # Only when nothing more specific was found above. This line runs AFTER the hatch and
     # edge-count checks, and used to overwrite them unconditionally — `no_hatch` came out
     # of the function as `ok`, which is exactly the failure the check was added to name.
@@ -5830,6 +6016,65 @@ def _section_sanity(source_view, section, orientation, depth,
         info["verdict"] = ("ok" if abs(ratio - 1.0) <= SECTION_KEEP_TOLERANCE
                            else "suspicious")
     return info
+
+
+def _section_off_axis_from_sanity(sanity):
+    """Decide whether a finished section is an eccentric chord. PURE — no COM.
+
+    Extracted from `add_section_view` (report 2026-11-10, P0) so the decision can be
+    exercised without SolidWorks. `sanity` is exactly the dict `_section_sanity` returns,
+    which makes this a real unit of the geometry rule rather than a string in a receipt.
+
+    Two independent measurements, in this order:
+
+      1. `kept_dimension` — the axis a perpendicular cut CANNOT change. A > 0.5% shrink
+         here means the plane missed the intended cross-section (the 2026-11-08 case).
+      2. `off_axis_dimension` — the axis the cut CAN shorten. This is where an eccentric
+         chord of a revolved part shows up, and it is precisely the one the old check
+         threw away. Measured 凹槽滚轮 horizontal / 2:1 / offset 0.004:
+         width 51.98 -> 51.98 (ratio 1.000) but height 127.98 -> 127.73 (0.25 mm).
+
+    Only `checked=True` full sections are judged: partial sections (depth>0) shrink by
+    design and cross-sections are smaller in both axes by definition — both return from
+    `_section_sanity` with `checked=False`.
+    """
+    if not isinstance(sanity, dict) or not sanity.get("checked"):
+        return None
+    kept = sanity.get("section_kept_mm")
+    src = sanity.get("source_kept_mm")
+    try:
+        if kept is not None and src:
+            shrunk = float(src) - float(kept)
+            if shrunk > max(0.005 * float(src), 0.2):
+                return {
+                    "shrunk_mm": round(shrunk, 3),
+                    "section_kept_mm": round(float(kept), 3),
+                    "source_kept_mm": round(float(src), 3),
+                    "ratio": round(float(kept) / float(src), 4),
+                    "dimension": sanity.get("kept_dimension"),
+                    "detected_on": "kept_dimension",
+                }
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+    raw = sanity.get("off_axis_shrink_mm")
+    try:
+        shrink = float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        shrink = None
+    o_src = sanity.get("source_off_axis_mm")
+    o_sec = sanity.get("section_off_axis_mm")
+    if (shrink is not None and shrink > SECTION_OFF_AXIS_TOLERANCE_MM
+            and o_src and o_sec is not None):
+        return {
+            "shrunk_mm": round(shrink, 3),
+            "section_kept_mm": o_sec,
+            "source_kept_mm": o_src,
+            "ratio": round(float(o_sec) / float(o_src), 4),
+            "dimension": sanity.get("off_axis_dimension"),
+            "detected_on": "off_axis_dimension",
+            "tolerance_mm": SECTION_OFF_AXIS_TOLERANCE_MM,
+        }
+    return None
 
 
 def add_section_view(drawing_path, view_name=None, orientation="horizontal",
@@ -6337,6 +6582,26 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                         % (position_requested, dropped_axis, str(target.Name), position_actual)
                         if dropped_axis else None),
         }
+        # Report 2026-11-10 (P0, suggestion 2): put the eccentricity implied by the
+        # requested offset in the receipt, in MODEL millimetres. `offset_m` is sheet metres
+        # and the sign convention above gives `offset_m = model_offset * scale`, so
+        # eccentricity = |offset_m| / scale. Measured on 凹槽滚轮 2:1: 0.004 m sheet ->
+        # 2 mm model, chord 2*sqrt(32^2-2^2) = 63.875 mm -> 127.75 mm at 2:1, matching the
+        # reported 127.73.
+        #
+        # DIAGNOSTIC ONLY. The `section_off_axis` rejection rests on MEASURED geometry,
+        # never on this conversion: an unavailable/wrong scale must not be able to argue a
+        # bad cut back into `ok:true`.
+        try:
+            _sec_scale = float(target.ScaleDecimal) or 1.0
+        except Exception:
+            _sec_scale = 1.0
+        try:
+            diag["eccentricity_mm"] = round(
+                abs(float(offset_m)) * 1000.0 / _sec_scale, 3)
+            diag["eccentricity_basis"] = "|offset_m| / view.ScaleDecimal, model mm"
+        except (TypeError, ValueError, ZeroDivisionError):
+            diag["eccentricity_mm"] = None
         if edge_count == 0:
             return error(
                 "section_empty",
@@ -6381,7 +6646,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                     # the cut plane sits exactly on the symmetry plane and no edge appears.
                     "**`offset_m=0` 现在可以切了**（0.8.255 修掉根因）。之前切不开不是偏置问题，是**剖切线长度被 clamp 到「短边一半」，端点正好落在轮廓圆上**，SolidWorks 把这种退化线当成「没穿过实体」，返回一个普通投影。现在线会**外扩 `cut_line_overshoot_m`（默认 4 mm）**，端点一定在轮廓外。\n"
                     "实测（2026-11-08，`offset=0`）：`限位导向套` 前视 46 边 / hatch 4 / ratio 1.000；`小车底部滚轮`（单实体导入件）前视 28 边 / hatch 2 / ratio 1.000 —— **两种零件都过轴**。\n"
-                    "**如果仍然切不开**：① 把 `cut_line_overshoot_m` 加到 0.008；② 看 `sanity.verdict`：`identical_to_source` 说明线没穿过实体，`no_hatch` 才去查剖面线设置（**别再怀疑材质** —— 2026-11-09 实测未赋材质也能 hatch 4，旧结论「未赋材质时 hatch 恒 0」已作废）；③ 还不行就把剖视留给 SolidWorks 手工做，**不要用 `offset_m` 去凑** —— 回转体上偏 2 mm 剖面宽度就从 64 掉到 63.5，标出来的直径是错的。",
+                    "**如果仍然切不开**：① 把 `cut_line_overshoot_m` 加到 0.008；② 看 `sanity.verdict`：`identical_to_source` 说明线没穿过实体，`no_hatch` 才去查剖面线设置（**别再怀疑材质** —— 2026-11-09 实测未赋材质也能 hatch 4，旧结论「未赋材质时 hatch 恒 0」已作废）；③ 还不行就把剖视留给 SolidWorks 手工做，**不要用 `offset_m` 去凑** —— 回转体上偏 2 mm，Ø64 外圆的弦长是 2·√(32²−2²) = 63.875 mm（旧文案误写 63.5，那对应约偏 4 mm），标出来的直径是错的。",
                     # Report 2026-11-08 (P0-1, suggestion 3): a failed section used to be
                     # left on the sheet with no mention in the receipt, so the caller found
                     # an empty `A-A` polluting the layout later. It is still kept — deleting
@@ -6401,46 +6666,29 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 # plane landed — that is diagnostic value the empty case does not have.
                 **_maybe_drop_failed_view("hatch_missing"),
                 **diag)
-        # ── Off-axis section (report 2026-11-08, P0 suggestion 2) ────────────────────
-        # `SECTION_KEEP_TOLERANCE` is 10%, which is far too loose to catch an ECCENTRIC
-        # cut. Measured on 小车底部滚轮, end view, vertical:
-        #
-        #     offset 0.004  ratio 0.992  section 63.48 vs source 63.98   <- 0.5 mm chord
-        #     offset 0.020  ratio None   section 49.94 vs source 63.98   <- 14 mm chord
-        #
-        # The first passed every check (`ok: true, ratio 0.992`); the second lost its ratio
-        # entirely. Both are chords, not sections through the axis, and a revolved part's
-        # axial section must go through the axis — that is the whole point of the view.
-        #
-        # 0.5% is deliberately tight: a correct through-axis cut matches the source to
-        # rounding (measured 1.000 on 限位导向套). Anything looser lets a chord through.
-        _kept = sanity.get("section_kept_mm")
-        _src = sanity.get("source_kept_mm")
-        _off_axis = None
-        try:
-            if _kept is not None and _src:
-                _shrunk = float(_src) - float(_kept)
-                # Only a SHRINK matters; a section can legitimately be longer than its
-                # parent if the cut exposes depth.
-                if _shrunk > max(0.005 * float(_src), 0.2):
-                    _off_axis = {
-                        "shrunk_mm": round(_shrunk, 3),
-                        "section_kept_mm": round(float(_kept), 3),
-                        "source_kept_mm": round(float(_src), 3),
-                        "ratio": round(float(_kept) / float(_src), 4),
-                    }
-        except Exception:
-            _off_axis = None
+        # ── Off-axis / eccentric chord (2026-11-08 suggestion 2, fixed 2026-11-10) ────
+        # The decision now lives in `_section_off_axis_from_sanity` — pure geometry, no
+        # COM, so smoke.py can exercise it with a synthetic `sanity` dict. It checks BOTH
+        # axes: `kept_dimension` (a > 0.5% shrink means the plane missed the cross-section)
+        # and `off_axis_dimension` (where an eccentric chord of a revolved part actually
+        # shows up). Report 2026-11-10 proved the old one-axis check was structurally
+        # blind: `ratio 1.000` next to `127.98 -> 127.73`, and still `ok: true`.
+        _off_axis = _section_off_axis_from_sanity(sanity)
         if _off_axis:
             return error(
                 "section_off_axis",
-                "剖视图比源视图窄了 %s mm（%.3f → %.3f）—— **这不是过轴全剖，是一条偏心弦**。"
-                % (_off_axis["shrunk_mm"], _off_axis["source_kept_mm"],
-                   _off_axis["section_kept_mm"]),
-                "回转体的轴向全剖必须过轴线。偏心剖面会把外圆读小（本例弦长 63.48 对 "
-                "Ø63.98）、把孔读小，图上却看不出异常。把 offset_m 调回 0 附近；"
-                "如果 0 切不开（单实体导入件常见），这个零件在当前构建上做不出正确的"
-                "轴向全剖，**不要交付这张偏心剖面**。视图保留了，供你判断偏心方向。",
+                "剖视图的 %s 维比源视图短了 %s mm（%.3f → %.3f）—— "
+                "**这不是过轴全剖，是一条偏心弦**。"
+                % (_off_axis.get("dimension") or "尺寸", _off_axis["shrunk_mm"],
+                   _off_axis["source_kept_mm"], _off_axis["section_kept_mm"]),
+                ("判据来自 `%s`：偏差超过 %s mm 绝对值即拒绝。用绝对值而不是百分比 —— "
+                 "偏心 2 mm 时高度只掉 0.25/127.98 = 0.195%%，任何按比例的门都放行。"
+                 "回转体的轴向全剖必须过轴线。偏心剖面会把外圆读小（本例弦长 63.48 对 "
+                 "Ø63.98）、把孔读小，图上却看不出异常。把 offset_m 调回 0 附近；"
+                 "如果 0 切不开（单实体导入件常见），这个零件在当前构建上做不出正确的"
+                 "轴向全剖，**不要交付这张偏心剖面**。视图保留了，供你判断偏心方向。")
+                % (_off_axis.get("detected_on") or "kept_dimension",
+                   SECTION_OFF_AXIS_TOLERANCE_MM),
                 off_axis=_off_axis,
                 **diag)
         if sanity.get("checked") and sanity.get("verdict") == "suspicious":
@@ -6459,6 +6707,20 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         diag.update(offset_requested_m=round(_offset_requested, 6),
                     offset_used_m=round(float(offset_m), 6),
                     offset_nudged=bool(_offset_nudged))
+        # Report 2026-11-10 (P1): `offset_nudged` used to be a silent leaf field while the
+        # same tool's own hint says "不要用 offset_m 去凑". A request for a through-axis
+        # cut must not quietly become a 0.5 mm eccentric one. The default is now False
+        # (cut_line_overshoot_m fixed the root cause), but an explicit opt-in still deserves
+        # a TOP-LEVEL warning so no pipeline can miss it.
+        if _offset_nudged:
+            _nudge_warning = (
+                "请求的 offset_m=0 被内部改写为 %.3f m（约 %.2f mm 模型偏心）：这是"
+                "「零偏置切不开」时期遗留的 workaround，`cut_line_overshoot_m` 已修掉根因，"
+                "`auto_nudge_zero_offset` 默认已改为 False。请显式传 0 复核，"
+                "不要把这张偏心剖面当成过轴全剖。"
+                % (float(offset_m), diag.get("eccentricity_mm") or 0.0))
+            diag["warning"] = " | ".join(
+                part for part in (diag.get("warning"), _nudge_warning) if part)
         return drawing_ok(**diag)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -9475,13 +9737,23 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             coaxial_duplicates_dropped=_coaxial_dropped[:10],
             # Partial work is not success. See the verdict comment above.
             ok=(not _ambiguous),
+            # Report 2026-11-10 (S-3): `ok:false` here means "the drawing is INCOMPLETE",
+            # not "the call failed" — the tool did run, created callouts and saved them.
+            # A pipeline reading ok:false as a transport error will retry or roll back a
+            # perfectly good partial result, which is a different problem from the one
+            # `ok:false` was introduced to prevent. Keep `ok` as the completeness gate (it
+            # is what stops a batch runner shipping a sheet with no main bore) but give the
+            # execution status its own field so the two can be told apart.
+            execution_ok=True,
+            completeness=("incomplete" if _ambiguous else "complete"),
             excluded_diameters_mm=sorted(
                 {a["narrower_dia_mm"] for a in _ambiguous}
                 | {a["wider_dia_mm"] for a in _ambiguous}),
             unannotated_note=(
                 ("%d 个直径因倒角配对无法判定而未标注：%s。其中可能有主孔。"
-                 "**请在 SolidWorks 里手工标** —— 两条自动路径都试过，都不对："
-                 "`add_hole_callout` 会把贯通孔写成「深 68」的盲孔（数值错），"
+                 "**请在 SolidWorks 里手工标** —— 两条自动路径都已实测证伪："
+                 "`add_hole_callout` 曾把贯通孔写成「深 68」的盲孔；v0.8.291 起它会"
+                 "撤销该标注并返回 `ok:false / verified:false`，不再往图上留错字。"
                  "`add_drawing_dimension(style=\"diameter\")` 的尺寸文字渲染不出来"
                  "（写 `<MOD-DIAM><DIM>` 得到 `Ø<DIM>16`，写数值得到 `Ø1616`）。"
                  "位置见 `ambiguous_chamfer_pairs[].centre`（模型坐标，米）。"

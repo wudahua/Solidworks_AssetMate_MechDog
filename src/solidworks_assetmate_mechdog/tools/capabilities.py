@@ -396,18 +396,27 @@ CAPABILITIES = [
     {
         "id": "hole_callout_text_slots",
         "status": "partial",
-        "summary": "孔标注文字：带深度的孔会连成 Ø1515",
-        "why": ("`AddHoleCallout2` 产出的文字是 `<MOD-DIAM>` 格式码，必须用 `SetText` 改写，"
-                "但**直径和深度在不同文字槽里**：只写直径时深度留在另一槽，Ø15 深15 渲染成 "
-                "`Ø1515`（反馈里的 `Ø9 → Θ99` 就是同一件事）。三条路实测都不通——"
-                "① 只写直径 → 深度粘连；② 写直径后清空其余槽 → **标注整条消失**；"
-                "③ 完全不写 → 印出字面量 `<MOD-DIAM>`。"
-                "通孔（无深度，如门板 Ø8）正常，只有带深度的孔受影响。"),
-        "workaround": ("对带深度的孔改用 `add_drawing_dimension`（普通尺寸，文字可控），"
-                       "或建完标注后人工改一次文字；`add_hole_callouts` 的回执里 "
-                       "`text_source=SetText_depth_may_trail` 就是这条限制的标记"),
+        "summary": "孔标注文字：原生槽位不改写；贯通/深度语义无法自动判定",
+        "why": ("历史 `Ø1515` 的根因是**直径与深度分处不同文字槽**：只写直径时深度留在"
+                "另一槽（Ø15 深 15 → `Ø1515`）；写直径后清空其余槽会让整条标注消失；"
+                "完全不写则印出字面量 `<MOD-DIAM>`。当前实现已**不再调用 `SetText`**，"
+                "而是保留 SolidWorks 原生多槽文字（`text_source=native`，逐槽 0..5 读取）。"
+                "\n\n仍做不到的是**贯通判定**：`AddHoleCallout2` 从切除特征取深度，"
+                "并不判断该切除是否穿出背面。实测 `限位导向套` 的 Ø16 贯通内孔渲染成 "
+                "`Ø16 ↧ 68`。能力状态因此是 `partial`：文字能读回，语义不能信。"),
+        "workaround": ("**不要**用 `add_drawing_dimension(style='diameter')` 补主孔 —— "
+                       "实测尺寸能建但文字渲染不出来（`<MOD-DIAM><DIM>` → `Ø<DIM>16`，"
+                       "写数值 → `Ø1616`）；也**不要**再手工 `SetText` 改孔标注。"
+                       "`add_hole_callout`（单数）自 v0.8.291 起，读到深度符号或读不到文字时"
+                       "会**撤销刚创建的标注**并返回 `ok:false / verified:false / "
+                       "drawing_safe:false`，`model_match.through_state` 如实为 `unknown`；"
+                       "`add_hole_callouts`（复数）对无法判定的直径返回 `ok:false / "
+                       "verdict:partial / excluded_diameters_mm`。"
+                       "贯通主孔请在 SolidWorks 界面手工标，位置见 "
+                       "`ambiguous_chamfer_pairs[].centre`。"),
         "evidence": ("2026-11-01 门板 A3：Ø8×2 渲染正常（`Ø8`），Ø15×3 渲染成 `Ø1515`；"
-                     "PDF 文本提取 + 渲染图双向确认"),
+                     "2026-11-10 `限位导向套`：PDF 4× 放大读到 `Ø16 ↧ 68`（贯通内孔），"
+                     "且旧回执 `ok:true / model_match.ok:true / delta_mm:0.0` 双重放行"),
     },
     {
         "id": "duplicate_dimension_to_view",
@@ -523,8 +532,14 @@ CAPABILITIES = [
                        "渲染图剖面线清晰 —— **这条结论作废**，它当时很可能只是"
                        "「端点压在轮廓圆上」那条退化路径的伴生现象。"
                        "**不要用 `offset_m` 去凑** —— 回转体上偏 5 mm，Ø16 内孔剖面变成 "
-                       "2·√(8²−5²)=12.5 mm，标出来的直径是错的；`section_off_axis` 会拦"
-                       "「剖面比源视图窄 0.5% 以上」的情况，但它拦不住所有偏心。"
+                       "2·√(8²−5²)=12.5 mm，标出来的直径是错的。"
+                       "**偏心拦截（2026-11-10 重修）**：旧版 `section_off_axis` 只比 "
+                       "`kept_dimension`，而偏心恰好缩短被丢弃的那一维，所以判据在结构上"
+                       "就是盲的（实测 `ratio:1.000` 与 `127.98 → 127.73` 同框，仍 `ok:true`）。"
+                       "现在同时比非 kept 维，偏差 > 0.1 mm **绝对值**即返回 "
+                       "`section_off_axis` / `ok:false`，回执给出 `eccentricity_mm` 与 "
+                       "`off_axis.dimension`。用绝对值而非百分比：0.25/127.98 = 0.195%，"
+                       "按比例的门永远放行。"
                        "**精度分层**：`edge_count == source_edge_count` 返回 "
                        "`section_not_cut`（根本没剖开）；`hatch_count == 0` 返回 "
                        "`hatch_missing`（剖开了没画线）；两者 hint 不共用。"
@@ -542,12 +557,17 @@ CAPABILITIES = [
                 "`verify_cut=True` 默认开启：垂直于图纸水平轴的剖切不改变宽度，故剖视宽必须"
                 "等于源视图宽（竖切比高），容差 10%；超出返回 `section_suspicious`，"
                 "`edge_count==0` 返回 `section_empty`，两者都保留视图供检查。\n\n"
-                "**限定（2026-11-05）**：剖切面切出来有没有剖面线（`GetFaceHatchCount`）"
-                "**取决于零件几何**，不是代码问题。同一台 SW2026 上，飞达动力轴回调 "
-                "`hatch_count: 1`，而另一夹具 `hatch_count: 0` → `hatch_missing`。"
-                "0.8.56 起这种情况**如实返回 `hatch_missing` 而不是 `ok:true`**，"
-                "能力状态因此是 `partial`：视图能建、剖切面能定位，但**剖面线不保证**。"
-                "需要剖面线时请换一个能切出实体截面的视图或零件。"),
+                "**历史限定（2026-11-05，已作废，仅存档）**：当时写「剖面线取决于零件"
+                "几何，不是代码问题……能力状态因此是 `partial`：剖面线不保证」。"
+                "2026-11-08 找到真正根因：**剖切线端点退化**（长度被 clamp 到短边一半，"
+                "端点正好压在轮廓圆上，SolidWorks 当成「没穿过实体」而返回普通投影）。"
+                "`cut_line_overshoot_m` 外扩 4 mm 后端点必在轮廓外，未赋材质的零件也能 "
+                "`hatch_count 4`；`offset_m=0` 直接可切。**材质/几何决定论作废**，"
+                "不要再按这段去查材质或换模板。\n\n"
+                "**当前 `partial` 的原因是另外两条**：① 偏心弦剖会被 `section_off_axis` "
+                "拒绝，但工具无法替你选一条过轴的剖切线；② 失败视图删掉后，父视图草图里的"
+                "剖切线清不掉（`EnumSectionLines` 在本 binding 抛错），回执只能如实给 "
+                "`section_line_remains:true`。两者都不影响「视图能建、剖切面能定位」。"),
         # Was a SECOND "workaround" key in the same dict — Python keeps the last one, so
         # everything written in the first `workaround` (the overshoot root cause and the
         # retired material claim) was unreachable from `check_capabilities`.
@@ -640,6 +660,14 @@ def check_capabilities(operation=None):
         blocked=[c["id"] for c in blocked],
         partial=[c["id"] for c in partial],
         capabilities=payload,
-        advice=("有 %d 项做不了。调用前请先看 workaround，不要跑完流程才发现。"
-                % len(blocked)) if blocked else "全部可做。",
+        # Report 2026-11-10 (S-4): `status:"partial"` + `status_label:"有限支持"` used to
+        # ship next to `advice:"全部可做。"` — two rounds of feedback called it out. A
+        # partial capability is not an unqualified yes; name the caveats.
+        advice=(("有 %d 项做不了。调用前请先看 workaround，不要跑完流程才发现。"
+                 % len(blocked)) if blocked else
+                ("有 %d 项有限支持（%s）。`status:partial` 不等于「全部可做」："
+                 "先看这些条目的 workaround，尤其是 `section_view` 的偏心拦截、"
+                 "`add_sheet_line` 的线型映射，以及 `hole_callout` 的贯通/深度限制。"
+                 % (len(partial), ", ".join(c["id"] for c in partial[:6])))
+                if partial else "全部可做。"),
     )

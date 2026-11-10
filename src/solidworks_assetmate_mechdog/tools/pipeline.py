@@ -95,8 +95,9 @@ def _callout_warning(callouts):
         skipped = callouts.get("excluded_diameters_mm") or []
         return ("孔标注只完成了一部分：%d 条已创建、%d 条被拒；%s 因倒角配对无法判定而未标注。"
                 "这些直径若含主孔，图纸不能直接交付 —— **请在 SolidWorks 里手工标**。"
-                "两条自动路径都试过都不对：`add_hole_callout` 会把贯通孔写成盲孔，"
-                "`add_drawing_dimension` 的尺寸文字渲染不出来。"
+                "两条自动路径都已实测证伪：`add_hole_callout` 曾把贯通孔写成盲孔，"
+                "现在会撤销标注并返回 `ok:false`；`add_drawing_dimension` 的尺寸文字"
+                "渲染不出来。"
                 % (created, callouts.get("failed_count") or 0,
                    "、".join("Ø%s" % d for d in skipped) or "部分直径"))
     if exceeded and created == 0:

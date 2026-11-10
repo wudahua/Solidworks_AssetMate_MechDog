@@ -161,17 +161,26 @@ def health_check(deep: Annotated[bool, Field(description="Include the deeper dia
     return json.dumps(sw_session.health(deep=deep), ensure_ascii=False, indent=2)
 
 
-# ── Advisory grouping of the 70 tools (architecture review 2026-11-09, P1) ──────────
+# ── Advisory grouping of the registered tools (architecture review 2026-11-09, P1) ───
 # The review proposed `standard / drawing / expert / full` profiles that actually filter
 # what gets registered. Before building that, two things are worth stating:
 #
 #   * nothing in five rounds of feedback says a model picks the WRONG tool. Every reported
 #     problem was "the tool answered incorrectly", never "I could not find the tool";
-#   * filtering needs either 70 edited decorators or a private `_tool_manager._tools` poke.
+#   * filtering needs one edited decorator per tool, or a private `_tool_manager._tools`
+#     poke — and the count changes every time a tool is added.
 #
 # So this ships the grouping as DATA, not as enforcement. Nothing is hidden, nothing can
 # break, and if a real "selected the wrong tool" case appears the table is already written.
 # `full` stays the only profile that is actually in effect.
+#
+# Report 2026-11-10 (P1): `full` used to be a hard-coded ENGLISH SENTENCE containing a
+# tool count, while `counts.full` and `registered` were computed from the live registry.
+# The same receipt reported two dynamic counts next to a `profiles.full` prose string
+# carrying a stale hard-coded count --- this very tool was the extra one, so the number
+# was wrong from the moment it shipped. No static count belongs in this module: `full`
+# is now built from `names` at call time and every `counts[k]` is just `len(profiles[k])`.
+# See the regression ledger for the guard.
 _TOOL_PROFILES = {
     "standard": [
         "ping", "health_check", "recent_failures", "check_capabilities",
@@ -203,7 +212,10 @@ _TOOL_PROFILES = {
         "assign_materials", "set_part_material",
         "export_bom", "batch_export",
     ],
-    "full": ["* all 70 — this is what is registered today"],
+    # `full` is deliberately ABSENT from the static table. It is not a hand-maintained
+    # subset — it is the live registry, injected in `list_tool_profiles()`. Keeping a
+    # placeholder list here (even a numberless sentence) is what let the old receipt
+    # return a prose string where every other profile returned tool names.
 }
 
 
@@ -231,12 +243,24 @@ def list_tool_profiles() -> str:
     _manager = getattr(mcp, "_tool_manager", None)
     names = sorted((getattr(_manager, "_tools", None) or {}).keys())
 
+    # `full` is the live registry, not a hand-maintained list and not a sentence. Every
+    # profile is now a plain list of tool names, so a caller can iterate `profiles[k]`
+    # uniformly, and `counts[k] == len(profiles[k])` holds for EVERY k with no special case.
+    _profiles = {k: list(v) for k, v in _TOOL_PROFILES.items()}
+    _profiles["full"] = list(names)
+    _known = set(names)
+    # Drift in the OTHER direction: the old check only looked for registered tools missing
+    # from the table. A renamed/deleted tool left behind in a group is just as stale.
+    _stale = {k: sorted({n for n in v if n not in _known})
+              for k, v in _TOOL_PROFILES.items()}
+    _stale = {k: v for k, v in _stale.items() if v}
+
     payload = {
         "ok": True,
-        "note": "advisory grouping — every tool stays registered; `full` is what is in effect",
-        "profiles": _TOOL_PROFILES,
-        "counts": {k: (len(v) if k != "full" else len(names))
-                   for k, v in _TOOL_PROFILES.items()},
+        "note": ("advisory grouping — every tool stays registered; `full` is the live "
+                 "registry and is what is in effect"),
+        "profiles": _profiles,
+        "counts": {k: len(v) for k, v in _profiles.items()},
         "registered": len(names),
         # Tools that belong to no group. An empty list means the table is complete; a name
         # here means someone added a tool and forgot the table, which is exactly the drift
@@ -245,6 +269,7 @@ def list_tool_profiles() -> str:
                       if n not in _TOOL_PROFILES["standard"]
                       and n not in _TOOL_PROFILES["drawing"]
                       and n not in _TOOL_PROFILES["expert"]],
+        "unknown_names": _stale,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -819,7 +844,7 @@ def measure_layout(
 @_reject_unknown_arguments
 def add_sheet_line(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")], x1_m: Annotated[float, Field(description="Sheet X of the line start, in metres.")], y1_m: Annotated[float, Field(description="Sheet Y of the line start, in metres.")], x2_m: Annotated[float, Field(description="Sheet X of the line end, in metres.")], y2_m: Annotated[float, Field(description="Sheet Y of the line end, in metres.")], save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,    verify_render: Annotated[bool, Field(description="Prove the line rendered by exporting the page before and after and diffing pixels (default True). Costs two PDF exports. Read the result: visibility.checked=true and changed_pixels>0 means it drew; changed_pixels=0 returns line_not_rendered; visibility.checked=false means the renderer was unavailable, which is NOT the same as 'not drawn'.")] = True,
-    line_style: Annotated[str, Field(description="'solid' (default), 'dashed', 'dashdot' (GB fine dash-dot, use this for an axis / centre line), 'dashdotdot', or 'phantom'. The style is set on the sketch segment via late-bound IDispatch — the type library does not declare it, so it is easy to conclude wrongly that it does not exist.")] = "solid",
+    line_style: Annotated[str, Field(description="Line style: a NAME ('solid', 'dashed', 'phantom', 'dashdot', 'dashdotdot'), OR a numeric string '1'..'7' passed straight to ISketchSegment.Style with no interpretation. PREFER THE NUMBER when appearance matters. Measured on SW2024 SP4 (report 2026-11-10 §4), the enum names do NOT match what prints: 'solid' -> Style 1 renders as FINE DASHES, 'dashdot' -> Style 5 renders as 194 very sparse dots (nearly invisible), Style 4 is the GB fine dash-dot / centre line, and Style 7 is the ONLY continuous solid line. So for an AXIS pass '4'; for a real solid line pass '7'. The receipt reports line_style_applied, line_style_measured and line_style_warning so a misleading mapping cannot pass silently. Default 'solid' is kept only for backwards compatibility. Set via late-bound IDispatch — the type library does not declare Style, which is why it is easy to conclude wrongly that it does not exist.")] = "solid",
     view_name: Annotated[str | None, Field(description="Model view to attach the line to. When set, the line lives in THAT VIEW'S sketch and moves/rescales with the view; when omitted it goes on the sheet sketch and stays where it was drawn. Read `follows_view` back to confirm.")] = None,
 ) -> str:
     """Draw a line in true sheet space (metres).
@@ -1797,8 +1822,10 @@ def _install_argument_guard(app):
                     # No `if declared:` guard. A tool with an EMPTY schema (`ping`) declares
                     # no properties, so any key at all is unknown — and skipping the check
                     # for empty schemas let `ping({"bogus_param":123})` straight through.
-                    # Report 2026-11-08: 69 of 70 tools refused, and `ping` was the one that
-                    # did not — precisely the tool used as a health probe.
+                    # Report 2026-11-08: every tool then registered refused unknown
+                    # arguments EXCEPT `ping` — precisely the tool used as a health probe.
+                    # (No count here: the registry size changes with every release, and a
+                    # stale number in a comment is how the 2026-11-10 P1 drift started.)
                     #
                     # An empty set is also the honest answer if schema generation ever fails:
                     # refuse rather than silently accept everything.

@@ -1172,22 +1172,130 @@ def main():
     r.check("partial reaches produce_drawing", _partial_reaches_the_pipeline)
 
     def _tool_profiles():
-        """The profile table must cover every registered tool (0.8.284).
+        """The profile table must cover every registered tool (0.8.284, hardened 0.8.291).
 
         Pure Python — no SolidWorks. It runs here because `smoke covers every tool` insists
         each tool is exercised somewhere, and this is the cheapest possible exercise.
+
+        Report 2026-11-10 (P1): the first version of this check only asserted
+        `ungrouped == []` and a lower bound on `registered`, so it passed while the SAME receipt said
+        `registered=71, counts.full=71` next to `profiles.full: ["* all 70 ..."]`. A
+        hard-coded lower bound cannot drift, but prose and per-group counts can. Three
+        invariants now cover the whole receipt; none of them contains a tool count.
         """
         import json as _json
-        payload = _json.loads(server.list_tool_profiles())
+
+        # `server` was NEVER imported by this file. `check_all.py` only COUNTS `r.check`
+        # call sites, so this check was reported as "49 on-machine checks" while it had in
+        # fact always died with `NameError` — including in a full smoke run. Found on
+        # 2026-11-10 by running `smoke.py --only 'tool profiles'`. Import locally: server.py
+        # pulls in the MCP SDK, which the other checks deliberately avoid.
+        from solidworks_assetmate_mechdog import server as _server
+
+        payload = _json.loads(_server.list_tool_profiles())
         assert payload.get("ok") is True, payload
-        assert payload.get("ungrouped") == [], (
-            "tools missing from the profile table: %s" % payload.get("ungrouped"))
-        assert payload.get("registered", 0) >= 71, payload.get("registered")
-        return "registered=%s grouped=%s" % (
-            payload.get("registered"),
-            {k: v for k, v in (payload.get("counts") or {}).items() if k != "full"})
+        profiles = payload.get("profiles") or {}
+        counts = payload.get("counts") or {}
+        registered = payload.get("registered")
+        assert isinstance(registered, int) and registered > 0, payload
+
+        # 1) every count is just len(profile) — no `k != "full"` special case.
+        assert set(counts) == set(profiles), (sorted(counts), sorted(profiles))
+        for k, v in profiles.items():
+            assert counts[k] == len(v), (
+                "counts[%r]=%r but len(profiles[%r])=%r — a hand-maintained count drifted"
+                % (k, counts[k], k, len(v)))
+
+        # 2) `full` is a real list of tool names, not an English sentence about them.
+        full = profiles.get("full") or []
+        assert counts.get("full") == registered == len(full), payload
+        assert all(isinstance(n, str) and n and " " not in n and not n.startswith("*")
+                   for n in full), (
+            "profiles.full holds prose instead of tool names: %r" % full[:3])
+
+        # 3) the registry and the hand-maintained groups agree in BOTH directions.
+        _real = [k for k in profiles if k != "full"]
+        _union = set().union(*(set(profiles[k]) for k in _real)) if _real else set()
+        assert _union == set(full), (
+            "grouped tools differ from the registry: missing=%s stale=%s"
+            % (sorted(set(full) - _union), sorted(_union - set(full))))
+        assert payload.get("ungrouped") == [], payload.get("ungrouped")
+        assert payload.get("unknown_names") == {}, payload.get("unknown_names")
+        return "registered=%s counts=%s full_is_names=%s" % (
+            registered, counts, len(full))
 
     r.check("tool profiles cover every tool", _tool_profiles)
+
+    def _eccentric_section_is_refused():
+        """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.
+
+        Pure geometry — no SolidWorks. `_section_off_axis_from_sanity` is the exact
+        decision `add_section_view` makes, extracted so the report's MEASURED numbers can
+        be replayed instead of merely reading source text.
+
+            凹槽滚轮 front view 2:1, horizontal, offset_m=0.004
+            source [51.98, 127.98]  section [51.98, 127.98]  -> through-axis, accept
+            source [51.98, 127.98]  section [51.98, 127.73]  -> 0.25 mm chord, reject
+
+        The old check compared only the width (51.98 vs 51.98, `ratio: 1.000`), so the
+        second case shipped as `ok:true` with no warning — the exact P0 in the report.
+        """
+        decide = drawing._section_off_axis_from_sanity
+        base = dict(checked=True, kept_dimension="width", source_kept_mm=51.98,
+                    section_kept_mm=51.98, ratio=1.0, off_axis_dimension="height",
+                    source_off_axis_mm=127.98)
+        assert decide(dict(base, section_off_axis_mm=127.98,
+                           off_axis_shrink_mm=0.0)) is None, (
+            "a through-axis cut was rejected")
+        verdict = decide(dict(base, section_off_axis_mm=127.73,
+                              off_axis_shrink_mm=0.25))
+        assert verdict is not None, "the measured 0.25 mm eccentric chord passed as ok:true"
+        assert verdict["detected_on"] == "off_axis_dimension", verdict
+        assert verdict["dimension"] == "height", verdict
+        assert verdict["shrunk_mm"] == 0.25, verdict
+        # A proportional 0.5% threshold computes 0.25/127.98 = 0.195% and lets it through;
+        # that is why the fix uses an ABSOLUTE 0.1 mm.
+        assert 0.25 / 127.98 < 0.005, "the old proportional threshold no longer fails"
+        assert decide(dict(base, checked=False, section_off_axis_mm=127.73,
+                           off_axis_shrink_mm=0.25)) is None, (
+            "an unchecked (partial / cross) section was judged")
+        assert decide(dict(base, section_off_axis_mm=127.95,
+                           off_axis_shrink_mm=0.03)) is None, (
+            "sub-threshold noise was flagged")
+        return "through-axis accepted; 0.25 mm chord -> section_off_axis on height"
+
+    r.check("eccentric section is refused", _eccentric_section_is_refused)
+
+    def _single_callout_never_returns_ok_true_for_unverified_ink():
+        """Report 2026-11-10 S-1: replay the measured strings through the pure decision.
+
+        Pure Python — no SolidWorks. The real tool needs a document plus an annotatable
+        circular edge (on this fixture it usually returns `edge_not_found`), so the
+        CONTRACT is exercised here with the exact text from the report's 4x PDF render:
+        `Ø16 ↧ 68`, on a Ø16 bore that goes all the way through.
+        """
+        decide = drawing._hole_callout_verification
+        # 1) the evidence image: depth symbol on a through bore.
+        v = decide("<MOD-DIAM> 16 <HOLE-DEPTH> 68", model_match_ok=True)
+        assert v["verified"] is False and v["error"] == "unsupported_through_bore", v
+        # 2) the OLD double-pass: `delta_mm: 0.0 / model_match.ok:true` made it worse,
+        #    because a correct diameter manufactured extra confidence in the wrong text.
+        assert decide("Ø16 ↧ 68", model_match_ok=True)["verified"] is False
+        assert decide("Ø16 ↧ 68", model_match_ok=None)["verified"] is False
+        # 3) `readback.text: null` in v0.8.290 must no longer be an ok:true path.
+        v = decide(None, model_match_ok=None)
+        assert v["verified"] is False and v["error"] == "hole_callout_unverifiable", v
+        # 4) a real diameter mismatch.
+        v = decide("Ø16 完全贯穿", model_match_ok=False)
+        assert v["verified"] is False and v["error"] == "diameter_mismatch", v
+        # 5) a clean, readable, depth-free callout is still allowed.
+        v = decide("Ø16 完全贯穿", model_match_ok=True)
+        assert v["verified"] is True and v["error"] is None and v["verdict"] == "verified", v
+        return ("Ø16↧68 -> unsupported_through_bore; null text -> hole_callout_unverifiable; "
+                "clean callout -> verified")
+
+    r.check("single callout refuses unverified ink",
+            _single_callout_never_returns_ok_true_for_unverified_ink)
 
     r.check("health()", _health)
 
@@ -1563,6 +1671,18 @@ def main():
         result = drawing.add_hole_callout(drw, 0.10, 0.10)
         # A miss is fine — what matters is a structured verdict, not an exception
         assert result.get("ok") is not None, "add_hole_callout returned no verdict"
+        # 0.8.291 (report 2026-11-10 S-1): v0.8.290 said `ok:true` while leaving
+        # `Ø16 ↧ 68` on a through bore. Any ok:true must now be backed by a machine-
+        # readable verification, and any unverified ink must have been reverted.
+        if result.get("ok") is True:
+            assert result.get("verified") is True, (
+                "ok:true without verified:true — the double-pass is back: %r" % result)
+            assert result.get("drawing_safe") is True, result
+            assert result.get("verdict") == "verified", result
+        elif "verification" in result:
+            assert result.get("verified") is False, result
+            assert result.get("callout_revert") is not None, (
+                "an unverified callout was not reverted: %r" % result)
         for name in ("smoke_hole.SLDDRW", "smoke_hole.SLDPRT"):
             try:
                 get_sw().CloseDoc(name)
