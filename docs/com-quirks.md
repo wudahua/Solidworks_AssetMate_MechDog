@@ -3100,3 +3100,45 @@ callouts: created=1 failed=31 verdict=partial budget_exceeded=true
 * 复验：`check_all.py` 281/281、`stdio_contract.py` 6/6、
   `smoke.py --only "assembly drawing not an empty shell"` **PASS**（3 views, 28 dims）。
 * **修复后未重跑全量**（53 min）；其余 55 项在全量里已全部 PASS，改动只影响这一项。
+
+---
+
+## 2026-11-11（v0.8.296）零偏置不再被静默改写成偏心剖（报告 2026-11-10 P1）
+
+### 问题
+
+`add_section_view` 的内层 `drawing.add_section_view` 的 `auto_nudge_zero_offset`
+默认早已是 `False`（0.8.255 用 `cut_line_overshoot_m` 修掉「剖切线端点被 clamp」
+根因后不再需要 nudge），但 **MCP 外壳 `server.add_section_view` 仍是 `= True`**。
+于是每一次工具调用 `offset_m=0` 都被改写成 `0.001 m`（1:2 时 0.5 mm 模型偏心），
+而同一份回执的 hint 已经写着「`auto_nudge_zero_offset` 默认已改为 False」——
+代码与承诺正好相反。
+
+影响不是观感问题：偏心剖量到的直径是错的（Ø64 → 弦长 63.875），
+而剖视仍 `ok:true` + `hatch:2`，只有直径错。报告 §6 的 CI smoke #5 即此。
+
+### 改法
+
+* 外壳默认改 `False`，描述重写：说明根因已由 `cut_line_overshoot_m` 解决；
+  显式传 `True` 时回执给 `offset_nudged:true` + 顶层 `warning`（点名偏心量）。
+* 内层默认保持 `False`，不动。
+* 新增纯 Python check `zero offset is not nudged by default`：用
+  `inspect.signature` **同时**断言两层默认值是 `False` —— 只查一层正是漏掉本 bug 的原因。
+* 真机 `revolved part section verdict` 增加两条断言：`offset_nudged is False`、
+  `offset_used_m == 0.0`，且剖视仍 `ok / hatch 2`（证明不 nudge 也能过轴切）。
+* 新增回归断言 `0.8.296 zero offset not nudged by default`（282 条），
+  用 AST 读两处签名默认值，并守护上述真机断言存在。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 282/282 |
+| `smoke.py --only "zero offset is not nudged by default"` | PASS |
+| `smoke.py --only "revolved part section verdict"` | PASS，34.6 s，`default=ok edges 28 hatch 2`、`offset_nudged:false`、`offset_used_m:0.0` |
+
+### 教训
+
+**同名参数的默认值分散在两层时，必须断言两层一致。** 0.8.296 之前那条
+`assert "auto_nudge_zero_offset=False" in body` 只查了内层函数体，
+外壳那一行从未被任何断言看过 —— 于是「内层已修好」被当成了「已经修好」。

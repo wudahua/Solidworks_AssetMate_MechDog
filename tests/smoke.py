@@ -943,6 +943,16 @@ def main():
                gs.get("hatch_count")))
         assert (gs.get("hatch_count") or 0) > 0, (
             "the cut reports ok but carries no hatching: %r" % (gs,))
+        # 0.8.296: report 2026-11-10 P1. The MCP wrapper used to default this parameter
+        # to True, so `offset_m=0` was silently rewritten to 0.001 m (0.5 mm eccentric)
+        # while the receipt's own hint claimed the default had been flipped. The section
+        # still cut, which is exactly why nobody noticed: only the diameters were wrong.
+        assert good.get("offset_nudged") is False, (
+            "a zero offset was nudged again: used=%r requested=%r"
+            % (good.get("offset_used_m"), good.get("offset_requested_m")))
+        assert good.get("offset_used_m") == 0.0, (
+            "offset_used_m is %r for a requested 0 — the two receipt fields disagree"
+            % (good.get("offset_used_m"),))
 
         for name in (stem2 + ".SLDDRW", stem + ".SLDDRW"):
             try:
@@ -1475,6 +1485,35 @@ def main():
         return "Ø11/Ø9.8 merges, Ø16/Ø18 protected, equal radii untouched"
 
     r.check("shallow coaxial counterbores still merge", _shallow_coaxial_counterbores_merge)
+
+    def _zero_offset_is_not_nudged_by_default():
+        """Report 2026-11-10 P1: a through-axis request must not become 0.5 mm eccentric.
+
+        The INNER default was already False while the MCP wrapper still said True, so
+        every wrapper call was nudged while the same receipt's hint claimed the default
+        had been flipped. That split IS the bug, so both layers are asserted here.
+        """
+        import inspect as _inspect
+
+        from solidworks_assetmate_mechdog import server as _server
+        from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+        for label, fn in (("server", _server.add_section_view),
+                          ("drawing", _drawing.add_section_view)):
+            default = _inspect.signature(fn).parameters["auto_nudge_zero_offset"].default
+            assert default is False, (
+                "%s still nudges a zero offset by default: %r — a requested through-axis "
+                "cut silently becomes a 0.5 mm eccentric section" % (label, default))
+
+        # Opting in must stay possible, and it must still warn at the TOP level.
+        src = _inspect.getsource(_drawing.add_section_view)
+        assert "_offset_nudged" in src and 'diag["warning"]' in src, (
+            "an explicit opt-in no longer surfaces a top-level warning")
+        assert "offset_requested_m" in src and "offset_used_m" in src, (
+            "the receipt stopped distinguishing the requested offset from the used one")
+        return "both layers default to False; opt-in still warns at top level"
+
+    r.check("zero offset is not nudged by default", _zero_offset_is_not_nudged_by_default)
 
     def _eccentric_section_is_refused():
         """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.

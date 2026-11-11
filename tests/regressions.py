@@ -9823,7 +9823,52 @@ def assert_assembly_drawing_accepts_partial():
     return "assembly check audits partial drawings instead of calling them failed"
 
 
+def assert_zero_offset_is_not_nudged_by_default():
+    """0.8.296 — report 2026-11-10 P1, the last open item in that report.
+
+    The INNER `drawing.add_section_view` default was already False, but the MCP wrapper
+    kept `= True`. Every wrapper call therefore asked for a through-axis cut and got a
+    0.5 mm eccentric one, while the receipt's own hint said "默认已改为 False" — the code
+    and the promise disagreed. This is not cosmetic: `offset_nudged` decides which
+    diameters the section measures, so a silent nudge makes the drawing wrong.
+
+    Assert BOTH layers by AST. The split between them is what shipped the bug, so a check
+    on either one alone would have missed it.
+    """
+    def _default(relpath, func):
+        tree = _tree(relpath)
+        fn = _function_node(tree, func)
+        assert fn is not None, "%s:%s disappeared" % (relpath, func)
+        args = fn.args.args
+        first = len(args) - len(fn.args.defaults)
+        for i, arg in enumerate(args[first:], start=first):
+            if arg.arg == "auto_nudge_zero_offset":
+                return fn.args.defaults[i - first]
+        return None
+
+    srv = _default("server.py", "add_section_view")
+    drw = _default("tools/drawing.py", "add_section_view")
+    assert isinstance(srv, ast.Constant) and srv.value is False, (
+        "the MCP wrapper nudges a zero offset again: %r — a requested through-axis cut "
+        "silently becomes a 0.5 mm eccentric section" % (srv,))
+    assert isinstance(drw, ast.Constant) and drw.value is False, (
+        "the inner default drifted away from the wrapper: %r" % (drw,))
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    assert 'r.check("zero offset is not nudged by default"' in sm, (
+        "the live default-value check is not registered")
+    assert '_inspect.signature(fn).parameters["auto_nudge_zero_offset"]' in sm, (
+        "the check reads source text instead of the real signatures")
+    assert 'good.get("offset_nudged") is False' in sm, (
+        "the real-machine assertion on offset_nudged was removed — a silent nudge would "
+        "pass with a section that still cuts, and only the diameters would be wrong")
+    assert 'good.get("offset_used_m") == 0.0' in sm, (
+        "the real-machine assertion on offset_used_m was removed")
+    return "both layers default to False; live check + real-machine assertions in place"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.296 zero offset not nudged by default", assert_zero_offset_is_not_nudged_by_default),
     ("0.8.295 assembly check accepts partial", assert_assembly_drawing_accepts_partial),
     ("0.8.294 coaxial merge ignores radius gap", assert_coaxial_merge_is_radius_agnostic),
     ("0.8.294 coaxial merge has live replay", assert_coaxial_merge_has_live_replay),
