@@ -111,6 +111,48 @@ def _callout_warning(callouts):
     return None
 
 
+# Steps that can make the DRAWING ITSELF undeliverable: the ones that write geometry,
+# annotations or the file. A WHITELIST on purpose — every helper / lifecycle / cleanup step
+# added later is neutral by default, so a cleanup failure can never mark a finished drawing
+# broken again (report 2026-11-11 §4: 0.8.299's blacklist treated `close_documents` as a
+# delivery defect, and a complete drawing came back `ok:false / completeness:"incomplete"`
+# only because closing it found nothing to close).
+#
+# `_CRITICAL` (create_drawing / dimensions / save) is a SUBSET: its members never reach this
+# list because their failure returns `critical_step_failed` earlier.
+_COMPLETENESS_RELEVANT = (
+    "create_drawing",
+    "dimensions",
+    "center_marks",
+    "surface_finish",
+    "hole_callouts",
+    "save",
+)
+
+
+def _step_partition(steps, verdict_ok):
+    """(delivery_relevant_failed, cleanup_failed) from a step list. PURE.
+
+    Splitting the two is the point: a cleanup failure is real and must stay OBSERVABLE, but
+    it says nothing about whether the sheet can be delivered.
+
+    `delivery_check` is special-cased. When it fails, `produce_drawing` already synthesises
+    a `blocker` saying the delivery verdict was LOST; recording the same event again as a
+    `failed_step` makes `incomplete_reasons` unreconcilable — two kinds, one cause (report
+    2026-11-11 §5). The blocker is the more accurate classification, so the `failed_step`
+    copy is dropped.
+    """
+    relevant, cleanup = [], []
+    for st in steps:
+        if st.get("status") != "failed":
+            continue
+        name = st.get("step")
+        if name == "delivery_check" and not verdict_ok:
+            continue
+        (relevant if name in _COMPLETENESS_RELEVANT else cleanup).append(name)
+    return relevant, cleanup
+
+
 def _delivery_status(blockers, partial_steps, failed_steps=()):
     """`execution_ok` / `completeness` for `produce_drawing` (report 2026-11-10 §5, F).
 
@@ -551,6 +593,11 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                 "; ".join("%s: %s" % (st["step"], st.get("detail"))
                           for st in steps if not st.get("ok") and st.get("detail"))
                 or "no detail recorded"),
+            # Report 2026-11-11 §8 P2-1: the description promised `execution_ok` would be
+            # false only on a transport failure, but this branch returned no such field, so
+            # a caller reading `d.get("execution_ok")` got None. The pipeline DID run — it
+            # just could not produce a usable sheet — so say so instead of dropping it.
+            execution_ok=True,
             documents_closed=closed)
 
     # ── top-level `ok` must not contradict a partial step (report 2026-11-09, A) ────────
@@ -564,10 +611,16 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     _partial_steps = [st["step"] for st in steps if st.get("status") == "partial"]
     # Report 2026-11-11 §5.3 path C: a non-critical step that CRASHED used to appear in
     # NEITHER list, so `completeness` said "complete" while a step had failed — worse than
-    # the blocker case, because nothing named it. `_CRITICAL` steps cannot reach here: their
-    # failure returns `critical_step_failed` earlier.
-    _failed_steps = [st["step"] for st in steps
-                     if st.get("status") == "failed" and st["step"] not in _CRITICAL]
+    # the blocker case, because nothing named it.
+    #
+    # §4 (over-correction): 0.8.299 fixed that by excluding only `_CRITICAL`, so a pure
+    # cleanup failure made a good drawing incomplete. `_step_partition` now decides with a
+    # WHITELIST of steps that actually write the drawing; everything else is observable via
+    # `cleanup_incomplete` + `warnings` but does not touch `completeness`.
+    _verdict_ok = bool(verdict.get("ok"))
+    _failed_steps, _cleanup_failed = _step_partition(steps, _verdict_ok)
+    _cleanup_warnings = ["清理/辅助步骤失败（不影响图纸内容）：%s" % _name
+                         for _name in _cleanup_failed]
     # Report 2026-11-10 §5 (F): a caller reading only `verdict` / `blockers` could not tell
     # an incomplete drawing from a complete one. One list feeds both the receipt and
     # `_delivery_status` — two copies would drift apart, which is how B shipped.
@@ -584,6 +637,10 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         ok=_receipt_ok(_status),
         partial_steps=_partial_steps,
         failed_steps=_failed_steps,
+        # Steps that failed but cannot make the DRAWING undeliverable (cleanup, read-only
+        # audits, cosmetic clamping). Reported so nothing is hidden, excluded from
+        # `completeness` so a good sheet is not thrown away.
+        cleanup_incomplete=_cleanup_failed,
         # `execution_ok` / `completeness` / `incomplete_reasons`, same words as
         # `add_hole_callouts`. `verdict` and `blockers` keep their old meaning on purpose.
         **_status,
@@ -599,7 +656,10 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         # Both sources: what the audit measured on the finished sheet, and what
         # `create_drawing` reported while building it (projection compliance, layout fit,
         # auto-fit scale changes). Neither is complete alone.
-        warnings=(audit.get("warnings") or []) + list(creation_warnings),
+        warnings=((audit.get("warnings") or []) + list(creation_warnings)
+                  # A cleanup failure stays visible here instead of being folded into
+                  # `completeness` — the sheet is fine, the session just did not tidy up.
+                  + _cleanup_warnings),
         creation_warnings=creation_warnings,
         view_count=audit.get("view_count"),
         steps=steps,

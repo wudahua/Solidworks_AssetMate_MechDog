@@ -355,9 +355,16 @@ def produce_drawing(
       * `incomplete_reasons` — why, and of which kind: `blocker` (fixable from here),
         `partial_step` (a step did part of its job), `failed_step` (a non-critical step
         crashed).
-      * `execution_ok` — the call itself ran. `ok:false` + `execution_ok:true` means
-        "incomplete drawing, do NOT retry or roll back"; only a transport failure makes
-        this false.
+      * `execution_ok` — the pipeline ran to the END (every step was attempted). Present and
+        true on every receipt this tool builds, including `critical_step_failed`, where the
+        sheet is unusable but the run did happen. A MISSING field means the call failed
+        before a receipt existed (bad input, transport loss): treat absent as "did not run",
+        never as success. So `ok:false` + `execution_ok:true` = "incomplete drawing, do NOT
+        retry or roll back".
+      * `cleanup_incomplete` — steps that failed but cannot affect the drawing (closing
+        documents, read-only audits, cosmetic clamping). They are named here and repeated in
+        `warnings`; they deliberately do NOT make `completeness` incomplete, because a
+        finished sheet must not be thrown away over a failed tidy-up.
       * `verdict` / `blockers` / `pending` — the HUMAN delivery judgement from
         `delivery_check`. `verdict` is a Chinese label for a reviewer; it is NOT a machine
         signal and deliberately does not encode "a step was partial".

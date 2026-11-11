@@ -3328,3 +3328,60 @@ verdict = "未判定：delivery_check 执行失败（…）"
 0.8.298 给 `completeness` 加 `blockers` 维度，却把 `ok` 留在只读 `partial_steps` 的
 旧公式上 —— 两个字段各算各的，就是这一版自己 docstring 里写的 "one fact, two judges"。
 守护也必须**把两个字段放进同一条断言**：分开断言时，两边各自都「正确」，组合却是错的。
+
+---
+
+## 2026-11-11（v0.8.300）清理步骤不是交付缺陷（报告 2026-11-11 §4/§5）
+
+### 问题：0.8.299 的 over-correction
+
+0.8.298 是「不完整却报成功」，0.8.299 补 `failed_step` 时只排除了 `_CRITICAL`，
+于是**方向反过来**：一张已保存、审计通过、独立 `delivery_check` 也 `ok:true`、
+有 17 条标注的完整图纸，仅因 `close_documents` 没关掉任何文档（`closed_count=0`）
+就变成 `ok:false / completeness:"incomplete"`。调用者既不能交付、又被
+`execution_ok:true` 告知「不要重试」—— 卡在无法收敛的死状态。
+
+三个语义被串在一起，最后一环是错的：
+
+| 层 | `close_documents` 的 ok 表示 |
+|---|---|
+| `close_document()` 返回 | 调用没抛异常 |
+| `record()` 读成 | 这一步成功了吗（`closed_count > 0` 才算） |
+| `_failed_steps` 再读成 | **图纸不完整吗** ← 错的 |
+
+### 第二处：`delivery_check` 崩溃被双计
+
+`verdict.get("ok")` 为假时，`_blockers` 合成一条「交付判定丢失」，同时
+`record("delivery_check", …)` 记 `status="failed"`，`_failed_steps` 又收一次。
+`incomplete_reasons` 里 `blocker` 和 `failed_step` 指向同一事件，按 `kind` 计数的
+调用者会重复统计。
+
+### 改法
+
+* 新增 `_COMPLETENESS_RELEVANT` **白名单**（只列会写图纸的步骤）：
+  `create_drawing` / `dimensions` / `center_marks` / `surface_finish` /
+  `hole_callouts` / `save`。
+  **用白名单不用黑名单**：以后每加一个辅助步骤都默认中性，不会再次漏掉。
+* 新增纯函数 `_step_partition(steps, verdict_ok)` → `(relevant_failed, cleanup_failed)`。
+  `delivery_check` 在「verdict 已丢失」时**只算 blocker**，不再进 `failed_step`。
+* 回执新增 `cleanup_incomplete`，并把每条清理失败写进 `warnings`
+  （`清理/辅助步骤失败（不影响图纸内容）：close_documents`）—— **可观测，但不污染
+  `completeness`**。
+* `critical_step_failed` 的 error 回执补 `execution_ok=True`：流水线确实跑完了，
+  只是没产出可用图纸；字段缺失才表示「没跑到出回执」。工具描述同步写明这条。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 288/288（+1 条断言） |
+| `smoke.py --only "step partition keeps cleanup out of completeness"` | PASS（纯函数：清理中性、写入步骤计数、`delivery_check` 只计一次、未知步骤默认中性） |
+| `smoke.py --only "cleanup failure keeps the sheet deliverable"` | **PASS，99.2 s**（真机注入 `close_document` 返回 0 关闭）→ `ok:true / complete`，`cleanup_incomplete:["close_documents"]`，warnings 有记录，`drawing_audit` 仍 ok |
+| `smoke.py --only "delivery_check crash is counted once"` | **PASS，107.7 s**（真机注入 error dict）→ `blocker` 1 条、`failed_step` 0 条、`verdict` 仍 `未判定…` |
+
+### 教训
+
+**「这一步失败了」和「图纸能不能交付」是两个问题。** 一个字段（`status`）承载
+执行结果，另一个字段（`completeness`）承载交付判断；把前者直接喂给后者，
+就必须先回答「这个步骤有没有资格影响图纸」。过滤条件要写成**白名单**：
+黑名单永远落后于下一次新增的步骤。

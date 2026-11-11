@@ -10018,7 +10018,64 @@ def assert_produce_drawing_reports_completeness():
     return "ok and completeness share one derivation; failed steps are counted"
 
 
+def assert_cleanup_steps_are_not_delivery_defects():
+    """0.8.300 — report 2026-11-11 §4: 0.8.299 over-corrected.
+
+    `_failed_steps` excluded only `_CRITICAL`, so `close_documents` — whose `ok` means "did
+    I close at least one document", NOT "is the sheet deliverable" — made a complete drawing
+    come back `ok:false / completeness:"incomplete"`. The sheet had been saved, audited and
+    judged OK; only the tidy-up failed. Three meanings were chained, and the last link was
+    wrong.
+
+    Now a WHITELIST decides: only steps that write geometry, annotations or the file can
+    make `completeness` incomplete. Everything else is reported through `cleanup_incomplete`
+    + `warnings`, so it stays observable without condemning the drawing. A whitelist also
+    means the NEXT helper step added is neutral by default — a blacklist will always be one
+    release behind.
+
+    Also asserts the double-count fix: one `delivery_check` crash used to appear as BOTH
+    `blocker` and `failed_step` (§5).
+    """
+    src = _read("tools/pipeline.py")
+    tree = ast.parse(src)
+    block = src.split("_COMPLETENESS_RELEVANT = (")[1].split("\n)")[0]
+    for neutral in ("close_documents", "audit", "reconcile", "clamp_dimensions"):
+        assert neutral not in block, (
+            "%r is a cleanup / read-only step and cannot make a sheet undeliverable"
+            % neutral)
+    for writer in ("create_drawing", "dimensions", "center_marks", "surface_finish",
+                   "hole_callouts", "save"):
+        assert writer in block, (
+            "%r writes the drawing but is missing from the delivery whitelist" % writer)
+
+    assert "\ndef _step_partition(" in src, "the pure partition disappeared"
+    body = ast.get_source_segment(src, _function_node(tree, "produce_drawing")) or ""
+    assert "_step_partition(steps, _verdict_ok)" in body, (
+        "the pipeline no longer partitions failed steps")
+    assert "cleanup_incomplete=_cleanup_failed" in body, (
+        "a cleanup failure is not reported anywhere")
+    assert "_cleanup_warnings" in body and "+ _cleanup_warnings" in body, (
+        "a cleanup failure no longer reaches `warnings`")
+    assert 'st["step"] not in _CRITICAL]' not in body, (
+        "the blacklist is back: every non-critical step counts as a delivery defect")
+    assert 'if name == "delivery_check" and not verdict_ok:' in src, (
+        "a lost delivery verdict is counted twice again (blocker + failed_step)")
+    assert "execution_ok=True," in body, (
+        "`critical_step_failed` drops `execution_ok`, so a caller reads None")
+
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    for name in ("step partition keeps cleanup out of completeness",
+                 "cleanup failure keeps the sheet deliverable",
+                 "delivery_check crash is counted once"):
+        assert 'r.check("%s"' % name in sm, "the live check %r is not registered" % name
+    assert "part = _pipeline._step_partition" in sm, (
+        "the pure check does not call the real helper")
+    return "whitelist decides completeness; cleanup observable; one crash, one reason"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.300 cleanup is not a delivery defect", assert_cleanup_steps_are_not_delivery_defects),
     ("0.8.298 produce_drawing reports completeness", assert_produce_drawing_reports_completeness),
     ("0.8.297 position comes from final placement", assert_position_fields_come_from_the_final_placement),
     ("0.8.297 tolerance has no negative zero", assert_tolerance_text_has_no_negative_zero),

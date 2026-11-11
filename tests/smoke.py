@@ -1650,6 +1650,120 @@ def main():
 
     r.check("ok and completeness cannot disagree", _ok_and_completeness_cannot_disagree)
 
+    def _step_partition_keeps_cleanup_out_of_completeness():
+        """Report 2026-11-11 §4/§5: over-correction and double counting. PURE."""
+        from solidworks_assetmate_mechdog.tools import pipeline as _pipeline
+
+        part = _pipeline._step_partition
+
+        # S3: closing a document that is already gone is NOT a delivery defect.
+        rel, clean = part([{"step": "close_documents", "status": "failed"}], True)
+        assert rel == [] and clean == ["close_documents"], (rel, clean)
+
+        # A step that WRITES the sheet still counts.
+        rel, clean = part([{"step": "center_marks", "status": "failed"}], True)
+        assert rel == ["center_marks"] and clean == [], (rel, clean)
+
+        # S1: a lost delivery verdict is already a blocker — do not count it twice.
+        rel, clean = part([{"step": "delivery_check", "status": "failed"}], False)
+        assert rel == [] and clean == [], (rel, clean)
+        # …with an INTACT verdict there is no blocker, and this step is read-only anyway:
+        # it cannot change the sheet, so it stays neutral for completeness.
+        rel, clean = part([{"step": "delivery_check", "status": "failed"}], True)
+        assert rel == [] and clean == ["delivery_check"], (rel, clean)
+
+        # Whitelist, not blacklist: an unknown future helper is neutral by default, so
+        # adding a step can never again make a finished drawing look broken.
+        rel, clean = part([{"step": n, "status": "failed"} for n in
+                           ("audit", "reconcile", "clamp_dimensions", "some_future_step")],
+                          True)
+        assert rel == [] and len(clean) == 4, (rel, clean)
+
+        # Successful steps never appear.
+        rel, clean = part([{"step": "save", "status": "ok"}], True)
+        assert rel == [] and clean == [], (rel, clean)
+        return "cleanup neutral, writers counted, delivery_check counted once"
+
+    r.check("step partition keeps cleanup out of completeness",
+            _step_partition_keeps_cleanup_out_of_completeness)
+
+    def _cleanup_failure_keeps_the_sheet_deliverable():
+        """Report 2026-11-11 §4 (S3), on a REAL drawing.
+
+        Measured upstream: a finished sheet — audit ok, delivery_check ok, 17 annotations —
+        came back `ok:false / completeness:"incomplete"` only because closing the document
+        found nothing to close. Replayed here by making `close_document` report 0 closed.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_cleanup.SLDPRT")
+        drw = os.path.join(workdir, "smoke_cleanup.SLDDRW")
+        shutil.copy2(src, part)
+        orig = drawing.close_document
+        drawing.close_document = lambda *a, **k: {"ok": True, "closed_count": 0,
+                                                  "closed": []}
+        try:
+            got = pipeline.produce_drawing(part, output_path=drw,
+                                           do_hole_callouts=False, overwrite=True)
+        finally:
+            drawing.close_document = orig
+            for name in ("smoke_cleanup.SLDDRW", "smoke_cleanup.SLDPRT"):
+                try:
+                    get_sw().CloseDoc(name)
+                except Exception:
+                    pass
+        assert got.get("ok") is True, (
+            "a cleanup-only failure still marks a good sheet incomplete: completeness=%r "
+            "reasons=%r" % (got.get("completeness"), got.get("incomplete_reasons")))
+        assert got.get("completeness") == "complete", got.get("incomplete_reasons")
+        assert "close_documents" not in (got.get("failed_steps") or []), (
+            "cleanup is back inside failed_steps: %r" % (got.get("failed_steps"),))
+        assert got.get("cleanup_incomplete") == ["close_documents"], (
+            "the cleanup failure is reported nowhere: %r"
+            % (got.get("cleanup_incomplete"),))
+        assert any("清理" in str(w) for w in (got.get("warnings") or [])), (
+            "the cleanup failure is not observable in warnings")
+        assert drawing.drawing_audit(drw).get("ok") is True, "the sheet itself is broken"
+        return "cleanup failed, sheet still complete; named in cleanup_incomplete + warnings"
+
+    r.check("cleanup failure keeps the sheet deliverable",
+            _cleanup_failure_keeps_the_sheet_deliverable)
+
+    def _delivery_check_crash_is_counted_once():
+        """Report 2026-11-11 §5 (S1), on a REAL drawing.
+
+        One crash used to appear as BOTH `blocker` and `failed_step`, so a caller counting
+        by `kind` saw two causes. The blocker is the accurate one; the duplicate is gone.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        part = os.path.join(workdir, "smoke_dcout.SLDPRT")
+        drw = os.path.join(workdir, "smoke_dcout.SLDDRW")
+        shutil.copy2(src, part)
+        orig = drawing.delivery_check
+        drawing.delivery_check = lambda *a, **k: {
+            "ok": False, "error": "delivery_check_failed",
+            "message": "simulated: record() got multiple values for argument 'blocking'"}
+        try:
+            got = pipeline.produce_drawing(part, output_path=drw, overwrite=True)
+        finally:
+            drawing.delivery_check = orig
+            for name in ("smoke_dcout.SLDDRW", "smoke_dcout.SLDPRT"):
+                try:
+                    get_sw().CloseDoc(name)
+                except Exception:
+                    pass
+        assert got.get("ok") is False, got
+        assert got.get("completeness") == "incomplete", got
+        assert "delivery_check" not in (got.get("failed_steps") or []), (
+            "the crash is counted twice: failed_steps=%r" % (got.get("failed_steps"),))
+        kinds = [r.get("kind") for r in (got.get("incomplete_reasons") or [])]
+        assert kinds.count("blocker") == 1, kinds
+        assert kinds.count("failed_step") == 0, kinds
+        assert str(got.get("verdict") or "").startswith("未判定"), got.get("verdict")
+        return "one crash, one reason: blocker only; verdict honestly 未判定"
+
+    r.check("delivery_check crash is counted once",
+            _delivery_check_crash_is_counted_once)
+
     def _eccentric_section_is_refused():
         """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.
 
