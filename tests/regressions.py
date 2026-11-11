@@ -9374,8 +9374,15 @@ def assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths():
     assert 'callouts.get("verdict") == "partial"' in pipe, (
         "callout_warning is silent for a partial run again")
     assert "孔标注缺 %d 个直径" in pipe, "pending does not mention the skipped diameters"
-    assert "ok=(not _partial_steps)" in pipe, (
-        "top-level ok contradicts a partial step again")
+    # 0.8.299: `ok` is no longer the literal `not _partial_steps`. The ORIGINAL intent —
+    # top-level `ok` must not contradict a partial step — is preserved, but it is now an
+    # IMPLICATION of one derivation instead of a second formula: `_partial_steps` reaches
+    # `_delivery_status`, which makes `completeness` incomplete, which is what `_receipt_ok`
+    # returns. Keeping the old literal here would have blocked the 2026-11-11 P0 fix.
+    assert "_delivery_status(_blockers, _partial_steps, _failed_steps)" in pipe, (
+        "partial steps no longer reach the completeness derivation")
+    assert "ok=_receipt_ok(_status)" in pipe, (
+        "top-level ok stopped following the derivation that knows about partial steps")
     assert "partial_steps=_partial_steps" in pipe, "the partial steps are not named"
 
     with open(os.path.join(ROOT, "tests", "static_check.py"), encoding="utf-8") as fh:
@@ -9976,11 +9983,19 @@ def assert_produce_drawing_reports_completeness():
     fields alone.
     """
     src = _read("tools/pipeline.py")
-    assert "\ndef _delivery_status(" in src, "the pure derivation disappeared"
+    assert "\ndef _delivery_status(" in src and "\ndef _receipt_ok(" in src, (
+        "the pure derivations disappeared")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                      "produce_drawing")) or ""
-    assert "**_delivery_status(_blockers, _partial_steps)" in body, (
-        "the receipt does not carry the derived pair")
+    assert "_status = _delivery_status(" in body and "**_status," in body, (
+        "the receipt does not carry the derived status")
+    # THE 0.8.298 P0: `ok` was `not partial_steps` while `completeness` also read blockers.
+    assert "ok=_receipt_ok(_status)" in body, (
+        "top-level ok is computed separately again — that is exactly the 0.8.298 P0")
+    assert "ok=(not _partial_steps)" not in body, (
+        "ok judges only partial steps while completeness judges more: two judges")
+    assert "_failed_steps" in body and "failed_steps=_failed_steps" in body, (
+        "a crashed non-critical step is invisible in completeness again (path C)")
     assert "blockers=_blockers" in body, (
         "the blocker list is built twice again — the two copies will drift")
     assert 'verdict=("partial"' not in body and 'verdict=("incomplete"' not in body, (
@@ -9990,13 +10005,17 @@ def assert_produce_drawing_reports_completeness():
         srv, _function_node(ast.parse(srv), "produce_drawing")) or ""
     assert "completeness" in srv_body and "execution_ok" in srv_body, (
         "the tool description does not tell callers which field to read")
+    assert "ALWAYS equals" in srv_body, (
+        "the description does not state that ok and completeness are the SAME fact")
     with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
         sm = fh.read()
-    assert 'r.check("produce_drawing completeness is machine readable"' in sm, (
-        "the live derivation check is not registered")
-    assert "_delivery_status([], [])" in sm, (
-        "the check reads source text instead of calling the real helper")
-    return "completeness/execution_ok added; verdict and blockers keep their meaning"
+    assert 'r.check("ok and completeness cannot disagree"' in sm, (
+        "the COMBINATION check is not registered — per-field checks missed this P0")
+    assert "_receipt_ok(status)" in sm, (
+        "the combination check does not use the real top-level derivation")
+    assert "for blockers, steps, failed_steps in (" in sm, (
+        "the invariant is asserted for one state only")
+    return "ok and completeness share one derivation; failed steps are counted"
 
 
 STATIC_REGRESSIONS = [

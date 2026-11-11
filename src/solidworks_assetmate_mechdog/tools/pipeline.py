@@ -111,7 +111,7 @@ def _callout_warning(callouts):
     return None
 
 
-def _delivery_status(blockers, partial_steps):
+def _delivery_status(blockers, partial_steps, failed_steps=()):
     """`execution_ok` / `completeness` for `produce_drawing` (report 2026-11-10 §5, F).
 
     SAME names and SAME meaning as `add_hole_callouts` (0.8.290), so a caller learns the
@@ -131,6 +131,11 @@ def _delivery_status(blockers, partial_steps):
     `execution_ok` is always True here: reaching this function means the pipeline ran.
     A transport failure returns an `error()` dict long before it, and that difference is
     what stops a batch runner from retrying a perfectly good incomplete drawing.
+
+    THREE reasons, not two (0.8.299, report 2026-11-11 §5.3 path C). A non-critical step
+    that CRASHED used to enter neither list, so a run with a broken `center_marks` /
+    `surface_finish` / `delivery_check` reported `completeness:"complete"` — worse than
+    the blocker case, because nothing at all named the failure.
     """
     reasons = []
     if blockers:
@@ -138,11 +143,27 @@ def _delivery_status(blockers, partial_steps):
                         "items": [str(b)[:160] for b in list(blockers)[:5]]})
     if partial_steps:
         reasons.append({"kind": "partial_step", "steps": list(partial_steps)})
+    if failed_steps:
+        reasons.append({"kind": "failed_step", "steps": list(failed_steps)})
     return {
         "execution_ok": True,
         "completeness": "incomplete" if reasons else "complete",
         "incomplete_reasons": reasons,
     }
+
+
+def _receipt_ok(status):
+    """Top-level `ok`, derived from the SAME reasons as `completeness`.
+
+    Report 2026-11-11 §5 (P0): 0.8.298 computed `ok = not partial_steps` while
+    `completeness` also looked at `blockers`, so a receipt could carry
+    `ok:true + completeness:"incomplete"` — a batch runner keyed on `ok` would ship a
+    drawing whose delivery verdict was LOST. One fact, two judges, sixth form.
+
+    This is the single implementation. `produce_drawing` and smoke both call it; a second
+    copy in the test would drift exactly the way the 0.8.297 blocker list did.
+    """
+    return status.get("completeness") == "complete"
 
 
 def produce_drawing(model_path, output_path=None, paper="A3", views=None,
@@ -541,6 +562,12 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # `verdict` is untouched — that is the delivery judgement and it comes from
     # `delivery_check`, not from whether every callout landed.
     _partial_steps = [st["step"] for st in steps if st.get("status") == "partial"]
+    # Report 2026-11-11 §5.3 path C: a non-critical step that CRASHED used to appear in
+    # NEITHER list, so `completeness` said "complete" while a step had failed — worse than
+    # the blocker case, because nothing named it. `_CRITICAL` steps cannot reach here: their
+    # failure returns `critical_step_failed` earlier.
+    _failed_steps = [st["step"] for st in steps
+                     if st.get("status") == "failed" and st["step"] not in _CRITICAL]
     # Report 2026-11-10 §5 (F): a caller reading only `verdict` / `blockers` could not tell
     # an incomplete drawing from a complete one. One list feeds both the receipt and
     # `_delivery_status` — two copies would drift apart, which is how B shipped.
@@ -549,12 +576,17 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                  ["delivery_check 未完成，交付判定丢失：%s"
                   % (str(verdict.get("message") or verdict.get("error")
                          or "unknown")[:120],)])
+    # 0.8.299: one derivation, ONE JUDGE. `ok` and `completeness` both come from `_status`
+    # via `_receipt_ok`; 0.8.298 computed `ok` from `partial_steps` alone and shipped
+    # `ok:true + completeness:"incomplete"` whenever a blocker existed.
+    _status = _delivery_status(_blockers, _partial_steps, _failed_steps)
     return ok(
-        ok=(not _partial_steps),
+        ok=_receipt_ok(_status),
         partial_steps=_partial_steps,
-        # 0.8.298: `execution_ok` / `completeness` / `incomplete_reasons`, same words as
+        failed_steps=_failed_steps,
+        # `execution_ok` / `completeness` / `incomplete_reasons`, same words as
         # `add_hole_callouts`. `verdict` and `blockers` keep their old meaning on purpose.
-        **_delivery_status(_blockers, _partial_steps),
+        **_status,
         model=path,
         drawing=target,
         category=resolved_category,

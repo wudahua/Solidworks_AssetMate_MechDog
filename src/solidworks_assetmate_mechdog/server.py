@@ -345,15 +345,19 @@ def produce_drawing(
     prune_to_plan=True makes the plan binding: dimensions the plan did not keep are deleted
     right after insertion. Set False for the old "import everything" behaviour.
 
-    WHICH FIELD MEANS WHAT (0.8.298, report 2026-11-10 §5):
+    WHICH FIELD MEANS WHAT (0.8.299, report 2026-11-11 §5):
 
-      * `ok` — the completeness gate. `false` whenever a step came back partial.
-        **A batch runner should key on this.**
+      * `ok` — ALWAYS equals `completeness == "complete"`. Both are derived from the same
+        `incomplete_reasons` by one function, so they cannot disagree. It stays as the
+        backwards-compatible alias: a batch runner already keying on `ok` needs no change.
       * `completeness` — `"complete"` / `"incomplete"`, same word as `add_hole_callouts`
-        (0.8.290) so the vocabulary is learned once. `incomplete_reasons` says whether it
-        was a blocker or a partial step.
-      * `execution_ok` — the call itself ran. Distinct from `ok` on purpose: `ok:false` +
-        `execution_ok:true` means "incomplete drawing, do NOT retry or roll back".
+        (0.8.290). Prefer this in new code.
+      * `incomplete_reasons` — why, and of which kind: `blocker` (fixable from here),
+        `partial_step` (a step did part of its job), `failed_step` (a non-critical step
+        crashed).
+      * `execution_ok` — the call itself ran. `ok:false` + `execution_ok:true` means
+        "incomplete drawing, do NOT retry or roll back"; only a transport failure makes
+        this false.
       * `verdict` / `blockers` / `pending` — the HUMAN delivery judgement from
         `delivery_check`. `verdict` is a Chinese label for a reviewer; it is NOT a machine
         signal and deliberately does not encode "a step was partial".

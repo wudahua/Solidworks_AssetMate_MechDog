@@ -1596,38 +1596,59 @@ def main():
 
     r.check("coincident centre marks are grouped", _coincident_marks_are_grouped)
 
-    def _delivery_status_is_machine_readable():
-        """Report 2026-11-10 §5 (F): `verdict` / `blockers` said nothing about completeness.
+    def _ok_and_completeness_cannot_disagree():
+        """Reports 2026-11-10 §5 F and 2026-11-11 §5 P0.
 
-        0.8.290 gave `add_hole_callouts` the pair `execution_ok` / `completeness`. This puts
-        the SAME words on `produce_drawing` instead of inventing a third vocabulary, and
-        leaves `verdict` as the human label it was. No SolidWorks.
+        0.8.298 shipped `ok = not partial_steps` next to a `completeness` that ALSO looked
+        at blockers, so a drawing whose delivery verdict was LOST reported
+        `ok:true + completeness:"incomplete"`. The 287 assertions missed it because every
+        one of them checked a single field.
+
+        0.8.299 derives both from `_receipt_ok(_status)`; this check compares them inside
+        the SAME assertion, for every reachable state. No SolidWorks.
         """
         from solidworks_assetmate_mechdog.tools import pipeline as _pipeline
 
-        complete = _pipeline._delivery_status([], [])
-        assert complete == {"execution_ok": True, "completeness": "complete",
-                            "incomplete_reasons": []}, complete
+        def _top(blockers, partial, failed=()):
+            status = _pipeline._delivery_status(blockers, partial, failed)
+            return _pipeline._receipt_ok(status), status
 
-        partial = _pipeline._delivery_status([], ["hole_callouts"])
-        assert partial["execution_ok"] is True, partial
-        assert partial["completeness"] == "incomplete", partial
+        top, clean = _top([], [])
+        assert clean == {"execution_ok": True, "completeness": "complete",
+                         "incomplete_reasons": []}, clean
+        assert top is True
+
+        # BLOCKER only — the exact state 0.8.298 got wrong (delivery_check crashed).
+        top, blocker = _top(["尺寸未关联实体"], [])
+        assert top is False, "blocker-only still reports success: %r" % (blocker,)
+        assert blocker["completeness"] == "incomplete", blocker
+        assert blocker["incomplete_reasons"][0]["kind"] == "blocker", blocker
+
+        top, partial = _top([], ["hole_callouts"])
+        assert top is False and partial["completeness"] == "incomplete", partial
         assert partial["incomplete_reasons"] == [
             {"kind": "partial_step", "steps": ["hole_callouts"]}], partial
 
-        # A blocker is also incomplete, but the KIND must stay distinguishable: one is
-        # fixable inside this toolkit, the other is a capability gap.
-        blocked = _pipeline._delivery_status(["尺寸未关联实体"], [])
-        assert blocked["completeness"] == "incomplete", blocked
-        assert blocked["incomplete_reasons"][0]["kind"] == "blocker", blocked
+        # Path C: a non-critical step CRASHED. 0.8.298 said "complete" here.
+        top, failed = _top([], [], ["center_marks"])
+        assert top is False, "a crashed step still reports complete: %r" % (failed,)
+        assert failed["incomplete_reasons"][0]["kind"] == "failed_step", failed
 
-        both = _pipeline._delivery_status(["x"], ["hole_callouts"])
-        assert [r["kind"] for r in both["incomplete_reasons"]] == [
-            "blocker", "partial_step"], both
-        return "complete / partial / blocked / both — four branches, one vocabulary"
+        top, allthree = _top(["x"], ["hole_callouts"], ["surface_finish"])
+        assert top is False
+        assert [r["kind"] for r in allthree["incomplete_reasons"]] == [
+            "blocker", "partial_step", "failed_step"], allthree
 
-    r.check("produce_drawing completeness is machine readable",
-            _delivery_status_is_machine_readable)
+        # The invariant, stated once: `ok` is an ALIAS of completeness, never a 2nd judge.
+        for blockers, steps, failed_steps in (
+                ([], [], ()), (["x"], [], ()), ([], ["h"], ()),
+                ([], [], ["c"]), (["x"], ["h"], ["c"])):
+            top, status = _top(blockers, steps, failed_steps)
+            assert top == (status["completeness"] == "complete"), (
+                blockers, steps, failed_steps, status)
+        return "ok == (completeness=='complete') in 5 states, incl. blocker-only + failed"
+
+    r.check("ok and completeness cannot disagree", _ok_and_completeness_cannot_disagree)
 
     def _eccentric_section_is_refused():
         """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.

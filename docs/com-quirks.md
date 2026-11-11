@@ -3256,10 +3256,75 @@ blockers = []               <- 未变
 | check | 结果 |
 |---|---|
 | `check_all.py` | 287/287（+1 条断言） |
-| `smoke.py --only "produce_drawing completeness is machine readable"` | PASS，四分支 |
+| `smoke.py --only "ok and completeness cannot disagree"` | PASS，五状态（0.8.299 起） |
 | 真机 `pipeline.produce_drawing` | 上表：`completeness:"incomplete"`，`verdict`/`blockers` 未变 |
 
 ### 教训
 
 **不要为了让一个字段「也说这件事」而改它的语义。** 补一个新字段的成本是一行回执；
 改一个老字段的语义的成本是每一个调用方。
+
+---
+
+## 2026-11-11（v0.8.299）`ok` 与 `completeness` 同源（报告 2026-11-11 §5，P0）
+
+### 问题：0.8.298 自己造了第六个「一个事实两个判官」
+
+```python
+ok=(not _partial_steps),                        # 只看 partial 步骤
+**_delivery_status(_blockers, _partial_steps),  # completeness 还看 blockers
+```
+
+于是**有 blocker 但没有 partial 步骤**时，回执是
+`ok:true + execution_ok:true + completeness:"incomplete"` —— 按 `ok` 判成败的批处理
+会把「交付判定丢失」的图纸当成成功出图。四条可达状态里只有这一条不一致，
+而真机恰好落在 `PARTIAL only`，矛盾被掩盖，287 条断言 + 61 条 check 全绿漏检。
+
+三条真机可达路径：
+
+| 路径 | 触发 | 0.8.298 结果 |
+|---|---|---|
+| A | `delivery_check` 返回 error dict（v0.8.229 的 `record()` 崩溃） | `ok:true` + `incomplete` |
+| B | `do_hole_callouts=False` 且 `delivery_check` 报真实 blocker | 同上 |
+| C | 任何**非 `_CRITICAL`** 步骤 `status="failed"` | 更糟：`ok:true` + `"complete"`（无人命名失败） |
+
+### 改法
+
+* 新纯函数 `_receipt_ok(status)`：`return status["completeness"] == "complete"`。
+  **顶层 `ok` 不再是独立公式**，与 `completeness` 同一个来源，结构上无法分歧。
+* `_delivery_status(blockers, partial_steps, failed_steps=())` 增加第三个 reason
+  `kind:"failed_step"`，堵住路径 C；`_CRITICAL` 步骤不会进入（它们早退
+  `critical_step_failed`）。
+* 回执新增 `failed_steps`，让「哪个步骤崩了」可枚举。
+* `produce_drawing` 的工具描述改写成字段优先级：`ok` **恒等于**
+  `completeness == "complete"`（向后兼容别名）；新代码优先读 `completeness`；
+  `incomplete_reasons[].kind` 区分 `blocker` / `partial_step` / `failed_step`；
+  `execution_ok` 只管「要不要重试」。
+
+### 验证
+
+真机复现路径 A（monkeypatch `drawing.delivery_check` 返回 error dict）：
+
+```text
+ok = false
+execution_ok = true
+completeness = "incomplete"
+incomplete_reasons = [
+  {"kind": "blocker", "count": 1, "items": ["delivery_check 未完成，交付判定丢失：…"]},
+  {"kind": "partial_step", "steps": ["hole_callouts"]},
+  {"kind": "failed_step", "steps": ["delivery_check"]}]
+failed_steps = ["delivery_check"]
+verdict = "未判定：delivery_check 执行失败（…）"
+```
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 287/287（旧断言 `ok=(not _partial_steps)` 重写为「ok 跟随同一份推导」） |
+| `smoke.py --only "ok and completeness cannot disagree"` | PASS：5 个状态逐一断言 `ok == (completeness=="complete")`，含 blocker-only 与 failed |
+
+### 教训
+
+**新增一个判据维度时，必须回头检查所有基于旧判据的字段。**
+0.8.298 给 `completeness` 加 `blockers` 维度，却把 `ok` 留在只读 `partial_steps` 的
+旧公式上 —— 两个字段各算各的，就是这一版自己 docstring 里写的 "one fact, two judges"。
+守护也必须**把两个字段放进同一条断言**：分开断言时，两边各自都「正确」，组合却是错的。
