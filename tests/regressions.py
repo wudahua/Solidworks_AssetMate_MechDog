@@ -9960,7 +9960,47 @@ def assert_zero_dimension_ledger_is_not_applicable():
     return "0 driving dimensions -> not_applicable, labelled in `checks`"
 
 
+def assert_produce_drawing_reports_completeness():
+    """0.8.298 — report 2026-11-10 §5 (F): two fields said nothing about completeness.
+
+    `verdict` is a Chinese label for a reviewer. Making it also encode "a step was
+    partial" gives ONE FACT TWO JUDGES — the mistake this project has fixed five times
+    (`ok` vs `verdict`, ratio vs absolute delta, `sheet_projected` vs usable edges).
+
+    `blockers` must stay "a defect the caller can fix from inside this toolkit". Pushing
+    hole-callout gaps there turns every drawing with an ambiguous chamfer permanently red,
+    with nothing the caller can do to clear it — the same failure mode the 0.8.297 ledger
+    fix removed at lower severity.
+
+    So: add the pair with the names `add_hole_callouts` already uses, and leave the other
+    fields alone.
+    """
+    src = _read("tools/pipeline.py")
+    assert "\ndef _delivery_status(" in src, "the pure derivation disappeared"
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "produce_drawing")) or ""
+    assert "**_delivery_status(_blockers, _partial_steps)" in body, (
+        "the receipt does not carry the derived pair")
+    assert "blockers=_blockers" in body, (
+        "the blocker list is built twice again — the two copies will drift")
+    assert 'verdict=("partial"' not in body and 'verdict=("incomplete"' not in body, (
+        "verdict now encodes completeness: one fact, two judges")
+    srv = _read("server.py")
+    srv_body = ast.get_source_segment(
+        srv, _function_node(ast.parse(srv), "produce_drawing")) or ""
+    assert "completeness" in srv_body and "execution_ok" in srv_body, (
+        "the tool description does not tell callers which field to read")
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    assert 'r.check("produce_drawing completeness is machine readable"' in sm, (
+        "the live derivation check is not registered")
+    assert "_delivery_status([], [])" in sm, (
+        "the check reads source text instead of calling the real helper")
+    return "completeness/execution_ok added; verdict and blockers keep their meaning"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.298 produce_drawing reports completeness", assert_produce_drawing_reports_completeness),
     ("0.8.297 position comes from final placement", assert_position_fields_come_from_the_final_placement),
     ("0.8.297 tolerance has no negative zero", assert_tolerance_text_has_no_negative_zero),
     ("0.8.297 centre marks can dedupe", assert_center_marks_can_dedupe_existing),

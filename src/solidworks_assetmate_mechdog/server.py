@@ -344,6 +344,19 @@ def produce_drawing(
 
     prune_to_plan=True makes the plan binding: dimensions the plan did not keep are deleted
     right after insertion. Set False for the old "import everything" behaviour.
+
+    WHICH FIELD MEANS WHAT (0.8.298, report 2026-11-10 §5):
+
+      * `ok` — the completeness gate. `false` whenever a step came back partial.
+        **A batch runner should key on this.**
+      * `completeness` — `"complete"` / `"incomplete"`, same word as `add_hole_callouts`
+        (0.8.290) so the vocabulary is learned once. `incomplete_reasons` says whether it
+        was a blocker or a partial step.
+      * `execution_ok` — the call itself ran. Distinct from `ok` on purpose: `ok:false` +
+        `execution_ok:true` means "incomplete drawing, do NOT retry or roll back".
+      * `verdict` / `blockers` / `pending` — the HUMAN delivery judgement from
+        `delivery_check`. `verdict` is a Chinese label for a reviewer; it is NOT a machine
+        signal and deliberately does not encode "a step was partial".
     """
     return _json(pipeline.produce_drawing(
         model_path, output_path=output_path, paper=paper,

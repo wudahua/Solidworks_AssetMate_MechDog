@@ -3202,3 +3202,64 @@ verdict 永远停在「待设计审核」，而调用方在本工具集内无法
 0.8.297 新增的长参数描述把转发调用挤出窗口，产生**假 FAIL**（代码是对的）。
 改成按 AST 取函数体，不再依赖字符偏移 —— 与 0.8.294 的「断言不能锁死修复」同类：
 **任何按字符窗口定位源码的断言，都会被无关的新增文本打破。**
+
+---
+
+## 2026-11-11（v0.8.298）`produce_drawing` 补 completeness，不给 verdict 加档（报告 §5 F）
+
+### 问题
+
+`produce_drawing` 的 `ok:false`（0.8.285 起表示「某步 partial」）只由
+`partial_steps` 和 `callouts.verdict` 承载，顶层 `verdict` 仍是「待设计审核」、
+`blockers: []`。报告 §5 认为只读这两项的调用者看不到「不可交付」，
+建议把漏标塞进 `blockers`，或给 `verdict` 加 `partial` 档。
+
+### 为什么两条建议都不采纳
+
+* `verdict` 是**给人看的中文交付标签**，由 `delivery_check` 产生。让它同时编码
+  「某步 partial」= 一个事实两个判据，项目已修过五次（`ok` vs `verdict`、
+  ratio vs 绝对偏差、`sheet_projected` vs 可用边）。三档改四档还会打断所有下游。
+* `blockers` 的语义是「**调用方在本工具集内能修的硬缺陷**」。孔标注漏标是
+  COM/几何能力限制，塞进去会让每张有倒角歧义孔的图纸永久红灯，调用方无法通过
+  任何操作清除 —— 与 0.8.297 刚修掉的「0/0 永久 pending」同型，只是更重。
+
+### 改法
+
+复用 `add_hole_callouts`（0.8.290）已有的词汇，新增三个字段，旧字段一字不改：
+
+| 字段 | 值 | 含义 |
+|---|---|---|
+| `execution_ok` | `true` | 调用跑完了；`ok:false` + 它 `true` = 图纸不完整，**不要重试/回滚** |
+| `completeness` | `complete` / `incomplete` | 与 `add_hole_callouts` 同名同义 |
+| `incomplete_reasons` | `[{"kind":"blocker",…}]` / `[{"kind":"partial_step",…}]` | 为什么，且两类可区分 |
+
+* 推导抽成纯函数 `_delivery_status(blockers, partial_steps)`，smoke 直接回放四分支。
+* `blockers` 列表提到 `return` 之前只算一次（`_blockers`），**一份数据喂两处** ——
+  两份必然漂移，B 就是这么坏的。
+* `produce_drawing` 的工具描述写死字段分工：批处理读 `ok` / `completeness`；
+  `verdict` 是给审核的人看的标签，不是机器信号。
+
+### 验证
+
+真机（装配体夹具）：
+
+```text
+ok = false
+partial_steps = ["hole_callouts"]
+execution_ok = true
+completeness = "incomplete"
+incomplete_reasons = [{"kind": "partial_step", "steps": ["hole_callouts"]}]
+verdict = "待设计审核"      <- 未变
+blockers = []               <- 未变
+```
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 287/287（+1 条断言） |
+| `smoke.py --only "produce_drawing completeness is machine readable"` | PASS，四分支 |
+| 真机 `pipeline.produce_drawing` | 上表：`completeness:"incomplete"`，`verdict`/`blockers` 未变 |
+
+### 教训
+
+**不要为了让一个字段「也说这件事」而改它的语义。** 补一个新字段的成本是一行回执；
+改一个老字段的语义的成本是每一个调用方。

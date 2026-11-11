@@ -1596,6 +1596,39 @@ def main():
 
     r.check("coincident centre marks are grouped", _coincident_marks_are_grouped)
 
+    def _delivery_status_is_machine_readable():
+        """Report 2026-11-10 §5 (F): `verdict` / `blockers` said nothing about completeness.
+
+        0.8.290 gave `add_hole_callouts` the pair `execution_ok` / `completeness`. This puts
+        the SAME words on `produce_drawing` instead of inventing a third vocabulary, and
+        leaves `verdict` as the human label it was. No SolidWorks.
+        """
+        from solidworks_assetmate_mechdog.tools import pipeline as _pipeline
+
+        complete = _pipeline._delivery_status([], [])
+        assert complete == {"execution_ok": True, "completeness": "complete",
+                            "incomplete_reasons": []}, complete
+
+        partial = _pipeline._delivery_status([], ["hole_callouts"])
+        assert partial["execution_ok"] is True, partial
+        assert partial["completeness"] == "incomplete", partial
+        assert partial["incomplete_reasons"] == [
+            {"kind": "partial_step", "steps": ["hole_callouts"]}], partial
+
+        # A blocker is also incomplete, but the KIND must stay distinguishable: one is
+        # fixable inside this toolkit, the other is a capability gap.
+        blocked = _pipeline._delivery_status(["尺寸未关联实体"], [])
+        assert blocked["completeness"] == "incomplete", blocked
+        assert blocked["incomplete_reasons"][0]["kind"] == "blocker", blocked
+
+        both = _pipeline._delivery_status(["x"], ["hole_callouts"])
+        assert [r["kind"] for r in both["incomplete_reasons"]] == [
+            "blocker", "partial_step"], both
+        return "complete / partial / blocked / both — four branches, one vocabulary"
+
+    r.check("produce_drawing completeness is machine readable",
+            _delivery_status_is_machine_readable)
+
     def _eccentric_section_is_refused():
         """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.
 

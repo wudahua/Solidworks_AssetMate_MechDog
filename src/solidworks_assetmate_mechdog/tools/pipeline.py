@@ -111,6 +111,40 @@ def _callout_warning(callouts):
     return None
 
 
+def _delivery_status(blockers, partial_steps):
+    """`execution_ok` / `completeness` for `produce_drawing` (report 2026-11-10 §5, F).
+
+    SAME names and SAME meaning as `add_hole_callouts` (0.8.290), so a caller learns the
+    vocabulary once instead of guessing which field is authoritative on which tool.
+
+    Why these two and not `verdict`:
+      * `verdict` is the HUMAN delivery label from `delivery_check` (可制造 / 待设计审核 /
+        仅供参考). Making it also encode "a step was partial" would give one fact two
+        judges — the exact mistake this project has fixed five times.
+      * `blockers` must stay "a defect the caller can fix from inside this toolkit".
+        Hole-callout gaps are a COM/geometry limit: pushing them into `blockers` turns
+        every drawing with an ambiguous chamfer permanently red (see the 0.8.297 ledger fix
+        for the same failure mode at lower severity).
+
+    PURE, so smoke replays both branches without SolidWorks.
+
+    `execution_ok` is always True here: reaching this function means the pipeline ran.
+    A transport failure returns an `error()` dict long before it, and that difference is
+    what stops a batch runner from retrying a perfectly good incomplete drawing.
+    """
+    reasons = []
+    if blockers:
+        reasons.append({"kind": "blocker", "count": len(blockers),
+                        "items": [str(b)[:160] for b in list(blockers)[:5]]})
+    if partial_steps:
+        reasons.append({"kind": "partial_step", "steps": list(partial_steps)})
+    return {
+        "execution_ok": True,
+        "completeness": "incomplete" if reasons else "complete",
+        "incomplete_reasons": reasons,
+    }
+
+
 def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     category=None, do_hole_callouts=None, do_surface_finish=None,
                     do_derived_check=True, hole_budget_s=45.0, prune_to_plan=True,
@@ -507,9 +541,20 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # `verdict` is untouched — that is the delivery judgement and it comes from
     # `delivery_check`, not from whether every callout landed.
     _partial_steps = [st["step"] for st in steps if st.get("status") == "partial"]
+    # Report 2026-11-10 §5 (F): a caller reading only `verdict` / `blockers` could not tell
+    # an incomplete drawing from a complete one. One list feeds both the receipt and
+    # `_delivery_status` — two copies would drift apart, which is how B shipped.
+    _blockers = ([b.get("detail") for b in (verdict.get("blockers") or [])]
+                 if verdict.get("ok") else
+                 ["delivery_check 未完成，交付判定丢失：%s"
+                  % (str(verdict.get("message") or verdict.get("error")
+                         or "unknown")[:120],)])
     return ok(
         ok=(not _partial_steps),
         partial_steps=_partial_steps,
+        # 0.8.298: `execution_ok` / `completeness` / `incomplete_reasons`, same words as
+        # `add_hole_callouts`. `verdict` and `blockers` keep their old meaning on purpose.
+        **_delivery_status(_blockers, _partial_steps),
         model=path,
         drawing=target,
         category=resolved_category,
@@ -619,10 +664,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             else "未判定：delivery_check 执行失败（%s）"
             % (str(verdict.get("message") or verdict.get("error") or "unknown")[:120],)
         ),
-        blockers=([b.get("detail") for b in (verdict.get("blockers") or [])]
-                  if verdict.get("ok") else
-                  ["delivery_check 未完成，交付判定丢失：%s"
-                   % (str(verdict.get("message") or verdict.get("error") or "unknown")[:120],)]),
+        blockers=_blockers,
         pending=[p.get("detail") for p in (verdict.get("pending") or [])]
                 # Report 2026-11-06 (P3): a projection that violates GB/T 14692 went into
                 # `creation_warnings` only, so the verdict stayed "待设计审核" with an empty
