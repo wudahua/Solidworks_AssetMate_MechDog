@@ -355,12 +355,12 @@ def produce_drawing(
       * `incomplete_reasons` — why, and of which kind: `blocker` (fixable from here),
         `partial_step` (a step did part of its job), `failed_step` (a non-critical step
         crashed).
-      * `execution_ok` — the pipeline ran to the END (every step was attempted). Present and
-        true on every receipt this tool builds, including `critical_step_failed`, where the
-        sheet is unusable but the run did happen. A MISSING field means the call failed
-        before a receipt existed (bad input, transport loss): treat absent as "did not run",
-        never as success. So `ok:false` + `execution_ok:true` = "incomplete drawing, do NOT
-        retry or roll back".
+      * `execution_ok` — ALWAYS present in this tool's receipts. `true` = the pipeline ran to
+        the END (every step attempted), including `critical_step_failed`, where the sheet is
+        unusable but the run did happen. `false` = it stopped early (`bad_input`,
+        `output_exists`, `ledger_failed`, `create_failed`, `restore_failed`). So
+        `ok:false` + `execution_ok:true` = "incomplete drawing, do NOT retry or roll back",
+        while `execution_ok:false` = the call itself never got far enough to try.
       * `cleanup_incomplete` — steps that failed but cannot affect the drawing (closing
         documents, read-only audits, cosmetic clamping). They are named here and repeated in
         `warnings`; they deliberately do NOT make `completeness` incomplete, because a

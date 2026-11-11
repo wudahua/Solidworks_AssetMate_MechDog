@@ -9826,7 +9826,10 @@ def assert_assembly_drawing_accepts_partial():
     body = src[i:end if end > 0 else len(src)]
     assert "allow_partial=True" in body, (
         "strict require() is back; a partial assembly drawing reports 'call failed: None None'")
-    assert 'assert payload.get("ok")' not in body, (
+    # Match the TRUTH assertion (`assert payload.get("ok"), msg`) — not every mention. A
+    # comparison like `assert payload.get("ok") == ...` is a different and valid check;
+    # 0.8.301 added exactly that and this over-broad pattern rejected it.
+    assert not re.search(r'assert payload\.get\("ok"\)\s*,', body), (
         "a bare ok assertion rejects a partial run even with allow_partial=True")
     assert "len(views) >= 1" in body and "total_dimensions" in body, (
         "the check no longer verifies that the drawing is not an empty shell")
@@ -10074,7 +10077,43 @@ def assert_cleanup_steps_are_not_delivery_defects():
     return "whitelist decides completeness; cleanup observable; one crash, one reason"
 
 
+def assert_every_early_return_states_execution_ok():
+    """0.8.301 — report 2026-11-11 §8 P2-1: `d.get("execution_ok")` returned `None`.
+
+    The tool description promised the field explained retry-or-not, but only the happy path
+    and `critical_step_failed` carried it. Every other early return (`bad_input`,
+    `output_exists`, `ledger_failed`, `create_failed`, `restore_failed`) omitted it, so a
+    caller had to invent a meaning for absence.
+
+    Now every `error(...)` inside `produce_drawing` states it: `False` for "stopped before
+    trying", `True` for the one branch that ran the whole chain and still produced nothing
+    usable. Checked by AST, not by grepping for a string, so a new early return cannot slip
+    through.
+    """
+    src = _read("tools/pipeline.py")
+    fn = _function_node(ast.parse(src), "produce_drawing")
+    missing = []
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "error"):
+            continue
+        if not any(kw.arg == "execution_ok" for kw in node.keywords):
+            missing.append(getattr(node, "lineno", "?"))
+    assert not missing, (
+        "error branches without execution_ok (lines %s) — a caller reads None there"
+        % missing)
+    body = ast.get_source_segment(src, fn) or ""
+    assert "execution_ok=True," in body, (
+        "critical_step_failed no longer says the run DID happen")
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    assert 'payload.get("ok") == (payload.get("completeness") == "complete")' in sm, (
+        "no real-machine check compares ok with completeness")
+    return "every early return states execution_ok; two real receipts assert the pair"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.301 early returns state execution_ok", assert_every_early_return_states_execution_ok),
     ("0.8.300 cleanup is not a delivery defect", assert_cleanup_steps_are_not_delivery_defects),
     ("0.8.298 produce_drawing reports completeness", assert_produce_drawing_reports_completeness),
     ("0.8.297 position comes from final placement", assert_position_fields_come_from_the_final_placement),

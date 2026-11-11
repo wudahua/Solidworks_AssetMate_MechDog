@@ -236,7 +236,11 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
 
     path = os.path.abspath(model_path)
     if not os.path.exists(path):
-        return error("bad_input", "model not found: %s" % path)
+        # Every early return carries `execution_ok: False` (report 2026-11-11 §8 P2-1):
+        # the field then ALWAYS exists, so a caller reading `d.get("execution_ok")` never
+        # gets `None` and never has to guess what absence means. Only the branches that
+        # finished the chain set it True.
+        return error("bad_input", "model not found: %s" % path, execution_ok=False)
 
     # P1, third report running (2026-11-03): this pipeline is NOT idempotent. Running it
     # twice on the same output_path opens the existing drawing and inserts everything again:
@@ -259,7 +263,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     "Pass overwrite=True to rebuild it from scratch, or choose another "
                     "output_path. Running again without this used to APPEND a second full "
                     "set of dimensions to the existing sheet (measured 8 -> 24 dimensions).",
-                    path=_exists_at, overwrite=False)
+                    path=_exists_at, overwrite=False, execution_ok=False)
             # Close any open copy first, then remove it so create_drawing starts clean.
             try:
                 from ..sw_session import get_sw
@@ -295,7 +299,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                      if _trash else
                      "The drawing is open in SolidWorks. Close it and retry, or pass a "
                      "different output_path."),
-                    underlying=str(exc)[:200])
+                    underlying=str(exc)[:200], execution_ok=False)
 
     steps = []
 
@@ -339,7 +343,8 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     led = record("ledger", led_raw,
                  "features=%d" % len(led_raw.get("features") or []))
     if not led.get("ok"):
-        return error("ledger_failed", led.get("message") or "feature ledger failed")
+        return error("ledger_failed", led.get("message") or "feature ledger failed",
+                     execution_ok=False)
     resolved_category = category or led.get("category")
     defaults = _defaults_for(resolved_category)
 
@@ -369,7 +374,8 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                      "")
     if not created.get("ok"):
         return error("create_failed", created.get("message") or "view creation failed",
-                     "Drawing not produced; see create_drawing errors.")
+                     "Drawing not produced; see create_drawing errors.",
+                     execution_ok=False)
 
     # Report 2026-11-06 (P1, second round on this): `create_drawing` already computes
     # compliance notes, a measured `layout`, the scale it chose and every auto-fit
@@ -523,7 +529,8 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             _batch.__exit__(None, None, None)
         except Exception as _exc:                               # noqa: BLE001
             return error("restore_failed", str(_exc)[:160],
-                         "SolidWorks preferences may not have been restored.")
+                         "SolidWorks preferences may not have been restored.",
+                         execution_ok=False)
 
     _CRITICAL = ("create_drawing", "dimensions", "save")
     _failed_critical = [st["step"] for st in steps

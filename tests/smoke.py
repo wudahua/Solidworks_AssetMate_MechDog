@@ -1206,6 +1206,21 @@ def main():
             "callouts.excluded_diameters_mm is missing")
         assert payload.get("ok") is False, (
             "top-level ok is true while a step is partial — a batch pipeline would ship it")
+        # 0.8.301 (report 2026-11-11 §6): the real-machine checks never looked at the
+        # completeness pair, so they could not catch `ok` and `completeness` disagreeing.
+        # `ok` must be the SAME fact as completeness, not a second opinion.
+        assert payload.get("completeness") == "incomplete", (
+            "completeness=%r while ok=%r"
+            % (payload.get("completeness"), payload.get("ok")))
+        assert payload.get("ok") == (payload.get("completeness") == "complete"), (
+            "a real receipt says ok=%r / completeness=%r"
+            % (payload.get("ok"), payload.get("completeness")))
+        assert payload.get("failed_steps") == [], (
+            "a partial step was also filed as a failed step: %r"
+            % (payload.get("failed_steps"),))
+        assert payload.get("cleanup_incomplete") == [], (
+            "cleanup steps were mixed into the delivery verdict: %r"
+            % (payload.get("cleanup_incomplete"),))
         assert "hole_callouts" in (payload.get("partial_steps") or []), (
             "partial_steps does not name hole_callouts")
         pending = " ".join(str(x) for x in (payload.get("pending") or []))
@@ -2543,6 +2558,17 @@ def main():
         # regression. `allow_partial=True` still rejects any payload carrying `error`.
         payload = require(pipeline.produce_drawing(asm_copy, output_path=asm_out),
                           allow_partial=True)
+        # 0.8.301 (report 2026-11-11 §6): assert the completeness pair on a REAL assembly
+        # drawing, not only in the pure helper. Bound first so this is a COMPARISON, not a
+        # truth assertion — `assert_assembly_drawing_accepts_partial` forbids the latter.
+        _ok = payload.get("ok")
+        _complete = payload.get("completeness")
+        assert _ok == (_complete == "complete"), (
+            "ok and completeness disagree on a real assembly drawing: ok=%r "
+            "completeness=%r" % (_ok, _complete))
+        assert isinstance(payload.get("failed_steps"), list), payload.get("failed_steps")
+        assert isinstance(payload.get("cleanup_incomplete"), list), (
+            payload.get("cleanup_incomplete"))
         views = payload.get("views") or []
         assert len(views) >= 1, "assembly drawing produced no views"
         assert payload.get("view_count") == len(views), (

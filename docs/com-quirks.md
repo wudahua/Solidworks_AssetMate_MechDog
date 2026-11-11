@@ -3385,3 +3385,57 @@ verdict = "未判定：delivery_check 执行失败（…）"
 执行结果，另一个字段（`completeness`）承载交付判断；把前者直接喂给后者，
 就必须先回答「这个步骤有没有资格影响图纸」。过滤条件要写成**白名单**：
 黑名单永远落后于下一次新增的步骤。
+
+---
+
+## 2026-11-12（v0.8.301）补齐上一份反馈的两处边界（报告 2026-11-11 §6 / §8）
+
+0.8.300 修了 P1-1 / P1-2 并加了两条真机 check，但逐条核对反馈时发现两处没做满。
+
+### 1. `execution_ok` 只补了一个分支（§8 P2-1）
+
+描述承诺「字段缺失 = 没跑到出回执」，实际只有 `critical_step_failed` 带
+`execution_ok=True`；其余早退分支（`bad_input` / `output_exists` /
+`output_trash_failed` / `ledger_failed` / `create_failed` / `restore_failed`）
+没有任何 `execution_ok`，调用者 `d.get("execution_ok")` 仍是 `None`。
+
+现在 `produce_drawing` 的**每一个** `error()` 都显式声明：
+
+| 分支 | `execution_ok` |
+|---|---|
+| `critical_step_failed`（跑完 13 步但图纸不可用） | `True` |
+| `bad_input` / `output_exists` / `output_trash_failed` / `ledger_failed` / `create_failed` / `restore_failed` | `False` |
+
+字段从此永远存在；描述改成分支式说明，不再依赖「缺失的含义」。
+回归断言用 AST 遍历 `produce_drawing` 内**所有** `error(...)` 调用，缺一个就红。
+
+### 2. 真机 check 只看单字段（§6）
+
+`partial reaches produce_drawing` 与 `assembly drawing not an empty shell` 都调
+`produce_drawing`，却只断言 `ok` / `partial_steps`，从不比较 `ok` 与 `completeness` ——
+这正是 0.8.298 那个 P0 能漏检的原因。两处都补上：
+
+```python
+_ok = payload.get("ok")
+_complete = payload.get("completeness")
+assert _ok == (_complete == "complete")
+assert isinstance(payload.get("failed_steps"), list)
+assert isinstance(payload.get("cleanup_incomplete"), list)
+```
+
+先绑定成变量再比较，避免触发「禁止裸 `assert payload.get("ok")`」的旧断言。
+
+### 附带修掉一个过宽的断言
+
+`0.8.295 assembly check accepts partial` 用子串
+`'assert payload.get("ok")' not in body` 禁止真值断言，但任何**比较式**也会被它挡住
+（0.8.301 新增的 `assert payload.get("ok") == ...` 就被判违规）。改成正则只匹配真值
+断言 `assert payload.get("ok") <逗号>`。**过宽的模式和写错的正则一样会误杀正确代码。**
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 289/289（+1 条 AST 断言） |
+| `assembly drawing not an empty shell`（真机） | PASS，250.0 s，3 views / 26 dims，新增组合断言已执行 |
+| `partial reaches produce_drawing`（真机） | PASS，94.8 s，但 `not triggered`（默认夹具无歧义倒角）—— partial 分支断言仍未执行，需 `--part 限位导向套` |
