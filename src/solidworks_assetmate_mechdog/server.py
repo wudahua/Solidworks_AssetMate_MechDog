@@ -1670,13 +1670,14 @@ def add_center_marks(
     include_slots: Annotated[bool, Field(description="Also mark slots, not just round holes.")] = True,
     extended_lines: Annotated[bool, Field(description="Draw the centre-mark cross lines beyond the hole edge.")] = True,
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
+    dedupe_existing: Annotated[bool, Field(description="FIRST delete centre marks that sit on the SAME point (within 0.1 mm), then mark. Off by default because it deletes annotations. Without it, a sheet left with three coincident marks by an older non-idempotent version keeps them forever: the idempotency guard only refuses to ADD more (report 2026-11-10 P2-4). Read `center_marks_removed` and `dedupe` back — 0 removals with this true means there was nothing to clean, which is a different fact from 'not attempted'.")] = False,
 ) -> str:
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 
     Returns views_marked (reliable) rather than a mark count, which under-reports
     on this binding.
     """
-    return _json(drawing.add_center_marks(drawing_path, include_slots=include_slots, extended_lines=extended_lines, view_name=view_name))
+    return _json(drawing.add_center_marks(drawing_path, include_slots=include_slots, extended_lines=extended_lines, view_name=view_name, dedupe_existing=dedupe_existing))
 
 
 @mcp.tool()

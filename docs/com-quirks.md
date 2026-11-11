@@ -3142,3 +3142,63 @@ callouts: created=1 failed=31 verdict=partial budget_exceeded=true
 **同名参数的默认值分散在两层时，必须断言两层一致。** 0.8.296 之前那条
 `assert "auto_nudge_zero_offset=False" in body` 只查了内层函数体，
 外壳那一行从未被任何断言看过 —— 于是「内层已修好」被当成了「已经修好」。
+
+---
+
+## 2026-11-11（v0.8.297）回执可读性四项（报告 2026-11-10 P2-1/3/4/5）
+
+### P2-1 位置字段混了两个时刻
+
+`add_section_view` 的 `alignment_kept` / `position_axis_ignored` 在**打断对齐之前**
+计算，而 `position_actual_m` 在**打断之后**重读。于是同一份回执可以写
+`position_axis_ignored: "x"` 却给出两个完全相同的坐标，或 `alignment_kept: true`
+旁边躺着成功的 `alignment_broken`。两句话各自为真，只是不在同一时刻。
+
+* 抽出纯函数 `_position_deviation(requested, actual, tol=1e-3)` → `(rewritten, axis)`。
+* 打断前只取一次快照 `alignment_rewrote_request`（决定是否需要打断）。
+* **所有**位置字段改为打断之后用同一函数重算；新增 `position_fulfilled`
+  （最终位置是否等于请求），与 `alignment_kept` 互为否定，可自检。
+* warning 文案改为「这是 FINAL 结果；若 `align_to_parent=False` 仍如此，说明本 build
+  拒绝打断，需要界面手工移动」。
+
+### P2-3 公差文字出 `-0`
+
+`GetToleranceValues` 会给出 **-0.0**，`%+g` 打印 `-0`，而图面是 `0`
+（GB 形式 `Ø30 +0.033/0`，`+0` 同样不对）。新增 `_signed_mm(value)`：
+`|v| < 5e-7` → `"0"`，否则 `%+g`；三处 `display_text` 拼接全部改用它。
+
+### P2-4 既有重复中心标记无法清理
+
+`already_marked` 只阻止**继续新增**，一个被旧版本写成三个重叠标记的视图永远修不好。
+新增 `dedupe_existing`（默认 `False`，因为会删标注）：
+
+* 纯函数 `_coincident_mark_groups(rows, tol=1e-4)`：三轴都在 0.1 mm 内才算重复，
+  保留每组第一个；相隔 5 mm 的两个真实孔位永不合并（只比 X/Y 会把纯 Z 差异误判）。
+* `_dedupe_view_center_marks(doc, view)` 按位置 `Select(False)` + `EditDelete`。
+* **先清理再统计**，`already_marked` 描述的是清理后的状态。
+* 回执 `dedupe_existing` / `center_marks_removed` / `dedupe`：
+  `removed:0` + `dedupe_existing:true` = 没有重复，与「没尝试」可区分。
+
+### P2-5 0 个尺寸被判成覆盖率失败
+
+`reconcile_ledger` 对导入实体返回 `0/0`，旧代码记 `ok:false` → 永久 pending，
+verdict 永远停在「待设计审核」，而调用方在本工具集内无法修复它。
+现在 `ledger_dimensions == 0` 记 `ok:true` + `status:"not_applicable"`；
+正常分支标 `status:"checked"`，两者在 `checks` 里可区分。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 286/286（+4 条断言） |
+| `smoke.py --only "position and tolerance receipts match the sheet"` | PASS |
+| `smoke.py --only "coincident centre marks are grouped"` | PASS |
+| `smoke.py --only "revolved part section verdict"` | PASS，20.6 s，`ledger_dims=0 status=not_applicable`（真机命中 not_applicable 分支） |
+| `smoke.py --only "drawing chain" --only "reconcile ledger"` | 2/2 PASS（dedupe 回执 + delivery verdict 常态分支） |
+
+### 附带修掉的测试缺陷
+
+`0.8.49 center marks view` 用 `server[index:index + 1200]` 窗口查 `view_name=view_name`；
+0.8.297 新增的长参数描述把转发调用挤出窗口，产生**假 FAIL**（代码是对的）。
+改成按 AST 取函数体，不再依赖字符偏移 —— 与 0.8.294 的「断言不能锁死修复」同类：
+**任何按字符窗口定位源码的断言，都会被无关的新增文本打破。**

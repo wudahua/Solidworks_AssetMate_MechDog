@@ -411,6 +411,14 @@ def main():
             assert rendered["page_count"] >= 1, rendered
             dimensioned = require(drawing.auto_dimension(drw))
             marked = require(drawing.add_center_marks(drw))
+            # 0.8.297 (report 2026-11-10 P2-4): the dedupe pass must actually run and be
+            # countable. `center_marks_removed: 0` with `dedupe_existing: true` means
+            # "nothing to clean", never "did not try" — the count is the distinction.
+            _dd = drawing.add_center_marks(drw, dedupe_existing=True, save=False)
+            assert _dd.get("dedupe_existing") is True, _dd
+            assert isinstance(_dd.get("center_marks_removed"), int), (
+                "the dedupe pass is not countable: %r" % (_dd.get("center_marks_removed"),))
+            assert isinstance(_dd.get("dedupe"), list), _dd
             audited = require(drawing.drawing_audit(drw))
             assert audited["view_count"] == 2, audited
             bad = [w for w in (audited.get("warnings") or [])
@@ -953,16 +961,38 @@ def main():
         assert good.get("offset_used_m") == 0.0, (
             "offset_used_m is %r for a requested 0 — the two receipt fields disagree"
             % (good.get("offset_used_m"),))
+        # 0.8.297 (report 2026-11-10 P2-1): position fields must come from the FINAL
+        # placement, and `position_fulfilled` makes the pair self-checking.
+        assert "position_fulfilled" in good, (
+            "the receipt no longer says whether the requested position was met")
+        assert "alignment_rewrote_request" in good, (
+            "the pre-break alignment snapshot is gone")
+
+        # 0.8.297 (report 2026-11-10 P2-5): this is an IMPORTED body with no driving
+        # dimensions. `0/0` used to be recorded as ok:false, which parked
+        # `ledger_reconciled` in `pending` and held the verdict at 待设计审核 forever, for
+        # something the caller cannot fix from this toolkit.
+        _del = drawing.delivery_check(part, drw2)
+        _lr = (_del.get("checks") or {}).get("ledger_reconciled") or {}
+        _dims = _lr.get("ledger_dimensions")
+        if _dims == 0:
+            assert _lr.get("status") == "not_applicable", (
+                "an imported body still reports 0/0 as a coverage failure: %r" % (_lr,))
+            assert _lr.get("ok") is True, _lr
+            assert all(p.get("check") != "ledger_reconciled"
+                       for p in (_del.get("pending") or [])), (
+                "0/0 still sits in `pending`: %r" % (_del.get("pending"),))
 
         for name in (stem2 + ".SLDDRW", stem + ".SLDDRW"):
             try:
                 get_sw().CloseDoc(os.path.basename(name))
             except Exception:
                 pass
-        return ("forced-uncut=%s (edges %s vs %s); default=ok edges %s hatch %s"
+        return ("forced-uncut=%s (edges %s vs %s); default=ok edges %s hatch %s; "
+                "ledger_dims=%s status=%s"
                 % (sanity.get("verdict"), sanity.get("edge_count"),
                    sanity.get("source_edge_count"), gs.get("edge_count"),
-                   gs.get("hatch_count")))
+                   gs.get("hatch_count"), _dims, _lr.get("status")))
 
     r.check("revolved part section verdict", _revolved_section)
     r.check("add_bom_table (native, populated)", _bom_table)
@@ -1514,6 +1544,57 @@ def main():
         return "both layers default to False; opt-in still warns at top level"
 
     r.check("zero offset is not nudged by default", _zero_offset_is_not_nudged_by_default)
+
+    def _position_and_tolerance_receipts():
+        """Replay report 2026-11-10 P2-1 and P2-3 with the real formatters. No COM."""
+        from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+        # P2-1: the report saw `position_axis_ignored: "x"` beside two IDENTICAL
+        # coordinates. Same position must compare as "not rewritten" — the axis used to be
+        # computed before an alignment break while `position_actual_m` was re-read after it.
+        dev = _drawing._position_deviation
+        assert dev([0.28, 0.185], [0.28, 0.185]) == (False, None)
+        assert dev([0.335, 0.17], [0.335, 0.3018]) == (True, "y"), "the 2026-11-06 case"
+        assert dev([0.30, 0.18], [0.28, 0.18]) == (True, "x")
+        assert dev(None, [0.3, 0.18]) == (None, None)
+        assert dev([0.3, 0.18], None) == (None, None)
+        # 0.5 mm of sheet jitter is inside the 1 mm tolerance, not a rewrite.
+        assert dev([0.30, 0.18], [0.3005, 0.18])[0] is False
+
+        # P2-3: `GetToleranceValues` hands back -0.0 and `%+g` printed "-0"; the sheet
+        # prints "0". `Ø30 +0.033/0` is the GB form, `+0` is wrong too.
+        fmt = _drawing._signed_mm
+        assert fmt(-0.0) == "0", fmt(-0.0)
+        assert fmt(0.0) == "0", fmt(0.0)
+        assert fmt(0.033) == "+0.033"
+        assert fmt(-0.018) == "-0.018"
+        return "identical position -> (False, None); -0.0 -> '0'; +0.033/-0.018 kept"
+
+    r.check("position and tolerance receipts match the sheet",
+            _position_and_tolerance_receipts)
+
+    def _coincident_marks_are_grouped():
+        """Replay report 2026-11-10 P2-4: three centre marks on ONE point. No COM."""
+        from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+        point = [0.2157, 0.1481, 0.026]
+        rows = [(point, "a"), (list(point), "b"), (list(point), "c"),
+                ([0.31, 0.14, 0.001], "d")]
+        plan = _drawing._coincident_mark_groups(rows)
+        assert plan["keepers"] == [0, 3], plan
+        assert plan["duplicates"] == [1, 2], plan
+        assert len(plan["groups"]) == 2, plan
+        assert plan["groups"][0]["kept_index"] == 0, plan["groups"][0]
+
+        # Two real marks 5 mm apart are different holes and must both survive.
+        far = [(list(point), "a"), ([0.2207, 0.1481, 0.026], "b")]
+        assert _drawing._coincident_mark_groups(far)["duplicates"] == []
+        # Axis-only comparison would merge a mark that differs purely in Z.
+        zed = [(list(point), "a"), ([0.2157, 0.1481, 0.030], "b")]
+        assert _drawing._coincident_mark_groups(zed)["duplicates"] == []
+        return "3 coincident -> 1 kept, 2 duplicates; 5 mm and 4 mm-Z apart untouched"
+
+    r.check("coincident centre marks are grouped", _coincident_marks_are_grouped)
 
     def _eccentric_section_is_refused():
         """CI smoke #3, report 2026-11-10: an eccentric chord must NOT pass as ok:true.

@@ -2164,8 +2164,12 @@ def assert_center_marks_take_a_view():
     assert 'str(view.Name) != str(view_name)' in body, (
         "the filter is declared but not applied in the loop")
     server = _read("server.py")
-    index = server.index("def add_center_marks(")
-    assert "view_name=view_name" in server[index:index + 1200], (
+    # Take the FUNCTION BODY, not a fixed 1200-character window: a long parameter
+    # description (0.8.297 added `dedupe_existing`) pushed the forwarding call out of the
+    # window and produced a false FAIL on a correct wrapper.
+    srv_body = ast.get_source_segment(
+        server, _function_node(ast.parse(server), "add_center_marks")) or ""
+    assert "view_name=view_name" in srv_body, (
         "the wrapper does not forward view_name")
     return "center marks can be limited to one view"
 
@@ -9867,7 +9871,100 @@ def assert_zero_offset_is_not_nudged_by_default():
     return "both layers default to False; live check + real-machine assertions in place"
 
 
+def assert_position_fields_come_from_the_final_placement():
+    """0.8.297 — report 2026-11-10 P2-1: one receipt mixed two moments in time.
+
+    `alignment_kept` / `position_axis_ignored` were computed BEFORE an optional alignment
+    break while `position_actual_m` was re-read AFTER it. A call could therefore report
+    `position_axis_ignored: "x"` beside two IDENTICAL coordinates, or `alignment_kept:
+    true` beside a SUCCESSFUL `alignment_broken`. Both statements were true at different
+    moments; as one JSON they are unreadable.
+
+    Every position field now comes from `_position_deviation(requested, actual)` after the
+    break, and `position_fulfilled` makes the pair self-checking.
+    """
+    src = _read("tools/drawing.py")
+    assert "\ndef _position_deviation(" in src, (
+        "the pure position comparator disappeared; smoke cannot replay the report")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_section_view")) or ""
+    assert body.count("_position_deviation(position_requested,") == 2, (
+        "expected one snapshot BEFORE the break and one final computation AFTER it")
+    assert "alignment_rewrote_request" in body, (
+        "the pre-break snapshot is gone; `alignment_kept` will be reused as a gate again")
+    assert '"position_fulfilled": position_fulfilled' in body, (
+        "the receipt does not say whether the request was finally met")
+    assert "alignment_broken = None" in body
+    return "position fields come from the final placement; pre-break state kept separately"
+
+
+def assert_tolerance_text_has_no_negative_zero():
+    """0.8.297 — report 2026-11-10 P2-3: receipt printed `+0.033/-0`, sheet `+0.033/0`."""
+    src = _read("tools/drawing.py")
+    assert "def _signed_mm(" in src, "the tolerance formatter disappeared"
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "_signed_mm")) or ""
+    assert "5e-7" in body and 'return "0"' in body, (
+        "negative zero is no longer normalised")
+    # The display_text splices must not format tolerances with a raw `%+g` again.
+    assert '"%s %+g/%+g"' not in src, (
+        "a dimension receipt still prints `-0` for a negative zero")
+    assert src.count("_signed_mm(_up)") >= 2 and src.count("_signed_mm(_lo)") >= 2, (
+        "a display_text branch bypasses the formatter")
+    return "`-0.0` -> '0'; both bilateral branches use the formatter"
+
+
+def assert_center_marks_can_dedupe_existing():
+    """0.8.297 — report 2026-11-10 P2-4: three coincident marks could never be cleaned.
+
+    `already_marked` only refuses to ADD more, so a sheet left with three marks on one
+    point by an older non-idempotent version stayed wrong forever. `dedupe_existing=True`
+    deletes them by position first; the grouping is a pure function so smoke replays it.
+    """
+    src = _read("tools/drawing.py")
+    assert "def _coincident_mark_groups(" in src, "the pure grouping helper disappeared"
+    assert "def _dedupe_view_center_marks(" in src
+    fn = _function_node(ast.parse(src), "add_center_marks")
+    args = [a.arg for a in fn.args.args]
+    assert "dedupe_existing" in args, "add_center_marks lost the opt-in"
+    body = ast.get_source_segment(src, fn) or ""
+    assert "center_marks_removed" in body and "dedupe_existing=bool(dedupe_existing)" in body, (
+        "the receipt cannot distinguish 'cleaned 2' from 'not attempted'")
+    srv = _read("server.py")
+    srv_fn = _function_node(ast.parse(srv), "add_center_marks")
+    assert "dedupe_existing" in [a.arg for a in srv_fn.args.args], (
+        "the MCP wrapper does not expose the opt-in")
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    assert 'r.check("coincident centre marks are grouped"' in sm
+    assert "_coincident_mark_groups(rows)" in sm, "the check does not call the real helper"
+    return "opt-in exists on both layers and the receipt counts removals"
+
+
+def assert_zero_dimension_ledger_is_not_applicable():
+    """0.8.297 — report 2026-11-10 P2-5: imported bodies carried a permanent pending item.
+
+    `reconcile_ledger` returns 0/0 on a body with no driving dimensions. `0/0` was
+    recorded as `ok:false`, which pushed `ledger_reconciled` into `pending` and held the
+    verdict at 待设计审核 forever — for something the caller cannot fix from this toolkit.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delivery_check")) or ""
+    assert "_ledger_dims == 0" in body, "the not-applicable branch is gone"
+    assert 'status="not_applicable"' in body, (
+        "0/0 is reported as a coverage failure again")
+    assert 'status="checked"' in body, (
+        "the normal branch does not label itself, so the two cases look identical")
+    assert '"台账覆盖率 %s（%s/%s 个尺寸在图纸上找到，缺 %s）"' in body
+    return "0 driving dimensions -> not_applicable, labelled in `checks`"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.297 position comes from final placement", assert_position_fields_come_from_the_final_placement),
+    ("0.8.297 tolerance has no negative zero", assert_tolerance_text_has_no_negative_zero),
+    ("0.8.297 centre marks can dedupe", assert_center_marks_can_dedupe_existing),
+    ("0.8.297 zero-dim ledger not applicable", assert_zero_dimension_ledger_is_not_applicable),
     ("0.8.296 zero offset not nudged by default", assert_zero_offset_is_not_nudged_by_default),
     ("0.8.295 assembly check accepts partial", assert_assembly_drawing_accepts_partial),
     ("0.8.294 coaxial merge ignores radius gap", assert_coaxial_merge_is_radius_agnostic),

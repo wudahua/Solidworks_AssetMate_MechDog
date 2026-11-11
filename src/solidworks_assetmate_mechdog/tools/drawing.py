@@ -3090,8 +3090,80 @@ def _count_center_marks(doc):
     return total
 
 
+def _coincident_mark_groups(rows, tol=1e-4):
+    """Split centre-mark rows into keepers and coincident duplicates. PURE.
+
+    `rows` is a sequence of `(position, payload)`. Two marks are duplicates when ALL THREE
+    coordinates are within `tol` (0.1 mm) — real marks on distinct holes are never that
+    close. The FIRST of each cluster is kept, so a stable order gives a stable result.
+
+    Report 2026-11-10 (P2-4) measured three marks on one point [0.2157, 0.1481, 0.026],
+    left by an older non-idempotent version. Extracted so smoke can replay that geometry
+    without COM.
+    """
+    keepers, duplicates, groups = [], [], []
+    for index, (pos, _payload) in enumerate(rows):
+        match = next(
+            (k for k in keepers
+             if all(abs(float(a) - float(b)) <= tol
+                    for a, b in zip(pos, rows[k][0]))),
+            None)
+        if match is None:
+            keepers.append(index)
+            continue
+        duplicates.append(index)
+        groups.append({"position": [round(float(v), 6) for v in pos],
+                       "kept_index": match,
+                       "kept_at": [round(float(v), 6) for v in rows[match][0]]})
+    return {"keepers": keepers, "duplicates": duplicates, "groups": groups}
+
+
+def _dedupe_view_center_marks(doc, view):
+    """Delete COINCIDENT centre marks in ONE view, keeping the first of each cluster.
+
+    Report 2026-11-10 (P2-4): a view carried three `center_mark` annotations at the SAME
+    point [0.2157, 0.1481, 0.026] — leftovers from a non-idempotent older version. They
+    draw a visibly thicker line and read like a rendering artifact, and the existing
+    `already_marked` guard cannot help: it only refuses to ADD more.
+
+    Only markers within 0.1 mm of each other in SHEET space count as duplicates — two
+    real marks on different holes are never that close. `GetPosition` is called as a
+    METHOD; reading it as a property raises on this binding.
+    """
+    import win32com.client as _wc
+
+    rows = []
+    for _raw in (view.GetAnnotations or ()):
+        try:
+            _ann = _wc.Dispatch(_raw)
+            if int(_ann.GetType) != 13:
+                continue
+        except Exception:
+            continue
+        try:
+            _pos = [round(float(v), 6) for v in call_method(_ann, "GetPosition")]
+        except Exception:
+            continue
+        rows.append((_pos, _ann))
+
+    plan = _coincident_mark_groups(rows)
+    removed, outcomes = 0, []
+    for index, group in zip(plan["duplicates"], plan["groups"]):
+        _pos, _ann = rows[index]
+        try:
+            call_method(_ann, "Select", False)
+            call_method(doc, "EditDelete")
+        except Exception as _exc:                                    # noqa: BLE001
+            outcomes.append({**group, "removed": False, "error": str(_exc)[:80]})
+            continue
+        removed += 1
+        outcomes.append({**group, "removed": True})
+    return {"checked": len(rows), "removed": removed,
+            "kept": len(plan["keepers"]), "groups": outcomes[:10]}
+
+
 def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view_name=None,
-                     save=True):
+                     save=True, dedupe_existing=False):
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 
     Requires activating each view first — drawing annotation ops act on the active
@@ -3101,6 +3173,12 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
     `view_name` restricts it to one view. Without it the isometric view got marks too —
     a report saw 15 cross marks scattered across a 3D pictorial, which is simply wrong
     drafting.
+
+    `dedupe_existing=True` FIRST deletes centre marks that sit on the same point (report
+    2026-11-10 P2-4). The `already_marked` guard only stops NEW duplicates, so a sheet
+    that already carries three coincident marks stays wrong forever; those have to be
+    deleted by position. Off by default because it deletes annotations the caller may
+    have placed on purpose — read `center_marks_removed` / `dedupe` in the receipt.
     """
     try:
         doc = _open_drawing(drawing_path)
@@ -3119,6 +3197,8 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
         # `*等轴测`. That is the only reliable signal here, and it is also the one that
         # composes with a custom-named view.
         skipped_views = []
+        _dedupe_results = []
+        _dedupe_removed = 0
         for view in _iter_views(doc):
             if getattr(view, "Type", None) == 1:
                 continue
@@ -3143,6 +3223,19 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
                 doc.ActivateView(view.Name)
             except Exception:
                 pass
+            # ── Delete pre-existing duplicates first (report 2026-11-10, P2-4) ─────
+            # The idempotency guard below only stops NEW marks; a view that already has
+            # three marks on one point keeps them. Do this BEFORE counting, so the count
+            # and the `already_marked` decision describe the CLEANED state.
+            if dedupe_existing:
+                try:
+                    _dd = _dedupe_view_center_marks(doc, view)
+                except Exception as _exc:                            # noqa: BLE001
+                    _dd = {"checked": 0, "removed": 0, "kept": 0,
+                           "error": str(_exc)[:120]}
+                _dedupe_removed += int(_dd.get("removed") or 0)
+                if _dd.get("removed") or _dd.get("error"):
+                    _dedupe_results.append({"view": str(view.Name), **_dd})
             # ── Idempotent (report 2026-11-08, P2-6) ──────────────────────────────
             # Called twice on the same view this left TWO center marks at the SAME point
             # (`细节项目254` / `256`, both [0.2157, 0.1481]). SolidWorks does not
@@ -3275,6 +3368,12 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             center_marks_added=_cm_added,
             verdict=_verdict,
             skipped_views=skipped_views,
+            # 0.8.297: how many coincident marks were DELETE, and per view where. A non-zero
+            # value proves the cleanup ran; 0 with `dedupe_existing:true` means there was
+            # nothing to clean, which is a different fact from "not attempted".
+            dedupe_existing=bool(dedupe_existing),
+            center_marks_removed=_dedupe_removed,
+            dedupe=_dedupe_results,
             views=results,
         )
         if _verdict == "nothing_to_mark":
@@ -6191,6 +6290,29 @@ def _section_sanity(source_view, section, orientation, depth,
     return info
 
 
+def _position_deviation(requested, actual, tol=1e-3):
+    """(rewritten, axis) between a REQUESTED sheet position and the ACTUAL one.
+
+    PURE, so smoke can replay report 2026-11-10 P2-1: a call used to report
+    `position_axis_ignored: "x"` beside two IDENTICAL coordinates, because the axis was
+    computed before an alignment break while `position_actual_m` was re-read after it.
+    Both numbers were true at different moments; the receipt cannot say that, so every
+    position field is now derived from the final placement by this one function.
+
+    Returns `(None, None)` when either side is unknown — `null` means "not compared",
+    never "matched".
+    """
+    if requested is None or actual is None:
+        return None, None
+    dx = abs(float(actual[0]) - float(requested[0]))
+    dy = abs(float(actual[1]) - float(requested[1]))
+    if dy > tol:
+        return True, "y"
+    if dx > tol:
+        return True, "x"
+    return False, None
+
+
 def _section_off_axis_from_sanity(sanity):
     """Decide whether a finished section is an eccentric chord. PURE — no COM.
 
@@ -6660,16 +6782,11 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             position_actual = [round(float(v), 4) for v in section.Position]
         except Exception:
             position_actual = None
+        # Snapshot BEFORE any break: this decides whether a break is needed at all.
+        alignment_rewrote_request, _ = _position_deviation(position_requested,
+                                                          position_actual)
         alignment_kept = None
         dropped_axis = None
-        if position_requested is not None and position_actual is not None:
-            dx = abs(position_actual[0] - position_requested[0])
-            dy = abs(position_actual[1] - position_requested[1])
-            alignment_kept = bool(dx > 1e-3 or dy > 1e-3)
-            if dy > 1e-3:
-                dropped_axis = "y"
-            elif dx > 1e-3:
-                dropped_axis = "x"
 
         # Report 2026-11-06 (P1, B1): a section view is created in projection with its
         # parent, so the requested y is silently rewritten to stay on the parent's axis.
@@ -6679,7 +6796,7 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         #
         # `align_to_parent=False` breaks the alignment here and re-applies the position.
         alignment_broken = None
-        if not align_to_parent and position_requested is not None and alignment_kept:
+        if not align_to_parent and position_requested is not None and alignment_rewrote_request:
             try:
                 from . import layout as _layout_mod
                 alignment_broken = _layout_mod.set_view(
@@ -6691,6 +6808,17 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                     pass
             except Exception as _exc:                               # noqa: BLE001
                 alignment_broken = {"ok": False, "error": str(_exc)[:100]}
+
+        # Report 2026-11-10 (P2-1): every position field is recomputed from the FINAL
+        # placement. The old code read `alignment_kept` / `position_axis_ignored` BEFORE
+        # the break and `position_actual` AFTER it — so one receipt could say "x was
+        # dropped" next to two identical coordinates, and `alignment_kept: true` could sit
+        # beside a SUCCESSFUL `alignment_broken`. Those were two different moments in time,
+        # not two contradictory facts, but the caller cannot tell that from the JSON.
+        alignment_kept, dropped_axis = _position_deviation(position_requested,
+                                                          position_actual)
+        position_fulfilled = (None if position_requested is None or position_actual is None
+                              else not alignment_kept)
 
         # ── Should a failed section stay on the sheet? (report 2026-11-08, P2-2) ──────
         # A deflated empty section pollutes the layout; measured 2026-11-08 on
@@ -6747,12 +6875,20 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
             "position_requested_m": position_requested,
             "position_actual_m": position_actual,
             "alignment_kept": alignment_kept,
+            # NEW (0.8.297): `true` = the FINAL position equals the request. Its negation of
+            # `alignment_kept` makes the pair self-checking: exactly one of them is true
+            # whenever a position was requested.
+            "position_fulfilled": position_fulfilled,
+            # What the alignment did BEFORE the optional break. `true` + `position_fulfilled`
+            # = the break worked; `true` + `false` = this build refused to break.
+            "alignment_rewrote_request": alignment_rewrote_request,
             "align_to_parent": bool(align_to_parent),
             "alignment_broken": alignment_broken,
             "position_axis_ignored": dropped_axis,
-            "warning": ("请求的位置 %r 的 %s 被丢弃：剖面视图与父视图 %r 保持投影对齐，"
-                        "实际落在 %r。要对齐就用这个位置；不要就再调 set_view(break_alignment=True)。"
-                        % (position_requested, dropped_axis, str(target.Name), position_actual)
+            "warning": ("最终位置 %r 与请求 %r 在 %s 上不一致：剖面视图与父视图 %r 保持"
+                        "投影对齐。这是 FINAL 结果 —— 若 `align_to_parent=False` 已尝试打断"
+                        "仍如此，说明本 build 拒绝打断，需要在界面里手工移动。"
+                        % (position_actual, position_requested, dropped_axis, str(target.Name))
                         if dropped_axis else None),
         }
         # Report 2026-11-10 (P0, suggestion 2): put the eccentricity implied by the
@@ -7794,6 +7930,20 @@ DISPLAY_CODE_MAP = {
 }
 
 
+def _signed_mm(value):
+    """Format a tolerance value in mm: `+0.033`, `-0.018`, or a plain `0`.
+
+    `GetToleranceValues` can hand back a NEGATIVE ZERO, and `%+g` then prints `-0` while
+    the sheet itself prints `0` — the receipt and the drawing disagreed on the same
+    dimension (report 2026-11-10 P2-3). A bare `0` also matches GB practice:
+    `Ø30 +0.033/0`, not `Ø30 +0.033/+0`.
+    """
+    value = float(value)
+    if abs(value) < 5e-7:
+        return "0"
+    return "%+g" % value
+
+
 def _resolve_display_text(raw_text, value_mm=None):
     """Turn display format codes into what the sheet actually prints (P3-3 / P1-1).
 
@@ -8216,8 +8366,9 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                                                       "upper": _up}
                                         _code = int(_tol)
                                         if _code == 2:      # BILATERAL: +up / -|lo|
-                                            row["display_text"] = "%s %+g/%+g" % (
-                                                row["display_text"], _up, _lo)
+                                            row["display_text"] = "%s %s/%s" % (
+                                                row["display_text"], _signed_mm(_up),
+                                                _signed_mm(_lo))
                                         elif _code == 3:    # LIMIT: two stacked values
                                             _base = row.get("value_mm")
                                             if _base is not None:
@@ -8225,11 +8376,13 @@ def list_drawing_annotations(drawing_path, view_name=None):
                                                     round(float(_base) + _up, 3),
                                                     round(float(_base) + _lo, 3))
                                             else:
-                                                row["display_text"] = "%s (+%g/+%g)" % (
-                                                    row["display_text"], _up, _lo)
+                                                row["display_text"] = "%s (%s/%s)" % (
+                                                    row["display_text"], _signed_mm(_up),
+                                                    _signed_mm(_lo))
                                         else:               # SYMMETRIC and others
-                                            row["display_text"] = "%s %+g/%+g" % (
-                                                row["display_text"], _up, _lo)
+                                            row["display_text"] = "%s %s/%s" % (
+                                                row["display_text"], _signed_mm(_up),
+                                                _signed_mm(_lo))
                                     else:
                                         # Still honest when the read fails, and now the
                                         # receipt also says WHY it is missing.
@@ -8659,11 +8812,22 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         if rec.get("ok"):
             coverage = rec.get("coverage")
             unmatched = rec.get("unmatched_count") or 0
-            record("ledger_reconciled",
-                   coverage is not None and coverage >= 0.9,
-                   "台账覆盖率 %s（%s/%s 个尺寸在图纸上找到，缺 %s）"
-                   % (coverage, rec.get("matched"), rec.get("ledger_dimensions"), unmatched),
-                   blocking=False)
+            _ledger_dims = rec.get("ledger_dimensions") or 0
+            if _ledger_dims == 0:
+                # Report 2026-11-10 (P2-5): an imported body has NO driving dimensions, so
+                # "0/0 found" is not a coverage failure — it is not applicable. Reporting
+                # it as `ok:false` put a permanent pending item on every imported part and
+                # held the verdict at 待设计审核 forever, for something the caller cannot
+                # fix from this toolkit.
+                record("ledger_reconciled", True,
+                       "台账 0 个尺寸（导入实体无驱动尺寸）—— 不适用，不是未覆盖",
+                       blocking=False, status="not_applicable", ledger_dimensions=0)
+            else:
+                record("ledger_reconciled",
+                       coverage is not None and coverage >= 0.9,
+                       "台账覆盖率 %s（%s/%s 个尺寸在图纸上找到，缺 %s）"
+                       % (coverage, rec.get("matched"), _ledger_dims, unmatched),
+                       blocking=False, status="checked", ledger_dimensions=_ledger_dims)
             # P1-3: a ratio cannot tell you WHAT is missing, and on a "must be repairable
             # from this drawing" job the missing five are the whole point.
             from ..sw_session import fix_mojibake as _fix_mojibake
