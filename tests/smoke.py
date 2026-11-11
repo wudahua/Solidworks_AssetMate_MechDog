@@ -2245,8 +2245,16 @@ def main():
         would tell you which.
         """
         asm_out = os.path.join(workdir, "smoke_asm_drw.SLDDRW")
-        payload = require(pipeline.produce_drawing(asm_copy, output_path=asm_out))
-        assert payload.get("ok"), payload.get("message")
+        # 0.8.295: this used strict `require()`, which rejects `ok:false`. Since 0.8.285
+        # a PARTIAL drawing has ok:false BY DESIGN — hole_callouts cannot disambiguate
+        # chamfer pairs, but views and dimensions WERE produced, which is exactly what
+        # "not an empty shell" must verify. Full smoke 2026-11-11 measured:
+        #   ok=false, error=null, message=null, partial_steps=['hole_callouts'],
+        #   view_count=3, 25 dimensions, callouts.verdict='partial'
+        # The old assertion reported "call failed: None None" and read like a pipeline
+        # regression. `allow_partial=True` still rejects any payload carrying `error`.
+        payload = require(pipeline.produce_drawing(asm_copy, output_path=asm_out),
+                          allow_partial=True)
         views = payload.get("views") or []
         assert len(views) >= 1, "assembly drawing produced no views"
         assert payload.get("view_count") == len(views), (

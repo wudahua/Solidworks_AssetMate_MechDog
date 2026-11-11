@@ -3057,3 +3057,46 @@ tarball / wheel 里 `head` / `prev_commit` 皆空，重复 tag 检查被整段�
 `(_keep_r - _k[1]) > 0.0015`；0.8.294 起该字面量**出现即为回归**，断言已重写
 并标为历史作废。教训与 0.8.293 的 `text` 语义漂移同类：
 **改动判据时必须同步枚举所有以旧判据为守卫的回归断言，否则旧断言会反过来锁死修复。**
+
+---
+
+## 2026-11-11（v0.8.295）全量 smoke 55/56，唯一 FAIL 是测试断言缺陷
+
+### 全量结果
+
+`python tests/smoke.py` 真机跑完，53 m 19 s，**55 passed / 1 FAILED / 56 run**。
+0.8.294 新增的 `shallow coaxial counterbores still merge` PASS。
+`partial reaches produce_drawing` 诚实标注
+"not triggered — this fixture has no chamfer-ambiguous diameter"，不是通过。
+
+### 唯一 FAIL 的定性
+
+`assembly drawing not an empty shell` → `call failed: None None`。
+单跑 `produce_drawing` 打印回执：
+
+```text
+ok=false, error=null, message=null
+partial_steps=["hole_callouts"], view_count=3, 25 dims
+callouts: created=1 failed=31 verdict=partial budget_exceeded=true
+```
+
+0.8.285 起 `produce_drawing` 的 partial 结果**故意**给 `ok:false`（孔标注有倒角歧义），
+但视图和尺寸都已产出。该 check 用严格 `require()`，把 `ok:false` 当调用失败；
+`error` / `message` 都是 null，于是打印出误导性的 `call failed: None None`。
+`smoke.py:1128-1147` 早已记录同一坑并在 `partial reaches produce_drawing` 用了
+`allow_partial=True`，只是 `_assembly_drawing` 漏了。
+
+与 v0.8.294 的产品改动无关：`add_hole_callouts` 的 `ok` 只由 `_ambiguous` 决定，
+0.8.294 只改了 coaxial 合并如何消费该集合，未改 `_ambiguous` 的生成。
+
+### 修复与验证
+
+* `_assembly_drawing` 改用 `require(..., allow_partial=True)`，删掉裸
+  `assert payload.get("ok")`；后续 `views` / `view_count` / `drawing_audit` 断言不变 ——
+  partial 图纸同样必须证明不是空壳。`allow_partial=True` 仍拒绝带 `error` 的回执，
+  真实调用失败不可能被掩盖。
+* 新增源码级断言 `0.8.295 assembly check accepts partial`（281 条），防止严格
+  `require()` 回来。
+* 复验：`check_all.py` 281/281、`stdio_contract.py` 6/6、
+  `smoke.py --only "assembly drawing not an empty shell"` **PASS**（3 views, 28 dims）。
+* **修复后未重跑全量**（53 min）；其余 55 项在全量里已全部 PASS，改动只影响这一项。

@@ -9798,7 +9798,33 @@ def assert_coaxial_merge_has_live_replay():
     return "live Ø11/Ø9.8 replay registered; real receipt asserts the protection field"
 
 
+def assert_assembly_drawing_accepts_partial():
+    """0.8.295 — the single FAIL in the 2026-11-11 full smoke was a TEST bug.
+
+    `assembly drawing not an empty shell` used strict `require()`. A partial
+    `produce_drawing` has `ok:false` BY DESIGN (0.8.285) with `error=null` and
+    `message=null`, so the check printed "call failed: None None" even though 3 views
+    and 25 dimensions HAD been produced. The check exists to prove the drawing is not
+    an empty shell; a partial drawing must still be audited, not skipped.
+    """
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    i = src.find("def _assembly_drawing():")
+    assert i > 0, "the assembly drawing check disappeared"
+    end = src.find("\n    r.check(", i)
+    body = src[i:end if end > 0 else len(src)]
+    assert "allow_partial=True" in body, (
+        "strict require() is back; a partial assembly drawing reports 'call failed: None None'")
+    assert 'assert payload.get("ok")' not in body, (
+        "a bare ok assertion rejects a partial run even with allow_partial=True")
+    assert "len(views) >= 1" in body and "total_dimensions" in body, (
+        "the check no longer verifies that the drawing is not an empty shell")
+    assert "call failed: %s %s" in src, "require() lost its diagnostic message"
+    return "assembly check audits partial drawings instead of calling them failed"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.295 assembly check accepts partial", assert_assembly_drawing_accepts_partial),
     ("0.8.294 coaxial merge ignores radius gap", assert_coaxial_merge_is_radius_agnostic),
     ("0.8.294 coaxial merge has live replay", assert_coaxial_merge_has_live_replay),
     ("0.8.293 hw placeholders stripped, raw kept", assert_hw_placeholders_are_stripped_but_kept_raw),
