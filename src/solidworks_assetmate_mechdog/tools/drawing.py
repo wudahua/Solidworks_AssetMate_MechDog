@@ -1233,6 +1233,26 @@ def create_drawing(
             return error(blocker[0], blocker[1],
                          "The drawing document was closed; nothing was written to %s."
                          % out, **result)
+        # ── 0.8.319 (report 2026-11-13 §1, P0) ───────────────────────────────────────────
+        # A non-1:1 drawing whose title block still says 1:1 is a DELIVERY defect: a shop
+        # measuring off that sheet reads every linear dimension at the wrong size. The sync
+        # failure was already in `title_scale_synced.error`, but the top-level `ok` stayed
+        # true, so neither the caller nor `produce_drawing` could see it. Same rule this
+        # file already applies to `save_not_written`: if the thing the caller asked for did
+        # not happen, `ok` is false.
+        if isinstance(_title_scale_synced, dict) and _title_scale_synced.get("error"):
+            _ratio = _title_scale_synced.get("text") or "?"
+            result["ok"] = False
+            result["error"] = "title_scale_not_synced"
+            result["message"] = (
+                "视图比例是 %s，但标题栏比例未能写入：%s。"
+                "图上标注的比例会与实际不符，按此图取尺寸会读错一倍。"
+                "请手工填写标题栏比例后再交付，或用 `set_title_block` 定点写入。"
+                % (_ratio, _title_scale_synced.get("error")))
+            result["blockers"] = list(result.get("blockers") or []) + [{
+                "check": "title_scale_synced",
+                "detail": "标题栏比例未写入（%s）" % _ratio,
+            }]
         return ok(**result)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -4689,6 +4709,21 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
             pass
         doc.SaveSilent
         result.update(applied=True, written=written, saved=True)
+        # 0.8.319 (report 2026-11-13 §1): `apply=True` with an EMPTY `written` means nothing
+        # was written, yet this returned `ok: true`. On a GB template whose title block keeps
+        # its values in a table/block rather than an `INote`, the scale field never matches —
+        # `planned` is `[]`, `written` is `[]`, and three layers of receipts all claimed
+        # success while the sheet still said 1:1. If the caller asked to write and nothing
+        # was written, that is a failure WITH a reason.
+        if not written:
+            return error(
+                "title_block_not_written",
+                "applied=True 但没有任何字段被写入（written 为空）。"
+                "该模板的标题栏可能把值存在表格/块里，而不是 `INote` —— 现有扫描够不到，"
+                "请手工填写或用 `unmatched` 的 reason 定位。",
+                applied=True, written=[], saved=True,
+                planned=[{k: v for k, v in _p.items() if k != "note"} for _p in planned],
+                unmatched=unmatched)
         return ok(**result)
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
@@ -5467,6 +5502,23 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
         if save:
             _save_drawing(doc)
 
+        # 0.8.319 (report 2026-11-13 §2.2): between two edges that MEET at an angle,
+        # `AddDimension2` produces an ANGULAR dimension. Returning `ok: true` with
+        # `value_mm: null` while the note claims "this is the distance between two edges"
+        # is a receipt contradicting itself — the caller asked for a length and got an
+        # angle. The dimension is real, so it stays on the sheet; the VERDICT is false and
+        # says which way out.
+        if _is_angular_dimension_type(dimension_type):
+            return error(
+                "angular_pair_not_a_distance",
+                "这两条边（%s 与 %s）在图上互成角度，AddDimension2 生成的是**角度尺寸**"
+                "（%s°），不是距离。" % (edge_a, edge_b, value_deg),
+                "量距离要用两条互相平行的边；要标这个角请改用 `add_angular_dimension`。"
+                "该角度尺寸已保留在图上，可直接用 `delete_annotation` 删掉或移动。",
+                edge_a=int(edge_a), edge_b=int(edge_b), value_mm=None,
+                value_deg=value_deg, value_is_angular=True,
+                dimension_type=dimension_type,
+                position_m=[round(float(x_m), 4), round(float(y_m), 4)])
         return drawing_ok(
             drawing=doc.GetTitle, view=str(target.Name),
             edge_a=int(edge_a), edge_b=int(edge_b),

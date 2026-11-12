@@ -413,6 +413,17 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             "detail": ("auto_fit changed the scale: %s — the title block must agree, or the "
                        "shop measures at the wrong ratio"
                        % (created.get("auto_scale_adjustments"),))})
+    # 0.8.319 (report 2026-11-13 §1.3): `create_drawing` now reports a failed title-scale
+    # sync as `ok:false`, which the guard above turns into `create_failed`. That is too
+    # coarse: the sheet EXISTS and is usable, only its ratio label is wrong. Forward the
+    # real cause so the one-click entry point stops being silent about it.
+    _tsync = created.get("title_scale_synced") or {}
+    if isinstance(_tsync, dict) and _tsync.get("error"):
+        creation_warnings.append({
+            "issue": "title_scale_unsynced",
+            "detail": ("视图比例 %s，但标题栏比例未写入：%s。按图取尺寸会读错，"
+                       "交付前必须手工补填标题栏比例。"
+                       % (_tsync.get("text") or "?", _tsync.get("error")))})
 
     # Section 3 of the spec puts every write inside a drawing_batch scope, so that preference
     # changes are undone even when the body raises. Options are the defaults, which switch
@@ -657,8 +668,18 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # via `_receipt_ok`; 0.8.298 computed `ok` from `partial_steps` alone and shipped
     # `ok:true + completeness:"incomplete"` whenever a blocker existed.
     _status = _delivery_status(_blockers, _partial_steps, _failed_steps)
+    _final_ok = _receipt_ok(_status)
     return ok(
-        ok=_receipt_ok(_status),
+        ok=_final_ok,
+        # 0.8.319 (report 2026-11-13 §2.3): `ok:false` used to arrive with NO `message` /
+        # `error` / `hint`, so a caller doing `payload.get("message")` saw `None` and learned
+        # nothing about why. The first blocker IS the reason.
+        error=(None if _final_ok else "delivery_incomplete"),
+        message=(None if _final_ok else
+                 (_blockers[0] if _blockers else "完整性不足，见 incomplete_reasons")),
+        hint=(None if _final_ok else
+              "`blockers` 是阻断项，`pending` 是可以接受但需人看一眼，"
+              "`warnings` 里是过程提示；三者的语义不同。"),
         partial_steps=_partial_steps,
         failed_steps=_failed_steps,
         # Steps that failed but cannot make the DRAWING undeliverable (cleanup, read-only

@@ -4469,3 +4469,73 @@ render_matches = None if (not checked or not _want or _uncertain) else _shape ==
 **「加个 else 分支」最容易踩的坑，是 else 里引用了 if 才有的东西。** 这条错误连
 `static_check` / `regressions` / `check_all` 三套全绿都拦不住，因为静态检查看不到
 「值是否被绑定」。任何跨分支共用的名字，必须在分支之前初始化 —— 这不是风格，是正确性。
+
+---
+
+## 2026-11-13（v0.8.319）标题栏比例没写进去，就不能说 ok（报告 §1 P0 / §2.2 / §2.3）
+
+### §1 三层回执都说 ok，图面仍是 1:1
+
+反馈在 SW2026 的 `gb_a3.drwdot` 上测到：视图 `scale=0.5`，标题栏仍写 1:1，
+而 `create_drawing` / `set_title_block` / `produce_drawing` 全报 `ok: true`。
+
+根因不是新 bug，而是**失败已经记录、结论没有跟着降级**：
+
+```python
+_title_scale_synced = {"text": "1:2",
+                       "error": "set_title_block did not confirm the write",
+                       "written": []}          # ← 失败在这
+result.update(title_scale_synced=_title_scale_synced, ...)
+return ok(**result)                             # ← ok 仍是 True
+```
+
+而这文件自己对 `save_not_written` 写过准则：「`ok:true` + `saved:false` 是同一个谎」并真的
+`return error(...)`。标题栏同步走的是另一条路。
+
+三处改：
+
+| 位置 | 改法 |
+|---|---|
+| `set_title_block` | `apply=True` 且 `written == []` → `error("title_block_not_written", ...)`，带上 `planned` / `unmatched` |
+| `create_drawing` | `title_scale_synced.error` 非空 → `ok=false` + `error: "title_scale_not_synced"` + `message` + 一条 `blockers`（图仍在，只是不能直接交付） |
+| `produce_drawing` | `creation_warnings` 加 `{"issue": "title_scale_unsynced", ...}`，一键入口不再沉默 |
+
+**真机（接槽 A3，`scale=0.5`）**：本机模板的比例格能被读到，同步**成功**
+（`written: [{field: scale, before: "1:2", after: "1:9", ok: true}]`），所以降级分支没被触发。
+单独验证零写入分支：`set_title_block(drw, apply=True)` 不传任何字段 →
+**`ok:false / error: title_block_not_written`**（修前是 `ok:true`）。
+
+**未在失败模板上复现**：反馈的 SW2026 模板取不到比例 note（82 个 note / 0 个 ratio candidate），
+本机 SW2024 的 `gb_a3` 能取到。结论按反馈的 caveat 表述：**该能力依赖模板把比例存成 `INote`**，
+已在 `check_capabilities` 新增 `title_block_scale: partial`。
+
+### §2.2 `add_distance_dimension` 把角度当距离报成功
+
+两条边互相垂直时，`AddDimension2` 生成的是**角度尺寸**，工具却 `ok:true` + `value_mm: null` +
+`note` 自称「这是两条边之间的距离」。
+
+现在：`_is_angular_dimension_type` 命中 → `error("angular_pair_not_a_distance", ...)`，
+`value_deg` 一起给，并提示「换平行的两条边，或改用 `add_angular_dimension`」。
+尺寸保留在图上（它是真实的），只是结论不再冒充距离。
+
+### §2.3 `produce_drawing` 失败时什么都不解释
+
+`ok:false` 回执没有 `message` / `error` / `hint`，调用方 `payload.get("message")` 得到 `None`。
+
+现在失败时：`error: "delivery_incomplete"`、`message` = 第一条 blocker、`hint` 说明
+`blockers` / `pending` / `warnings` 三者语义不同。成功时这三个字段为 `null`。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 312/312（+3 条断言） |
+| 真机 `set_title_block(apply=True)` 零字段 | `ok:false / title_block_not_written` |
+| 真机 `set_title_block(scale="1:9", apply=True)` | `ok:true`，`before 1:2 → after 1:9` |
+
+### 教训
+
+**「把失败记下来」和「让失败影响结论」是两件事。** 0.8.318 已经让
+`title_scale_synced.error` 可见，但只要顶层 `ok` 不动，一键入口的调用方永远看不到它 ——
+这就是「记录」和「判定」之间的那道缝。同一个文件里对 `save_not_written` 早就写对了，
+这次只是把同一条规则用到隔壁分支。

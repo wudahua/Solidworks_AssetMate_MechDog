@@ -9393,7 +9393,10 @@ def assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths():
     # returns. Keeping the old literal here would have blocked the 2026-11-11 P0 fix.
     assert "_delivery_status(_blockers, _partial_steps, _failed_steps)" in pipe, (
         "partial steps no longer reach the completeness derivation")
-    assert "ok=_receipt_ok(_status)" in pipe, (
+    # 0.8.319: the derivation may be hoisted into `_final_ok` (needed so `error`/`message`
+    # use the SAME value) — accept that shape, but still reject a second source of `ok`.
+    assert ("ok=_receipt_ok(_status)" in pipe
+            or ("_final_ok = _receipt_ok(_status)" in pipe and "ok=_final_ok" in pipe)), (
         "top-level ok stopped following the derivation that knows about partial steps")
     assert "partial_steps=_partial_steps" in pipe, "the partial steps are not named"
 
@@ -10005,7 +10008,8 @@ def assert_produce_drawing_reports_completeness():
     assert "_status = _delivery_status(" in body and "**_status," in body, (
         "the receipt does not carry the derived status")
     # THE 0.8.298 P0: `ok` was `not partial_steps` while `completeness` also read blockers.
-    assert "ok=_receipt_ok(_status)" in body, (
+    assert ("ok=_receipt_ok(_status)" in body
+            or ("_final_ok = _receipt_ok(_status)" in body and "ok=_final_ok" in body)), (
         "top-level ok is computed separately again — that is exactly the 0.8.298 P0")
     assert "ok=(not _partial_steps)" not in body, (
         "ok judges only partial steps while completeness judges more: two judges")
@@ -10654,7 +10658,61 @@ def assert_plan_accepts_flat_pattern_and_counts_omissions():
     return "flat_pattern accepted by the plan; omissions counted honestly"
 
 
+def assert_title_scale_failure_lowers_the_verdict():
+    """0.8.319 — report 2026-11-13 §1 (P0): three layers said ok while the sheet said 1:1.
+
+    On a GB template whose title block is a table/block (not `INote`), `set_title_block`
+    planned nothing, wrote nothing, and returned `ok: true`. `create_drawing` recorded the
+    failure in `title_scale_synced.error` but kept its own `ok: true`, and
+    `produce_drawing` never forwarded it. A shop measuring off that sheet reads every
+    linear dimension at the wrong ratio — this file already applies the opposite rule to
+    `save_not_written`: if it did not happen, `ok` is false.
+    """
+    src = _read("tools/drawing.py")
+    create = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "create_drawing")) or ""
+    assert 'result["ok"] = False' in create, (
+        "a failed title-scale sync no longer lowers the top-level ok")
+    assert "title_scale_not_synced" in create
+    assert "blockers" in create
+
+    tblock = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "set_title_block")) or ""
+    assert "title_block_not_written" in tblock, (
+        "`apply=True` with an empty written list still returns ok:true")
+    assert "if not written:" in tblock
+
+    pipe = _read("tools/pipeline.py")
+    assert "title_scale_unsynced" in pipe, (
+        "produce_drawing does not carry the failure into creation_warnings")
+    return "a failed sync lowers ok at every layer"
+
+
+def assert_distance_dimension_refuses_to_call_an_angle_a_length():
+    """0.8.319 — report 2026-11-13 §2.2: `ok:true` for a dimension that is not a distance."""
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_distance_dimension")) or ""
+    assert "angular_pair_not_a_distance" in body, (
+        "an angular result is reported as a successful distance again")
+    return "an angle between the two edges is refused with a reason"
+
+
+def assert_produce_drawing_explains_a_failure():
+    """0.8.319 — report 2026-11-13 §2.3: `ok:false` arrived with no message at all."""
+    src = _read("tools/pipeline.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "produce_drawing")) or ""
+    assert 'error=(None if _final_ok else "delivery_incomplete")' in body, (
+        "a failed produce_drawing still explains nothing")
+    assert "message=(None if _final_ok else" in body
+    return "a failed produce_drawing names its first blocker"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.319 title-scale failure lowers ok", assert_title_scale_failure_lowers_the_verdict),
+    ("0.8.319 distance refuses an angle", assert_distance_dimension_refuses_to_call_an_angle_a_length),
+    ("0.8.319 pipeline explains failures", assert_produce_drawing_explains_a_failure),
     ("0.8.318 delivery default path binds its locals", assert_delivery_check_default_path_cannot_hit_unbound_local),
     ("0.8.318 uncertain render is not a pass", assert_uncertain_render_is_not_a_pass),
     ("0.8.318 plan accepts flat_pattern", assert_plan_accepts_flat_pattern_and_counts_omissions),

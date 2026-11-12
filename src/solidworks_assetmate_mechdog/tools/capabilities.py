@@ -359,6 +359,23 @@ CAPABILITIES = [
                      "`visibility {changed_pixels:2230}`；PDF 目视可见完整角焊缝符号"
                      "（水平参考线 + 直角三角形 + 「6.0」+ 斜引线）。"),
     },
+    {"id": "title_block_scale",
+        "status": "partial",
+        "summary": ("标题栏「比例」格同步 · 只在把比例存成 `INote` 的模板上生效；"
+                    "GB 表格/块结构下从未写入（2026-11-13 实测）"),
+        "why": ("`set_title_block` 的 scale 分支只扫 sheet 的 `INote`，用整串正则匹配比例文本，"
+                "并只接受底部带（`y <= sheet_h * 0.15`）。SW2026 + `gb_a3.drwdot` 实测："
+                "82 个 note 里没有任何一个含 `1:1` / `比例` / 纯比例文本 → `planned: []` → "
+                "`written: []`，图面仍是模板默认的 1:1，而视图是 1:2。"
+                "作者本机 2026-11-06 的模板能读到 `scale: 1:1`（`[0.3591, 0.0304]`）—— "
+                "**这个能力对模板结构有依赖，不是所有 GB 模板都成立**。"),
+        "workaround": ("非 1:1 出图后必须目视确认标题栏比例。`create_drawing` 的 "
+                       "`title_scale_synced.error` 非空就说明没写进去 —— 此时顶层 `ok` 已降级为 "
+                       "`false` + `error: title_scale_not_synced`，`blockers` 里也有一条。"
+                       "手工补填标题栏，或先用 1:1 出图。"),
+        "evidence": ("2026-11-13 真机 SW2026 §1：`scale=0.5, auto_fit=False` → "
+                     "`title_scale_synced: {text: '1:2', error: 'set_title_block did not "
+                     "confirm the write', written: []}`，PDF 目视标题栏仍 1:1。")},
     {"id": "datum_feature_symbol",
         # Report 2026-11-12 §3: `verified` is kept for the SYMBOL (insertable, letter
         # settable, edge-attachable, GB circle shape — all measured). What was misleading
