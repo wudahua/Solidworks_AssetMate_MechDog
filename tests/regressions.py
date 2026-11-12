@@ -10564,7 +10564,32 @@ def assert_angles_are_not_pushed_outside():
     return "angular dimensions are excluded from place_outside and reported"
 
 
+def assert_multi_page_audit_and_dry_run_fields_are_explained():
+    """0.8.317 — report 2026-11-12 §4-1 / §5-2: two fields that went quiet.
+
+    §4-1  `drawing_audit.sheet_annotations` fell from a stable 83 to `null` after the
+          multi-sheet refactor: the per-sheet loop no longer reaches the sheet view, so
+          nothing filled it in. It is now read from `doc.GetFirstView` directly.
+    §5-2  `set_title_block` reported `note_name: null` / `cell_position_m: null` in
+          dry-run, where the note is only CREATED on apply — a bare null reads as "could
+          not read it". `note_name_reason` now says which.
+    """
+    src = _read("tools/drawing.py")
+    audit = ast.get_source_segment(src, _function_node(ast.parse(src), "drawing_audit")) or ""
+    assert "_sheet_view = doc.GetFirstView" in audit, (
+        "sheet_annotations depends on the per-sheet loop again (it was null for that reason)")
+    assert "_sheet_view.GetAnnotationCount" in audit
+
+    tblock = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "set_title_block")) or ""
+    assert "note_name_reason" in tblock, (
+        "a null note_name does not say whether it was unreadable or not created yet")
+    assert "dry_run" in tblock
+    return "sheet_annotations reads the sheet view; a null cell name explains itself"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.317 audit + dry-run fields explained", assert_multi_page_audit_and_dry_run_fields_are_explained),
     ("0.8.316 angles stay put", assert_angles_are_not_pushed_outside),
     ("0.8.315 add_sheet does not claim a frame", assert_add_sheet_does_not_claim_a_frame_it_lacks),
     ("0.8.314 gap confidence zero vs one", assert_gap_confidence_distinguishes_zero_from_one),

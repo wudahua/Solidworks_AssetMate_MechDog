@@ -1500,7 +1500,17 @@ def drawing_audit(drawing_path):
 
         sheet_rows, all_views, warnings, boxes_by_sheet = [], [], [], []
         total_dims = 0
+        # 0.8.317 (report 2026-11-12 §4-1): after the multi-sheet refactor this field went
+        # from a stable 83 to `null` on the same drawing — the per-sheet loop below no
+        # longer reaches the sheet view, so nothing filled it in. The sheet view is always
+        # reachable directly; read it there instead of depending on that loop.
         sheet_annotations = None
+        try:
+            _sheet_view = doc.GetFirstView
+            if _sheet_view is not None:
+                sheet_annotations = int(_sheet_view.GetAnnotationCount)
+        except Exception:
+            pass
 
         for sheet_index, sheet_name in enumerate(names, start=1):
             try:
@@ -4301,9 +4311,27 @@ def _note_name(note):
     if note is None:
         return None
     try:
-        return str(_call_method(note, "GetAnnotation").GetName)
+        import win32com.client as _win_note
+        ann = _win_note.Dispatch(_call_method(note, "GetAnnotation"))
+        # `GetName` is a method on some builds and a property on others; `str()` of the
+        # bound method would be a "name" that means nothing, so dispatch first and read
+        # through both shapes (report 2026-11-12 §5-2 measured a bare `null` here).
+        raw = ann.GetName
+        return str(raw() if callable(raw) else raw) or None
     except Exception:
         return None
+
+
+def _note_name_reason(entry):
+    """Why `note_name` may be null — different cause, different fix."""
+    note = (entry or {}).get("note")
+    if note is None:
+        return ("dry_run：note 只在 apply 时创建，名称与坐标要等 apply 之后才能读；"
+                "`cell_slot_m` 是模板推算的格子位置")
+    if _note_name(note) is None:
+        return ("note 存在，但 `GetAnnotation().GetName` 读不到 —— 该模板的格子可能"
+                "没有独立的注解名，用 `cell_slot_m` 定位")
+    return None
 
 
 def _note_text(annotation):
@@ -4613,9 +4641,20 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
             "drawing": doc.GetTitle,
             "planned": [dict({k: v for k, v in p.items() if k != "note"},
                              note_name=_note_name(p.get("note")),
+                             # 0.8.317 (report 2026-11-12 §5-2): `note_name` and
+                             # `cell_position_m` were quietly `null` in dry-run because the
+                             # note is only CREATED on apply. A bare null reads as "the tool
+                             # could not read it"; this field says which of the two it is.
+                             note_name_reason=_note_name_reason(p),
                              # Never iterate ann_position() directly: it returns None when
                              # the cell has no readable position (P0-1, 2026-11-04).
-                             cell_position_m=_cell_position(p.get("note")))
+                             cell_position_m=_cell_position(p.get("note")),
+                             # Same reasoning as `note_name_reason`: a null coordinate is
+                             # a template limitation, not a silent gap. `cell_slot_m` is
+                             # the usable locator either way.
+                             cell_position_reason=(
+                                 None if _cell_position(p.get("note")) is not None else
+                                 "该格子的注解位置读不到（模板限制），用 `cell_slot_m` 定位"))
                         for p in planned],
             "unmatched": unmatched,
             "skipped_reversed": skipped_reversed,

@@ -4333,3 +4333,51 @@ auto_dimension(include_unmarked=True, place_outside=True)
 
 **「把东西挪到外面」只对点状标注成立。** 带自身几何的标注（角度弧、引线、符号）移动时，
 几何会跟着形变 —— 位置合法不等于图元合法。判断这类改动要先问「它的几何会怎么变」。
+
+---
+
+## 2026-11-12（v0.8.317）最后三项口径收尾（报告 §4-1 / §5-2 / §5-3）
+
+### §4-1 `drawing_audit.sheet_annotations` 变 `null`
+
+多页改造后，这个字段从稳定的 `83` 变成 `null` —— 因为按页遍历的循环不再走到 sheet view，
+没人给它赋值。现在直接从 `doc.GetFirstView` 读，不再依赖那个循环。
+
+真机（接槽 A2 四视图）：`sheet_annotations: 94`、`view_count: 4`。
+
+### §5-2 `set_title_block` 的 `note_name` / `cell_position_m` 恒 `null`
+
+`_note_name` 里 `_call_method(note, "GetAnnotation").GetName` 没做 dispatch，读不到就返回
+`None`，于是两个字段一起静默为空。改为先 `win.Dispatch` 再取 `GetName`（属性/方法两种形态都兼容）。
+
+真机：
+
+```text
+field=material  before='Q235B'  note_name='细节项目256'  cell_position_m=None
+cell_position_reason='该格子的注解位置读不到（模板限制），用 `cell_slot_m` 定位'
+```
+
+`cell_position_m` 在这个模板上确实读不到（注解位置 API 的已知边界），但它不再是一个
+**没有解释的 null** —— `cell_position_reason` 说清原因，`cell_slot_m` 给出可用定位点。
+
+顺带确认 `dry_run` **不会**改文件：调用前后 `mtime` 与字节数完全一致。第一次测到的
+`before` 从空变成 `Q235B`，是**读取能力**被修好，不是 dry-run 泄漏。
+
+### §5-3 `add_dimension_tolerance` 参数单位
+
+参数级描述已是 `in MILLIMETRES (e.g. 0.05 for +0.05)`，全仓库无 `in metres` 残留。
+本轮无需改动，记录在此以免下一轮重复核对。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 306/306（+1 条断言） |
+| 真机 `drawing_audit` | `sheet_annotations: 94`（修前 null） |
+| 真机 `set_title_block(apply=False)` | `note_name='细节项目256'`（修前 null），文件 mtime/大小不变 |
+
+### 教训
+
+**一个 `null` 至少要能回答「为什么是 null」。** 三处字段的修法不同 —— 一处是读错了对象、
+一处是没 dispatch、一处是 API 边界 —— 但对调用方来说都是「空」。不给原因的空，
+和撒谎只差一个字段名。
