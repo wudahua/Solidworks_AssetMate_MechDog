@@ -113,7 +113,17 @@ class Runner:
             print("  FAIL %s -> %s" % (name, detail))
         for name, _, _, detail in skipped:
             print("  SKIP %s -> %s" % (name, detail))
-        return 0 if not failed else 1
+        if failed:
+            return 1
+        # Report 2026-11-12 §4: "all skipped" is NOT a pass. A CI job running `--only` on
+        # a machine without the local fixtures used to get RC=0 with ZERO checks executed,
+        # which reads exactly like a green run. A separate code so scripts can tell the
+        # two apart without parsing stdout.
+        if ran and not passed:
+            print("  NO CHECKS EXECUTED — every selected case was skipped for a missing "
+                  "fixture; this is NOT a passing run.")
+            return 3
+        return 0
 
 
 def require(payload, key=None, value=None, allow_partial=False):
@@ -1672,32 +1682,45 @@ def main():
         part = _pipeline._step_partition
 
         # S3: closing a document that is already gone is NOT a delivery defect.
-        rel, clean = part([{"step": "close_documents", "status": "failed"}], True)
-        assert rel == [] and clean == ["close_documents"], (rel, clean)
+        plan = part([{"step": "close_documents", "status": "failed"}], True)
+        assert plan["failed"] == [] and plan["cleanup"] == ["close_documents"], plan
 
-        # A step that WRITES the sheet still counts.
-        rel, clean = part([{"step": "center_marks", "status": "failed"}], True)
-        assert rel == ["center_marks"] and clean == [], (rel, clean)
+        # Report 2026-11-12 §5: the SAME step in `partial` state used to bypass the
+        # whitelist — six steps measured. One partition must cover both states.
+        for status in ("failed", "partial"):
+            plan = part([{"step": "close_documents", "status": status}], True)
+            assert plan["failed"] == [] and plan["partial"] == [], (
+                "cleanup in %r state leaks into completeness: %r" % (status, plan))
+            assert plan["cleanup"] == ["close_documents"], plan
 
-        # S1: a lost delivery verdict is already a blocker — do not count it twice.
-        rel, clean = part([{"step": "delivery_check", "status": "failed"}], False)
-        assert rel == [] and clean == [], (rel, clean)
-        # …with an INTACT verdict there is no blocker, and this step is read-only anyway:
-        # it cannot change the sheet, so it stays neutral for completeness.
-        rel, clean = part([{"step": "delivery_check", "status": "failed"}], True)
-        assert rel == [] and clean == ["delivery_check"], (rel, clean)
+        # A step that WRITES the sheet still counts, in either state.
+        plan = part([{"step": "center_marks", "status": "failed"}], True)
+        assert plan["failed"] == ["center_marks"] and plan["cleanup"] == [], plan
+        plan = part([{"step": "hole_callouts", "status": "partial"}], True)
+        assert plan["partial"] == ["hole_callouts"] and plan["failed"] == [], plan
 
-        # Whitelist, not blacklist: an unknown future helper is neutral by default, so
-        # adding a step can never again make a finished drawing look broken.
-        rel, clean = part([{"step": n, "status": "failed"} for n in
-                           ("audit", "reconcile", "clamp_dimensions", "some_future_step")],
-                          True)
-        assert rel == [] and len(clean) == 4, (rel, clean)
+        # S1: a lost delivery verdict is already a blocker — counted once, but NAMED.
+        plan = part([{"step": "delivery_check", "status": "failed"}], False)
+        assert plan["failed"] == [] and plan["cleanup"] == [], plan
+        assert plan["superseded"] == ["delivery_check"], (
+            "the crash stopped being enumerable: %r" % (plan,))
+        # …with an INTACT verdict there is no blocker, and the step is read-only anyway.
+        plan = part([{"step": "delivery_check", "status": "failed"}], True)
+        assert plan["failed"] == [] and plan["cleanup"] == ["delivery_check"], plan
+
+        # Whitelist, not blacklist: an unknown future helper is neutral in BOTH states.
+        plan = part([{"step": name, "status": state}
+                     for name in ("audit", "reconcile", "clamp_dimensions",
+                                  "some_future_step")
+                     for state in ("failed", "partial")], True)
+        assert plan["failed"] == [] and plan["partial"] == [], plan
+        assert len(plan["cleanup"]) == 8, plan
 
         # Successful steps never appear.
-        rel, clean = part([{"step": "save", "status": "ok"}], True)
-        assert rel == [] and clean == [], (rel, clean)
-        return "cleanup neutral, writers counted, delivery_check counted once"
+        plan = part([{"step": "save", "status": "ok"}], True)
+        assert plan == {"failed": [], "partial": [], "cleanup": [],
+                        "superseded": []}, plan
+        return "whitelist covers failed+partial; cleanup neutral; crash named once"
 
     r.check("step partition keeps cleanup out of completeness",
             _step_partition_keeps_cleanup_out_of_completeness)
@@ -1741,7 +1764,13 @@ def main():
         came back `ok:false / completeness:"incomplete"` only because closing the document
         found nothing to close. Replayed here by making `close_document` report 0 closed.
         """
-        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        # 0.8.305 (report 2026-11-12 §4): this used the sheet-metal `door.SLDPRT`, which
+        # is gitignored — so on every standard install the check was SKIPped and the new
+        # "real receipt" guarantee rested on a check nobody could run. Any model that can
+        # produce a drawing is enough; `--part` is already required to start.
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any model that can produce a drawing)")
         part = os.path.join(workdir, "smoke_cleanup.SLDPRT")
         drw = os.path.join(workdir, "smoke_cleanup.SLDDRW")
         shutil.copy2(src, part)
@@ -1781,7 +1810,11 @@ def main():
         One crash used to appear as BOTH `blocker` and `failed_step`, so a caller counting
         by `kind` saw two causes. The blocker is the accurate one; the duplicate is gone.
         """
-        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        # 0.8.305 (report 2026-11-12 §4): same fixture problem as the cleanup check —
+        # `--part` instead of a gitignored sheet-metal model.
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any model that can produce a drawing)")
         part = os.path.join(workdir, "smoke_dcout.SLDPRT")
         drw = os.path.join(workdir, "smoke_dcout.SLDDRW")
         shutil.copy2(src, part)
@@ -1802,6 +1835,10 @@ def main():
         assert got.get("completeness") == "incomplete", got
         assert "delivery_check" not in (got.get("failed_steps") or []), (
             "the crash is counted twice: failed_steps=%r" % (got.get("failed_steps"),))
+        # 0.8.305 (report 2026-11-12 §6): folding it into the blocker must not hide it.
+        assert got.get("superseded_steps") == ["delivery_check"], (
+            "the crash is not enumerable anywhere: superseded_steps=%r"
+            % (got.get("superseded_steps"),))
         kinds = [r.get("kind") for r in (got.get("incomplete_reasons") or [])]
         assert kinds.count("blocker") == 1, kinds
         assert kinds.count("failed_step") == 0, kinds

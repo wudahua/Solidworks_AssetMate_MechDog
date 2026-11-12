@@ -83,7 +83,11 @@ def main():
     print("all offline checks passed")
     print("  source-level : %d assertions (text/AST only)"
           % _regression_count())
-    print("  on-machine   : %d checks, NOT run here — `python tests/smoke.py`"
+    # 0.8.305 (report 2026-11-12 §4): this number is a STRING COUNT, not a runnable
+    # suite. Calling them "checks" made "64 on-machine checks" read as coverage when
+    # nothing had executed — and on a standard install most of them cannot run at all.
+    print("  on-machine   : %d r.check() calls counted, 0 executed here "
+          "(needs local fixtures + live SolidWorks) — `python tests/smoke.py`"
           % _smoke_check_count())
     return 0
 

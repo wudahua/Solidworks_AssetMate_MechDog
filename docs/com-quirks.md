@@ -3609,3 +3609,71 @@ degraded_reason = null
 **「没有报错」不等于「放对了」。** 当避让的障碍集只覆盖一类对象时，另一类对象
 必然会被压住，而回执仍然全绿。障碍集要按「图上所有会被文字遮住的东西」定义，
 并且回执必须回报**实际交叠数**，而不是「挪动次数」。
+
+---
+
+## 2026-11-12（v0.8.305）守护能跑起来，白名单管住 partial（报告 §4 / §5 / §6）
+
+### §4 两条真机守护在标准安装下零覆盖
+
+`_cleanup_failure_keeps_the_sheet_deliverable` 与 `_delivery_check_crash_is_counted_once`
+都用 `_require_fixture(_model_dir()/door.SLDPRT)`，而 `测试用例/` 整树被 `.gitignore`
+排除、`SHEET_METAL_DIR` 没有 CLI 覆盖。标准 tarball 安装下：
+
+* 直接跑 `smoke.py` → `missing test model` + `return 2`，**0 条 check 执行**；
+* 传 `--part/--assembly` 让启动通过 → 两条全 `SKIP`，**退出码仍是 0**。
+
+于是提交说明里的 "real receipts compare ok with completeness" 依赖的正是这两条，
+而它们在用户机器上一条都跑不起来 —— 同一模式第七次出现。
+
+改法：
+
+* 两条 check 改用 `args.part`（启动时本来就必须提供），不再依赖钣金夹具。
+* `Runner.summary()`：有 FAIL → 1；**有 run 但 0 passed → 3** + 醒目
+  `NO CHECKS EXECUTED`；否则 0。让 CI 能区分「全 SKIP」与「全 PASS」。
+* `check_all.py` 横幅改成 `N r.check() calls counted, 0 executed here` ——
+  那是个字符串计数，不是可运行套件。
+
+### §5 白名单只护 `failed`，`partial` 绕过
+
+`_step_partition` 只处理 `status == "failed"`，而 `_partial_steps` 完全没过白名单。
+同一个 `close_documents`：`failed` 态已被正确中性化，换成 `partial` 态就重新把完整
+图纸判为 `incomplete`。反馈构造出 6 个这样的绕过（`close_documents` / `audit` /
+`reconcile` / `clamp_dimensions` / `drawing_batch` / 未知辅助步骤）。
+
+改法：一个分区同时处理两种状态，返回值改成 dict：
+
+```python
+{"failed": [...], "partial": [...], "cleanup": [...], "superseded": [...]}
+```
+
+只有白名单内的写入步骤进入 `failed` / `partial`；其余进 `cleanup`，仍进
+`cleanup_incomplete` + `warnings`，但不再影响 `completeness`。
+
+### §6 `delivery_check` 失败从两个列表里消失
+
+0.8.300 为消除双计把它 `continue` 掉了，结果它既不在 `failed_steps` 也不在
+`cleanup_incomplete` —— 想枚举「本次哪些步骤失败」的调用者必须去解析 14 项 `steps[]`
+（含长 `detail`）。现在进 `superseded` 并在回执里给出：
+
+```json
+"superseded_steps": ["delivery_check"]
+```
+
+「只算一次」与「可以枚举」同时成立。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 292/292 |
+| 全 SKIP 退出码（构造 1 SKIP + 1 not-selected） | `RC = 3` + `NO CHECKS EXECUTED`；有 PASS 时 `RC = 0` |
+| 真机 `cleanup failure keeps the sheet deliverable` | PASS，69.9 s（现在走 `--part`） |
+| 真机 `delivery_check crash is counted once` | PASS，64.8 s，`superseded_steps == ["delivery_check"]` |
+| `smoke.py --only "step partition ..."` | PASS：`failed`/`partial` 两态都中性化，8 个未知辅助步骤全进 `cleanup` |
+
+### 教训
+
+**「守护存在」和「守护能跑」是两件事，而只有后者算覆盖。**
+写 check 时要问「在一台没有我这些私有夹具的机器上，它会不会执行」；
+再问「全 SKIP 时退出码是多少」—— 如果都是 0，那这个 check 在 CI 里等于不存在。

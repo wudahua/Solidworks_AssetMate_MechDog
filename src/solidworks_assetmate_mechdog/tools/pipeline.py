@@ -131,26 +131,35 @@ _COMPLETENESS_RELEVANT = (
 
 
 def _step_partition(steps, verdict_ok):
-    """(delivery_relevant_failed, cleanup_failed) from a step list. PURE.
+    """Bucket the non-ok steps. PURE.
 
-    Splitting the two is the point: a cleanup failure is real and must stay OBSERVABLE, but
-    it says nothing about whether the sheet can be delivered.
+    Returns `{"failed": [...], "partial": [...], "cleanup": [...], "superseded": [...]}`:
 
-    `delivery_check` is special-cased. When it fails, `produce_drawing` already synthesises
-    a `blocker` saying the delivery verdict was LOST; recording the same event again as a
-    `failed_step` makes `incomplete_reasons` unreconcilable — two kinds, one cause (report
-    2026-11-11 §5). The blocker is the more accurate classification, so the `failed_step`
-    copy is dropped.
+      * `failed` / `partial` — steps that WRITE the drawing, split by state. Both matter:
+        0.8.300 only filtered `failed`, so the same cleanup step reporting `partial`
+        bypassed the whitelist and made a finished sheet incomplete again (report
+        2026-11-12 §5, six whitelist bypasses measured).
+      * `cleanup` — everything else (cleanup, read-only audits, cosmetic clamping). Real and
+        observable, but it cannot make the sheet undeliverable.
+      * `superseded` — a `delivery_check` failure whose verdict was already turned into a
+        `blocker`. Deduplicating it must not make it INVISIBLE: report 2026-11-12 §6 showed
+        it vanished from both machine-readable lists, so a caller counting failures had to
+        parse 14 `steps[]` entries with long `detail` strings.
     """
-    relevant, cleanup = [], []
+    out = {"failed": [], "partial": [], "cleanup": [], "superseded": []}
     for st in steps:
-        if st.get("status") != "failed":
+        status = st.get("status")
+        if status not in ("failed", "partial"):
             continue
         name = st.get("step")
         if name == "delivery_check" and not verdict_ok:
+            out["superseded"].append(name)
             continue
-        (relevant if name in _COMPLETENESS_RELEVANT else cleanup).append(name)
-    return relevant, cleanup
+        if name in _COMPLETENESS_RELEVANT:
+            out["failed" if status == "failed" else "partial"].append(name)
+        else:
+            out["cleanup"].append(name)
+    return out
 
 
 def _delivery_status(blockers, partial_steps, failed_steps=()):
@@ -615,17 +624,18 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # Chosen: `ok:false` whenever any step is partial, with `partial_steps` naming them.
     # `verdict` is untouched — that is the delivery judgement and it comes from
     # `delivery_check`, not from whether every callout landed.
-    _partial_steps = [st["step"] for st in steps if st.get("status") == "partial"]
     # Report 2026-11-11 §5.3 path C: a non-critical step that CRASHED used to appear in
-    # NEITHER list, so `completeness` said "complete" while a step had failed — worse than
-    # the blocker case, because nothing named it.
-    #
+    # NEITHER list, so `completeness` said "complete" while a step had failed.
     # §4 (over-correction): 0.8.299 fixed that by excluding only `_CRITICAL`, so a pure
-    # cleanup failure made a good drawing incomplete. `_step_partition` now decides with a
-    # WHITELIST of steps that actually write the drawing; everything else is observable via
-    # `cleanup_incomplete` + `warnings` but does not touch `completeness`.
+    # cleanup failure made a good drawing incomplete.
+    # 2026-11-12 §5: the whitelist only filtered `failed`, so the SAME cleanup step in
+    # `partial` state bypassed it — six bypasses measured. One partition decides both.
     _verdict_ok = bool(verdict.get("ok"))
-    _failed_steps, _cleanup_failed = _step_partition(steps, _verdict_ok)
+    _partition = _step_partition(steps, _verdict_ok)
+    _partial_steps = _partition["partial"]
+    _failed_steps = _partition["failed"]
+    _cleanup_failed = _partition["cleanup"]
+    _superseded_steps = _partition["superseded"]
     _cleanup_warnings = ["清理/辅助步骤失败（不影响图纸内容）：%s" % _name
                          for _name in _cleanup_failed]
     # Report 2026-11-10 §5 (F): a caller reading only `verdict` / `blockers` could not tell
@@ -648,6 +658,10 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         # audits, cosmetic clamping). Reported so nothing is hidden, excluded from
         # `completeness` so a good sheet is not thrown away.
         cleanup_incomplete=_cleanup_failed,
+        # 0.8.305 (report 2026-11-12 §6): a `delivery_check` failure is folded into a
+        # `blocker` so it is not counted twice — but folding must not hide it. Named here
+        # so "every failed step is enumerable" holds without parsing `steps[]`.
+        superseded_steps=_superseded_steps,
         # `execution_ok` / `completeness` / `incomplete_reasons`, same words as
         # `add_hole_callouts`. `verdict` and `blockers` keep their old meaning on purpose.
         **_status,

@@ -10200,7 +10200,43 @@ def assert_requirements_block_reports_real_overlaps():
     return "requirements block reports real overlaps and names the layer it ignored"
 
 
+def assert_live_checks_run_without_private_fixtures():
+    """0.8.305 — report 2026-11-12 §4: two live guards could not run on ANY install.
+
+    `_cleanup_failure_keeps_the_sheet_deliverable` and `_delivery_check_crash_is_counted_once`
+    required `door.SLDPRT`, which `.gitignore` excludes wholesale, and `SHEET_METAL_DIR` had
+    no CLI override. On a standard tarball install, `smoke.py` either exited 2 before any
+    check or skipped both and returned 0 — while the commit message claimed "real receipts
+    compare ok with completeness". A guard that cannot execute is not coverage.
+    """
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    for name in ("_cleanup_failure_keeps_the_sheet_deliverable",
+                 "_delivery_check_crash_is_counted_once"):
+        start = sm.find("def %s():" % name)
+        assert start > 0, "%s disappeared" % name
+        end = sm.find("\n    def ", start + 10)
+        body = sm[start:end if end > 0 else start + 5000]
+        assert "args.part" in body, (
+            "%s still needs a gitignored fixture and cannot run on a standard install"
+            % name)
+        # Check the CALL, not the text: the comment above it explains the history and
+        # legitimately names the old fixture.
+        assert "_require_fixture(" not in body, (
+            "%s went back to a private fixture" % name)
+    assert "NO CHECKS EXECUTED" in sm, (
+        "an all-SKIP run still returns 0, which reads as green in CI")
+    assert "return 3" in sm, "the all-SKIP exit code is gone"
+
+    with open(os.path.join(ROOT, "tests", "check_all.py"), encoding="utf-8") as fh:
+        ca = fh.read()
+    assert "0 executed here" in ca, (
+        "the banner still calls a string count a set of runnable 'checks'")
+    return "live guards use --part; all-SKIP exits 3; the banner says 0 executed"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.305 live guards run without fixtures", assert_live_checks_run_without_private_fixtures),
     ("0.8.304 requirements report real overlaps", assert_requirements_block_reports_real_overlaps),
     ("0.8.303 angular never becomes mm", assert_angular_dimensions_never_enter_length_checks),
     ("0.8.301 early returns state execution_ok", assert_every_early_return_states_execution_ok),
