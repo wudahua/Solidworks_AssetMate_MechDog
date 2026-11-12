@@ -1989,7 +1989,9 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
     # Intermediate counts. The receipt only shows the final `placed`, so when a change here
     # silently stops the pass there is nothing to look at (0.8.48 happened exactly that way).
     debug = {"views": len(boxes), "annotations": 0, "skip_before": 0,
-             "skip_no_position": 0, "skip_no_owner": 0, "buckets": 0, "per_side": {}}
+             "skip_no_position": 0, "skip_no_owner": 0, "buckets": 0, "per_side": {},
+             # 0.8.316 (report 2026-11-12 D3): anges are deliberately NOT pushed outside.
+             "skipped_angular": []}
     _t_enum = 0.0
     for view, box in boxes:
         try:
@@ -2017,6 +2019,24 @@ def _push_dimensions_outside(doc, win, before_names, gap_m=0.012, step_m=0.008):
             except Exception:
                 debug["skip_no_position"] += 1
                 continue
+
+            # ── 0.8.316 (report 2026-11-12 D3): never push an ANGLE outward ────────────
+            # An angular dimension's leader arcs around its vertex at that angle's own
+            # radius. Moving its text outward STRETCHES that arc, and on a large radius the
+            # arc crosses the sheet frame — the "big arc + slanted leader entering from
+            # outside the frame" defect that survived three releases. SolidWorks' own
+            # placement keeps the arc next to the geometry, which is strictly safer; an
+            # angular dimension that is not moved cannot be moved outside.
+            try:
+                if _is_angular_dimension_type(
+                        _annotation_dimension_type(annotation, win)):
+                    debug["skipped_angular"].append(
+                        {"name": name,
+                         "position_m": [round(float(position[0]), 4),
+                                        round(float(position[1]), 4)]})
+                    continue
+            except Exception:
+                pass
 
             # Owning view: the box that contains it, else the one with the nearest centre.
             owner_box = None
@@ -2714,10 +2734,13 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                     _save_drawing(doc)
                 except Exception:
                     pass
+            _ang = (outside_debug or {}).get("skipped_angular") or []
             notes.append(
                 "place_outside：%d 条尺寸已推到视图外按侧分层（外扩 %.0f mm + n×%.0f mm），"
                 "失败 %d 条。" % (outside_placed, float(outside_gap_m) * 1000,
-                                 float(outside_step_m) * 1000, len(outside_failed)))
+                                 float(outside_step_m) * 1000, len(outside_failed))
+                + (" %d 条角度/弧长尺寸**未移动** —— 外移会把引线拉长、越过图框"
+                   "（见 `outside_debug.skipped_angular`）。" % len(_ang) if _ang else ""))
             if outside_spills:
                 # Say when the stack had to change sides or compress — otherwise the caller
                 # sees a layout it did not ask for and cannot tell why.

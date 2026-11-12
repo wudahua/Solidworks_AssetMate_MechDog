@@ -10545,7 +10545,27 @@ def assert_add_sheet_does_not_claim_a_frame_it_lacks():
     return "add_sheet reports null + a hard warning instead of claiming a frame"
 
 
+def assert_angles_are_not_pushed_outside():
+    """0.8.316 — report 2026-11-12 D3: the arc that enters from outside the frame.
+
+    An angular dimension's leader arcs around its vertex at the angle's own radius. Pushing
+    its text outward STRETCHES that arc; with a large radius the arc crosses the sheet
+    frame — the "big arc + slanted leader from outside" defect that survived three
+    releases. SolidWorks' own placement keeps the arc next to the geometry, so angles are
+    excluded from `place_outside` and reported in `outside_debug.skipped_angular`.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "_push_dimensions_outside")) or ""
+    assert "skipped_angular" in body, (
+        "angles are pushed outside again; their leaders will cross the frame")
+    assert "_is_angular_dimension_type" in body, (
+        "the exclusion no longer identifies angles by type")
+    return "angular dimensions are excluded from place_outside and reported"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.316 angles stay put", assert_angles_are_not_pushed_outside),
     ("0.8.315 add_sheet does not claim a frame", assert_add_sheet_does_not_claim_a_frame_it_lacks),
     ("0.8.314 gap confidence zero vs one", assert_gap_confidence_distinguishes_zero_from_one),
     ("0.8.314 hole-callout check reports itself", assert_hole_callout_check_is_never_silently_absent),

@@ -163,8 +163,11 @@ CAPABILITIES = [
     },
     {
         "id": "multi_sheet",
-        "status": "verified",
-        "summary": "一个 .SLDDRW 内建多张图纸页 · 可用（0.8.196 起）",
+        # Report 2026-11-12 D1: pages can be created and written to, but a page created by
+        # `NewSheet4` on this build gets the right PAPER SIZE and no frame/title block —
+        # so one .SLDDRW cannot be handed over as a finished multi-page drawing.
+        "status": "partial",
+        "summary": "一个 .SLDDRW 内建多张图纸页 · 能建页、能写视图和尺寸，但**新页没有图框和标题栏**，不能直接交付（0.8.196 起；2026-11-12 更正）",
         "why": ("**我错了 14 个版本。** 从 0.8.180 到 0.8.195 我一直写「`NewSheet4` 是 "
                 "late-bound，pywin32 推不出 11–13 个参数的签名」，还把它记成了"
                 "「客户端环境限制，不是功能缺失」。\n\n"
@@ -181,11 +184,15 @@ CAPABILITIES = [
                 "`TemplateIn` 是**第三个**参数、类型 I4，我却一直把 `None` / `''` 塞在那里，"
                 "所以每种 arity 都在 `类型不匹配 arg 6` 上失败 —— 那是 COM 在派发层就把类型"
                 "挡了，SolidWorks 根本没收到调用。"),
-        "workaround": ("不需要。`add_sheet` 直接用 `gencache` 缓存里的 `IDrawingDoc` 包装"
-                       "late-bound 对象；缓存不存在时才退回 `sheet_creation_blocked` 并给"
-                       "makepy 命令。"),
-        "evidence": ("SW2024 SP4 实测（2026-11-07 07:53，飞达动力轴）：`('图纸1',)` → "
-                     "`['图纸1', '图纸2']`，`ok: true`。"),
+        "workaround": ("**正式交付继续用「多个 .SLDDRW + 外部 PDF 合并」**；单文档多页只适合"
+                       "过程稿。`add_sheet` 之后不要用 `template_applied` 判断能否交付 —— 它现在"
+                       "恒为 `null`，因为本 build 上无法验证图框是否套上。"
+                       "（`add_sheet` 的 gencache 兜底本身仍然有效，缺失时会给 makepy 命令。）"),
+        "evidence": ("SW2024 SP4 实测：2026-11-07 建页成功（`('图纸1',)` → `['图纸1','图纸2']`）；"
+                     "2026-11-12 两页 A2 复核：第 1 页图框+标题栏齐全，第 2 页只有分区字母。"
+                     "`NewSheet4` 的 `TemplateName` 传 `.drwdot` / `.slddrt`、以及 "
+                     "`SetTemplateName + ReloadTemplate(True)` 三种方式均无效；"
+                     "`GetTemplateName()` 回显请求值而非实际值，不能自证。"),
     },
     {
         "id": "sheet_sketch_space",
