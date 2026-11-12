@@ -7768,6 +7768,10 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     # technical-requirements block — which mentions "H7" and "H8" in prose — answer for
     # the dimension.
     window_text = []
+    # `boxes` must live OUTSIDE the try as well: the numeric fallback below needs every
+    # text box on the page when the window does not contain the deviations
+    # (report 2026-11-12 §2).
+    boxes = []
     try:
         n_rects = textpage.count_rects()
         boxes = []
@@ -7803,7 +7807,10 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
             for _b in boxes:
                 _bx = (_b[0] + _b[2]) / 2.0
                 _by = (_b[1] + _b[3]) / 2.0
-                if abs(_bx - _cx) <= 3.0 * _h and abs(_by - _cy) <= 3.0 * _h:
+                # 0.8.312: 3 line heights was too tight — a tolerance stack two rows below
+                # its nominal fell outside the window, and the probe then reported "no
+                # deviation" for a perfectly correct sheet (report 2026-11-12 §2).
+                if abs(_bx - _cx) <= 6.0 * _h and abs(_by - _cy) <= 6.0 * _h:
                     window_text.append(_b[4])
         elif boxes:
             # No exact nominal found: fall back to everything, which is what the old code
@@ -7858,27 +7865,77 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     _has_lo = (bool(_lo_text) and _lo_value not in (None, 0.0)
                and (_lo_text in joined or ("-%s" % _lo_text) in joined))
 
+    # ── Report 2026-11-12 §2 (P0): the sign and the number are SEPARATE text objects ──
+    # SolidWorks writes a tolerance's `+`/`-` apart from its magnitude, so a CORRECT
+    # `Ø14.20 +0.050 / -0.050` arrived here as three bare numbers. Requiring the sign on
+    # the same line produced `basic_no_deviation` plus "readback is right but the sheet is
+    # not what you asked for" — a FALSE NEGATIVE that invites the caller to "fix" a
+    # correct drawing, which is worse than not checking at all.
+    #
+    # The shape test is NUMERIC now: parse each line as a magnitude and compare it with the
+    # requested deviations. The sign-text test stays only as corroboration.
+    def _magnitudes_of(text_lines):
+        out = []
+        for _ln in (text_lines or []):
+            _s = str(_ln).strip().lstrip("+-\u00b1").strip()
+            try:
+                out.append(abs(float(_s)))
+            except Exception:
+                continue
+        return out
+
+    _up_mag = abs(float(upper_mm)) if upper_mm is not None else None
+    _lo_mag = abs(float(lower_mm)) if lower_mm is not None else None
+
+    def _found(mags, target):
+        return bool(target) and any(abs(_m - target) <= 1e-6 for _m in mags)
+
+    _magnitudes = _magnitudes_of(lines)
+    _num_up = _found(_magnitudes, _up_mag)
+    _num_lo = _found(_magnitudes, _lo_mag)
+    _basis = "magnitudes_in_window" if _window_used else "magnitudes_full_page"
+    if _window_used and boxes and not (_num_up or _num_lo):
+        # The window missed them: fall back to the whole page. Comparing MAGNITUDES keeps
+        # the technical-requirements prose ("H7", "H8") from answering for a dimension —
+        # those lines never parse as a bare float.
+        _page_mags = _magnitudes_of([b[4] for b in boxes])
+        _page_up = _found(_page_mags, _up_mag)
+        _page_lo = _found(_page_mags, _lo_mag)
+        if _page_up or _page_lo:
+            _magnitudes, _num_up, _num_lo = _page_mags, _page_up, _page_lo
+            _basis = "magnitudes_full_page_fallback"
+            _window_used = False
+    _num_count = ((int(_num_up) + int(_num_lo))
+                  if (_up_mag or 0) != (_lo_mag or 0) else int(_num_up))
+
     _tol_name = str(tol or "").lower().split("(")[0].strip()
     if "±" in joined and dev and dev in joined:
-        shape = "symmetric_plus_minus"
-    elif hi and hi != nominal and hi_count >= 1 and dev_count == 0:
-        shape = "limit_values"
+        shape, _evidence = "symmetric_plus_minus", "sign_text"
+    elif hi and hi != nominal and hi_count >= 1 and not _num_up and not _num_lo:
+        shape, _evidence = "limit_values", "sign_text"
+    elif _num_up or _num_lo:
+        # One magnitude is enough: a zero lower limit prints no second number.
+        shape, _evidence = "bilateral_two_deviations", "numeric_magnitude"
     elif _has_up or _has_lo:
-        # Either deviation present is enough. `+0.018/0` prints the upper only, and calling
-        # that "unrecognised" was the false negative this check exists to prevent.
-        shape = "bilateral_two_deviations"
+        shape, _evidence = "bilateral_two_deviations", "sign_text"
     elif _tol_name and _tol_name not in ("none", "basic") and dev_count == 0:
-        # A tolerance was requested but nothing of it reached the sheet.
-        shape = "basic_no_deviation"
+        shape, _evidence = "basic_no_deviation", "no_deviation_found"
     elif dev_count == 0:
-        shape = "basic_no_deviation"
+        shape, _evidence = "basic_no_deviation", "no_deviation_found"
     else:
-        shape = "unrecognised"
+        shape, _evidence = "unrecognised", "ambiguous"
 
     return {"checked": True, "shape": shape, "lines": hits[:8],
             "windowed": _window_used,
             "deviation_count": dev_count, "limit_count": hi_count,
-            "upper_present": bool(_has_up), "lower_present": bool(_has_lo),
+            # 0.8.312: how many requested magnitudes were found AS NUMBERS, independent of
+            # whether their signs landed in the same text object.
+            "numeric_deviation_count": _num_count,
+            # What the verdict rests on, so the caller can weigh it (report §2.5 item 3).
+            "basis": _basis,
+            "evidence": _evidence,
+            "upper_present": bool(_has_up or _num_up),
+            "lower_present": bool(_has_lo or _num_lo),
             "lower_expected": _lo_value,
             "expected": tol}
 

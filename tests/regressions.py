@@ -10357,7 +10357,90 @@ def assert_plan_respects_views_and_labels_confidence():
     return "plan honours views; categories carry confidence; symbol warnings say applied"
 
 
+def assert_plan_views_are_validated_and_consistent():
+    """0.8.312 — report 2026-11-12 (plan_drawing §4/§5/§6): three fields, three answers.
+
+    §4  `views_omitted` was "requested minus planned" where planned WAS requested, so it
+        was structurally ALWAYS `[]` — a field that can never report anything reads as
+        "nothing was dropped" for every input.
+    §5  `views=None` raised `TypeError` from `suggested_views=list(views)`: an uncaught
+        exception instead of a structured receipt.
+    §6  `views=[]` produced `suggested_views: []` beside `views_planned: ["front","right"]`.
+
+    BEHAVIOURAL, not textual. The COM ledger read is mocked out, so this runs anywhere —
+    the previous check only grepped the source and would have passed with all three bugs
+    present (report 2026-11-12 §7 made exactly that point).
+    """
+    import unittest.mock as mock
+
+    from solidworks_assetmate_mechdog.tools import ledger as _ledger
+    from solidworks_assetmate_mechdog.tools import planner as _planner
+
+    fake = {"ok": True, "part": "X", "bbox_mm": [100, 50, 20],
+            "stats": {"driving_dimensions": 4}, "features": [], "holes": [],
+            "category": None}
+    model = os.path.join(ROOT, "pyproject.toml")      # only has to EXIST
+
+    with mock.patch.object(_ledger, "build_feature_ledger", return_value=fake):
+        four = _planner.plan_drawing(model, views=("front", "top", "right", "isometric"))
+        assert four["views_planned"] == ["front", "top", "right", "isometric"], four
+        assert four["suggested_views"] == four["views_planned"], four
+        assert four["sheets"][0]["views"] == four["views_planned"], four
+        assert four["views_omitted"] == [], four
+
+        none_case = _planner.plan_drawing(model, views=None)
+        assert none_case.get("ok") is True, (
+            "views=None no longer returns a receipt: %r" % (none_case,))
+        assert none_case["suggested_views"] == ["front", "right"], none_case
+
+        empty = _planner.plan_drawing(model, views=[])
+        assert empty["suggested_views"] == empty["views_planned"] == ["front", "right"], (
+            empty)
+        assert empty["sheets"][0]["views"] == ["front", "right"], empty
+
+        bad = _planner.plan_drawing(model, views=("front", "bogus_view"))
+        assert bad["views_omitted"] == ["bogus_view"], bad["views_omitted"]
+        assert bad["views_omitted_reasons"] == {"bogus_view": "unknown_view"}, bad
+        assert "bogus_view" not in bad["sheets"][0]["views"], bad["sheets"]
+
+        dup = _planner.plan_drawing(model, views=("front", "front"))
+        assert dup["views_planned"] == ["front"], dup
+        assert dup["views_omitted_reasons"] == {"front": "duplicate"}, dup
+    return "validated + deduped + reasons; no TypeError; three fields agree"
+
+
+def assert_tolerance_render_uses_numbers_not_signs():
+    """0.8.312 — report 2026-11-12 §2 (P0): a CORRECT bilateral tolerance judged basic.
+
+    SolidWorks writes a tolerance's `+`/`-` as a SEPARATE text object, so a correct
+    `Ø14.20 +0.050 / -0.050` reached the probe as three bare numbers (`14.20`, `0.050`,
+    `0.050`). The check required the sign on the same line, concluded
+    `basic_no_deviation` and warned "readback is right but the sheet is not what you
+    asked for" — a false negative that invites the caller to "fix" a correct drawing.
+
+    The shape is now decided by MAGNITUDES, with a whole-page fallback when the window
+    misses them, and the receipt says what the verdict rests on (`basis` / `evidence`).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "_tolerance_text_on_pdf")) or ""
+    assert "_magnitudes_of" in body, "the probe went back to matching signed text"
+    assert "numeric_deviation_count" in body, (
+        "the receipt cannot say how many deviations were found as numbers")
+    assert '"basis"' in body and '"evidence"' in body, (
+        "the verdict no longer states what it rests on")
+    assert "magnitudes_full_page_fallback" in body, (
+        "a tolerance outside the window is invisible again")
+    assert "6.0 * _h" in body, (
+        "the window is too tight for a two-line tolerance stack")
+    assert 'shape, _evidence = "bilateral_two_deviations", "numeric_magnitude"' in body, (
+        "a magnitude alone can no longer establish the shape")
+    return "magnitudes decide the shape; window falls back to the whole page"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.312 tolerance render uses numbers", assert_tolerance_render_uses_numbers_not_signs),
+    ("0.8.312 plan views behaviour", assert_plan_views_are_validated_and_consistent),
     ("0.8.311 plan views + confidence", assert_plan_respects_views_and_labels_confidence),
     ("0.8.307 layout fits matches measure", assert_layout_fits_matches_measure_layout),
     ("0.8.306 sheet index + layout columns", assert_sheet_index_and_layout_columns_do_not_lie),

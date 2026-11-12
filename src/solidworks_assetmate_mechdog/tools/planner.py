@@ -152,15 +152,37 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
     # ["front", "right"] while `suggested_views` echoed the caller's list — so a caller who
     # passed four views got a two-view plan with no explanation, and `delivery_check`
     # echoed the label. The plan now uses what was ASKED for.
-    _requested_views = [str(v) for v in (views or ())]
-    _planned_views = _requested_views or ["front", "right"]
+    # Report 2026-11-12 (plan_drawing §4): `views_omitted` used to be computed as
+    # "requested minus planned" where planned WAS requested, so it could never be anything
+    # but `[]`. A field that cannot report anything is worse than no field: it reads as
+    # "nothing was dropped" for every input. The list is now built by VALIDATING each
+    # requested name against the SAME alias table `create_drawing` uses — a second
+    # whitelist here would drift from it, which is how 0.8.310's problems started.
+    _valid_views = set(drawing_tools.VIEW_ALIASES)
+    _requested_views = [str(v).strip().lower() for v in (views or ())]
+    _seen_views, _planned_views, _omitted_views = set(), [], []
+    _omitted_reasons = {}
+    for _v in _requested_views:
+        if _v not in _valid_views:
+            _omitted_views.append(_v)
+            _omitted_reasons[_v] = "unknown_view"
+            continue
+        if _v in _seen_views:
+            _omitted_views.append(_v)
+            _omitted_reasons[_v] = "duplicate"
+            continue
+        _seen_views.add(_v)
+        _planned_views.append(_v)
+    if not _planned_views:
+        # Nothing usable was asked for: fall back, and say so through the omitted list
+        # rather than silently pretending the caller wanted the default.
+        _planned_views = ["front", "right"]
     sheet_plan = [{"sheet": 1,
                    "content": "结构图：%s" % " + ".join(_planned_views),
                    "views": list(_planned_views)}]
     if led.get("category") == "钣金":
         sheet_plan.append({"sheet": 2, "content": "展开图：钣金展开 + 成型对照",
                            "views": ["flat_pattern"]})
-    _omitted_views = [v for v in _requested_views if v not in _planned_views]
 
     return ok(
         model=led.get("part"),
@@ -170,10 +192,16 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
         category_confidence=led.get("category_confidence"),
         box_mm=box,
         paper=paper,
-        suggested_views=list(views),
+        # Report 2026-11-12 (plan_drawing §5/§6): `list(views)` raised TypeError for
+        # `views=None` and produced `suggested_views: []` beside `views_planned: [...]`
+        # for `views=[]`. All three fields now come from the same validated list.
+        suggested_views=list(_planned_views),
         views_requested=(_requested_views or None),
         views_planned=list(_planned_views),
         views_omitted=_omitted_views,
+        # WHY each one was dropped: "unknown_view" or "duplicate". Without this the list
+        # mixes two different problems into one bucket.
+        views_omitted_reasons=_omitted_reasons,
         driving_dimensions=total_driving,
         keep_count=len(keep),
         arc_lengths_skipped=len(arc_skipped),

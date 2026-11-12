@@ -4025,3 +4025,72 @@ add_note("倒角 C2（2x45°），外径 Ø30 ±0.1")
 
 **「建议」和「已完成」必须用不同字段表达。** 一条 warning 如果既可能是待办也可能
 是回执，调用方只能去猜；`applied: true` 比任何措辞都省事。
+
+---
+
+## 2026-11-12（v0.8.312）公差渲源自证不再假阴性 + `views` 三件套同源（报告 §2 / §4-§7）
+
+### §2 P0：正确的双边公差被判成基本尺寸
+
+`_tolerance_text_on_pdf` 用「带符号文本」判形状。但 SolidWorks 导出 PDF 时把公差的
+`+`/`-` 写成**独立文本对象**，一份正确的 `Ø14.20 +0.050 / -0.050` 到解析器里是三行裸数字：
+
+```
+'14.20'
+'0.050'
+'0.050'
+```
+
+于是 `deviation_count: 0` → `basic_no_deviation` → `pdf_render_matches: false` +
+警告「readback 是对的，但印出来的不是这个公差」。**假阴性会诱导调用方去"修"一张正确的图**，
+方向比假阳性更危险。
+
+改法：
+
+* **按数值判形状**：把每行解析成量值（去掉 `+`/`-`/`±` 前缀后 `float()`），与请求的上下偏差
+  比对。符号是否同行不再参与。
+* **窗口从 3 行高放宽到 6 行高**，并在窗口内找不到偏差时**回退到全页**（`basis:
+  "magnitudes_full_page_fallback"`）。回退也只比数值 —— 技术要求正文里的 `H7` 解析不出 float，
+  不会顶替尺寸。
+* 回执新增 `numeric_deviation_count` / `basis` / `evidence`（`numeric_magnitude` 或 `sign_text`），
+  让调用方知道这个结论有多强。
+
+真机（`door` 建图 + 0.20 mm 尺寸 + `bilateral ±0.05`）：
+
+```text
+shape = "bilateral_two_deviations"     # 修前 basic_no_deviation
+basis = "magnitudes_in_window"
+evidence = "numeric_magnitude"
+numeric_deviation_count = 1
+deviation_count = 2
+lines = ["0.20", "0.050", "0.050"]     # 两个偏差现在都在窗口内
+pdf_render_matches = True              # 修前 false
+```
+
+### §4-§7 `views` 三件套：一个字段三个答案
+
+| 问题 | 改法 |
+|---|---|
+| `views_omitted` 按「请求 − 计划」算，而计划就是请求 → **恒空** | 逐个校验：非法名进 `omitted` 且标 `unknown_view`，重复标 `duplicate`，都不进 `sheets[].views` |
+| `views=None` → `suggested_views=list(views)` 抛 **TypeError** | 三个字段全部取校验后的列表 |
+| `views=[]` → `suggested_views: []` 与 `views_planned: [front,right]` 自相矛盾 | 同上，三者同源 |
+| 只有 AST 断言，行为覆盖 0 | 新增**行为断言**：mock 掉 COM 台账读取，真调 `plan_drawing` 验 5 种输入 |
+
+视图名白名单复用 `drawing.VIEW_ALIASES`（`create_drawing` 用的同一张表），**不另写一份** ——
+第二份白名单一定会漂移。
+
+行为断言实测覆盖：4 视图全采纳、`None` 不崩且回默认、`[]` 三字段一致、`bogus_view` 进
+`omitted` 且带 `unknown_view`、`(front,front)` 去重且标 `duplicate`。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 298/298（+2 条断言，其中一条是行为断言） |
+| 真机 `add_dimension_tolerance(verify_render=True)` | `shape: bilateral_two_deviations` / `matches: True` |
+
+### 教训
+
+**判据不能依赖「渲染器怎么摆字符」。** 符号、数字、单位分属不同文本对象是导出器的自由；
+能稳定比较的是**数值**。同样，一个字段如果按构造永远只能是同一个值，那它不是字段，
+是常数 —— 应该要么真算，要么删掉。
