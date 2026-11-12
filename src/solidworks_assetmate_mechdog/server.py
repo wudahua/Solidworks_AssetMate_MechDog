@@ -194,6 +194,7 @@ _TOOL_PROFILES = {
         "plan_drawing", "produce_drawing", "create_drawing", "drawing_audit",
         "delivery_check", "reconcile_ledger", "plan_dimension_gaps", "survey_drawings",
         "survey_dimensions_by_view", "build_feature_ledger",
+        "export_sketch_geometry",
         "add_sheet", "activate_sheet", "add_view_to_sheet", "place_views", "set_view",
         "move_view", "set_view_scale", "delete_view", "add_sheet_line", "set_title_block",
         "add_section_view", "add_detail_view", "add_flat_pattern_view",
@@ -1343,6 +1344,36 @@ def assign_materials(
     return _json(material_tools.assign_materials(
         paths, rules=rules, database=database, config=config, save=save, apply=apply,
     ))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def export_sketch_geometry(
+    model_path: Annotated[str, Field(description="Part to read (.SLDPRT), absolute path.")],
+    include_points: Annotated[bool, Field(description="Include every sketch point (needed to rebuild the outline, and what the arc endpoints are recovered from).")] = True,
+    max_sketches: Annotated[int, Field(description="Stop after this many sketches; raise it for a part with hundreds of features.")] = 200,
+) -> str:
+    """Read every sketch's segment geometry — the input a full rebuild needs.
+
+    `build_feature_ledger` describes a part's DRIVING DIMENSIONS; this describes its
+    OUTLINE. Per sketch: `segments[]` with `kind` (line / arc), `length_m`, and
+
+      * line -> exact `start_m`, `direction`, and `end_m = start + direction x length`;
+      * arc  -> exact `center_m`, `axis`, `radius_m`, `sweep_deg`, plus `start_m` / `end_m`
+        recovered from the sketch's own point set (`endpoints_source` says how, or why not).
+
+    **READ `plane_frame` BEFORE TRUSTING THE COORDINATES.** It is always `null` on this
+    binding (`ModelToSketchTransform` answers MEMBERNOTFOUND, `GetReferenceEntity` needs an
+    argument), so the coordinates are SKETCH-LOCAL: Z is 0 for a planar sketch and the
+    plane's origin/axes must be confirmed in the UI. `plane_frame_available: false` on the
+    receipt says the same thing in one field.
+
+    Never guesses: an arc whose endpoints do not resolve to a unique point pair gets
+    `start_m: null` / `end_m: null` and the reason in `endpoints_source`. Read-only — the
+    document is opened, read and closed without saving.
+    """
+    return _json(drawing.export_sketch_geometry(
+        model_path, include_points=include_points, max_sketches=max_sketches))
 
 
 @mcp.tool()

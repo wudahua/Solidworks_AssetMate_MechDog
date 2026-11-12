@@ -53,7 +53,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 
 ## 三个能力域
 
-### 一、装配与零件（13）
+### 一、装配与零件（14）
 
 | 工具 | 作用 |
 |---|---|
@@ -70,6 +70,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `assign_materials` | 按名称关键词智能分配（标准件→碳钢，结构件→铝） |
 | `material_library` | 列本地材质库名称（解析受限，见边界） |
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
+| `export_sketch_geometry` | **草图逐点几何**（0.8.309 新增）：每段线/弧的长度、直线端点由 `LineParams`+`GetLength` 精确算出、圆弧给圆心/轴/半径/包角并从点集反解端点；`plane_frame` 恒 null（本 binding 读不到基准面），坐标是**草图局部坐标** |
 
 ### 二、工程图（43）
 
@@ -136,7 +137,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
 | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案；回显**运行中的版本 + 源码路径 + 解释器** |
 | `ping` | **最轻的存活探针**（约 18 ms，不碰 ActiveDoc）：SW 版本、往返延迟、上一个工具、自愈计数 |
-| `list_tool_profiles` | 72 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
+| `list_tool_profiles` | 73 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
 | `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
 | `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
 
@@ -468,7 +469,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 72 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 73 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash

@@ -3847,3 +3847,71 @@ edge_a.Select2(False, 0) → edge_b.Select2(True, 0) → AddDimension2(x, y, 0)
 
 **「能创建」和「创建对了」必须分开断言。** `AddDimension2` 在平行边之间不会报错，
 它会给你一个长度；不校验类型就报成功，等于把「选错了边」伪装成「标好了角度」。
+
+---
+
+## 2026-11-12（v0.8.309）新增 `export_sketch_geometry`：草图逐点几何（报告 §3，最后一个 P0）
+
+### 先探测，再写代码
+
+这个 binding 上「草图几何」有一半能读、一半不能。动手前逐项实测：
+
+| API | 结果 |
+|---|---|
+| `sketch.GetSketchSegments` | ✅ 段列表（late-bound 可读） |
+| `sketch.GetSketchPoints` | ✅ 每个点 `X/Y/Z`（草图坐标） |
+| `sketch.GetSketchContours` | ✅ `contour.IsClosed` |
+| `seg.GetType` | ✅ `0` = 直线，`1` = 圆弧 |
+| `seg.GetLength` | ✅ 米 |
+| `seg.GetCurve` → `LineParams` | ✅ `[ox,oy,oz, dx,dy,dz]`（原点 + 单位方向） |
+| `seg.GetCurve` → `CircleParams` | ✅ `[cx,cy,cz, ax,ay,az, radius]` |
+| `sketch.ModelToSketchTransform` | ❌ `DISP_E_MEMBERNOTFOUND` |
+| `sketch.GetReferenceEntity` | ❌ 需要参数 |
+| `ISketchLine.GetStartPoint2` | ❌ 派生接口对 late binding 不可见 |
+
+所以：**直线端点可精确算**（`origin`、`origin + direction × length`）；**圆弧没有端点**，
+只有圆心/轴/半径/长度。
+
+### 圆弧端点从点集反解，不唯一就报 null
+
+弧长 `L` 与半径 `r` 定包角 `θ = L/r`，弦长 `2r·sin(θ/2)`。草图点集里同时满足
+「到圆心距离 = r」且「两点距离 = 弦长」的那一对就是端点。纯几何、可复算。
+
+反解不唯一（或最近候选差超过弦长 2%）时返回 `start_m: null` / `end_m: null`，
+`endpoints_source` 写原因 —— **一个错的端点会让整份重建模型全错**，猜不得。
+
+### 基准面 frame 明确 null
+
+`plane_frame` 恒为 `null`，配 `plane_frame_reason` 与顶层
+`plane_frame_available: false`：坐标是**草图局部坐标**（平面草图 Z 恒 0），
+基准面 origin/xdir/ydir 必须回界面确认。这是「拿不到就说拿不到」，不是省略。
+
+### 回执
+
+```json
+{"ok": true, "units": "m", "sketch_count": 17, "plane_frame_available": false,
+ "sketches": [{"name": "草图1", "segment_count": 9, "point_count": 13, "closed": true,
+   "segments": [
+     {"index": 0, "kind": "arc", "type": 1, "length_m": 0.034502,
+      "center_m": [0.11448, -0.08625, 0.0], "axis": [0.0, 0.0, 1.0],
+      "radius_m": 0.0885, "sweep_deg": 22.336,
+      "start_m": [0.113405, -0.174749, 0.0], "end_m": [0.147118, -0.168519, 0.0],
+      "endpoints_source": "matched_from_sketch_points"},
+     {"index": 4, "kind": "line", "type": 0, "length_m": 0.865091,
+      "start_m": [-0.7517, -0.1748, 0.0], "direction": [1.0, 0.0, 0.0],
+      "end_m": [-0.113391, -0.1748, 0.0], "endpoints_source": "line_params"}]}]}
+```
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `static_check` | `OK (73 tools, ... README in sync, every parameter documented)` |
+| `check_all.py` | 295/295 |
+| 真机 `sketch geometry is exact and honest` | **PASS，97.6 s**：17 个草图、**235 条直线段逐条验证 `end == start + direction × length`**、8 条圆弧 `radius > 0` 且都有端点溯源、`plane_frame` 全为 null |
+
+### 教训
+
+**先探 API，再写功能。** 这个 binding 上「看起来该有」的方法有三分之二是
+`MEMBERNOTFOUND`；凭文档写完再调试，等于把每一处不可用都变成一次静默失败。
+探测脚本本身就是交付物的一部分 —— 它决定了回执里哪些字段能给值、哪些必须写 null。

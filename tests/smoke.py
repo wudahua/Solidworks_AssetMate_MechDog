@@ -1802,6 +1802,46 @@ def main():
     r.check("angular dimension is native or refused",
             _angular_dimension_is_native_or_refused)
 
+    def _sketch_geometry_is_exact_and_honest():
+        """Report 2026-11-12 §3 (the last P0 gap): the outline, point by point.
+
+        Probed on this binding BEFORE writing the tool: `LineParams` + `GetLength` give
+        exact line endpoints, `CircleParams` gives arc centre/axis/radius, and arc
+        endpoints are recovered from the sketch's own point set. `plane_frame` is NOT
+        readable (`ModelToSketchTransform` -> MEMBERNOTFOUND), so the receipt must say so
+        in a field instead of implying model coordinates.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that has a sketch)")
+        got = drawing.export_sketch_geometry(src)
+        require(got)
+        assert got.get("sketch_count"), "no sketch geometry was read at all"
+        assert got.get("plane_frame_available") is False, (
+            "plane_frame claims to be available; ModelToSketchTransform does not work here")
+        kinds, checked_lines, checked_arcs = set(), 0, 0
+        for sk in got.get("sketches") or []:
+            assert sk.get("plane_frame") is None, (
+                "plane_frame is not null, but no API on this binding can produce it")
+            for seg in sk.get("segments") or []:
+                kinds.add(seg.get("kind"))
+                if seg.get("kind") == "line" and seg.get("end_m"):
+                    for a, d, b in zip(seg["start_m"], seg["direction"], seg["end_m"]):
+                        assert abs(a + d * seg["length_m"] - b) < 1e-6, (
+                            "line end != start + direction x length: %r" % (seg,))
+                    checked_lines += 1
+                if seg.get("kind") == "arc":
+                    assert seg.get("radius_m") and seg["radius_m"] > 0, seg
+                    assert seg.get("endpoints_source"), (
+                        "an arc carries no endpoint provenance: %r" % (seg,))
+                    checked_arcs += 1
+        assert checked_lines, "no line segment was verified"
+        assert kinds & {"line", "arc"}, "neither a line nor an arc was read: %r" % kinds
+        return ("%d sketches, %d lines verified (%d arcs), kinds=%s, plane_frame=null"
+                % (got.get("sketch_count"), checked_lines, checked_arcs, sorted(kinds)))
+
+    r.check("sketch geometry is exact and honest", _sketch_geometry_is_exact_and_honest)
+
     def _cleanup_failure_keeps_the_sheet_deliverable():
         """Report 2026-11-11 §4 (S3), on a REAL drawing.
 

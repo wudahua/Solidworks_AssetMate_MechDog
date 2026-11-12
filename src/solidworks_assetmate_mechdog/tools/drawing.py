@@ -12812,3 +12812,273 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("layout_dimensions_failed", str(exc))
+
+
+# ── Sketch geometry export (report 2026-11-12 §3, the last P0 gap) ───────────────────────
+# "Rebuild this part in any CAD system" needs the sketch outline point by point, not just
+# the driving dimensions. Probed on this binding before writing anything:
+#
+#   sketch.GetSketchSegments        OK   (list of ISketchSegment, late-bound)
+#   sketch.GetSketchPoints          OK   (ISketchPoint with X/Y/Z, sketch coordinates)
+#   sketch.GetSketchContours        OK   (contour.IsClosed)
+#   sketch.ModelToSketchTransform   FAIL DISP_E_MEMBERNOTFOUND  -> no plane frame
+#   sketch.GetReferenceEntity       FAIL needs an argument      -> no plane frame
+#   seg.GetType                     OK   0 = line, 1 = arc
+#   seg.GetLength                   OK   metres
+#   seg.GetCurve                    OK
+#   curve.LineParams                OK   [ox, oy, oz, dx, dy, dz]  (origin + unit dir)
+#   curve.CircleParams              OK   [cx, cy, cz, ax, ay, az, radius]
+#   ISketchLine.GetStartPoint2      FAIL the derived interface is invisible to late binding
+#
+# So a LINE gives exact endpoints (origin, origin + direction x length) and an ARC gives
+# exact centre/axis/radius but NOT its endpoints. The endpoints are recovered from the
+# sketch's own point set — and only when exactly one pair matches the arc's chord.
+
+SKETCH_SEGMENT_LINE = 0
+SKETCH_SEGMENT_ARC = 1
+
+
+def _seg_point(value):
+    """Three floats from an `ISketchPoint`-like object, or None."""
+    try:
+        return [round(float(value.X), 6), round(float(value.Y), 6), round(float(value.Z), 6)]
+    except Exception:
+        return None
+
+
+def _dist3(a, b):
+    try:
+        return sum((float(x) - float(y)) ** 2 for x, y in zip(a[:3], b[:3])) ** 0.5
+    except Exception:
+        return None
+
+
+def _arc_endpoints(center, radius, length, points, tol=1e-4):
+    """(start, end, source) for an arc, from the sketch's point set. PURE.
+
+    An arc reports centre/axis/radius and its LENGTH, not its endpoints (the derived
+    `ISketchArc` interface is invisible to late binding). The sketch's point set contains
+    them: the two points that lie ON this circle, at a chord distance of
+    `2*r*sin(len/(2r))`.
+
+    Returns `(None, None, reason)` instead of guessing when the pair is not unique — a
+    wrong endpoint silently corrupts every downstream rebuild.
+    """
+    import math
+
+    try:
+        radius = float(radius)
+        length = float(length)
+    except (TypeError, ValueError):
+        return None, None, "bad_arc_parameters"
+    if radius <= 0 or length <= 0:
+        return None, None, "bad_arc_parameters"
+    chord = 2.0 * radius * math.sin(min(length / radius, math.pi) / 2.0)
+    on_circle = [p for p in (points or [])
+                 if p and _dist3(p, center) is not None
+                 and abs(_dist3(p, center) - radius) <= max(tol, radius * 1e-3)]
+    if len(on_circle) < 2:
+        return None, None, "fewer than two sketch points lie on this circle"
+    best = None
+    for i in range(len(on_circle)):
+        for j in range(i + 1, len(on_circle)):
+            d = _dist3(on_circle[i], on_circle[j])
+            if d is None:
+                continue
+            if best is None or abs(d - chord) < best[0]:
+                best = (abs(d - chord), on_circle[i], on_circle[j], d)
+    if best is None:
+        return None, None, "no usable point pair"
+    if best[0] > max(tol, chord * 0.02):
+        return None, None, ("no point pair matches the arc chord (nearest is %.4f mm off)"
+                            % (best[0] * 1000.0))
+    return best[1], best[2], "matched_from_sketch_points"
+
+
+def _sketch_segments(sketch):
+    """Every segment of one sketch as plain dicts. Never invents a coordinate."""
+    import win32com.client as win
+
+    points = []
+    for raw in (sketch.GetSketchPoints or ()):
+        pt = _seg_point(win.Dispatch(raw))
+        if pt:
+            points.append(pt)
+
+    segments = []
+    for index, raw in enumerate(sketch.GetSketchSegments or ()):
+        try:
+            seg = win.Dispatch(raw)
+        except Exception:
+            continue
+        try:
+            kind_code = int(seg.GetType)
+        except Exception:
+            kind_code = None
+        try:
+            length_m = round(float(seg.GetLength), 6)
+        except Exception:
+            length_m = None
+        entry = {"index": index, "type": kind_code, "length_m": length_m}
+        curve = None
+        try:
+            curve = win.Dispatch(seg.GetCurve)
+        except Exception:
+            curve = None
+        if kind_code == SKETCH_SEGMENT_LINE:
+            entry["kind"] = "line"
+            origin = direction = None
+            if curve is not None:
+                try:
+                    vals = [float(v) for v in curve.LineParams]
+                    if len(vals) >= 6:
+                        origin = [round(v, 6) for v in vals[:3]]
+                        direction = [round(v, 6) for v in vals[3:6]]
+                except Exception:
+                    pass
+            entry["start_m"] = origin
+            entry["direction"] = direction
+            if origin and direction and length_m:
+                entry["end_m"] = [round(o + d * length_m, 6)
+                                  for o, d in zip(origin, direction)]
+                entry["endpoints_source"] = "line_params"
+            else:
+                entry["end_m"] = None
+                entry["endpoints_source"] = None
+        elif kind_code == SKETCH_SEGMENT_ARC:
+            entry["kind"] = "arc"
+            center = axis = radius = None
+            if curve is not None:
+                try:
+                    vals = [float(v) for v in curve.CircleParams]
+                    if len(vals) >= 7:
+                        center = [round(v, 6) for v in vals[:3]]
+                        axis = [round(v, 6) for v in vals[3:6]]
+                        radius = round(vals[6], 6)
+                except Exception:
+                    pass
+            entry["center_m"] = center
+            entry["axis"] = axis
+            entry["radius_m"] = radius
+            if radius and length_m:
+                import math as _math
+                entry["sweep_deg"] = round(_math.degrees(length_m / radius), 3)
+            else:
+                entry["sweep_deg"] = None
+            start, end, source = _arc_endpoints(center, radius, length_m, points)
+            entry["start_m"] = start
+            entry["end_m"] = end
+            entry["endpoints_source"] = source
+        else:
+            entry["kind"] = "other"
+            entry["start_m"] = None
+            entry["end_m"] = None
+            entry["endpoints_source"] = "unsupported_segment_type"
+        segments.append(entry)
+
+    closed = None
+    try:
+        contours = list(sketch.GetSketchContours or ())
+        if contours:
+            closed = bool(win.Dispatch(contours[0]).IsClosed)
+    except Exception:
+        closed = None
+
+    return {"segments": segments, "points": points, "closed": closed}
+
+
+def export_sketch_geometry(model_path, include_points=True, max_sketches=200):
+    """Read every sketch's segment geometry — the input a full rebuild needs.
+
+    Report 2026-11-12 §3 (P0): the toolkit could describe a part's DRIVING DIMENSIONS but
+    not its sketch OUTLINE, so "rebuild this in any CAD system" still needed an external
+    MCP plus a hand-written document. This fills that gap for the geometry that is actually
+    readable on this binding.
+
+    What IS returned, per sketch:
+      * `segments[]` — `kind` (line / arc / other), length, and for a line the exact
+        `start_m` + `direction` + computed `end_m`; for an arc the exact `center_m` /
+        `axis` / `radius_m` / `sweep_deg`, plus endpoints recovered from the sketch's own
+        point set (`endpoints_source`).
+      * `points[]` — every sketch point, in SKETCH coordinates (metres).
+      * `closed` — from `GetSketchContours()[0].IsClosed`.
+
+    What is NOT, and is reported as null rather than guessed:
+      * `plane_frame` — `ModelToSketchTransform` answers DISP_E_MEMBERNOTFOUND and
+        `GetReferenceEntity` needs an argument, so the sketch→model transform cannot be
+        read here. Coordinates are SKETCH-local: Z is 0 for a planar sketch, and the
+        plane's origin/directions must be confirmed in the UI.
+      * an arc whose endpoints do not resolve to a unique point pair — `endpoints_source`
+        carries the reason instead of a coordinate.
+
+    Read-only: the document is opened, read and closed without saving.
+    """
+    try:
+        import win32com.client as win
+
+        path = os.path.abspath(model_path)
+        if not os.path.exists(path):
+            return error("bad_input", "model not found: %s" % path)
+        doc = open_document(path, SW_DOC_PART)
+        if doc is None:
+            return error("model_unreadable", "could not open %s" % path)
+        sketches = []
+        skipped_unreadable = 0
+        try:
+            feature = doc.FirstFeature
+            guard = 0
+            while feature is not None and guard < 2000 and len(sketches) < int(max_sketches):
+                guard += 1
+                try:
+                    ftype = str(feature.GetTypeName2)
+                    fname = str(feature.Name)
+                except Exception:
+                    feature = feature.GetNextFeature
+                    continue
+                if ftype in ("Sketch", "ProfileFeature", "3DSketch"):
+                    try:
+                        sketch = win.Dispatch(feature.GetSpecificFeature2)
+                        data = _sketch_segments(sketch)
+                    except Exception:
+                        skipped_unreadable += 1
+                        data = None
+                    if data is not None:
+                        entry = {"name": fname, "feature_type": ftype,
+                                 "segment_count": len(data["segments"]),
+                                 "point_count": len(data["points"]),
+                                 "closed": data["closed"],
+                                 "segments": data["segments"],
+                                 # `null` for a documented reason, never a guess.
+                                 "plane_frame": None,
+                                 "plane_frame_reason": (
+                                     "ModelToSketchTransform is not available on this "
+                                     "binding; coordinates are SKETCH-local (Z=0 for a "
+                                     "planar sketch)")}
+                        if include_points:
+                            entry["points"] = data["points"]
+                        sketches.append(entry)
+                feature = feature.GetNextFeature
+        finally:
+            try:
+                close_document(path)
+            except Exception:
+                pass
+
+        return ok(
+            model=path,
+            units="m",
+            sketch_count=len(sketches),
+            sketches=sketches,
+            skipped_unreadable=skipped_unreadable,
+            geometry_available=("segments" if sketches else "none"),
+            plane_frame_available=False,
+            note=("坐标是**草图局部坐标**（米），Z 对平面草图为 0；基准面 origin/xdir/ydir "
+                  "在本 binding 读不到（`ModelToSketchTransform` 报 MEMBERNOTFOUND），"
+                  "`plane_frame` 因此是 null 而不是猜出来的值。直线端点由 "
+                  "`LineParams` + `GetLength` 精确算出；圆弧给圆心/轴/半径/包角，"
+                  "端点由草图点集反解，反解不唯一时 `endpoints_source` 写明原因。"
+                  "本工具只读：打开、读取、关闭，不保存。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("sketch_geometry_failed", str(exc))

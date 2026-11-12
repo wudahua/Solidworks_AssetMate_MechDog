@@ -4416,8 +4416,8 @@ def assert_docs_numbers_match_the_code():
                     registered += 1
     # 71 since v0.8.284 (`list_tool_profiles`). Bump this line IN THE SAME COMMIT that adds
     # a tool — the check exists so a new tool cannot slip in without anyone noticing.
-    assert registered == 72, (
-        "expected 72 registered tools, AST found %d — update this expectation "
+    assert registered == 73, (
+        "expected 73 registered tools, AST found %d — update this expectation "
         "deliberately when a tool is added" % registered)
 
     # Whitespace-tolerant because README wraps the sentence; `assert m` because not
