@@ -4303,11 +4303,24 @@ if _is_angular_dimension_type(_annotation_dimension_type(annotation, win)):
 回执新增 `outside_debug.skipped_angular`（每条含 `name` + `position_m`），
 `notes` 里也会写「N 条角度/弧长尺寸未移动」。调用方据此知道哪些尺寸保持原位。
 
-### 未真机命中（如实记录）
+### 真机验证（`接槽.SLDPRT`，A2 四视图）
 
-本机没有「模型自带角度驱动尺寸」的零件：`P05_karetku` 全量导入后 `inserted: 0`，
-`skipped_angular: []`。反馈的 `接槽.SLDPRT` 有 45° 倒角驱动尺寸，那才会命中这条分支。
-本轮只验证了代码路径可执行（不报错、`outside_debug` 结构正常），**没有验证命中后的图面效果**。
+```text
+create: True
+auto_dimension(include_unmarked=True, place_outside=True)
+  inserted: 33   total: 23   placed_outside: 21
+  skipped_angular: [
+    {"name": "D3", "position_m": [0.2822, 0.3116]},
+    {"name": "D2", "position_m": [0.2599, 0.2620]}]
+```
+
+导出 PDF（54 506 B）→ `render_drawing(scale=2.0)` 目视：
+
+* 图框 + 右下角标题栏齐全；
+* **框外没有任何线条、圆弧、引线或文字**（四周干净，分区字母在框内）；
+* 两处 45° 角度尺寸都留在原位，弧贴在几何旁，没有再被拉到远处。
+
+修前这两条正是被外置推出去、弧跨出图框的那一类。**D3 关闭。**
 
 ### 验证
 
