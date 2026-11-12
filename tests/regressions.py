@@ -10438,7 +10438,53 @@ def assert_tolerance_render_uses_numbers_not_signs():
     return "magnitudes decide the shape; window falls back to the whole page"
 
 
+def assert_delete_dimensions_reads_display_dimensions():
+    """0.8.313 — report 2026-11-12 D2: `delete_dimensions` could not delete ANYTHING.
+
+    The collection loop passed `IAnnotation` to `_dimension_measure`, which calls
+    `GetDimension2(0)` — that method lives on `IDisplayDimension`, so the call raised and
+    the surrounding `except: continue` swallowed it. `rows` came back EMPTY: `removed: 0 /
+    failed: 0`, with the survivor scan (which DOES cast to the specific annotation) as the
+    only evidence. Four calls across three versions deleted zero dimensions.
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delete_dimensions")) or ""
+    assert "_dimension_measure(display)" in body, (
+        "the collection loop passes the annotation again; `rows` will be empty")
+    assert "_dimension_measure(ann)" not in body, (
+        "`IAnnotation` has no GetDimension2 — this is exactly the D2 bug")
+    assert '"name": _nm' in body and '"position_m": _where' in body, (
+        "survivors are not directly usable as delete_annotation(name, position_m)")
+    return "measure reads the display dimension; survivors carry name + position"
+
+
+def assert_sheet_index_and_cylinder_faces_are_honest():
+    """0.8.313 — report 2026-11-12 D6 / D7: two fields that said the opposite of the truth.
+
+    D6: the schema declares `sheet: string | integer`, Pydantic coerces `2` to `"2"`, so
+        `isinstance(sheet, int)` never fired — `add_view_to_sheet(sheet=2)` answered
+        `no sheet named '2'` and echoed the integer as if it were a name.
+    D7: `delivery_check.facts.cylinder_faces_in_model` reported `0` when `include_faces`
+        was False, though the ledger simply never walked faces; a part with 22 cylindrical
+        faces read as having none.
+    """
+    lay = _read("tools/layout.py")
+    body = ast.get_source_segment(lay, _function_node(ast.parse(lay),
+                                                     "add_view_to_sheet")) or ""
+    assert "str(sheet).strip().isdigit()" in body, (
+        "`sheet=2` is treated as a name again")
+
+    drw = _read("tools/drawing.py")
+    assert '"cylinder_faces_status"' in drw, (
+        "an uncounted face count still reports 0 instead of not_checked")
+    assert "hole_candidates if include_faces else None" in drw
+    return "integer sheet index works; an uncounted face count says so"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.313 delete reads display dimensions", assert_delete_dimensions_reads_display_dimensions),
+    ("0.8.313 sheet index + cylinder honesty", assert_sheet_index_and_cylinder_faces_are_honest),
     ("0.8.312 tolerance render uses numbers", assert_tolerance_render_uses_numbers_not_signs),
     ("0.8.312 plan views behaviour", assert_plan_views_are_validated_and_consistent),
     ("0.8.311 plan views + confidence", assert_plan_respects_views_and_labels_confidence),

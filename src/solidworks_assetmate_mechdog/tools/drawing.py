@@ -9273,7 +9273,12 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                 "hole_callouts": holes_in_drawing,
                 "geometric_tolerances": gtols,
                 "surface_finishes": finishes,
-                "cylinder_faces_in_model": hole_candidates,
+                # Report 2026-11-12 D7: with `include_faces=False` (the default — walking
+                # faces costs 10x) the ledger never touches faces, so this reported `0`.
+                # On a real A2 part with 22 cylindrical faces that read as "no cylinders"
+                # instead of "not counted", and every hole-related judgement inherited it.
+                "cylinder_faces_in_model": (hole_candidates if include_faces else None),
+                "cylinder_faces_status": ("counted" if include_faces else "not_checked"),
                 "dimensions_unattached": unattached,
                 "features": model_stats.get("features"),
                 "model_doubts": [d.get("kind") for d in doubts],

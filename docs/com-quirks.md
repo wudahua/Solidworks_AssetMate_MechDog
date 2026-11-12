@@ -4094,3 +4094,63 @@ pdf_render_matches = True              # 修前 false
 **判据不能依赖「渲染器怎么摆字符」。** 符号、数字、单位分属不同文本对象是导出器的自由；
 能稳定比较的是**数值**。同样，一个字段如果按构造永远只能是同一个值，那它不是字段，
 是常数 —— 应该要么真算，要么删掉。
+
+---
+
+## 2026-11-12（v0.8.313）`delete_dimensions` 一条都删不掉（报告 D2 / D6 / D7）
+
+### D2：`rows` 恒空，所以 `removed: 0 / failed: 0`
+
+收集循环把 `IAnnotation` 传给 `_dimension_measure`，而后者第一句是
+`display.GetDimension2(0)` —— **`GetDimension2` 在 `IDisplayDimension` 上，`IAnnotation` 没有**。
+调用抛异常，被循环外层的 `except: continue` 吞掉，于是 `rows` 永远是空列表：
+
+```
+removed: 0    failed: 0    remaining_matches: [4 条角度尺寸]
+```
+
+用户看到的「一条都删不掉」，实际是**一条都没尝试**。而存活扫描用的是正确对象
+（`ann.GetSpecificAnnotation`），所以它照常列出 4 条残留 —— 两个字段各说各的。
+
+修法：收集时先 `win.Dispatch(ann.GetSpecificAnnotation)`，与存活扫描同一路径。
+真机（`door` + 17 条尺寸，`keep_values=[]`）：
+
+```text
+ok = true    removed = 17    failed = 0    remaining_matches = []    verified_clean = true
+```
+
+（修前 `ok:false / removed:0 / failed:0 / remaining 4`。）
+
+同时按反馈建议补两处：`remaining_matches` 现在带 `name` + `position_m` + `unit`，
+可直接喂给 `delete_annotation(name, position_m)` 兜底；角度尺寸本来就走删除分支
+（`unit == "deg"` 永不被 `keep_values` 保留），这一点无需改。
+
+### D6：`add_view_to_sheet(sheet=2)` 报 `no sheet named '2'`
+
+与 `_activate_sheet_if_given` 同一个成因：schema 声明 `string | integer`，Pydantic 把 `2`
+转成 `"2"`，`isinstance(sheet, int)` 永不命中。改成「先按名字、再按纯数字索引」，并补上
+原来缺失的 `else`（名字不存在且非数字时明确报 `sheet_not_found`）。
+
+真机：`add_view_to_sheet(sheet=2)` → `ok`。
+
+### D7：`cylinder_faces_in_model: 0` 让人以为模型没有圆柱面
+
+`delivery_check` 默认 `include_faces=False`（走面要 10 倍时间），台账因此从不遍历面，
+`holes` 为空，这个数就报 0。一个实测有 22 个圆柱面的零件被报成 0。
+
+现在：`include_faces=False` 时该字段为 `null`，并给
+`cylinder_faces_status: "not_checked"`；只有真数过才报数字。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 300/300（+2 条断言） |
+| 真机 `delete_dimensions(keep_values=[])` | `removed: 17 / verified_clean: true` |
+| 真机 `add_view_to_sheet(sheet=2)` | `ok` |
+
+### 教训
+
+**「计数为 0」有三种含义：没有对象、没有尝试、没有权限。** 一个 `except: continue`
+就能把「没尝试」伪装成「没有」，而旁边那段用正确对象的扫描会照实报出残留 —— 两个字段
+互相矛盾，却都「有数据」。计数器的分母必须和动作本身同源。

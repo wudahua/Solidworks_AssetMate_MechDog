@@ -462,7 +462,15 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
                     ann = win.Dispatch(item)
                     if int(ann.GetType) != 4:
                         continue
-                    _val, _unit, _type = _dimension_measure(ann)
+                    # `_dimension_measure` needs an IDisplayDimension: `IAnnotation` has no
+                    # `GetDimension2`, so passing `ann` raised INSIDE the helper and the
+                    # `except: continue` below swallowed it. `rows` came back EMPTY, so
+                    # `removed: 0 / failed: 0` — and the only evidence was the survivor
+                    # scan, which reads the specific annotation and therefore worked
+                    # (report 2026-11-12 D2: "四次调用都删不掉"). Read the specific
+                    # annotation first, exactly as the survivor scan already does.
+                    display = win.Dispatch(ann.GetSpecificAnnotation)
+                    _val, _unit, _type = _dimension_measure(display)
                     if _val is None:
                         continue
                     rows.append((view, ann, _val, _unit, _type))
@@ -586,7 +594,25 @@ def delete_dimensions(drawing_path, keep_values=None, view_name=None,
                         continue
                     if unit == "mm" and any(abs(value - k) <= keep_tolerance_mm for k in keep):
                         continue
+                    # 0.8.313 (report 2026-11-12 D2 suggestion 3): name + position make
+                    # every survivor directly usable as `delete_annotation(name,
+                    # position_m)` — the documented workaround — instead of leaving the
+                    # caller to re-enumerate the sheet to find them.
+                    _where = None
+                    try:
+                        _where = [round(float(v), 4) for v in ann.GetPosition]
+                    except Exception:
+                        _where = None
+                    _nm = None
+                    try:
+                        _raw_name = ann.GetName
+                        _nm = str(_raw_name() if callable(_raw_name) else _raw_name) or None
+                    except Exception:
+                        _nm = None
                     remaining.append({"value_mm": round(value, 3),
+                                      "unit": unit,
+                                      "name": _nm,
+                                      "position_m": _where,
                                       "view": str(getattr(view, "Name", ""))})
         except Exception:
             remaining = []
@@ -1929,22 +1955,34 @@ def add_view_to_sheet(drawing_path, sheet, model_path=None, view_name="*前视",
         doc = _open_drawing(drawing_path)
         names = [str(n) for n in (doc.GetSheetNames or ())]
         target = None
-        if isinstance(sheet, int):
+        # Report 2026-11-12 D6: the schema declares `sheet: string | integer`, Pydantic
+        # coerces `2` to `"2"`, so `isinstance(sheet, int)` never fired and a valid 1-based
+        # index failed with `no sheet named '2'` — while the error text echoed the integer
+        # as a NAME. Resolve by NAME first (a sheet literally called "2" must win), then
+        # treat a digit string as a 1-based index. Same rule as `_activate_sheet_if_given`.
+        _as_index = None
+        if isinstance(sheet, int) and not isinstance(sheet, bool):
+            _as_index = sheet
+        elif sheet and str(sheet) not in names and str(sheet).strip().isdigit():
+            _as_index = int(str(sheet).strip())
+        if sheet and str(sheet) in names:
+            target = str(sheet)
+        elif _as_index is not None:
             try:
-                target = names[sheet - 1]
+                target = names[_as_index - 1]
             except Exception:
                 return error("sheet_not_found", "index %r outside 1..%d"
-                             % (sheet, len(names)), sheets=names)
-        elif sheet:
-            if str(sheet) not in names:
-                return error("sheet_not_found", "no sheet named %r" % sheet,
+                             % (_as_index, len(names)),
                              "existing: %s" % ", ".join(names), sheets=names)
-            target = str(sheet)
-        else:
+        elif not sheet:
             try:
                 target = str(doc.GetCurrentSheet.GetName)
             except Exception:
                 return error("sheet_not_found", "no sheet specified and none is active")
+        else:
+            # Named, but not a sheet on this drawing, and not a digit string.
+            return error("sheet_not_found", "no sheet named %r" % sheet,
+                         "existing: %s" % ", ".join(names), sheets=names)
 
         ok = bool(doc.ActivateSheet(target))
         _current = None
