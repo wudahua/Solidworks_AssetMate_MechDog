@@ -3499,3 +3499,58 @@ off_axis = null
 **「这一维变短了」不等于「剖切面偏了」。** 判据必须区分「数值变化」与「语义变化」：
 圆形视图竖剖后，一条直径被换成轴向长度，两维不再可比。
 先用**测量得到**的偏心量做门控，再谈尺寸收缩 —— 把可靠的测量放在猜测前面。
+
+---
+
+## 2026-11-12（v0.8.303）角度尺寸不再被当成毫米（报告 §4 P0）
+
+### 一个根因，三个症状
+
+`IDimension.SystemValue` 对角度尺寸是**弧度**。四个读取点都乘 1000 当毫米：
+
+| 读取点 | 0.8.302 输出 |
+|---|---|
+| `layout_dimensions` | `sample_moves[].text = "785.4"`（45° 被排版成 785 mm） |
+| `reconcile_ledger` | `drawing_only_values: [785.4]` → `coverage 0.7`（图上其实一条不缺） |
+| `verify_dimension_attachments` | `value_mm: 785.398, dimension_type: 3` |
+| `drawing_dimension_values` | 把弧度值塞进「图上所有长度值」集合，喂给上面两个 |
+
+`list_drawing_annotations` 早就正确（`value_deg: 45.0` + `value_mm: null`），
+但它用的是自己那套 `(1, 3)` 判断；其他三处各写一个类型码，于是互相矛盾。
+
+### 改法：一个谓词，四处共用
+
+```python
+ANGULAR_DIMENSION_TYPES = (1, 3)          # 这个 binding 上 1 和 3 都是角度
+
+def _is_angular_dimension_type(dim_type):  # PURE
+    ...
+
+def _radians_to_deg(value_rad):            # PURE
+    ...
+```
+
+* `drawing_dimension_values` **跳过**角度行 —— 它的两个调用者都在比长度。
+* `verify_dimension_attachments`：类型已知后补 `value_deg`，并把 `value_mm` 置 `None`
+  （名字带 `_mm` 的字段不该装度数）。
+* `reconcile_ledger`：ledger 侧只接受 `kind in (0, 2)`；`3` 从「线性」移到
+  `skipped_non_length` 并标 `reason: "angular"`。
+* `layout_dimensions`：角度行的 `text` 由 `_radians_to_deg` 生成 `45°`，
+  不再沿用弧度派生的 `785.4`，宽度估算也随之正确。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 290/290（+1 条断言） |
+| `smoke.py --only "angular dimensions never become millimetres"` | PASS：`1`/`3` 判角度、`0.785398 rad → 45.0°`、`785.4` 不可作为长度泄漏 |
+| 真机 `drawing chain` + `reconcile ledger` | 2/2 PASS（无角度尺寸的路径未被误伤） |
+
+**未覆盖**：本机没有带角度尺寸的夹具（反馈者的 `边肋连接件` 不在仓库），
+所以「45° 图面不再印 785.4」只在纯函数层验证。图面根治还需要
+`add_angular_dimension`（创建/修正原生关联角度标注）—— 反馈列为 P1，本轮未做。
+
+### 教训
+
+**同一个事实的编码散在四处，就会有三处是错的。** 类型判断必须只有一个谓词，
+而且这个谓词要被所有读者调用 —— 每处「顺手写一个 if」都是一次未来的分歧。

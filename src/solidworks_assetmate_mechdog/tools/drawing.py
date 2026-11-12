@@ -4608,12 +4608,53 @@ def _edge_model_length(edge, axes):
     return ((p1[a] - p2[a]) ** 2 + (p1[b] - p2[b]) ** 2) ** 0.5
 
 
+# Report 2026-11-12 §4 (P0): an ANGULAR dimension's `SystemValue` is RADIANS, and every
+# reader multiplied it by 1000 as if it were millimetres. 45° = 0.785398 rad became
+# `785.398 "mm"`, which then printed as `785.4`, entered a length comparison as
+# `drawing_only_values: [785.4]`, dropped `coverage` to 0.7, and made the angle count as
+# an orphan. Both codes below are angular on this binding — `add_drawing_dimension`
+# already reported `value_is_angular=(type in (1, 3))`; the other readers used one code
+# and disagreed with it. ONE predicate now, so they cannot drift again.
+ANGULAR_DIMENSION_TYPES = (1, 3)
+
+
+def _is_angular_dimension_type(dim_type):
+    """Is this `GetType` code angular? PURE. `None` / junk -> False (never guess)."""
+    try:
+        return int(dim_type) in ANGULAR_DIMENSION_TYPES
+    except (TypeError, ValueError):
+        return False
+
+
+def _radians_to_deg(value_rad):
+    """Radians -> degrees, 3 decimals. PURE."""
+    return round(float(value_rad) * 180.0 / 3.141592653589793, 3)
+
+
+def _annotation_dimension_type(annotation, win=None):
+    """`GetType` of a dimension's SPECIFIC annotation, as an int (or None)."""
+    if win is None:
+        import win32com.client as win
+    try:
+        spec = win.Dispatch(annotation.GetSpecificAnnotation)
+    except Exception:
+        return None
+    try:
+        raw = spec.GetType
+        return int(raw() if callable(raw) else raw)
+    except Exception:
+        return None
+
+
 def drawing_dimension_values(doc):
-    """All dimension values already on the sheet, rounded to 0.1 mm.
+    """All LINEAR dimension values already on the sheet, in MODEL MILLIMETRES.
 
     IView.GetDisplayDimensions only returns a subset (13 of 56 measured), so read the
     view's annotation list instead: dimension annotations have GetType() == 4, and the
     value comes from GetSpecificAnnotation().GetDimension2(0).SystemValue.
+
+    Angular rows are SKIPPED. Both callers compare against lengths, and a radian value
+    masquerading as millimetres is what produced `785.4` (report 2026-11-12 §4).
     """
     import win32com.client as win
 
@@ -4628,6 +4669,9 @@ def drawing_dimension_values(doc):
             try:
                 ann = win.Dispatch(item)
                 if ann.GetType != 4:  # 4 = dimension annotation
+                    continue
+                if _is_angular_dimension_type(
+                        _annotation_dimension_type(ann, win)):
                     continue
                 dim = ann.GetSpecificAnnotation.GetDimension2(0)
                 if dim is not None:
@@ -9106,6 +9150,18 @@ def verify_dimension_attachments(drawing_path, view_name=None):
                     except Exception:
                         dim_type = None
                 row["dimension_type"] = dim_type
+                # 0.8.303 (report 2026-11-12 §4): `SystemValue` is RADIANS for an angular
+                # dimension, so `* 1000` above produced `value_mm: 785.398` for a 45°
+                # chamfer — a field named `_mm` carrying degrees, which then fed the orphan
+                # and ledger checks. Correct the unit once the type is known, exactly as
+                # `list_drawing_annotations` already does for its own rows.
+                if _is_angular_dimension_type(dim_type):
+                    try:
+                        row["value_deg"] = _radians_to_deg(dim.SystemValue)
+                        row["value_is_angular"] = True
+                    except Exception:
+                        row["value_deg"] = None
+                    row["value_mm"] = None
 
                 # Dedupe first, bookkeep after. It used to be the other way round, so
                 # counts/orphans counted RAW HITS (23) while dimension_count counted
@@ -10290,11 +10346,17 @@ def reconcile_ledger(model_path, drawing_path, tolerance_mm=0.5):
         for feature in led.get("features") or []:
             for dim in feature.get("dimensions") or []:
                 kind = dim.get("dimension_type")
-                if kind is not None and kind not in (0, 2, 3):
-                    # angular / ordinate dimensions never appear as a linear value
+                # 0.8.303 (report 2026-11-12 §4): `3` is ANGULAR on this binding, not
+                # linear. Accepting it put a 45° chamfer into the ledger as `785.398 mm`,
+                # which then surfaced as `drawing_only_values: [785.4]` and dragged
+                # `coverage` down to 0.7 on a sheet where nothing was actually missing.
+                # Only plain lengths (0) and diameters (2) may enter a length comparison.
+                if kind is not None and kind not in (0, 2):
                     skipped_non_length.append({
                         "feature": feature.get("name"),
                         "value": dim.get("value_mm"), "type": kind,
+                        "reason": ("angular" if _is_angular_dimension_type(kind)
+                                   else "non_length"),
                     })
                     continue
                 value = dim.get("value_mm")
@@ -12359,6 +12421,18 @@ def layout_dimensions(drawing_path, view_name=None, min_gap_m=0.006,
                         char_h = float(specific.GetTextFormat.CharHeight) or 0.0035
                     except Exception:
                         pass
+                    # 0.8.303 (report 2026-11-12 §4): an ANGULAR dimension's
+                    # `SystemValue` is radians, and `GetText` can hand back the
+                    # radian-derived number — a 45° chamfer arrived here as `785.4` and
+                    # was laid out (and reported) as a 785 mm length. The angle is
+                    # authoritative, so label every angular row from it.
+                    if _is_angular_dimension_type(
+                            _annotation_dimension_type(annotation, win)):
+                        try:
+                            text = "%g°" % _radians_to_deg(
+                                win.Dispatch(specific.GetDimension2(0)).SystemValue)
+                        except Exception:
+                            pass
                     # Plain dimensions inserted by auto_dimension return EMPTY from GetText
                     # (only callouts carry text there). GetDimension2 still answers with the
                     # value, so build a representative string from it — otherwise the width

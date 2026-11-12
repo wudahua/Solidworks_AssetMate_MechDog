@@ -10124,7 +10124,53 @@ def assert_every_early_return_states_execution_ok():
     return "every early return states execution_ok; two real receipts assert the pair"
 
 
+def assert_angular_dimensions_never_enter_length_checks():
+    """0.8.303 — report 2026-11-12 §4 (P0): a 45° chamfer printed as `785.4`.
+
+    `SystemValue` is RADIANS for an angular dimension. Four readers multiplied it by 1000
+    and treated the result as millimetres: `layout_dimensions` reported `text: "785.4"`,
+    `reconcile_ledger` produced `drawing_only_values: [785.4]` and `coverage 0.7` on a
+    sheet where nothing was missing, `verify_dimension_attachments` returned
+    `value_mm: 785.398`, and `drawing_dimension_values` fed the length sets underneath.
+
+    ONE predicate now decides everywhere — `add_drawing_dimension` already used codes
+    `(1, 3)` while the others used a single code, which is why they disagreed.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    assert "ANGULAR_DIMENSION_TYPES = (1, 3)" in src, "the angular codes drifted"
+    assert "\ndef _is_angular_dimension_type(" in src, "the shared predicate disappeared"
+    assert "\ndef _radians_to_deg(" in src
+
+    body = ast.get_source_segment(src, _function_node(tree,
+                                                     "drawing_dimension_values")) or ""
+    assert "_is_angular_dimension_type" in body, (
+        "a radian value can enter a length set again")
+
+    vbody = ast.get_source_segment(src, _function_node(tree,
+                                                      "verify_dimension_attachments")) or ""
+    assert 'row["value_deg"] = _radians_to_deg' in vbody, (
+        "an angular dimension still reports its radian value as `value_mm`")
+    assert 'row["value_mm"] = None' in vbody
+
+    lbody = ast.get_source_segment(src, _function_node(tree, "layout_dimensions")) or ""
+    assert '"%g°" % _radians_to_deg' in lbody, (
+        "a 45° dimension is laid out as a 785 mm length again")
+
+    rbody = ast.get_source_segment(src, _function_node(tree, "reconcile_ledger")) or ""
+    assert "kind not in (0, 2, 3)" not in rbody, (
+        "code 3 is angular; accepting it as linear is how 785.4 entered the ledger")
+
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    assert 'r.check("angular dimensions never become millimetres"' in sm, (
+        "the live angular predicate check is not registered")
+    assert "_radians_to_deg" in sm, "the check does not call the real conversion"
+    return "one angular predicate; all four readers route through it"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.303 angular never becomes mm", assert_angular_dimensions_never_enter_length_checks),
     ("0.8.301 early returns state execution_ok", assert_every_early_return_states_execution_ok),
     ("0.8.300 cleanup is not a delivery defect", assert_cleanup_steps_are_not_delivery_defects),
     ("0.8.298 produce_drawing reports completeness", assert_produce_drawing_reports_completeness),

@@ -1702,6 +1702,38 @@ def main():
     r.check("step partition keeps cleanup out of completeness",
             _step_partition_keeps_cleanup_out_of_completeness)
 
+    def _angular_dimensions_never_become_millimetres():
+        """Report 2026-11-12 §4 (P0): 45° reached four readers as `785.4 mm`.
+
+        `SystemValue` is RADIANS for an angular dimension and every reader multiplied it
+        by 1000. `list_drawing_annotations` already answered `value_deg`, so the fix is one
+        shared type predicate that all readers use. No SolidWorks.
+        """
+        import inspect as _inspect
+        import math as _math
+
+        from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+        is_ang = _drawing._is_angular_dimension_type
+        assert is_ang(1) and is_ang(3), "angular type codes changed"
+        for other in (0, 2, 4, 5, None, "x", -1):
+            assert not is_ang(other), "%r was treated as angular" % (other,)
+
+        deg = _drawing._radians_to_deg
+        assert deg(_math.pi / 4) == 45.0, deg(_math.pi / 4)
+        assert deg(0.785398) == 45.0, deg(0.785398)   # the leaked SystemValue
+        assert deg(_math.pi) == 180.0
+        # The number that shipped: 0.785398 * 1000 rounds to 785.4.
+        assert round(0.785398 * 1000, 1) == 785.4
+
+        src = _inspect.getsource(_drawing.drawing_dimension_values)
+        assert "_is_angular_dimension_type" in src, (
+            "length values no longer exclude angular rows")
+        return "1/3 angular; 0.785398 rad -> 45.0 deg; 785.4 cannot leak as a length"
+
+    r.check("angular dimensions never become millimetres",
+            _angular_dimensions_never_become_millimetres)
+
     def _cleanup_failure_keeps_the_sheet_deliverable():
         """Report 2026-11-11 §4 (S3), on a REAL drawing.
 
