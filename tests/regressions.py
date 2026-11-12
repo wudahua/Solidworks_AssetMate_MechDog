@@ -9216,10 +9216,22 @@ def assert_eccentric_sections_are_refused_and_line_styles_are_documented():
     assert 'detected_on' in decide and "off_axis_dimension" in decide, (
         "the receipt cannot say WHICH axis failed")
     assert 'sanity.get("checked")' in decide, "unchecked sections would be judged"
-    m = drw.find("_off_axis = _section_off_axis_from_sanity(sanity)")
-    assert m > k, "add_section_view does not use the pure decision"
-    assert "section_off_axis" in drw[m:m + 300] and "return error(" in drw[m:m + 300], (
+    # 0.8.302: the decision takes the MEASURED eccentricity as a second argument. Without
+    # it a correct end-view vertical section was rejected (report 2026-11-12 §2): the
+    # source is a circle, the section is the axial slice, so "width shrank 76 mm" is a
+    # change of meaning, not a chord.
+    m = drw.find('_off_axis = _section_off_axis_from_sanity('
+                 'sanity, diag.get("eccentricity_mm"))')
+    assert m > k, "add_section_view does not pass the measured eccentricity"
+    seg = drw[m:drw.find("off_axis=_off_axis", m) + 24]
+    assert '"section_off_axis"' in seg and "return error(" in seg, (
         "an off-axis verdict no longer rejects the call")
+    assert "SECTION_ECCENTRICITY_GATE_MM" in drw, (
+        "the gate that stops a through-axis cut being called eccentric is gone")
+    assert "source_size_mm" in decide, (
+        "the square-source guard is gone; a circular view will be mis-judged again")
+    assert 'sanity["verdict"] = "section_off_axis"' in seg, (
+        "the nested sanity still claims ok next to a top-level rejection")
 
     # ── P1: no silent nudge; eccentricity visible; the chord number corrected ────────
     assert "auto_nudge_zero_offset=False" in drw, (

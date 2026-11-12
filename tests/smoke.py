@@ -1796,26 +1796,54 @@ def main():
         decide = drawing._section_off_axis_from_sanity
         base = dict(checked=True, kept_dimension="width", source_kept_mm=51.98,
                     section_kept_mm=51.98, ratio=1.0, off_axis_dimension="height",
-                    source_off_axis_mm=127.98)
+                    source_off_axis_mm=127.98, source_size_mm=[51.98, 127.98])
         assert decide(dict(base, section_off_axis_mm=127.98,
-                           off_axis_shrink_mm=0.0)) is None, (
+                           off_axis_shrink_mm=0.0), 2.0) is None, (
             "a through-axis cut was rejected")
         verdict = decide(dict(base, section_off_axis_mm=127.73,
-                              off_axis_shrink_mm=0.25))
+                              off_axis_shrink_mm=0.25), 2.0)
         assert verdict is not None, "the measured 0.25 mm eccentric chord passed as ok:true"
         assert verdict["detected_on"] == "off_axis_dimension", verdict
         assert verdict["dimension"] == "height", verdict
         assert verdict["shrunk_mm"] == 0.25, verdict
+        # The off-axis pair must be NAMED as such; it used to be returned under
+        # `source_kept_mm` / `section_kept_mm`, i.e. the wrong dimension's name.
+        assert verdict["source_mm"] == 127.98 and verdict["section_mm"] == 127.73, verdict
         # A proportional 0.5% threshold computes 0.25/127.98 = 0.195% and lets it through;
         # that is why the fix uses an ABSOLUTE 0.1 mm.
         assert 0.25 / 127.98 < 0.005, "the old proportional threshold no longer fails"
+
+        # ── The 2026-11-12 regression: a CIRCULAR source cut vertically ──────────────
+        # Source [127.98, 127.98] (Ø64 at 2:1), section [51.98, 127.98]: width became the
+        # part's axial length. "Shrank 76 mm" is a change of MEANING, not a chord.
+        end = dict(checked=True, kept_dimension="height",
+                   source_kept_mm=127.98, section_kept_mm=127.98, ratio=1.0,
+                   off_axis_dimension="width",
+                   source_off_axis_mm=127.98, section_off_axis_mm=51.98,
+                   off_axis_shrink_mm=76.0, source_size_mm=[127.98, 127.98])
+        assert decide(end, 0.0) is None, (
+            "a correct end-view vertical section was rejected as an eccentric chord")
+        assert decide(end, 2.0) is None, (
+            "a circular source cannot be judged on its off-axis pair at all")
+        # A rectangular source keeps its meaning on both axes, so the pair still counts —
+        # and with an UNKNOWN eccentricity the geometric test must still run.
+        assert decide(dict(end, source_size_mm=[51.98, 127.98]), None) is not None, (
+            "an unknown eccentricity disabled the geometric test")
+
+        # The asymmetric invariant the report asked for: e == 0 never yields a chord.
+        for ecc in (0.0, -0.0, 0.1, 0.5):
+            assert decide(dict(base, section_off_axis_mm=100.0,
+                               off_axis_shrink_mm=27.98), ecc) is None, (
+                "eccentricity %r produced a chord verdict" % (ecc,))
+
         assert decide(dict(base, checked=False, section_off_axis_mm=127.73,
-                           off_axis_shrink_mm=0.25)) is None, (
+                           off_axis_shrink_mm=0.25), 2.0) is None, (
             "an unchecked (partial / cross) section was judged")
         assert decide(dict(base, section_off_axis_mm=127.95,
-                           off_axis_shrink_mm=0.03)) is None, (
+                           off_axis_shrink_mm=0.03), 2.0) is None, (
             "sub-threshold noise was flagged")
-        return "through-axis accepted; 0.25 mm chord -> section_off_axis on height"
+        return ("through-axis + circular end view accepted; 0.25 mm chord rejected; "
+                "ecc=0 never yields a chord")
 
     r.check("eccentric section is refused", _eccentric_section_is_refused)
 

@@ -3439,3 +3439,63 @@ assert isinstance(payload.get("cleanup_incomplete"), list)
 | `check_all.py` | 289/289（+1 条 AST 断言） |
 | `assembly drawing not an empty shell`（真机） | PASS，250.0 s，3 views / 26 dims，新增组合断言已执行 |
 | `partial reaches produce_drawing`（真机） | PASS，94.8 s，但 `not triggered`（默认夹具无歧义倒角）—— partial 分支断言仍未执行，需 `--part 限位导向套` |
+
+---
+
+## 2026-11-12（v0.8.302）正确的过轴全剖不再被判成偏心弦（报告 §2 P0）
+
+### 问题
+
+0.8.291 的偏心判据把「非 kept 维收缩」当**独立**拒绝条件。这对矩形源视图成立，
+对**圆形源视图的竖剖**完全失效：
+
+| 视图 | 源 `size_mm` | 剖视 `size_mm` | 判据结论 |
+|---|---|---|---|
+| 端视图（Ø64 圆）竖剖 offset=0 | `[127.98, 127.98]` | `[51.98, 127.98]` | ❌ 报 `section_off_axis`，`shrunk=76.0` |
+
+宽度从 127.98 → 51.98 不是偏心，是**「圆的直径」被换成「零件的轴向长度」**。
+同一份回执里 `eccentricity_mm: 0.0`、`kept ratio 1.0`、28 边 / hatch 2 都在说
+「这是正确的过轴全剖」—— 判据却给出相反结论。
+
+### 改法（三道守卫，按顺序）
+
+1. **偏心量门控**：`SECTION_ECCENTRICITY_GATE_MM = 0.5`。
+   `eccentricity_mm` 已知且 `<= 0.5` → 直接放行。过轴的平面物理上不可能产生弦剖。
+   `null`（未知）不当作 0，继续走几何判据。
+2. **kept 维**：不变（圆形源视图上，偏心缩短的正是这一维，所以这道守卫本来就有效）。
+3. **off_axis 维**：新增「方形源视图跳过」——`source_size_mm` 两维相等（圆 / 正方形轮廓）
+   时，这一对维度的语义在剖切后已改变，不可比。矩形源视图仍照旧比对。
+
+附带修掉报告 §3 的五处回执缺陷：
+
+| 项 | 改法 |
+|---|---|
+| 被拒时 `sanity.verdict` 仍 `"ok"` | 置为 `"section_off_axis"` 并附 `sanity.off_axis` |
+| `off_axis.section_kept_mm` / `source_kept_mm` 装的是 **off-axis 维**的值 | 改中性名 `source_mm` / `section_mm` |
+| 两个 `ratio` 同名不同义 | off-axis 分支的键改为 `ratio`，但只在 `off_axis` 对象内；`sanity.ratio` 不变 |
+| hint 里手写弦长常数（63.5 → 63.48 两版都不准） | 由 `eccentricity_mm` + `source_mm / scale` **计算** `2·√(r²−e²)` |
+| `off_axis_shrink_mm: -0.0` | 归零，不再出现负零 |
+
+### 验证
+
+真机（`小车底部滚轮`，`create_drawing(views=["right"])` + 竖剖 offset=0）：
+
+```text
+ok = true          (0.8.301: false / section_off_axis)
+edge_count = 28    hatch_count = 2
+eccentricity_mm = 0.0
+sanity = {source_size_mm:[63.98,63.98], section_size_mm:[25.98,63.98],
+          kept_dimension:"height", ratio:1.0, off_axis_shrink:38.0}
+off_axis = null
+```
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 289/289 |
+| `smoke.py --only "eccentric section is refused"` | PASS：过轴 + 圆视图放行、0.25 mm 弦仍拒、`ecc=0` 永不产生弦判定、未知偏心仍走几何判据 |
+
+### 教训
+
+**「这一维变短了」不等于「剖切面偏了」。** 判据必须区分「数值变化」与「语义变化」：
+圆形视图竖剖后，一条直径被换成轴向长度，两维不再可比。
+先用**测量得到**的偏心量做门控，再谈尺寸收缩 —— 把可靠的测量放在猜测前面。

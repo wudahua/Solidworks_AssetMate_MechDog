@@ -6164,6 +6164,13 @@ SECTION_KEEP_TOLERANCE = 0.10
 # rounding (0.00 mm measured on both parts), so 0.1 mm leaves real headroom.
 SECTION_OFF_AXIS_TOLERANCE_MM = 0.1
 
+# Report 2026-11-12 §2 (P0 regression): a cut plane THROUGH the axis cannot produce a
+# chord, so a measured eccentricity at or below this gate must never be reported as one.
+# 0.5 mm on the model: at Ø64 a 0.5 mm chord shortens the diameter by 0.004 mm, far below
+# `SECTION_OFF_AXIS_TOLERANCE_MM` anyway — this gate only removes false positives, it
+# cannot hide a real eccentric chord.
+SECTION_ECCENTRICITY_GATE_MM = 0.5
+
 
 def _section_sanity(source_view, section, orientation, depth,
                     hatch_count=None, edge_count=None, source_edge_count=None):
@@ -6278,7 +6285,10 @@ def _section_sanity(source_view, section, orientation, depth,
     info["off_axis_dimension"] = off_which
     info["source_off_axis_mm"] = round(off_src * 1000, 2)
     info["section_off_axis_mm"] = round(off_sec * 1000, 2)
-    info["off_axis_shrink_mm"] = round((off_src - off_sec) * 1000, 3)
+    # `-0.0` appears when the two values are equal (report 2026-11-12 §3-6) and reads as a
+    # negative measurement. Clamp the sign of zero; a real shrink keeps its value.
+    _off_shrink = round((off_src - off_sec) * 1000, 3)
+    info["off_axis_shrink_mm"] = 0.0 if _off_shrink == 0 else _off_shrink
     # Only when nothing more specific was found above. This line runs AFTER the hatch and
     # edge-count checks, and used to overwrite them unconditionally — `no_hatch` came out
     # of the function as `ok`, which is exactly the failure the check was added to name.
@@ -6313,21 +6323,29 @@ def _position_deviation(requested, actual, tol=1e-3):
     return False, None
 
 
-def _section_off_axis_from_sanity(sanity):
+def _section_off_axis_from_sanity(sanity, eccentricity_mm=None):
     """Decide whether a finished section is an eccentric chord. PURE — no COM.
 
     Extracted from `add_section_view` (report 2026-11-10, P0) so the decision can be
     exercised without SolidWorks. `sanity` is exactly the dict `_section_sanity` returns,
     which makes this a real unit of the geometry rule rather than a string in a receipt.
 
-    Two independent measurements, in this order:
+    Three guards, in this order:
 
+      0. `eccentricity_mm` — measured distance from the cut plane to the axis. A plane
+         THROUGH the axis cannot produce a chord, so a known value at or below the gate
+         returns "not eccentric" immediately. Without this, report 2026-11-12 §2 measured
+         a CORRECT end-view vertical section being rejected: the source view is a Ø64
+         circle (`source_size_mm [127.98, 127.98]`) and the section is the axial slice
+         (`[51.98, 127.98]`), so "width shrank by 76 mm" was the diameter being replaced
+         by the part's length — while the SAME receipt carried `eccentricity_mm: 0.0`,
+         `ratio: 1.0` and 28 edges / hatch 2.
       1. `kept_dimension` — the axis a perpendicular cut CANNOT change. A > 0.5% shrink
          here means the plane missed the intended cross-section (the 2026-11-08 case).
-      2. `off_axis_dimension` — the axis the cut CAN shorten. This is where an eccentric
-         chord of a revolved part shows up, and it is precisely the one the old check
-         threw away. Measured 凹槽滚轮 horizontal / 2:1 / offset 0.004:
-         width 51.98 -> 51.98 (ratio 1.000) but height 127.98 -> 127.73 (0.25 mm).
+         On a CIRCULAR source this is the axis an eccentric chord actually shortens.
+      2. `off_axis_dimension` — the axis the cut CAN shorten. Meaningful only when both
+         axes keep their meaning across the cut, so it is SKIPPED for a square source view
+         (circle / square profile), where one axis becomes the part's axial length.
 
     Only `checked=True` full sections are judged: partial sections (depth>0) shrink by
     design and cross-sections are smaller in both axes by definition — both return from
@@ -6335,6 +6353,16 @@ def _section_off_axis_from_sanity(sanity):
     """
     if not isinstance(sanity, dict) or not sanity.get("checked"):
         return None
+
+    # Guard 0: measured eccentricity, not a guess. `null` means "not known" and falls
+    # through to the geometry tests below — absence must never be read as zero.
+    try:
+        if eccentricity_mm is not None and \
+                abs(float(eccentricity_mm)) <= SECTION_ECCENTRICITY_GATE_MM:
+            return None
+    except (TypeError, ValueError):
+        pass
+
     kept = sanity.get("section_kept_mm")
     src = sanity.get("source_kept_mm")
     try:
@@ -6343,14 +6371,27 @@ def _section_off_axis_from_sanity(sanity):
             if shrunk > max(0.005 * float(src), 0.2):
                 return {
                     "shrunk_mm": round(shrunk, 3),
-                    "section_kept_mm": round(float(kept), 3),
-                    "source_kept_mm": round(float(src), 3),
+                    "source_mm": round(float(src), 3),
+                    "section_mm": round(float(kept), 3),
                     "ratio": round(float(kept) / float(src), 4),
                     "dimension": sanity.get("kept_dimension"),
                     "detected_on": "kept_dimension",
                 }
     except (TypeError, ValueError, ZeroDivisionError):
         pass
+
+    # Guard 1: a square source view replaces one dimension with the axial length. The
+    # kept-axis test above still catches a chord on a circular source, because there the
+    # chord shortens the KEPT axis — so skipping this pair loses nothing.
+    _src_size = sanity.get("source_size_mm") or ()
+    try:
+        _square_source = (len(_src_size) >= 2 and _src_size[0] and _src_size[1]
+                          and abs(float(_src_size[0]) - float(_src_size[1])) <= 1e-6)
+    except (TypeError, ValueError, IndexError):
+        _square_source = False
+    if _square_source:
+        return None
+
     raw = sanity.get("off_axis_shrink_mm")
     try:
         shrink = float(raw) if raw is not None else None
@@ -6362,8 +6403,11 @@ def _section_off_axis_from_sanity(sanity):
             and o_src and o_sec is not None):
         return {
             "shrunk_mm": round(shrink, 3),
-            "section_kept_mm": o_sec,
-            "source_kept_mm": o_src,
+            # Report 2026-11-12 §3-2: these used to be called `source_kept_mm` /
+            # `section_kept_mm` while holding the OFF-AXIS values, so the receipt named
+            # the wrong dimension. Neutral names now; `sanity` keeps its own pair.
+            "source_mm": o_src,
+            "section_mm": o_sec,
             "ratio": round(float(o_sec) / float(o_src), 4),
             "dimension": sanity.get("off_axis_dimension"),
             "detected_on": "off_axis_dimension",
@@ -6982,22 +7026,45 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
         # and `off_axis_dimension` (where an eccentric chord of a revolved part actually
         # shows up). Report 2026-11-10 proved the old one-axis check was structurally
         # blind: `ratio 1.000` next to `127.98 -> 127.73`, and still `ok: true`.
-        _off_axis = _section_off_axis_from_sanity(sanity)
+        _off_axis = _section_off_axis_from_sanity(sanity, diag.get("eccentricity_mm"))
         if _off_axis:
+            # Report 2026-11-12 §3-1: the nested `sanity` still said `verdict: "ok"` next
+            # to a top-level rejection, so a caller reading only `sanity` saw a pass.
+            sanity["verdict"] = "section_off_axis"
+            sanity["off_axis"] = _off_axis
+            _ecc = diag.get("eccentricity_mm")
+            _chord = None
+            if _ecc and _off_axis.get("detected_on") == "off_axis_dimension":
+                try:
+                    # Chord of the SOURCE diameter at that offset, in MODEL mm:
+                    # 2*sqrt(r^2 - e^2). Computed, never a constant — report 2026-11-12
+                    # §3-4 caught two releases in a row quoting a hand-written 63.5 /
+                    # 63.48 that matched neither the model nor the sheet.
+                    _r_model = (float(_off_axis["source_mm"]) / _sec_scale) / 2.0
+                    _chord = round(2.0 * ((_r_model ** 2 - float(_ecc) ** 2) ** 0.5), 3)
+                except (TypeError, ValueError, KeyError, ZeroDivisionError):
+                    _chord = None
+            _share = 0.0
+            try:
+                _share = (float(_off_axis["shrunk_mm"]) / float(_off_axis["source_mm"])
+                          * 100.0)
+            except (TypeError, ValueError, KeyError, ZeroDivisionError):
+                _share = 0.0
             return error(
                 "section_off_axis",
                 "剖视图的 %s 维比源视图短了 %s mm（%.3f → %.3f）—— "
                 "**这不是过轴全剖，是一条偏心弦**。"
                 % (_off_axis.get("dimension") or "尺寸", _off_axis["shrunk_mm"],
-                   _off_axis["source_kept_mm"], _off_axis["section_kept_mm"]),
-                ("判据来自 `%s`：偏差超过 %s mm 绝对值即拒绝。用绝对值而不是百分比 —— "
-                 "偏心 2 mm 时高度只掉 0.25/127.98 = 0.195%%，任何按比例的门都放行。"
-                 "回转体的轴向全剖必须过轴线。偏心剖面会把外圆读小（本例弦长 63.48 对 "
-                 "Ø63.98）、把孔读小，图上却看不出异常。把 offset_m 调回 0 附近；"
-                 "如果 0 切不开（单实体导入件常见），这个零件在当前构建上做不出正确的"
-                 "轴向全剖，**不要交付这张偏心剖面**。视图保留了，供你判断偏心方向。")
-                % (_off_axis.get("detected_on") or "kept_dimension",
-                   SECTION_OFF_AXIS_TOLERANCE_MM),
+                   _off_axis["source_mm"], _off_axis["section_mm"]),
+                ("判据来自 `%s`：该维偏差超过 %s mm 绝对值即拒绝 —— 用绝对值而不是百分比，"
+                 "因为本例只掉 %.2f%%，任何按比例的门都会放行。"
+                 "回转体的轴向全剖必须过轴线：偏心会让外圆与孔都读小，图上却看不出异常。"
+                 "%s"
+                 "把 offset_m 调回 0 附近重切。视图保留了，供你判断偏心方向。"
+                 % (_off_axis.get("detected_on") or "kept_dimension",
+                    SECTION_OFF_AXIS_TOLERANCE_MM, _share,
+                    ("按 `eccentricity_mm` 算出该处弦长 %.3f mm（模型 mm）。" % _chord)
+                    if _chord else "")),
                 off_axis=_off_axis,
                 **diag)
         if sanity.get("checked") and sanity.get("verdict") == "suspicious":
