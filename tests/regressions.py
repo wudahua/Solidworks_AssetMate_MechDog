@@ -10294,7 +10294,35 @@ def assert_sheet_index_and_layout_columns_do_not_lie():
     return "sheet index accepts digit strings; columns counted; fits marked predicted"
 
 
+def assert_layout_fits_matches_measure_layout():
+    """0.8.307 — report 2026-11-12 §5 (P1-2): same sheet, two "measured" verdicts.
+
+    `create_drawing.layout.fits` was judged against the annotation-band-INSET rectangle
+    while `measure_layout` / `drawing_audit` / `delivery_check` judge the RAW safe area.
+    On the reporter's sheet that produced `fits:false / out_of_bounds:[视图2,视图4]` next
+    to `measure_layout.min_margin_m: +0.010` and `drawing_audit.warnings: []`.
+
+    The band exists to reserve room for DIMENSIONS; a view inside the safe area is not
+    "outside the sheet" because it sits in the band. `fits` now uses the raw rectangle and
+    the stricter question gets its own field, so the two tools can only disagree when the
+    sheet really is too tight.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "create_drawing")) or ""
+    assert "_base_rect" in body, (
+        "the raw safe rectangle is gone; `fits` is judged against the band inset again")
+    assert "_out_of_bounds = _outside(_base_rect)" in body, (
+        "`fits` does not use the same rectangle as `measure_layout`")
+    assert "fits_annotation_band" in body and "annotation_band_out_of_bounds" in body, (
+        "the stricter band verdict is not reported separately")
+    assert '"bounds_m": [round(_base_rect[0], 4)' in body, (
+        "`bounds_m` does not describe the rectangle `fits` was judged against")
+    return "fits uses the raw safe area; the band verdict is a separate field"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.307 layout fits matches measure", assert_layout_fits_matches_measure_layout),
     ("0.8.306 sheet index + layout columns", assert_sheet_index_and_layout_columns_do_not_lie),
     ("0.8.306 ledger missing excludes present", assert_ledger_missing_excludes_present_values),
     ("0.8.305 live guards run without fixtures", assert_live_checks_run_without_private_fixtures),

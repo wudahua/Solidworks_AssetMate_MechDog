@@ -3743,3 +3743,58 @@ sheet=1 -> ok | inserted: 24        # 0.8.305 报 no sheet named '1'
 
 **「我没配上对」不等于「图上没有」。** 把「未匹配」直接翻译成「缺项」，会让调用方去补
 已经画好的尺寸 —— 这类假阴性和假阳性一样贵，因为它消耗的是信任。
+
+---
+
+## 2026-11-12（v0.8.307）`layout.fits` 与 `measure_layout` 同源（报告 §5 P1-2）
+
+### 同一张图，两个「已测量」的相反结论
+
+| 工具 | 结论 |
+|---|---|
+| `create_drawing.layout` | `fits:false` / `out_of_bounds:[视图2, 视图4]` / `columns:4` |
+| `measure_layout` | 4 视图全在框内，`min_margin_m: +0.010` |
+| `drawing_audit` | `warnings: []` |
+| `delivery_check` | `no_view_outside_sheet: ok` |
+
+### 根因：两个工具用的不是同一个矩形
+
+`create_drawing` 在放置前把安全区**内缩 `annotation_band_m`（默认 18 mm）**，然后用这个
+更小的框判 `out_of_bounds`；`measure_layout` 用的是**未内缩**的模板安全区。
+
+内缩本身是对的 —— 它给尺寸文字留空间。错的是把「视图落进了标注带」报成
+「视图出界」。视图在安全区内就是没出界，只是没留够标注空间，这是两件事。
+
+### 改法
+
+* 内缩前保存 `_base_rect`（原始安全区），`fits` / `out_of_bounds` / `bounds_m` 全部改用它
+  —— 与 `measure_layout` 同一个框。
+* 更严格的那个问题独立成字段，不再混进 `fits`：
+  `fits_annotation_band` / `annotation_band_out_of_bounds` / `annotation_band_bounds_m`。
+* `columns` 上一版已改为按不同左边缘计数（2×2 报 2，不再是 4）。
+
+### 验证
+
+真机（`door.SLDPRT`，`view_positions=[[0.130,0.134],[0.320,0.134]]`，band 18 mm）：
+
+```text
+layout: {"fits": true, "fits_annotation_band": false,
+         "out_of_bounds": [],
+         "annotation_band_out_of_bounds": ["工程图视图1", "工程图视图2"]}
+measure_layout.min_margin_m: 0.0153
+```
+
+`fits:true` 与 `min_margin_m:+0.0153` 一致（0.8.306 会报 `fits:false`）；
+标注带不足由 `fits_annotation_band:false` 单独表达，调用方知道该留空间还是该改布局。
+
+对照：把视图再往下放 6 mm（`y=0.095`）时两边同时报出界 ——
+`fits:false` + `measure_layout.min_margin_m: -0.0237`，说明真出界时仍然一致。
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 295/295（+1 条断言） |
+
+### 教训
+
+**两个工具都标着「measured」，不代表它们测的是同一件事。** 判定框不同时，布尔值必然
+打架；要么共用同一个框，要么把更严格的那条判据拆成独立字段并说明它更严格。

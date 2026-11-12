@@ -614,6 +614,13 @@ def create_drawing(
         # v0.8.262 tried this on `_place_views` and changed nothing measurable — that
         # function only REPACKS views after they exist. The box that decides the initial
         # positions is `safe_x0..safe_y1` right here, so the inset belongs here.
+        # Report 2026-11-12 §5 (P1-2): `fits` was judged against the BAND-INSET box while
+        # `measure_layout` judges against the raw safe area, so on 边肋连接件 one tool said
+        # `fits:false / out_of_bounds:[视图2,视图4]` and the other said every view was
+        # inside with `min_margin_m +0.010`. Same sheet, two verdicts, both "measured".
+        # The band exists to reserve room for DIMENSIONS, not to make a view "outside the
+        # sheet" — so keep the raw rectangle for `fits` and report the inset one separately.
+        _base_rect = (safe_x0, safe_y0, safe_x1, safe_y1)
         _band = max(0.0, float(annotation_band_m))
         if _band:
             safe_x0 += _band
@@ -859,11 +866,16 @@ def create_drawing(
                 # precise_outline returns [x1, y1, x2, y2] in sheet metres.
                 if _b and len(_b) >= 4:
                     _boxes.append((str(getattr(_v, "Name", "?")), _b))
-            _out_of_bounds = []
-            for _name, _b in _boxes:
-                if (_b[0] < safe_x0 - 1e-6 or _b[1] < safe_y0 - 1e-6
-                        or _b[2] > safe_x1 + 1e-6 or _b[3] > safe_y1 + 1e-6):
-                    _out_of_bounds.append(_name)
+            def _outside(rect):
+                return [_n for _n, _b in _boxes
+                        if (_b[0] < rect[0] - 1e-6 or _b[1] < rect[1] - 1e-6
+                            or _b[2] > rect[2] + 1e-6 or _b[3] > rect[3] + 1e-6)]
+
+            # `fits` answers "is the view outside the SHEET" — the same question
+            # `measure_layout` / `drawing_audit` / `delivery_check` answer. The band-inset
+            # verdict is a different, stricter one and gets its own field (P1-2).
+            _out_of_bounds = _outside(_base_rect)
+            _out_of_band = _outside((safe_x0, safe_y0, safe_x1, safe_y1))
             _overlaps = []
             for _i in range(len(_boxes)):
                 for _j in range(_i + 1, len(_boxes)):
@@ -883,10 +895,20 @@ def create_drawing(
                       "explicit": True,
                       "measured": bool(_boxes),
                       "predicted": True,
-                      "bounds_m": [round(safe_x0, 4), round(safe_y0, 4),
-                                   round(safe_x1, 4), round(safe_y1, 4)],
+                      # The rectangle `fits` was judged against — the RAW safe area, so it
+                      # matches `measure_layout` (P1-2).
+                      "bounds_m": [round(_base_rect[0], 4), round(_base_rect[1], 4),
+                                   round(_base_rect[2], 4), round(_base_rect[3], 4)],
                       "out_of_bounds": _out_of_bounds,
-                      "overlaps": _overlaps}
+                      "overlaps": _overlaps,
+                      # Stricter, separate question: did the packing leave the
+                      # `annotation_band_m` inset free for dimensions? A view can be
+                      # `fits:true` and `fits_annotation_band:false` — that is a placement
+                      # choice, not a defect.
+                      "fits_annotation_band": not _out_of_band and not _overlaps,
+                      "annotation_band_out_of_bounds": _out_of_band,
+                      "annotation_band_bounds_m": [round(safe_x0, 4), round(safe_y0, 4),
+                                                   round(safe_x1, 4), round(safe_y1, 4)]}
         else:
             layout = _place_views(view_objects, sheet_w, sheet_h, safety=safety)
         try:
