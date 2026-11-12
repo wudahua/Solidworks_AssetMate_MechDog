@@ -632,8 +632,18 @@ def add_technical_requirements(drawing_path: Annotated[str, Field(description="E
     are kept as written, the rest get ordinals.
 
     `auto_place` (default) walks the block up the left margin until it clears every model
-    view, using the real (deflated) outlines; pass `x_m`/`y_m` with `auto_place=False` to
-    pin it. Errors: `bad_input` (empty lines) / `no_room_for_requirements`.
+    view AND every dimension text box; pass `x_m`/`y_m` with `auto_place=False` to pin it.
+    Errors: `bad_input` (empty lines) / `no_room_for_requirements`.
+
+    READ THE OVERLAP FIELDS, not just `ok` (0.8.304, report 2026-11-12 §7):
+      * `actual_collisions` — how many obstacles the FINAL box really intersects.
+        `0` means clean; anything else also sets a `warning` naming the count.
+      * `dimension_obstacles` — how many dimension text boxes were in the keep-out set.
+      * `degraded_reason: "dimensions_ignored_no_room"` — the sheet had nowhere clear of
+        both layers, so only the views were avoided. Check `actual_collisions` before
+        shipping the sheet.
+    A previous version placed the block straight across a dimension line while answering
+    `collisions_avoided: 0`, which an unattended batch could not detect.
 
     Verified 2026-11-02: a 4-line block reported a 22.4 mm bbox and rendered as 4 lines.
     """

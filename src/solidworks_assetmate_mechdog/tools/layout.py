@@ -696,6 +696,55 @@ def _encode_note_symbols(text):
     return encoded, warnings
 
 
+def _dimension_text_boxes(doc, char_h_default=0.0035):
+    """Estimated text boxes of every DIMENSION on the sheet.
+
+    Report 2026-11-12 §7 (N-1): `auto_place` only knew about view outlines, so a 技术要求
+    block was placed 14 mm above the main view — clear of its `precise_outline` — and
+    printed straight across the dimension lines living there. Dimensions are obstacles even
+    when they sit outside the view box.
+
+    The estimate matches `layout_dimensions` (position ± half width / one char height), so
+    the two tools agree about what "overlapping" means.
+    """
+    import win32com.client as win
+
+    boxes = []
+    for view in _iter_views(doc):
+        try:
+            raw = view.GetAnnotations
+        except Exception:
+            continue
+        items = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+        for item in items:
+            try:
+                ann = win.Dispatch(item)
+                if ann.GetType != 4:            # 4 = dimension annotation
+                    continue
+                position = [float(v) for v in ann.GetPosition]
+            except Exception:
+                continue
+            text, char_h = "", char_h_default
+            try:
+                specific = win.Dispatch(ann.GetSpecificAnnotation)
+                for index in (0, 1, 2):
+                    try:
+                        candidate = str(specific.GetText(index) or "")
+                        if candidate:
+                            text = candidate
+                            break
+                    except Exception:
+                        continue
+                char_h = float(specific.GetTextFormat.CharHeight) or char_h_default
+            except Exception:
+                pass
+            width = (max(char_h * 0.8, len(text) * char_h * 0.62) if text
+                     else char_h * 3)
+            boxes.append([position[0] - width / 2.0, position[1] - char_h,
+                          position[0] + width / 2.0, position[1] + char_h])
+    return boxes
+
+
 def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_mm=3.5,
                                title="技术要求", auto_place=True, save=True):
     """Write a technical-requirements block as ONE note, not N notes.
@@ -749,7 +798,7 @@ def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_m
         block_h = -block_box[1]
         block_w = block_box[2]
 
-        obstacles = []
+        view_obstacles = []
         for view in _iter_views(doc):
             if getattr(view, "Type", None) == 1:
                 continue
@@ -759,7 +808,12 @@ def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_m
             except Exception:
                 box = None
             if box:
-                obstacles.append([float(v) for v in box])
+                view_obstacles.append([float(v) for v in box])
+        # Report 2026-11-12 §7 (N-1): a dimension line lives OUTSIDE the view outline, so
+        # the old obstacle set let a requirements block land on top of it. Both kinds are
+        # obstacles now; the fallback below keeps a dense sheet placeable.
+        dimension_obstacles = _dimension_text_boxes(doc)
+        obstacles = view_obstacles + dimension_obstacles
 
         sheet_w, sheet_h = 0.420, 0.297
         try:
@@ -789,13 +843,24 @@ def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_m
             left = max(margin, float((safe_area or {}).get("left", 0) or 0))
             top = sheet_h - max(margin, float((safe_area or {}).get("top", 0) or 0))
             bottom_limit = max(margin, float((safe_area or {}).get("bottom", 0) or 0))
-            candidate = top
-            while candidate - block_h > bottom_limit:
-                box = [left, candidate - block_h, left + block_w, candidate]
-                if not any(_boxes_overlap(box, ob, 0.004) for ob in obstacles):
-                    chosen = (left, candidate)
+            # Two passes (report 2026-11-12 §7 N-1). Prefer a spot clear of views AND
+            # dimension text; when the sheet has no such spot, fall back to views only and
+            # SAY which layer was ignored. 0.8.290 refused outright; 0.8.301 placed the
+            # block across dimension lines and still reported `collisions_avoided: 0`,
+            # which is worse because a batch run cannot tell it went wrong.
+            degraded_reason = None
+            for layer, reason in ((obstacles, None),
+                                  (view_obstacles, "dimensions_ignored_no_room")):
+                candidate = top
+                while candidate - block_h > bottom_limit:
+                    box = [left, candidate - block_h, left + block_w, candidate]
+                    if not any(_boxes_overlap(box, ob, 0.004) for ob in layer):
+                        chosen = (left, candidate)
+                        degraded_reason = reason
+                        break
+                    candidate -= block_h + 0.006
+                if chosen is not None:
                     break
-                candidate -= block_h + 0.006
             if chosen is None and x_m is not None and y_m is not None:
                 chosen = (float(x_m), float(y_m))
             if chosen is None:
@@ -813,6 +878,25 @@ def add_technical_requirements(drawing_path, lines, x_m=None, y_m=None, height_m
         result["title"] = str(title) if title else None
         result["text"] = body
         result["block_height_mm"] = round(block_h * 1000, 1)
+        # Report 2026-11-12 §7 (N-1): `ok:true` must not hide an overprint. Report what the
+        # FINAL box actually overlaps. `actual_collisions: 0` with a `degraded_reason` means
+        # the block cleared the views but dimension text may still cross it — 0.8.301 said
+        # `collisions_avoided: 0` while the PDF showed the block on top of an arc.
+        try:
+            _final_box = _note_bbox(body, float(chosen[0]), float(chosen[1]), height_m)
+            _hits = [ob for ob in obstacles
+                     if _boxes_overlap(_final_box, ob, 0.002)]
+        except Exception:
+            _hits = []
+        result["actual_collisions"] = len(_hits)
+        result["overlap_with"] = [[round(float(v), 4) for v in ob] for ob in _hits[:5]]
+        result["dimension_obstacles"] = len(dimension_obstacles)
+        if degraded_reason:
+            result["degraded_reason"] = degraded_reason
+        if _hits:
+            result["warning"] = (
+                "技术要求块与 %d 个障碍物（视图 / 尺寸文字）重叠，本次放置未能完全避让。"
+                "改用 auto_place=False + x_m/y_m 指定位置，或减少行数。" % len(_hits))
         return result
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))

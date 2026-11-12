@@ -3554,3 +3554,58 @@ def _radians_to_deg(value_rad):            # PURE
 
 **同一个事实的编码散在四处，就会有三处是错的。** 类型判断必须只有一个谓词，
 而且这个谓词要被所有读者调用 —— 每处「顺手写一个 if」都是一次未来的分歧。
+
+---
+
+## 2026-11-12（v0.8.304）技术要求块不再静默压图（报告 §7 N-1）
+
+### 问题：从「过保守拒绝」变成「静默压图」
+
+0.8.290 是 `no_room_for_requirements`（称需 38 mm），调用方至少知道失败。
+0.8.301 修好拒绝之后：
+
+```json
+{ "ok": true, "adjusted": false, "collisions_avoided": 0,
+  "position_m": [0.0588, 0.287], "block_height_mm": 28.0 }
+```
+
+PDF 上标题与前两行正压在主视图的大圆弧和上方尺寸线上。原因是障碍集只有视图
+`precise_outline`：块放在视图 bbox 上方 14 mm 就「合法」，而尺寸线、引出线、圆弧
+恰好住在那条缝里。**从「明确失败」变成「成功但图面错误」，对无人值守批量出图更危险。**
+
+### 改法
+
+* 新增 `_dimension_text_boxes(doc)`：按 `layout_dimensions` 同一套估算
+  （位置 ± 半宽 / 一个字高）为每个尺寸标注生成 bbox，**尺寸也算障碍**。
+* 保持 `view_obstacles` 与 `dimension_obstacles` 两份：扫描时先试「视图 + 尺寸」，
+  找不到再退化为「只避视图」，并回 `degraded_reason: "dimensions_ignored_no_room"`。
+  这样既不退回 0.8.290 的硬报错，也不再静默压图。
+* 回执新增三项：
+  * `actual_collisions` —— 最终 box 真正交叠的障碍数（不是「挪了几次」）；
+  * `overlap_with` —— 前 5 个交叠 box，便于定位；
+  * `dimension_obstacles` —— 障碍集里有多少个尺寸文字框。
+  `actual_collisions > 0` 时同时给 `warning`，`ok` 仍为 true（放置本身没失败，
+  但调用方现在有信号）。
+
+### 验证
+
+真机（`door.SLDPRT`，front 视图 + 17 条尺寸 + 4 行技术要求）：
+
+```text
+ok = true
+position_m = [0.0588, 0.287]
+actual_collisions = 0
+dimension_obstacles = 17      # 改前恒为 0：尺寸根本没进障碍集
+degraded_reason = null
+```
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 291/291（+1 条断言） |
+| `smoke.py`（`eng cases` 内的技术要求断言） | 新增 `actual_collisions` / `dimension_obstacles` 断言 |
+
+### 教训
+
+**「没有报错」不等于「放对了」。** 当避让的障碍集只覆盖一类对象时，另一类对象
+必然会被压住，而回执仍然全绿。障碍集要按「图上所有会被文字遮住的东西」定义，
+并且回执必须回报**实际交叠数**，而不是「挪动次数」。

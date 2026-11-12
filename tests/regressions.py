@@ -10169,7 +10169,39 @@ def assert_angular_dimensions_never_enter_length_checks():
     return "one angular predicate; all four readers route through it"
 
 
+def assert_requirements_block_reports_real_overlaps():
+    """0.8.304 — report 2026-11-12 §7 (N-1): `auto_place` reported success over an overprint.
+
+    0.8.290 refused with `no_room_for_requirements`; 0.8.301 fixed the refusal by placing
+    the block 14 mm above the main view — clear of its `precise_outline`, straight across
+    the dimension lines that live there — and answered `collisions_avoided: 0`. An
+    unattended batch had no signal at all, which is worse than the refusal it replaced.
+    """
+    src = _read("tools/layout.py")
+    tree = ast.parse(src)
+    assert "\ndef _dimension_text_boxes(" in src, (
+        "dimension text is not an obstacle again; the block will land on a dimension line")
+    body = ast.get_source_segment(src, _function_node(tree,
+                                                     "add_technical_requirements")) or ""
+    assert "obstacles = view_obstacles + dimension_obstacles" in body, (
+        "the keep-out set is view-only again")
+    assert "actual_collisions" in body, (
+        "the receipt does not say what the FINAL box really overlaps")
+    assert "dimensions_ignored_no_room" in body, (
+        "the fallback is silent again: a dense sheet must say which layer it ignored")
+    assert "result[\"warning\"]" in body or "result['warning']" in body, (
+        "an overprint leaves no warning behind")
+
+    with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
+        sm = fh.read()
+    assert 'req.get("actual_collisions")' in sm, (
+        "the real-machine check does not read the overlap count")
+    assert 'req.get("dimension_obstacles")' in sm
+    return "requirements block reports real overlaps and names the layer it ignored"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.304 requirements report real overlaps", assert_requirements_block_reports_real_overlaps),
     ("0.8.303 angular never becomes mm", assert_angular_dimensions_never_enter_length_checks),
     ("0.8.301 early returns state execution_ok", assert_every_early_return_states_execution_ok),
     ("0.8.300 cleanup is not a delivery defect", assert_cleanup_steps_are_not_delivery_defects),

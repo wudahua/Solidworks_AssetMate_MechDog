@@ -2016,6 +2016,18 @@ def main():
                 "the block did not become one multi-line note: %r" % body)
             assert "1." in body and "3." in body, (
                 "ordinals were not generated for un-numbered lines: %r" % body)
+            # 0.8.304 (report 2026-11-12 §7 N-1): report what the block ACTUALLY overlaps.
+            # 0.8.301 printed it across a dimension line while answering
+            # `collisions_avoided: 0`, so a batch run had no way to notice.
+            assert isinstance(req.get("actual_collisions"), int), (
+                "placement does not report real overlaps: %r"
+                % (req.get("actual_collisions"),))
+            assert isinstance(req.get("dimension_obstacles"), int), (
+                "dimension text is not part of the obstacle set: %r"
+                % (req.get("dimension_obstacles"),))
+            if req.get("actual_collisions"):
+                assert req.get("warning"), (
+                    "overlaps were found but no warning was issued: %r" % (req,))
 
         # datum feature symbol (0.8.63): attaches to an edge, and the label must read
         # back — InsertDatumTag2 defaults to 'B', so a silent failure would be easy.
