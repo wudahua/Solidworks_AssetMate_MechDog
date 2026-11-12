@@ -1776,23 +1776,39 @@ def main():
                                                     include_points=False))
         count = len(listing.get("edges") or [])
         assert count >= 2, "need two edges to dimension an angle, got %d" % count
-        got = drawing.add_angular_dimension(drw, 0, 1, 0.22, 0.09, view_name=view,
-                                            expect_deg=45.0)
-        assert got.get("value_mm") is None, (
-            "an angular dimension reported a millimetre value: %r"
-            % (got.get("value_mm"),))
-        if got.get("ok"):
-            assert isinstance(got.get("value_deg"), (int, float)), got
-            assert got.get("value_is_angular") is True, got
-            assert int(got.get("dimension_type") or 0) in (1, 3), got
-            detail = "native angle %.2f deg" % float(got["value_deg"])
-        else:
+        # 0.8.310 (report 2026-11-12 §4.4 follow-up): 0.8.308's live run only ever hit the
+        # REFUSAL branch, so "creates a native angle" was never exercised. Measured on
+        # P05_karetku: edges (0,1) are circles -> not_angular, edges (2,3) -> 12.631 deg.
+        # Try the known-good pair first, then degrade — and if this fixture has no pair at
+        # all, say so instead of reporting a green line for a path that never ran.
+        hit, tried = None, []
+        for pair in ((2, 3), (0, 1), (1, 2), (3, 4), (4, 5)):
+            if max(pair) >= count:
+                continue
+            got = drawing.add_angular_dimension(drw, pair[0], pair[1], 0.22, 0.09,
+                                                view_name=view)
+            tried.append((pair, got.get("error") or "ok"))
+            assert got.get("value_mm") is None, (
+                "an angular dimension reported a millimetre value: %r"
+                % (got.get("value_mm"),))
+            if got.get("ok"):
+                assert isinstance(got.get("value_deg"), (int, float)), got
+                assert got.get("value_is_angular") is True, got
+                assert int(got.get("dimension_type") or 0) in (1, 3), got
+                assert 0 < float(got["value_deg"]) < 181, got
+                assert got.get("reverted") is False, got
+                hit = got
+                break
             assert got.get("error") in ("not_angular", "angular_dimension_failed",
                                         "select_failed", "bad_edge_index"), got
             if got.get("error") == "not_angular":
                 assert got.get("reverted") is True, (
                     "a wrong-kind dimension was left on the sheet: %r" % (got,))
-            detail = "refused: %s" % got.get("error")
+        if hit is None:
+            return ("refusal path verified %r; this fixture produced no native angle — "
+                    "the SUCCESS path was NOT exercised" % (tried,))
+        detail = "native angle %.3f deg (type %s)" % (
+            float(hit["value_deg"]), hit.get("dimension_type"))
         try:
             drawing.close_document(drw)
         except Exception:

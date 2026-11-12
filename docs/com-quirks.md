@@ -3915,3 +3915,48 @@ edge_a.Select2(False, 0) → edge_b.Select2(True, 0) → AddDimension2(x, y, 0)
 **先探 API，再写功能。** 这个 binding 上「看起来该有」的方法有三分之二是
 `MEMBERNOTFOUND`；凭文档写完再调试，等于把每一处不可用都变成一次静默失败。
 探测脚本本身就是交付物的一部分 —— 它决定了回执里哪些字段能给值、哪些必须写 null。
+
+---
+
+## 2026-11-12（v0.8.310）两个「已知未覆盖」的收口
+
+### `add_angular_dimension` 的成功路径：已真机验证
+
+0.8.308 的真机只命中了拒绝分支（所选两条边平行），所以「能创建原生角度」这件事
+其实**没有被验证过** —— 一个只有失败路径覆盖的新工具等于没覆盖。
+
+在 `P05_karetku` 上逐对试边：
+
+| 边对 | 结果 |
+|---|---|
+| (0, 1)（两条圆边） | `not_angular`，`reverted: true` |
+| (2, 3)（两条直线） | **`ok`，`value_deg: 12.631`，`dimension_type: 1`，`reverted: false`** |
+
+两条路径现在都被固定进 `smoke.py` 的 `angular dimension is native or refused`：
+先试已知可成的 (2,3)，失败再退化到其它组合；**若该夹具一对都不成，返回
+`the SUCCESS path was NOT exercised` 而不是绿行**。
+
+实测回执：`native angle 12.631 deg (type 1)`，37.9 s。
+
+### 基准面 `plane_frame`：补探 6 条路径后结案
+
+初版只试了 3 个名字就说「读不到」，不够。补探结果：
+
+| API | 结果 |
+|---|---|
+| `ModelToSketchTransform` | `DISP_E_MEMBERNOTFOUND` |
+| `GetSketchTransform` / `Get3DSketchTransform` / `GetSketchPlane` | 成员不存在 |
+| `GetReferenceEntity2` | 成员不存在 |
+| `GetReferenceEntity(0/1/True)` | `DISP_E_TYPEMISMATCH` —— 需要 out 参数，pywin32 传不了 |
+| `feature.GetDefinition` | 返回 `None` |
+| `Extension.GetCoordinateSystemTransformByName("")` | 返回 `None`（模型无坐标系） |
+
+**结论：这是 binding 的硬边界，不是实现缺陷。** `plane_frame` 保持 `null` +
+`plane_frame_reason` + 顶层 `plane_frame_available: false`，坐标为草图局部坐标。
+继续在上面投入只会把「拿不到」包装成「看起来拿到了」。
+
+### 教训
+
+**「未覆盖」分两种：实现漏了，和 API 拿不到。** 前者的正确动作是补测试，
+后者的正确动作是**把边界写进回执然后停止投入**。混在一起谈会让后者永远挂在
+待办列表上，看起来像欠债，实际是天花板。
