@@ -674,6 +674,16 @@ _NOTE_SYMBOL_CODES = {
     "\u00b0": "<MOD-DEG>",    # °
 }
 
+#: What each SolidWorks format code becomes on DWG/DXF export. 0.8.311 (report 2026-11-12
+#: §7 N-4): the warning used to hand the caller `replace_with: "<MOD-DEG>"` and leave it
+#: unclear whether that was a literal to write or something already done. It is already
+#: done — this table says what the export produces, so there is nothing left to do.
+_DWG_EXPORT_FORM = {
+    "<MOD-DIAM>": "%%c",
+    "<MOD-PM>": "%%p",
+    "<MOD-DEG>": "%%d",
+}
+
 
 def _encode_note_symbols(text):
     """Replace raw Unicode technical symbols with SolidWorks format codes.
@@ -686,11 +696,19 @@ def _encode_note_symbols(text):
     for char, code in _NOTE_SYMBOL_CODES.items():
         if char not in encoded:
             continue
+        _dwg = _DWG_EXPORT_FORM.get(code, "handled by SolidWorks")
         warnings.append({
             "char": char,
             "codepoint": "U+%04X" % ord(char),
             "replace_with": code,
-            "reason": "raw char becomes a \\U+ escape in DWG/DXF; some CAD viewers draw a box",
+            # 0.8.311 (report 2026-11-12 §7 N-4): say that the substitution ALREADY
+            # happened. The old text read like advice, so a caller could not tell whether
+            # the note still needed a manual fix — it never did.
+            "applied": True,
+            "dwg_export": _dwg,
+            "reason": ("已自动替换为 SolidWorks 格式码 %s，图面与回执都已生效，无需手工处理；"
+                       "导出 DWG/DXF 时为 %s。裸字符会被写成 \\U+ 转义，"
+                       "部分 CAD 查看器显示成方框。" % (code, _dwg)),
         })
         encoded = encoded.replace(char, code)
     return encoded, warnings
@@ -1150,6 +1168,10 @@ def add_note(drawing_path, text, x_m, y_m, height_mm=None, bold=False, save=True
                           safe_area_degraded=_safe_degraded,
                           safe_area_source=_safe_source,
                           text_requested=str(text), text_warnings=text_warnings,
+                          # 0.8.311: one boolean for "the symbols were encoded", so a
+                          # caller does not have to read the warning list to know.
+                          text_sanitized=bool(text_warnings),
+                          text_sanitized_count=len(text_warnings),
                           position_m=[round(float(x_m), 4), round(float(y_m), 4)],
                           position_requested_m=position_requested,
                           adjusted=bool(collisions_avoided),

@@ -10321,7 +10321,44 @@ def assert_layout_fits_matches_measure_layout():
     return "fits uses the raw safe area; the band verdict is a separate field"
 
 
+def assert_plan_respects_views_and_labels_confidence():
+    """0.8.311 — report 2026-11-12 §7 (N-3 / N-4): two advisory fields that misled.
+
+    N-3: `plan_drawing` hard-coded `sheets[0].views = ["front","right"]` while
+    `suggested_views` echoed the caller's four — a 4-view request produced a 2-view plan
+    with no explanation. And a 3-body S-shaped plate came back as `轴类` from its bounding
+    box alone, which `delivery_check` then echoed as if it were a fact.
+
+    N-4: the symbol warning read like advice (`replace_with: "<MOD-DEG>"`) although the
+    substitution had ALREADY been applied. It now says `applied: true` and names the DWG
+    export form (`%%d`), so nothing is left for the caller to do by hand.
+    """
+    src = _read("tools/planner.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "plan_drawing")) or ""
+    assert '"views": ["front", "right"]' not in body, (
+        "the sheet plan hard-codes two views again, ignoring the caller's `views`")
+    assert "_planned_views" in body and "views_omitted" in body, (
+        "the plan does not say which views it planned or dropped")
+    assert "category_confidence" in body, (
+        "the plan drops the confidence that the ledger provides")
+
+    led = _read("tools/ledger.py")
+    cbody = ast.get_source_segment(led, _function_node(ast.parse(led), "_classify")) or ""
+    assert '"high"' in cbody and '"low"' in cbody, (
+        "the classifier lost its confidence levels")
+    assert "未验证是否回转体" in cbody, (
+        "a bbox-only category claims more certainty than it has")
+
+    lay = _read("tools/layout.py")
+    assert "_DWG_EXPORT_FORM" in lay, "the DWG export form is not published"
+    assert '"applied": True' in lay, (
+        "the symbol warning still reads like advice that was never carried out")
+    assert "text_sanitized" in lay
+    return "plan honours views; categories carry confidence; symbol warnings say applied"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.311 plan views + confidence", assert_plan_respects_views_and_labels_confidence),
     ("0.8.307 layout fits matches measure", assert_layout_fits_matches_measure_layout),
     ("0.8.306 sheet index + layout columns", assert_sheet_index_and_layout_columns_do_not_lie),
     ("0.8.306 ledger missing excludes present", assert_ledger_missing_excludes_present_values),

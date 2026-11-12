@@ -148,20 +148,32 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
     total_driving = stats.get("driving_dimensions") or len(ledger_rows)
     ratio = round(len(keep) / total_driving, 3) if total_driving else None
 
-    # Sheet-splitting advice, from the measured A3 3-view ceiling.
-    sheet_plan = [{"sheet": 1, "content": "结构图：主视 + 侧视",
-                   "views": ["front", "right"]}]
+    # Sheet-splitting advice. 0.8.311 (report 2026-11-12 §7 N-3): this used to hard-code
+    # ["front", "right"] while `suggested_views` echoed the caller's list — so a caller who
+    # passed four views got a two-view plan with no explanation, and `delivery_check`
+    # echoed the label. The plan now uses what was ASKED for.
+    _requested_views = [str(v) for v in (views or ())]
+    _planned_views = _requested_views or ["front", "right"]
+    sheet_plan = [{"sheet": 1,
+                   "content": "结构图：%s" % " + ".join(_planned_views),
+                   "views": list(_planned_views)}]
     if led.get("category") == "钣金":
         sheet_plan.append({"sheet": 2, "content": "展开图：钣金展开 + 成型对照",
                            "views": ["flat_pattern"]})
+    _omitted_views = [v for v in _requested_views if v not in _planned_views]
 
     return ok(
         model=led.get("part"),
         category=led.get("category"),
         category_reason=led.get("category_reason"),
+        # "low" = inferred from three bbox numbers, not from geometry. Treat as a hint.
+        category_confidence=led.get("category_confidence"),
         box_mm=box,
         paper=paper,
         suggested_views=list(views),
+        views_requested=(_requested_views or None),
+        views_planned=list(_planned_views),
+        views_omitted=_omitted_views,
         driving_dimensions=total_driving,
         keep_count=len(keep),
         arc_lengths_skipped=len(arc_skipped),

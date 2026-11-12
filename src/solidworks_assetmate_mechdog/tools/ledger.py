@@ -196,26 +196,40 @@ def _hole_key(hole):
 
 
 def _classify(bbox_mm, has_flat_pattern, types):
-    """Heuristic part category (process §2.2). Advisory only."""
+    """Heuristic part category. PURE. Returns `(category, reason, confidence)`.
+
+    Report 2026-11-12 §7 (N-3): a 3-body S-shaped plate (46.5 x 30 x 120 mm, no cylinder
+    anywhere) came back as `轴类`, and `delivery_check` echoed the label. The heuristic is
+    fine as ADVICE — what was missing is how far to trust it. A flat-pattern hit is a FACT;
+    everything else is inferred from three numbers.
+
+    So every bbox-derived branch now returns `confidence: "low"` and says the basis out
+    loud. Adding a real "is it a solid of revolution" test needs cylindrical-face data,
+    which `plan_drawing` deliberately does not pay for (`include_faces=False`) — a cheap
+    cylinder test would trade a known mislabel for an unknown one.
+    """
     if has_flat_pattern:
-        return "钣金", "零件含 FlatPattern 特征"
-    dims = sorted(bbox_mm)
+        return "钣金", "零件含 FlatPattern 特征", "high"
+    dims = sorted(bbox_mm or [])
+    if len(dims) < 3:
+        return "其他", "包围盒退化", "low"
     shortest, middle, longest = dims[0], dims[1], dims[2]
     if shortest <= 0:
-        return "其他", "包围盒退化"
+        return "其他", "包围盒退化", "low"
     slender = longest / shortest
     width = middle / shortest
+    _bbox_only = "（仅基于包围盒长径比，未验证是否回转体 —— 结论仅供参考）"
     # Threshold lowered from 8 to 3 (P2-6, 2026-11-03): a Ø14x60 shaft is 4.3:1, which is
     # unquestionably a turned part but fell well inside the old "一般零件" bin — and the
     # report's plan then offered `总长: 14.0` (the X extent) with no Ø14 and no collar width.
     # 3:1 still excludes plates and blocks: a 5x50x60 strip is 12:1 but width 10 > 2.5.
     if slender >= 3 and width <= 2.5:
-        return "轴类", "长径比 %.1f、中/短比 %.1f" % (slender, width)
+        return "轴类", "长径比 %.1f、中/短比 %.1f%s" % (slender, width, _bbox_only), "low"
     if shortest <= 6 and middle >= 20:
-        return "板类", "最薄 %.1f mm、最宽 %.1f mm" % (shortest, middle)
+        return "板类", "最薄 %.1f mm、最宽 %.1f mm" % (shortest, middle), "low"
     if longest / middle <= 1.6 and longest / shortest >= 1.6 and len(types) >= 8:
-        return "箱体", "三方向尺寸接近且特征多"
-    return "一般零件", "包围盒 %s" % (bbox_mm,)
+        return "箱体", "三方向尺寸接近且特征多", "low"
+    return "一般零件", "包围盒 %s" % (bbox_mm,), "low"
 
 
 #: Ledger cache for one pipeline run (PR3). Bounded; see build_feature_ledger.
@@ -400,7 +414,8 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
                 seen.add(key)
                 holes.append(hole)
 
-        category, reason = _classify(bbox_mm or [0, 0, 0], has_flat_pattern, types)
+        category, reason, category_confidence = _classify(
+            bbox_mm or [0, 0, 0], has_flat_pattern, types)
 
         driving = sum(len(f["dimensions"]) for f in features)
         payload = ok(
@@ -410,6 +425,9 @@ def build_feature_ledger(model_path, include_faces=True, config=None):
             units="mm",
             category=category,
             category_reason=reason,
+            # 0.8.311 (report 2026-11-12 §7 N-3): "low" means the label came from three
+            # bounding-box numbers; treat it as a hint, not a classification.
+            category_confidence=category_confidence,
             bbox_mm=bbox_mm,
             material=_material_of(model),
             features=features,

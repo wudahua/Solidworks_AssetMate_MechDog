@@ -3960,3 +3960,68 @@ edge_a.Select2(False, 0) → edge_b.Select2(True, 0) → AddDimension2(x, y, 0)
 **「未覆盖」分两种：实现漏了，和 API 拿不到。** 前者的正确动作是补测试，
 后者的正确动作是**把边界写进回执然后停止投入**。混在一起谈会让后者永远挂在
 待办列表上，看起来像欠债，实际是天花板。
+
+---
+
+## 2026-11-12（v0.8.311）最后两条 P2：分类置信度 + 符号编码已生效（报告 §7 N-3 / N-4）
+
+### N-3 `plan_drawing` 忽略传入 `views`，分类过度自信
+
+两个独立问题：
+
+1. `sheets[0].views` 硬编码 `["front", "right"]`，而同一份回执的 `suggested_views`
+   回显调用方传入的 4 个 —— 传 4 个得到 2 个的计划，且不解释。
+2. 一个 3 实体 S 形弯板（46.5 × 30 × 120，全无圆柱面）被判成 `轴类`，
+   `delivery_check` 又把这个标签当事实复述。
+
+改法：
+
+* 计划直接用调用方的 `views`；新增 `views_requested` / `views_planned` / `views_omitted`
+  三个字段，让「要了什么 / 规划了什么 / 丢了什么」可对账。
+* `_classify` 改为返回 `(category, reason, confidence)`：`FlatPattern` 命中是**事实**
+  （`high`），其余全部来自三个包围盒数字（`low`），且 `axis` 分支的 reason 追加
+  「仅基于包围盒长径比，未验证是否回转体 —— 结论仅供参考」。`plan_drawing` 与
+  `build_feature_ledger` 都透出 `category_confidence`。
+
+**没有**加「圆柱面占比」判据：`plan_drawing` 用 `include_faces=False` 是为了性能，
+为此新开一次面扫描会把一个已知误标换成另一个未知误标。低置信度标签 + 说明，是这里
+正确的成本点。
+
+### N-4 `°` 的警告读起来像「还要你自己改」
+
+`_encode_note_symbols` 其实**已经**把裸字符替换成 SolidWorks 格式码（`°` → `<MOD-DEG>`），
+但 warning 写的是 `replace_with: "<MOD-DEG>"` + 「raw char becomes a \U+ escape」，
+调用方读不出「已经改好了」还是「建议你改」。
+
+现在每条 warning 带 `applied: true` 与 `dwg_export`（`%%c` / `%%p` / `%%d`），
+reason 明确写「已自动替换……无需手工处理」；回执另给
+`text_sanitized: true` / `text_sanitized_count`，一个布尔就够判断。
+
+### 验证
+
+真机：
+
+```text
+plan_drawing(P05, views=["top","front","right","isometric"])
+  category=轴类  category_confidence=low
+  reason=长径比 5.6、中/短比 1.9（仅基于包围盒长径比，未验证是否回转体 —— 结论仅供参考）
+  views_requested=['top','front','right','isometric']
+  views_planned  =['top','front','right','isometric']   omitted=[]
+  sheets[0].views=['top','front','right','isometric']    # 0.8.310 是 ['front','right']
+
+add_note("倒角 C2（2x45°），外径 Ø30 ±0.1")
+  ok=True  text_sanitized=True  text_sanitized_count=3
+  Ø -> <MOD-DIAM>  applied=True  dwg=%%c
+  ± -> <MOD-PM>    applied=True  dwg=%%p
+  ° -> <MOD-DEG>   applied=True  dwg=%%d
+  实际写入：倒角 C2（2x45<MOD-DEG>），外径 <MOD-DIAM>30 <MOD-PM>0.1
+```
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 296/296（+1 条断言） |
+
+### 教训
+
+**「建议」和「已完成」必须用不同字段表达。** 一条 warning 如果既可能是待办也可能
+是回执，调用方只能去猜；`applied: true` 比任何措辞都省事。
