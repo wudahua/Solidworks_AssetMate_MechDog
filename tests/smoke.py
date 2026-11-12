@@ -1757,6 +1757,51 @@ def main():
     r.check("angular dimensions never become millimetres",
             _angular_dimensions_never_become_millimetres)
 
+    def _angular_dimension_is_native_or_refused():
+        """Report 2026-11-12 §4.4: 45° used to require deleting the annotation and typing.
+
+        Two outcomes are acceptable and BOTH are asserted: a native angle (`value_deg`
+        set, `value_mm` null) or an explicit `not_angular` with the wrong-kind dimension
+        rolled back. What must never happen is a LENGTH reported as an angle.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any model that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_ang.SLDPRT")
+        drw = os.path.join(workdir, "smoke_ang.SLDDRW")
+        shutil.copy2(src, part)
+        built = require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        view = (built.get("views") or [{}])[0].get("name") or "工程图视图1"
+        listing = require(drawing.list_drawing_edges(drw, view_name=view,
+                                                    include_points=False))
+        count = len(listing.get("edges") or [])
+        assert count >= 2, "need two edges to dimension an angle, got %d" % count
+        got = drawing.add_angular_dimension(drw, 0, 1, 0.22, 0.09, view_name=view,
+                                            expect_deg=45.0)
+        assert got.get("value_mm") is None, (
+            "an angular dimension reported a millimetre value: %r"
+            % (got.get("value_mm"),))
+        if got.get("ok"):
+            assert isinstance(got.get("value_deg"), (int, float)), got
+            assert got.get("value_is_angular") is True, got
+            assert int(got.get("dimension_type") or 0) in (1, 3), got
+            detail = "native angle %.2f deg" % float(got["value_deg"])
+        else:
+            assert got.get("error") in ("not_angular", "angular_dimension_failed",
+                                        "select_failed", "bad_edge_index"), got
+            if got.get("error") == "not_angular":
+                assert got.get("reverted") is True, (
+                    "a wrong-kind dimension was left on the sheet: %r" % (got,))
+            detail = "refused: %s" % got.get("error")
+        try:
+            drawing.close_document(drw)
+        except Exception:
+            pass
+        return detail
+
+    r.check("angular dimension is native or refused",
+            _angular_dimension_is_native_or_refused)
+
     def _cleanup_failure_keeps_the_sheet_deliverable():
         """Report 2026-11-11 §4 (S3), on a REAL drawing.
 

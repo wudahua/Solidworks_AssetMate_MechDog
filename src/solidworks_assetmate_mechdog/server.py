@@ -198,6 +198,7 @@ _TOOL_PROFILES = {
         "move_view", "set_view_scale", "delete_view", "add_sheet_line", "set_title_block",
         "add_section_view", "add_detail_view", "add_flat_pattern_view",
         "auto_dimension", "add_drawing_dimension", "add_distance_dimension",
+        "add_angular_dimension",
         "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
@@ -1610,6 +1611,40 @@ def list_drawing_edges(drawing_path: Annotated[str, Field(description="Existing 
     """
     return _json(drawing.list_drawing_edges(drawing_path, view_name=view_name,
                                         include_points=include_points, flip_x=flip_x))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def add_angular_dimension(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
+    edge_a: Annotated[int, Field(description="Index of the FIRST edge (from list_drawing_edges) bounding the angle.")],
+    edge_b: Annotated[int, Field(description="Index of the SECOND edge; the dimension measures the angle between the two.")],
+    x_m: Annotated[float, Field(description="Sheet X in metres.")],
+    y_m: Annotated[float, Field(description="Sheet Y in metres.")],
+    view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
+    expect_deg: Annotated[float | None, Field(description="Expected angle in DEGREES, e.g. 45 for a 1x45 chamfer. When given, `verified` reports whether the created dimension agrees within `tolerance_deg`. Omit it and `verified` stays null — null is 'not checked', NOT a pass.")] = None,
+    tolerance_deg: Annotated[float, Field(description="Allowed difference between `expect_deg` and the created angle, in degrees.")] = 0.5,
+    save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,
+) -> str:
+    """Create a NATIVE, associative ANGULAR dimension between two edges.
+
+    The only prior options were a deleted annotation plus typed text (loses the link to the
+    model) or nothing. This calls `AddDimension2` on two selected edges — the mechanism
+    `add_distance_dimension` already uses — and then CHECKS the result is angular before
+    reporting success: between two parallel edges the same call yields a LENGTH, so
+    `not_angular` is returned and the wrong dimension is deleted again (`reverted: true`).
+
+    Angles are the ONE dimension kind whose raw value is RADIANS. This returns
+    `value_deg` (e.g. `45.0`) and always `value_mm: null`; a field named `_mm` must never
+    carry degrees (report 2026-11-12 §4).
+
+    Pass `expect_deg` for anything that matters — a silently wrong angle is invisible on
+    the sheet. `verified: false` means it was created at a different angle than you asked
+    for; the dimension is left in place so you can see where it landed.
+    """
+    return _json(drawing.add_angular_dimension(
+        drawing_path, edge_a, edge_b, x_m, y_m, view_name=view_name,
+        expect_deg=expect_deg, tolerance_deg=tolerance_deg, save=save))
 
 
 @mcp.tool()

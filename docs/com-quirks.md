@@ -3798,3 +3798,52 @@ measure_layout.min_margin_m: 0.0153
 
 **两个工具都标着「measured」，不代表它们测的是同一件事。** 判定框不同时，布尔值必然
 打架；要么共用同一个框，要么把更严格的那条判据拆成独立字段并说明它更严格。
+
+---
+
+## 2026-11-12（v0.8.308）新增 `add_angular_dimension`：原生关联角度尺寸（报告 §4.4）
+
+### 之前只能「删掉再打字」
+
+`add_drawing_dimension` 的文字槽写不出来，`auto_dimension` 只能搬运模型已有的尺寸。
+所以想把 45° 标到图上，唯一办法是 `delete_annotation` 删掉原生标注、再加一条文字 ——
+图面上有「45°」，但它不再与模型关联，改模型不会跟着变。
+
+### 做法：`AddDimension2` + 类型校验 + 撤销
+
+`add_distance_dimension` 早已证明「选两条边 → `AddDimension2`」可用。角度是同一机制，
+区别只在**必须校验结果的类型**：两条边平行时，同一个调用会安静地产出一个**长度**尺寸。
+
+```
+edge_a.Select2(False, 0) → edge_b.Select2(True, 0) → AddDimension2(x, y, 0)
+→ GetDimension2(0).GetType ∈ (1, 3)?  是 → value_deg；否 → 撤销并返回 not_angular
+```
+
+* 类型不对时**真的删掉**：`GetAnnotation` → `Select(False)` → `EditDelete` → `EditRebuild3`，
+  回执 `created:false / reverted:true / dimension_type`。图上留一条「看起来像角度」的
+  长度标注，比没有更糟。
+* 回执 `value_deg`（度数）+ `value_mm: null` + `value_is_angular: true`。
+* `expect_deg` 可选：给了就比对，`verified` 三态（`true` / `false` / `null`=未校验）。
+  `ok` 跟随 `verified is not False` —— 创建成功但角度不对时 `ok:false`，调用方必须处理。
+
+同时修掉 `add_distance_dimension` 的同类 bug：两条非平行边产生角度尺寸时，它原来报
+`value_mm: 785.398`。现在给 `value_deg` 并把 `value_mm` 置 null —— 这正是
+`layout_dimensions` 那条 `785.4` 的上游。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `static_check` | `OK (72 tools, ... README in sync, every parameter documented)` |
+| `check_all.py` | 295/295 |
+| `stdio_contract.py` | 6/6，`seal={'registered': 72, 'sealed': 72, 'ok': True}` |
+| 真机 `angular dimension is native or refused` | PASS，39.0 s，`refused: not_angular` |
+
+真机这一次选中的两条边**平行**，所以命中拒绝路径：`not_angular` + `reverted:true`，
+`value_mm` 为 null。**成功路径（`ok:true` + `value_deg`）本轮未在真机命中** ——
+需要在有明确夹角的两条边上复测，已列为待办。
+
+### 教训
+
+**「能创建」和「创建对了」必须分开断言。** `AddDimension2` 在平行边之间不会报错，
+它会给你一个长度；不校验类型就报成功，等于把「选错了边」伪装成「标好了角度」。

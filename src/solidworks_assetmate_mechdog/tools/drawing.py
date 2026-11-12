@@ -5329,6 +5329,7 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
                              "The dimension was created WITHOUT the prefix — check the "
                              "figure before shipping, or delete it and retry.")
         value_mm = None
+        value_deg = None
         dimension_type = None
         try:
             dim2 = win.Dispatch(call_method(display, "GetDimension2", 0))
@@ -5344,6 +5345,12 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
                     dimension_type = int(dim2.Type)
                 except Exception:
                     dimension_type = None
+            # 0.8.308 (report 2026-11-12 §4): between two NON-PARALLEL edges the very same
+            # call yields an ANGULAR dimension, whose SystemValue is radians. Reporting
+            # `value_mm: 785.398` for 45° is the bug this whole release line started from.
+            if _is_angular_dimension_type(dimension_type):
+                value_deg = _radians_to_deg(dim2.SystemValue)
+                value_mm = None
         except Exception:
             pass
         try:
@@ -5363,6 +5370,9 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
             drawing=doc.GetTitle, view=str(target.Name),
             edge_a=int(edge_a), edge_b=int(edge_b),
             value_mm=value_mm,
+            # 0.8.308: angular results carry `value_deg` and NO `value_mm`; a field named
+            # `_mm` must never hold degrees (report 2026-11-12 §4).
+            value_deg=value_deg,
             dimension_type=dimension_type,
             # Requested vs applied: `SetText` can fail on some builds, and a Ø that did not
             # land reads as a plain length to anyone checking the sheet.
@@ -5377,6 +5387,150 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
         return error("bad_input", str(exc))
     except Exception as exc:
         return error("distance_dimension_failed", str(exc))
+
+
+def add_angular_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=None,
+                          expect_deg=None, tolerance_deg=0.5, save=True):
+    """Create a NATIVE, associative angular dimension between two edges.
+
+    Report 2026-11-12 §4.4: the only way to get 45° onto the sheet was to DELETE the
+    imported annotation and type the text, which loses the association — edit the model and
+    the sheet stops following. This selects two edges and calls `AddDimension2` (the same
+    mechanism as `add_distance_dimension`), then CHECKS the result is angular before
+    reporting success: between two parallel edges that identical call yields a LENGTH, and
+    shipping one labelled "angle" is worse than refusing.
+
+    `expect_deg` is optional and strongly recommended for a chamfer: `verified` says
+    whether the created value matches it within `tolerance_deg`. A silently wrong angle is
+    invisible on the sheet.
+
+    Angles are the ONE dimension kind whose raw `SystemValue` is RADIANS, so this returns
+    `value_deg` and always `value_mm: null` (report 2026-11-12 §4).
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        target = None
+        for view in _iter_views(doc):
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name is None or str(view.Name) == view_name:
+                target = view
+                break
+        if target is None:
+            return error("view_not_found", "no model view named %r" % view_name)
+        doc.ActivateView(target.Name)
+        doc.ClearSelection2(True)
+
+        edges = []
+        for component in (list(target.GetVisibleComponents or ())):
+            try:
+                edges.extend(list(target.GetVisibleEntities2(component, 1) or ()))
+            except Exception:
+                continue
+        for label, index in (("edge_a", edge_a), ("edge_b", edge_b)):
+            if index is None or index < 0 or index >= len(edges):
+                return error("bad_edge_index",
+                             "%s=%s out of range (%d edges)" % (label, index, len(edges)))
+
+        first = win.Dispatch(edges[int(edge_a)])
+        second = win.Dispatch(edges[int(edge_b)])
+        if not first.Select2(False, 0):
+            return error("select_failed", "could not select edge_a=%s" % edge_a)
+        if not second.Select2(True, 0):
+            return error("select_failed", "could not append edge_b=%s" % edge_b)
+
+        raw = _invoke_as_method(doc, "AddDimension2", float(x_m), float(y_m), 0.0)
+        if raw is None:
+            return error(
+                "angular_dimension_failed", "AddDimension2 returned null",
+                "It needs exactly two compatible entities selected. Pick the two edges "
+                "that actually bound the angle you want.")
+        display = win.Dispatch(raw)
+
+        dim_type = None
+        value_deg = None
+        try:
+            dim2 = win.Dispatch(call_method(display, "GetDimension2", 0))
+            try:
+                dim_type = int(dim2.GetType)
+            except Exception:
+                try:
+                    dim_type = int(dim2.Type)
+                except Exception:
+                    dim_type = None
+            if _is_angular_dimension_type(dim_type):
+                value_deg = _radians_to_deg(dim2.SystemValue)
+        except Exception:
+            pass
+
+        if not _is_angular_dimension_type(dim_type):
+            # Wrong KIND: undo it. A stray length dimension on the sheet reads as a real
+            # measurement and is hard to attribute later.
+            reverted = False
+            try:
+                ann = win.Dispatch(call_method(display, "GetAnnotation"))
+                ann.Select(False)
+                _call_method(doc, "EditDelete")
+                _call_method(doc, "EditRebuild3")
+                reverted = True
+            except Exception:
+                reverted = False
+            try:
+                doc.GraphicsRedraw2()
+            except Exception:
+                pass
+            if save:
+                _save_drawing(doc)
+            return error(
+                "not_angular",
+                "AddDimension2 created a dimension of type %r, not an angle" % (dim_type,),
+                "The two edges are parallel (or the selection degenerated), so SolidWorks "
+                "produced a LENGTH. Pick the two lines that bound the angle.",
+                created=False, reverted=reverted, dimension_type=dim_type,
+                edge_a=int(edge_a), edge_b=int(edge_b))
+
+        verified = None
+        if expect_deg is not None and value_deg is not None:
+            verified = abs(float(value_deg) - float(expect_deg)) <= float(tolerance_deg)
+
+        try:
+            _call_method(doc, "EditRebuild3")
+            perf_hooks.bump("rebuild_calls")
+        except Exception:
+            pass
+        try:
+            doc.GraphicsRedraw2()
+            perf_hooks.bump("redraw_calls")
+        except Exception:
+            pass
+        if save:
+            _save_drawing(doc)
+
+        return drawing_ok(
+            drawing=doc.GetTitle, view=str(target.Name),
+            edge_a=int(edge_a), edge_b=int(edge_b),
+            created=True, reverted=False,
+            # `value_deg` is the whole point: 45°, not 785.4.
+            value_deg=value_deg,
+            value_mm=None,
+            value_is_angular=True,
+            dimension_type=dim_type,
+            expect_deg=(None if expect_deg is None else round(float(expect_deg), 3)),
+            tolerance_deg=float(tolerance_deg),
+            verified=verified,
+            position_m=[round(float(x_m), 4), round(float(y_m), 4)],
+            prefix_requested=None, prefix_applied=None,
+            ok=(verified is not False),
+            note=("原生关联角度尺寸 —— 编辑模型后图面会跟着更新。角度是唯一"
+                  "`SystemValue` 用弧度的尺寸类型，所以 `value_mm` 恒为 null、角度在 "
+                  "`value_deg`。`verified: null` 表示没传 `expect_deg`，不是验证通过；"
+                  "`not_angular` 表示两条边平行、已被撤销。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("angular_dimension_failed", str(exc))
 
 
 def add_drawing_dimension(drawing_path, x=None, y=None, value=None, offset_x=0.0,
