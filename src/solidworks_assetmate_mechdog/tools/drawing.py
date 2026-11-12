@@ -870,9 +870,21 @@ def create_drawing(
                     _a, _c = _boxes[_i][1], _boxes[_j][1]
                     if min(_a[2], _c[2]) - max(_a[0], _c[0]) > 1e-6 and                             min(_a[3], _c[3]) - max(_a[1], _c[1]) > 1e-6:
                         _overlaps.append("%s<->%s" % (_boxes[_i][0], _boxes[_j][0]))
+            # Report 2026-11-12 §5 (P1-2): a 2x2 layout reported `columns: 4` because every
+            # VIEW was counted as a column, and `fits:false` disagreed with `measure_layout`
+            # / `drawing_audit` / `delivery_check` on the same sheet. `columns` now counts
+            # distinct left edges, and the receipt says this is a PREDICTION against the
+            # annotation-band box — not the measurement `measure_layout` performs. Exposing
+            # `bounds_m` lets the caller see which box produced the verdict instead of
+            # trusting a bare boolean.
+            _columns = sorted({round(_b[0], 4) for _, _b in _boxes})
             layout = {"fits": not _out_of_bounds and not _overlaps,
-                      "columns": len(views), "explicit": True,
+                      "columns": len(_columns) or len(views),
+                      "explicit": True,
                       "measured": bool(_boxes),
+                      "predicted": True,
+                      "bounds_m": [round(safe_x0, 4), round(safe_y0, 4),
+                                   round(safe_x1, 4), round(safe_y1, 4)],
                       "out_of_bounds": _out_of_bounds,
                       "overlaps": _overlaps}
         else:
@@ -1242,18 +1254,27 @@ def _activate_sheet_if_given(doc, sheet):
     if not names:
         return None, error("no_sheets", "the drawing reports zero sheets")
     target = None
-    if isinstance(sheet, int):
+    # Report 2026-11-12 §5 (P1-1): the MCP schema declares `string | integer` and Pydantic
+    # coerced `1` to `"1"` before it arrived, so the int branch never ran and a perfectly
+    # valid index failed with `no sheet named '1'`. Resolve by NAME first (a sheet really
+    # named "1" must win), then fall back to a digit string as a 1-based index.
+    _as_index = None
+    if isinstance(sheet, int) and not isinstance(sheet, bool):
+        _as_index = sheet
+    elif str(sheet) not in names and str(sheet).strip().isdigit():
+        _as_index = int(str(sheet).strip())
+    if str(sheet) in names:
+        target = str(sheet)
+    elif _as_index is not None:
         try:
-            target = names[sheet - 1]
+            target = names[_as_index - 1]
         except Exception:
             return None, error("sheet_not_found",
-                               "index %r is outside 1..%d" % (sheet, len(names)),
-                               sheets=names)
-    else:
-        if str(sheet) not in names:
-            return None, error("sheet_not_found", "no sheet named %r" % sheet,
+                               "index %r is outside 1..%d" % (_as_index, len(names)),
                                "existing: %s" % ", ".join(names), sheets=names)
-        target = str(sheet)
+    else:
+        return None, error("sheet_not_found", "no sheet named %r" % sheet,
+                           "existing: %s" % ", ".join(names), sheets=names)
     try:
         ok = bool(doc.ActivateSheet(target))
     except Exception as exc:                                        # noqa: BLE001
@@ -8617,6 +8638,10 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
 
         blockers, pending, passed, checks = [], [], [], {}
         ledger_missing = []
+        # The other half of `unmatched_ledger`: values that ARE on the sheet but lost their
+        # attribution. Defined here so a failed `reconcile_ledger` cannot NameError the
+        # receipt (0.8.306).
+        ledger_unmatched_but_present = []
 
         # `blocking` is KEYWORD-ONLY. It used to be the fourth positional parameter, so an
         # explanation passed in that slot silently became the blocking flag — and any
@@ -8892,14 +8917,23 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             near_view = sum(1 for o in all_orphans if o.get("orphan_near_view"))
             dim_count = int(att.get("dimension_count") or 0)
             attached = max(dim_count - orphan, 0)
-            suffix = ("（其中 %d 条位置在视图附近，但引线未验证）" % near_view
-                      if near_view else "")
+            # Report 2026-11-12 §5 (P1-4) asked for `orphan` to be downgraded to a warning
+            # whenever the dimension merely sits near its view. That test was measured and
+            # REJECTED in 0.8.27: parked dimensions are always within 50 mm of the outline,
+            # so proximity excused 15 genuine orphans while the same receipt still claimed
+            # every dimension was attached. Proximity stays an OBSERVATION; what changed
+            # here is that its distribution is published, and the hint says what to do.
+            suffix = ("（其中 %d 条位置在视图附近、引线未验证 —— 若 PDF 上引线正常，"
+                      "这些多为 place_outside 移动过的尺寸，不必删；远离视图的才需人工确认）"
+                      % near_view if near_view else "")
             record("dimension_attachments", orphan == 0,
                    (("%d/%d 个尺寸无关联实体%s" % (orphan, dim_count, suffix))
                     if orphan
                     else ("%d 个尺寸均已关联" % dim_count)),
                    excused_count=0,
                    attached_count=attached,
+                   near_view_orphans=near_view,
+                   far_from_view_orphans=orphan - near_view,
                    blocking=bool(strict_attachments) and orphan > 0)
         else:
             record("dimension_attachments", False,
@@ -8943,12 +8977,27 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             # from this drawing" job the missing five are the whole point.
             from ..sw_session import fix_mojibake as _fix_mojibake
 
+            # Report 2026-11-12 §5 (P1-5): `unmatched_ledger` mixes two different facts —
+            # "no drawing dimension carries this value" and "the value IS on the sheet but
+            # an earlier ledger row consumed it". Listing both under `ledger_missing` told
+            # the caller to draw six dimensions that were already drawn (measured on
+            # 边肋连接件: 30.0 x2 / 5.0 / 15.5 / 9.0 x2 / 15.0, all present).
+            _missing_rows = rec.get("missing_truly") or []
+            _present_rows = rec.get("present_but_unmatched") or []
             ledger_missing = [
                 {"feature": _fix_mojibake(row.get("feature")),
                  "dimension": _fix_mojibake(row.get("dimension")),
                  "value_mm": row.get("value_mm"),
                  "dimension_type": row.get("dimension_type")}
-                for row in (rec.get("unmatched_ledger") or [])
+                for row in _missing_rows
+            ]
+            ledger_unmatched_but_present = [
+                {"feature": _fix_mojibake(row.get("feature")),
+                 "dimension": _fix_mojibake(row.get("dimension")),
+                 "value_mm": row.get("value_mm"),
+                 "dimension_type": row.get("dimension_type"),
+                 "reason": "图上有同值尺寸，归属待确认 —— 不是缺项"}
+                for row in _present_rows
             ]
         else:
             record("ledger_reconciled", False,
@@ -8979,6 +9028,11 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
             # P1-3: the concrete list behind `ledger_reconciled`'s ratio.
             ledger_missing=ledger_missing,
             ledger_missing_count=len(ledger_missing),
+            # 0.8.306 (report 2026-11-12 §5 P1-5): the OTHER half of `unmatched_ledger`.
+            # These values ARE on the sheet; only the attribution is uncertain, so they
+            # must not be listed as missing.
+            ledger_unmatched_but_present=ledger_unmatched_but_present,
+            ledger_unmatched_but_present_count=len(ledger_unmatched_but_present),
             facts={
                 "views": view_count,
                 "dimensions": dim_total,

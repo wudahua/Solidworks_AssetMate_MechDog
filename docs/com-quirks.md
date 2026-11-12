@@ -3677,3 +3677,69 @@ degraded_reason = null
 **「守护存在」和「守护能跑」是两件事，而只有后者算覆盖。**
 写 check 时要问「在一台没有我这些私有夹具的机器上，它会不会执行」；
 再问「全 SKIP 时退出码是多少」—— 如果都是 0，那这个 check 在 CI 里等于不存在。
+
+---
+
+## 2026-11-12（v0.8.306）台账缺项不再点名已画出的尺寸（报告 §5 P1-1/2/4/5）
+
+### P1-5 `ledger_missing` 把「归属不确定」当成「缺」
+
+`reconcile_ledger` 早就把 `unmatched_ledger` 拆成两半：`missing_truly`（图上没有任何尺寸
+带这个值）与 `present_but_unmatched`（值在图上，配对失败）。`delivery_check` 却把**整个**
+unmatched 列表写成 `ledger_missing`，于是在 `边肋连接件` 上让调用方去补 30.0 ×2 / 5.0 /
+15.5 / 9.0 ×2 / 15.0 —— 每一条都已经画在图上。
+
+现在 `ledger_missing` 只来自 `missing_truly`，另一半独立发布：
+
+```json
+"ledger_unmatched_but_present": [{"value_mm": 30.0, "reason": "图上有同值尺寸，归属待确认 —— 不是缺项"}]
+```
+
+### P1-4 orphan：不降级，但把分布摊开
+
+反馈建议「位置在视图附近的 orphan 降为 warning」。**这条不改** —— 0.8.27 已经实测过：
+尺寸默认停靠在视图外 12 mm，所以几乎每个 orphan 都「在视图附近」，那次「修好」放过了
+15 个真 orphan，同一份回执还声称「23 个尺寸均已关联」。判据本身已被证伪，不能重犯。
+
+改的是可观测性：`dimension_attachments` 现在带
+`near_view_orphans` / `far_from_view_orphans`，detail 里也说清「若 PDF 引线正常，
+这些多为 `place_outside` 移动过的尺寸，不必删；远离视图的才需人工确认」。
+orphan 仍是 pending —— 宁可让人看一眼，也不要让真缺陷悄悄通过。
+
+### P1-1 `sheet=1` 报 `no sheet named '1'`
+
+schema 声明 `string | integer`，Pydantic 把 `1` 转成 `"1"` 后 `isinstance(sheet, int)`
+永远为假，于是合法的 1-based 索引被当成名字查。现在**先按名字**（真有一张叫 "1" 的图纸
+就该赢），名字不存在且是纯数字才当索引。
+
+### P1-2 `create_drawing.layout.columns` 数的是视图数
+
+2×2 摆位被报成 `columns: 4`，`fits:false` 又与 `measure_layout` / `drawing_audit` /
+`delivery_check` 三方矛盾。`columns` 改为按测量到的**不同左边缘**计数；`fits` 增加
+`predicted: true` 与 `bounds_m`，让调用方看到判定用的是哪个框，而不是只给一个布尔值。
+
+**未做**：让 `fits` 与 `measure_layout` 共用同一套判定仍是待办 —— 那需要把
+「标注带」框与 `precise_outline` 的语义统一，改动面更大，留待下一轮。
+
+### 验证
+
+真机（`door.SLDPRT` 复制为 `sidxdoor`，避免同名文档冲突）：
+
+```text
+create: True
+layout: {"fits": true, "columns": 2, "explicit": true, "measured": true,
+         "predicted": true, "bounds_m": [0.0768, 0.083, 0.398, 0.275],
+         "out_of_bounds": [], "overlaps": []}
+add_sheet: True
+sheet=1 -> ok | inserted: 24        # 0.8.305 报 no sheet named '1'
+```
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 294/294（+2 条断言） |
+| 真机 `reconcile ledger` + `drawing chain` | 2/2 PASS |
+
+### 教训
+
+**「我没配上对」不等于「图上没有」。** 把「未匹配」直接翻译成「缺项」，会让调用方去补
+已经画好的尺寸 —— 这类假阴性和假阳性一样贵，因为它消耗的是信任。

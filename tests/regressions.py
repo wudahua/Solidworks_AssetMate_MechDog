@@ -10235,7 +10235,68 @@ def assert_live_checks_run_without_private_fixtures():
     return "live guards use --part; all-SKIP exits 3; the banner says 0 executed"
 
 
+def assert_ledger_missing_excludes_present_values():
+    """0.8.306 — report 2026-11-12 §5 (P1-5): six dimensions were called missing while drawn.
+
+    `reconcile_ledger` already split `unmatched_ledger` into `missing_truly` (no drawing
+    dimension carries that value) and `present_but_unmatched` (the value IS there, the
+    pairing failed). `delivery_check` then listed the WHOLE unmatched list as
+    `ledger_missing`, so on 边肋连接件 it told the caller to draw 30.0 / 5.0 / 15.5 /
+    9.0 / 15.0 — every one of which was already on the sheet.
+
+    Also asserts the orphan distribution is published. Downgrading `orphan` on proximity
+    was measured and rejected in 0.8.27 (it excused 15 genuine orphans), so the fix is to
+    report `near_view_orphans` / `far_from_view_orphans` and let the caller judge.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delivery_check")) or ""
+    assert 'for row in _missing_rows' in body, (
+        "ledger_missing is built from `unmatched_ledger` again — that list mixes two facts")
+    assert "_present_rows" in body and "ledger_unmatched_but_present" in body, (
+        "the 'present but unattributed' half is dropped from the receipt")
+    assert "ledger_unmatched_but_present_count" in body
+    assert "near_view_orphans" in body and "far_from_view_orphans" in body, (
+        "the orphan distribution is not published")
+    # The rejected shortcut must not come back.
+    assert "orphan == 0 or " not in body, (
+        "orphan was downgraded on proximity — 0.8.27 measured that it excuses real defects")
+    return "missing = missing_truly only; present-but-unattributed named separately"
+
+
+def assert_sheet_index_and_layout_columns_do_not_lie():
+    """0.8.306 — report 2026-11-12 §5 (P1-1 / P1-2): two small contract lies.
+
+    P1-1: the schema declares `sheet: string | integer`, Pydantic coerced `1` to `"1"` and
+    the int branch never ran, so a valid 1-based index failed with `no sheet named '1'`.
+    P1-2: `create_drawing.layout.columns` counted every VIEW as a column, so a 2x2 layout
+    reported `columns: 4`; and `fits` disagreed with `measure_layout` on the same sheet
+    without saying it was a prediction against a different box.
+    """
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    body = ast.get_source_segment(src, _function_node(tree,
+                                                     "_activate_sheet_if_given")) or ""
+    assert 'str(sheet).strip().isdigit()' in body, (
+        "a digit string is not treated as a 1-based index; `sheet=1` fails again")
+    assert "if str(sheet) in names:" in body, (
+        "a sheet literally named '1' must win over the index interpretation")
+
+    create = ast.get_source_segment(src, _function_node(tree, "create_drawing")) or ""
+    assert '"columns": len(views)' not in create, (
+        "every view is called a column again")
+    assert '"_columns"' in create or "_columns = sorted" in create, (
+        "columns is not derived from the measured boxes")
+    assert '"predicted": True' in create, (
+        "the layout block does not say its `fits` is a prediction")
+    assert '"bounds_m"' in create, (
+        "the box behind `fits` is not published, so a caller cannot explain a disagreement")
+    return "sheet index accepts digit strings; columns counted; fits marked predicted"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.306 sheet index + layout columns", assert_sheet_index_and_layout_columns_do_not_lie),
+    ("0.8.306 ledger missing excludes present", assert_ledger_missing_excludes_present_values),
     ("0.8.305 live guards run without fixtures", assert_live_checks_run_without_private_fixtures),
     ("0.8.304 requirements report real overlaps", assert_requirements_block_reports_real_overlaps),
     ("0.8.303 angular never becomes mm", assert_angular_dimensions_never_enter_length_checks),
