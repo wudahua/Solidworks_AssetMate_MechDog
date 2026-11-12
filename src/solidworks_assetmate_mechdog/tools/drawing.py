@@ -9053,6 +9053,18 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                    diameter_dimensions=diameter_dims,
                    covered_by_diameter_only=(holes_in_drawing == 0 and diameter_dims > 0),
                    covered=covered > 0)
+        else:
+            # Report 2026-11-12 §4-4: with `include_faces=False` (the default, 10x cheaper)
+            # the ledger never counts cylindrical faces, so `hole_candidates` is 0 and this
+            # whole block was skipped — the check VANISHED from `checks`. A missing check
+            # reads as "nothing to report", which is how "0 hole-callout objects" stopped
+            # being judged at all. It now reports itself as not run.
+            record("hole_callouts", True,
+                   "孔标注未核对：`include_faces=False`，台账没有圆柱面计数。"
+                   "要跑这项检查请传 `include_faces=True`（约 10 倍耗时）。",
+                   blocking=False, status="not_checked",
+                   hole_callout_objects=holes_in_drawing,
+                   diameter_dimensions=diameter_dims)
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
 
@@ -11362,9 +11374,16 @@ def plan_dimension_gaps(model_path, drawing_path, tolerance_mm=0.05,
             elif _n_matches > 1:
                 entry["confidence"] = "medium"
                 entry["confidence_reason"] = "%d 条边对匹配" % _n_matches
-            else:
+            elif _n_matches == 1:
                 entry["confidence"] = "high"
                 entry["confidence_reason"] = "唯一匹配"
+            else:
+                # ZERO matches used to fall into the `else` above and be reported as
+                # "唯一匹配 / high" — so a `no_geometry` gap (no candidate pair at all)
+                # read as a certain answer with `candidates: []` (report 2026-11-12 §5).
+                # "No candidates" and "exactly one candidate" are opposite facts.
+                entry["confidence"] = "none"
+                entry["confidence_reason"] = "没有候选边对（与「唯一匹配」相反）"
 
             _low = entry.get("confidence") == "low"
             if _low:

@@ -357,6 +357,9 @@ def produce_drawing(
       * `incomplete_reasons` — why, and of which kind: `blocker` (fixable from here),
         `partial_step` (a step did part of its job), `failed_step` (a non-critical step
         crashed).
+      * `partial_steps` / `failed_steps` / `cleanup_incomplete` / `superseded_steps` — the
+        raw step names per bucket. `superseded_steps` names a `delivery_check` failure that
+        was already folded into a `blocker`: counted once, still enumerable.
       * `execution_ok` — ALWAYS present in this tool's receipts. `true` = the pipeline ran to
         the END (every step attempted), including `critical_step_failed`, where the sheet is
         unusable but the run did happen. `false` = it stopped early (`bad_input`,

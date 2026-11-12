@@ -353,8 +353,13 @@ CAPABILITIES = [
                      "（水平参考线 + 直角三角形 + 「6.0」+ 斜引线）。"),
     },
     {"id": "datum_feature_symbol",
+        # Report 2026-11-12 §3: `verified` is kept for the SYMBOL (insertable, letter
+        # settable, edge-attachable, GB circle shape — all measured). What was misleading
+        # was the old `工作around: 不需要 workaround`, which hid that PLACEMENT is only
+        # half controllable. That is now stated in summary / why / workaround, and
+        # `geometric_tolerance` points here instead of the non-existent `datum_feature`.
         "status": "verified",
-        "summary": "基准要素符号：能插入、能指定字母、能挂在指定边上；形状是圆形，这是 GB 的正确样式",
+        "summary": "基准要素符号：能插入、能指定字母、能挂在指定边上；形状是圆形（GB 正确样式）—— 但只有 Y 生效，X 由所选边决定",
         "why": ("`add_datum_feature` 走 `IModelDoc2.InsertDatumTag2`（`IDrawingDoc.InsertDatumTag` "
                 "已标 Obsolete），**在当前位置的选择集上插入**，所以必须挂到边上——参数是 "
                 "`view_name` + `edge_index` 而不是自由图纸点，因为基准必须指向真实几何。"
@@ -364,8 +369,12 @@ CAPABILITIES = [
                 "（依照标准 / 方形 / 圆形(GB)），三角形的「定位样式」属于**方形**基准点"
                 "（ANSI / 部分企业标准），圆形基准点用的是垂直/竖直/水平，没有三角。"
                 "实测该符号 `GetTriangleCount` 为 0、`GetLineCount` 1、`GetArcCount` 1，"
-                "几何上本就没有三角。"),
-        "workaround": ("不需要 workaround。**不要试图从代码里逼出三角形**：`FilledTriangle` "
+                "几何上本就没有三角。"
+                "**落点只有一半可控**（2026-11-12 第三轮实测）：`x_m` 被所选边的锚点覆盖，"
+                "`y_m` 生效，回执 `position_honoured: false` / `position_delta_m: [0.0235, 0.0]`。"
+                "放之前先读 `position_honoured`，不要假定传入坐标被采纳。"),
+        "workaround": ("落点：`y_m` 可用；`x_m` 由 `edge_index` 选中的边决定，要精确位置就换一条边。"
+                       "**不要试图从代码里逼出三角形**：`FilledTriangle` "
                        "只填充已有三角；制图标准（整数偏好 188）与 187/189/190/191/199 "
                        "都改不了显示类型。真要方形三角样式，得改模板 "
                        "`gb_a3.drwdot` → 文档属性 → 注解 → 基准点 → 显示类型 → 方形，"
@@ -475,8 +484,8 @@ CAPABILITIES = [
                 "`symbol_render_verified: true`、`gtol_text_count: 0`，PDF 渲染出来是"
                 "真正的 ⊥ / ⌖ / ▱ 几何符号。\n"
                 "框格坐标 `x/y` 也被如实采纳（`position_set: true`），可以精确摆放。\n"
-                "**仍然受限的是基准符号**，不是框格：`add_datum_feature` 的落点由所选边"
-                "推导，传入坐标被忽略，详见 `datum_feature`。"),
+                "**仍然受限的是基准符号的落点**，不是框格：`add_datum_feature` 的 X 由所选边"
+                "推导（Y 可用），详见 `datum_feature_symbol`。"),
         "workaround": ("框格可直接用于正式图纸。若需要基准符号落在指定位置，"
                        "用 `add_datum_feature` 选边后回读 `position_actual_m` 判断落点，"
                        "不合适就换一条边重试（或用 add_note 手工标，但那就不是原生基准了）"),

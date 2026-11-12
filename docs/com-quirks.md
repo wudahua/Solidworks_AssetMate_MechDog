@@ -4154,3 +4154,62 @@ ok = true    removed = 17    failed = 0    remaining_matches = []    verified_cl
 **「计数为 0」有三种含义：没有对象、没有尝试、没有权限。** 一个 `except: continue`
 就能把「没尝试」伪装成「没有」，而旁边那段用正确对象的扫描会照实报出残留 —— 两个字段
 互相矛盾，却都「有数据」。计数器的分母必须和动作本身同源。
+
+---
+
+## 2026-11-12（v0.8.314）一批口径项：零候选不是唯一匹配、检查消失要说出来（报告 §3/§4-4/§5）
+
+### §5 `no_geometry` 的 gap 报「唯一匹配 / high」
+
+置信度阶梯的最后一级是裸 `else`：
+
+```python
+elif _n_matches > 1:   medium
+else:                  high / "唯一匹配"     # ← 0 次匹配也落这里
+```
+
+于是 `candidates: []` 的 gap（根本没找到边对）被描述成「唯一、高置信度」。
+**「没有候选」和「恰好一个候选」是相反的事实。**
+
+改：`elif _n_matches == 1` 才 `high`；`0` 给 `confidence: "none"` +
+`reason: "没有候选边对（与「唯一匹配」相反）"`。
+
+### §4-4 `hole_callouts` 检查整项消失
+
+`record("hole_callouts", ...)` 整块挂在 `if hole_candidates:` 下面。默认
+`include_faces=False` → 台账不数圆柱面 → `hole_candidates == 0` → **整个检查不进 `checks`**。
+上一轮「`ok:true` 但 0 个孔标注对象」的矛盾，以「删掉检查」的方式消失了。
+
+现在补 `else` 分支：`ok: True` + `status: "not_checked"` + 明确写「传 `include_faces=True`
+才会跑这项检查」。**检查可以没跑，但不能不在。**
+
+### §3 能力表引用了不存在的 `datum_feature`
+
+`geometric_tolerance.why` 连着三轮写「详见 `datum_feature`」，而能力表里只有
+`datum_feature_symbol` —— 解释限制的那句话把读者指向了空处。
+
+改：指向 `datum_feature_symbol`；该条目 `summary` / `why` / `workaround` 三处都写明
+「`y_m` 生效、`x_m` 由所选边决定，先读 `position_honoured`」。
+`status` 仍是 `verified`（符号本身确实可用、GB 圆形确已实测），因为误导来自那句
+「不需要 workaround」，而不是来自 `status`。
+
+新增断言：扫描能力表里所有 `详见 \`xxx\``，每个都必须是一个真实 `id` —— 这类悬空引用
+不能再出现。
+
+### `produce_drawing` 描述补齐四个桶
+
+`partial_steps` / `failed_steps` / `cleanup_incomplete` / `superseded_steps` 的语义
+原先只写在代码注释里，工具描述只提到 `incomplete_reasons`。现在描述里逐桶点名，
+`superseded_steps` 特别说明「已折进 blocker，只算一次但仍可枚举」。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 303/303（+3 条断言） |
+| `capability references resolve` | 全部 `详见` 引用可解析 |
+
+### 教训
+
+**「计数为 0」和「唯一」是同一条 `else` 的两端。** 只要置信度阶梯以裸 `else` 收尾，
+零值就会继承最高的那一档结论。阶梯要逐值显式，末档要留给真正的「其他」。

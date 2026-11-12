@@ -10482,7 +10482,52 @@ def assert_sheet_index_and_cylinder_faces_are_honest():
     return "integer sheet index works; an uncounted face count says so"
 
 
+def assert_gap_confidence_distinguishes_zero_from_one():
+    """0.8.314 — report 2026-11-12 §5: `no_geometry` gaps said "唯一匹配 / high".
+
+    The confidence ladder ended in a bare `else` for the `high` branch, so ZERO matches
+    fell into it: a gap with `candidates: []` was described as a certain, unique answer.
+    Zero candidates and exactly one candidate are opposite facts.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "plan_dimension_gaps")) or ""
+    assert "elif _n_matches == 1:" in body, "the `high` branch still catches zero matches"
+    assert 'entry["confidence"] = "none"' in body, "no-candidate gaps do not say so"
+    assert "没有候选边对" in body
+    return "zero matches -> confidence none; one match -> high"
+
+
+def assert_hole_callout_check_is_never_silently_absent():
+    """0.8.314 — report 2026-11-12 §4-4: the check vanished instead of saying not-run."""
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delivery_check")) or ""
+    assert 'status="not_checked"' in body, (
+        "include_faces=False drops `hole_callouts` from `checks` entirely")
+    assert "孔标注未核对" in body
+    return "an unrun hole-callout check reports itself instead of disappearing"
+
+
+def assert_capability_cross_references_resolve():
+    """0.8.314 — report 2026-11-12 §3: `geometric_tolerance` pointed at a missing id.
+
+    The entry was `详见 datum_feature` for three rounds, and no such capability existed —
+    so the one place that explained the limitation sent the reader nowhere.
+    """
+    src = _read("tools/capabilities.py")
+    ids = set(re.findall(r'"id":\s*"([a-z0-9_]+)"', src))
+    assert ids, "no capability ids found; the pattern broke"
+    refs = set(re.findall(r"详见 `([a-z0-9_]+)`", src))
+    dangling = sorted(refs - ids)
+    assert not dangling, "capability text references non-existent ids: %s" % dangling
+    return "%d capability ids; every `详见` reference resolves" % len(ids)
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.314 gap confidence zero vs one", assert_gap_confidence_distinguishes_zero_from_one),
+    ("0.8.314 hole-callout check reports itself", assert_hole_callout_check_is_never_silently_absent),
+    ("0.8.314 capability references resolve", assert_capability_cross_references_resolve),
     ("0.8.313 delete reads display dimensions", assert_delete_dimensions_reads_display_dimensions),
     ("0.8.313 sheet index + cylinder honesty", assert_sheet_index_and_cylinder_faces_are_honest),
     ("0.8.312 tolerance render uses numbers", assert_tolerance_render_uses_numbers_not_signs),
