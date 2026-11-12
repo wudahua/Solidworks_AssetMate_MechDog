@@ -220,7 +220,12 @@ def _receipt_ok(status):
 def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     category=None, do_hole_callouts=None, do_surface_finish=None,
                     do_derived_check=True, hole_budget_s=45.0, prune_to_plan=True,
-                    overwrite=False, projection="first", close_when_done=True):
+                    overwrite=False, projection="first", close_when_done=True,
+                    # 0.8.318 (report 2026-11-12 v0.8.317 §4.4): the delivery check has a
+                    # 10x-cost face pass, and `produce_drawing` had no way to ask for it —
+                    # so the ONE parameter that changes that judgement was unreachable from
+                    # the one-shot pipeline. Default stays cheap.
+                    include_faces=False):
     """Run the whole chain and report each step plus the delivery verdict.
 
     Steps (each failure is recorded, not fatal — a partial drawing beats no drawing):
@@ -519,7 +524,9 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         recon = record("reconcile", recon_raw, "coverage=%s" % recon_raw.get("coverage"))
 
     # 10) verdict
-    verdict = record("delivery_check", drawing_tools.delivery_check(path, target), "")
+    verdict = record("delivery_check",
+                     drawing_tools.delivery_check(path, target,
+                                                  include_faces=include_faces), "")
     drawing_tools.annotations_cache_disable()
 
     # Spec section 13: do NOT return ok:true when the final file was not actually updated,

@@ -4381,3 +4381,91 @@ cell_position_reason='该格子的注解位置读不到（模板限制），用 
 **一个 `null` 至少要能回答「为什么是 null」。** 三处字段的修法不同 —— 一处是读错了对象、
 一处是没 dispatch、一处是 API 边界 —— 但对调用方来说都是「空」。不给原因的空，
 和撒谎只差一个字段名。
+
+---
+
+## 2026-11-12（v0.8.318）`delivery_check` 默认链路崩溃 + 公差护栏假阳性（报告 §4 / §5 / §6）
+
+### §4 P0：默认路径 100% 崩溃，交付判定全丢
+
+**这是 0.8.314 引入的回归。** 为修「孔标注检查消失」，我在 `else` 分支里写了
+`diameter_dimensions=diameter_dims`，而 `diameter_dims` 只在 `if hole_candidates:` 内部赋值：
+
+```python
+if hole_candidates:
+    diameter_dims = 0        # ← 唯一赋值点
+    ...
+else:                        # 0.8.314 新增
+    record("hole_callouts", ..., diameter_dimensions=diameter_dims)   # UnboundLocalError
+```
+
+`include_faces=False` 是**默认值** → `hole_candidates == 0` → 必然走 `else` → 崩。
+`delivery_check` 返回 `ok:false / verdict:null / checks:{}`，`produce_drawing` 花了 20 多秒
+却什么都判定不了。
+
+修法：`diameter_dims = 0` 提到 `if` 之前；`else` 分支的 `diameter_dimensions` 改为 `null` +
+`diameter_dimensions_status: "not_checked"` —— 没数过就不能报 0。
+
+真机：
+
+```text
+delivery_check(model, drawing)            # 默认 include_faces=False
+  ok: true   verdict: 待设计审核   blockers: 0   pending: 3   checks: 16
+  hole_callouts: {status: "not_checked", diameter_dimensions: null,
+                  detail: "孔标注未核对：include_faces=False…"}
+```
+
+smoke 端到端（`drawing chain` + `reconcile ledger`，默认参数）：
+`delivery ok=True, verdict='待设计审核'`，381.6 s。
+
+**守护的教训**：0.8.314 为此加的那条断言只查源码里有没有 `status="not_checked"` 字符串 ——
+AST 断言**不可能**发现同一分支里的 `UnboundLocalError`。新增的是**顺序断言**
+（`diameter_dims = 0` 必须在 `if hole_candidates:` 之前）+ smoke 的行为覆盖。顺序断言仍是
+静态检查，真正确认「默认路径不崩」的是 smoke 那次真机调用。
+
+### §4.4 逃生开关：`produce_drawing(include_faces=False)`
+
+原先 `produce_drawing` → `delivery_check` 是硬编码默认值，调用方唯一出路是绕开一站式出图。
+现在 `produce_drawing` 有 `include_faces` 参数，直通 `delivery_check`。默认仍是 `False`
+（便宜），需要孔覆盖判定时显式打开。
+
+### §5 P1：公差护栏可被「页面别处的同值数字」满足
+
+0.8.312 把形状判定改成按量值，解决了假阴性，但引入假阳性：任意一个等于偏差值的数字
+（另一条尺寸、粗糙度说明、未注公差行）都能把 `basic_no_deviation` 抬成
+`bilateral_two_deviations`，于是 `render_matches: true` —— 恰好放行了这道护栏要抓的那类事故。
+
+两处收紧：
+
+1. **x 带从 ±6 行高收到 ±2.5**：公差堆叠与它的主值在同一列，页面别处的 `0.05` 通常不在。
+2. **整页回退时 `evidence = "uncertain"`**，且 `render_matches` 记 **`null`** 而不是 `true`：
+
+```python
+_uncertain = (pdf_probe.get("evidence") == "uncertain"
+              or pdf_probe.get("basis") == "magnitudes_full_page_fallback")
+render_matches = None if (not checked or not _want or _uncertain) else _shape == _want
+```
+
+`null` + warning（"图面公差形状未能确定…请导出 PDF 目视核对"）。**猜出来的形状不配当通过。**
+
+### §6 P2：`flat_pattern` 与 `views_omitted_reasons`
+
+* `flat_pattern` 不在 `VIEW_ALIASES`（那张表驱动 `create_drawing` 建视图形状），但这个 planner
+  自己会给钣金件追加一页 `views: ["flat_pattern"]` —— 同一份回执既判它「未知视图」又把它
+  写进计划。现在计划层用 `set(VIEW_ALIASES) | {"flat_pattern"}`，不动 `create_drawing` 那条路。
+* `views_omitted_reasons` 以视图名为 key，`("bogus","bogus")` 会 2 条 omitted / 1 个 key。
+  新增 `views_omitted_detail`（list of `{view, reason}`）与 `views_omitted_count`。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 309/309（+3 条断言） |
+| 真机 `delivery_check`（默认参数） | `ok:true / verdict:待设计审核 / checks:16` |
+| 真机 smoke `drawing chain` + `reconcile ledger` | 2/2 PASS，`delivery ok=True`，381.6 s |
+
+### 教训
+
+**「加个 else 分支」最容易踩的坑，是 else 里引用了 if 才有的东西。** 这条错误连
+`static_check` / `regressions` / `check_all` 三套全绿都拦不住，因为静态检查看不到
+「值是否被绑定」。任何跨分支共用的名字，必须在分支之前初始化 —— 这不是风格，是正确性。

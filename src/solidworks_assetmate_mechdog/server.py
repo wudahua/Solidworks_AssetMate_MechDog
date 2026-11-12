@@ -335,6 +335,7 @@ def produce_drawing(
     close_when_done: Annotated[bool, Field(description="Close the part and drawing this run opened. False keeps them open for inspection — only useful when a human is watching the SolidWorks window.")] = True,
     do_derived_check: Annotated[bool, Field(description="Reconcile the model's driving dimensions against the sheet and report coverage. Costs one ledger read; turn off for a faster run.")] = True,
     hole_budget_s: Annotated[float, Field(description="Seconds allowed for hole callouts before that step gives up. Raise it for parts with many holes; the step reports budget_exceeded when it runs out.")] = 45.0,
+    include_faces: Annotated[bool, Field(description="Let the final delivery check walk cylindrical faces (~10x slower). Needed for the hole-callout judgement — without it that check reports `not_checked` and the delivery verdict cannot consider hole coverage. Off by default so a batch run stays cheap.")] = False,
 ) -> str:
     """Model in, annotated and judged drawing out — the whole chain in one call.
 
@@ -383,7 +384,7 @@ def produce_drawing(
         projection=projection,
         close_when_done=close_when_done,
         do_derived_check=do_derived_check,
-        hole_budget_s=hole_budget_s))
+        hole_budget_s=hole_budget_s, include_faces=include_faces))
 
 
 @mcp.tool()

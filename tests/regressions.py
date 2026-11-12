@@ -10588,7 +10588,76 @@ def assert_multi_page_audit_and_dry_run_fields_are_explained():
     return "sheet_annotations reads the sheet view; a null cell name explains itself"
 
 
+def assert_delivery_check_default_path_cannot_hit_unbound_local():
+    """0.8.318 — report 2026-11-12 v0.8.317 §4 (P0): the DEFAULT path crashed every time.
+
+    `diameter_dims` was assigned only inside `if hole_candidates:` and read in the `else`
+    added by 0.8.314, so with `include_faces=False` (the default) `delivery_check` raised
+    `UnboundLocalError` -> `ok:false / verdict:null` -> `produce_drawing` lost its entire
+    delivery judgement after 20 s of work.
+
+    This is an ORDER assertion, not a behaviour assertion: it pins that the name is bound
+    before the branch. Behaviour is covered by the live `reconcile ledger` smoke check,
+    which calls `delivery_check` with default arguments.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "delivery_check")) or ""
+    init = body.find("diameter_dims = 0")
+    branch = body.find("if hole_candidates:")
+    assert init > 0 and branch > 0, "the hole-callout block moved; re-check this assertion"
+    assert init < branch, (
+        "`diameter_dims` is assigned after the branch whose `else` reads it — the default "
+        "include_faces=False path will crash again")
+    assert "diameter_dimensions_status" in body, (
+        "the not_checked branch reports 0 as if it had counted")
+    return "diameter_dims is bound before both branches"
+
+
+def assert_uncertain_render_is_not_a_pass():
+    """0.8.318 — report 2026-11-12 v0.8.317 §5: the guard could be satisfied by accident.
+
+    A magnitude-only shape cannot tell WHOSE `0.05` it found (another dimension, a
+    roughness note, a general-tolerance line). When the evidence came from the whole page,
+    `render_matches: true` would wave through exactly the case the guard exists for
+    (readback right, figure wrong). Uncertainty is reported as `None`.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_dimension_tolerance")) or ""
+    assert "_uncertain" in body, "an uncertain render verdict can pass again"
+    assert 'evidence") == "uncertain"' in body
+    assert "or _uncertain" in body
+    probe = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                      "_tolerance_text_on_pdf")) or ""
+    assert "_fallback_used" in probe, "the page fallback is no longer marked uncertain"
+    assert "2.5 * _h" in probe, (
+        "the x band widened again; an unrelated number can decide the shape")
+    return "page-fallback evidence is uncertain; render_matches cannot be True from it"
+
+
+def assert_plan_accepts_flat_pattern_and_counts_omissions():
+    """0.8.318 — report 2026-11-12 v0.8.317 §6.1/§6.2: one receipt, two answers.
+
+    `flat_pattern` is absent from `VIEW_ALIASES` yet this planner APPENDS a flat-pattern
+    page for sheet metal, so it was simultaneously rejected as unknown and planned. And
+    `views_omitted_reasons` is keyed by name, so `("bogus","bogus")` produced 2 omitted
+    entries and 1 reason key.
+    """
+    src = _read("tools/planner.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "plan_drawing")) or ""
+    assert '| {"flat_pattern"}' in body, (
+        "the plan rejects flat_pattern while also planning a flat-pattern page")
+    assert "views_omitted_count" in body and "views_omitted_detail" in body, (
+        "repeated omitted views still collapse into one dict key")
+    return "flat_pattern accepted by the plan; omissions counted honestly"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.318 delivery default path binds its locals", assert_delivery_check_default_path_cannot_hit_unbound_local),
+    ("0.8.318 uncertain render is not a pass", assert_uncertain_render_is_not_a_pass),
+    ("0.8.318 plan accepts flat_pattern", assert_plan_accepts_flat_pattern_and_counts_omissions),
     ("0.8.317 audit + dry-run fields explained", assert_multi_page_audit_and_dry_run_fields_are_explained),
     ("0.8.316 angles stay put", assert_angles_are_not_pushed_outside),
     ("0.8.315 add_sheet does not claim a frame", assert_add_sheet_does_not_claim_a_frame_it_lacks),

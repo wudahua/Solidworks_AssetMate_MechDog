@@ -7911,7 +7911,11 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
                 # 0.8.312: 3 line heights was too tight — a tolerance stack two rows below
                 # its nominal fell outside the window, and the probe then reported "no
                 # deviation" for a perfectly correct sheet (report 2026-11-12 §2).
-                if abs(_bx - _cx) <= 6.0 * _h and abs(_by - _cy) <= 6.0 * _h:
+                # 0.8.318 (report 2026-11-12 v0.8.317 §5): the x band is now 2.5 line
+                # heights — a tolerance stack sits in the SAME COLUMN as its nominal, while
+                # the page-wide 6h box was wide enough to swallow an unrelated `0.05` that
+                # happened to be nearby.
+                if abs(_bx - _cx) <= 2.5 * _h and abs(_by - _cy) <= 6.0 * _h:
                     window_text.append(_b[4])
         elif boxes:
             # No exact nominal found: fall back to everything, which is what the old code
@@ -7994,6 +7998,7 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     _magnitudes = _magnitudes_of(lines)
     _num_up = _found(_magnitudes, _up_mag)
     _num_lo = _found(_magnitudes, _lo_mag)
+    _fallback_used = False
     _basis = "magnitudes_in_window" if _window_used else "magnitudes_full_page"
     if _window_used and boxes and not (_num_up or _num_lo):
         # The window missed them: fall back to the whole page. Comparing MAGNITUDES keeps
@@ -8006,6 +8011,7 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
             _magnitudes, _num_up, _num_lo = _page_mags, _page_up, _page_lo
             _basis = "magnitudes_full_page_fallback"
             _window_used = False
+            _fallback_used = True
     _num_count = ((int(_num_up) + int(_num_lo))
                   if (_up_mag or 0) != (_lo_mag or 0) else int(_num_up))
 
@@ -8025,6 +8031,12 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
         shape, _evidence = "basic_no_deviation", "no_deviation_found"
     else:
         shape, _evidence = "unrecognised", "ambiguous"
+
+    if _fallback_used:
+        # The only support is "a number on this page equals the deviation" — the page has
+        # other dimensions, notes and general-tolerance lines that can produce the same
+        # number. Say so, so the caller can refuse to treat this as a pass.
+        _evidence = "uncertain"
 
     return {"checked": True, "shape": shape, "lines": hits[:8],
             "windowed": _window_used,
@@ -8321,8 +8333,18 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
                  "basic": "basic_no_deviation",
                  "limit": "limit_values"}.get(str(tolerance_type).lower())
         _shape = pdf_probe.get("shape")
-        render_matches = (None if not pdf_probe.get("checked") or not _want
+        # 0.8.318 (report 2026-11-12 v0.8.317 §5): a shape inferred from the WHOLE PAGE is
+        # a guess, and `render_matches: true` on a guess is the exact failure this guard
+        # exists to catch (readback right, figure wrong). Uncertainty is `None`, not a pass.
+        _uncertain = (pdf_probe.get("evidence") == "uncertain"
+                      or pdf_probe.get("basis") == "magnitudes_full_page_fallback")
+        render_matches = (None if not pdf_probe.get("checked") or not _want or _uncertain
                           else _shape == _want)
+        if _uncertain:
+            warnings.append(
+                "图面公差形状未能确定：证据来自整页文本（`basis=%s`），页面别处的同值数字"
+                "也可能凑成这个形状，所以 `pdf_render_matches` 记 `null` 而不是 `true`。"
+                "请导出 PDF 目视核对。" % pdf_probe.get("basis"))
         if render_matches is False:
             warnings.append(
                 "图面与请求不符：要求 `%s`（应呈现为 %s），PDF 文本层实际是 `%s` —— "
@@ -9081,6 +9103,12 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         gtols = int(totals.get("geometric_tolerance", 0))
 
         hole_candidates = len(led.get("holes") or [])
+        # 0.8.318 (report 2026-11-12 v0.8.317 §4, P0): the `not_checked` branch added in
+        # 0.8.314 referenced `diameter_dims`, which was only assigned INSIDE the `if`
+        # below -> `UnboundLocalError` on the DEFAULT path (`include_faces=False`), so
+        # `delivery_check` returned `ok:false / verdict:null` and `produce_drawing` lost
+        # its whole delivery judgement. Initialised here, where both branches can see it.
+        diameter_dims = 0
         if hole_candidates:
             # Hole information can legitimately land three ways: a native hole callout, a
             # thread callout, or a plain Ø dimension on the circular edge. Any of them
@@ -9165,7 +9193,9 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                    "要跑这项检查请传 `include_faces=True`（约 10 倍耗时）。",
                    blocking=False, status="not_checked",
                    hole_callout_objects=holes_in_drawing,
-                   diameter_dimensions=diameter_dims)
+                   # 0 is NOT "counted, none found" here — nothing was counted at all.
+                   diameter_dimensions=None,
+                   diameter_dimensions_status="not_checked")
         record("tolerances_present", toleranced > 0,
                "%d 个尺寸带公差" % toleranced, blocking=False)
 

@@ -158,7 +158,12 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
     # "nothing was dropped" for every input. The list is now built by VALIDATING each
     # requested name against the SAME alias table `create_drawing` uses — a second
     # whitelist here would drift from it, which is how 0.8.310's problems started.
-    _valid_views = set(drawing_tools.VIEW_ALIASES)
+    # 0.8.318 (report 2026-11-12 v0.8.317 §6.1): `flat_pattern` is NOT in `VIEW_ALIASES`
+    # (that table drives `create_drawing`'s view creation and has no flat-pattern entry),
+    # yet this planner APPENDS a flat-pattern page for sheet metal. The result was one
+    # receipt that both rejected `flat_pattern` as unknown and planned it. The plan layer
+    # accepts it; `create_drawing` reached it through its own path.
+    _valid_views = set(drawing_tools.VIEW_ALIASES) | {"flat_pattern"}
     _requested_views = [str(v).strip().lower() for v in (views or ())]
     _seen_views, _planned_views, _omitted_views = set(), [], []
     _omitted_reasons = {}
@@ -202,6 +207,12 @@ def plan_drawing(model_path, paper="A3", views=("front", "right"), include_unmar
         # WHY each one was dropped: "unknown_view" or "duplicate". Without this the list
         # mixes two different problems into one bucket.
         views_omitted_reasons=_omitted_reasons,
+        # 0.8.318 (report 2026-11-12 v0.8.317 §6.2): a dict keyed by view name collapses
+        # repeats — `("bogus","bogus")` gave 2 omitted entries but 1 reason key. The pair
+        # below keeps the count honest without breaking the dict shape existing callers use.
+        views_omitted_detail=[{"view": _v, "reason": _omitted_reasons.get(_v)}
+                              for _v in _omitted_views],
+        views_omitted_count=len(_omitted_views),
         driving_dimensions=total_driving,
         keep_count=len(keep),
         arc_lengths_skipped=len(arc_skipped),
