@@ -10524,7 +10524,29 @@ def assert_capability_cross_references_resolve():
     return "%d capability ids; every `详见` reference resolves" % len(ids)
 
 
+def assert_add_sheet_does_not_claim_a_frame_it_lacks():
+    """0.8.315 — report 2026-11-12 D1: `template_applied: true` on a page with NO frame.
+
+    Measured on this build, three ways, each producing the right SIZE and no frame:
+    `TemplateName = *.drwdot`, `TemplateName = *.slddrt`, and
+    `SetTemplateName + ReloadTemplate` (the latter returns 0 and is ignored).
+    `GetTemplateName()` echoes the REQUEST rather than what was loaded, so the API cannot
+    answer "did the frame arrive" — the receipt now says `null` plus a hard warning.
+    """
+    src = _read("tools/layout.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "add_sheet")) or ""
+    assert "template_applied=None" in body, (
+        "`add_sheet` claims the template was applied again")
+    assert "sheet_format_applied=None" in body
+    assert "图框与标题栏未验证" in body, (
+        "the receipt does not warn that the frame may be missing")
+    assert "_find_sheet_format" in body, (
+        "the .slddrt lookup is gone; a future attempt will pass a .drwdot again")
+    return "add_sheet reports null + a hard warning instead of claiming a frame"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.315 add_sheet does not claim a frame", assert_add_sheet_does_not_claim_a_frame_it_lacks),
     ("0.8.314 gap confidence zero vs one", assert_gap_confidence_distinguishes_zero_from_one),
     ("0.8.314 hole-callout check reports itself", assert_hole_callout_check_is_never_silently_absent),
     ("0.8.314 capability references resolve", assert_capability_cross_references_resolve),

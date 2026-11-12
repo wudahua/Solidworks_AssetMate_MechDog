@@ -75,6 +75,45 @@ def _activate(sw, path):
         return None
 
 
+def _find_sheet_format(paper, doc=None):
+    """Locate the GB drawing FORMAT (`.slddrt`) for `paper`, or None.
+
+    Report 2026-11-12 D1, measured root cause: `NewSheet4`'s `TemplateName` argument takes
+    a drawing FORMAT, not a document TEMPLATE. Passing a `.drwdot` made SolidWorks record
+    `...\\sheetformat\\a2` — a path with no extension and no file — so the new page got the
+    right PAPER SIZE (the `paper` code still applies) and **no frame, no title block**,
+    while the receipt said `template_applied: true`.
+
+    A page that HAS a frame reports `GetTemplateName() == "a2 - gb.slddrt"`. So: prefer the
+    format sitting next to the current sheet's own format (same machine, same convention),
+    then fall back to scanning the installed templates.
+    """
+    want = str(paper or "A3").strip().lower()
+    names = ("%s - gb.slddrt" % want, "%s.slddrt" % want)
+
+    if doc is not None:
+        try:
+            current = str(doc.GetCurrentSheet.GetTemplateName or "")
+        except Exception:
+            current = ""
+        if current.lower().endswith(".slddrt"):
+            folder = os.path.dirname(current)
+            for name in names:
+                candidate = os.path.join(folder, name)
+                if os.path.exists(candidate):
+                    return candidate
+
+    roots = [r"C:\ProgramData\SOLIDWORKS", r"C:\ProgramData\SolidWorks",
+             r"C:\Program Files\SOLIDWORKS Corp"]
+    for root in roots:
+        for name in names:
+            hits = glob.glob(os.path.join(root, "**", "sheetformat", name),
+                             recursive=True)
+            if hits:
+                return sorted(hits)[0]
+    return None
+
+
 def _find_template(paper):
     """Locate a drawing template without relying on user preferences."""
     want = paper.lower()

@@ -1681,12 +1681,21 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
         # Cause: `TemplateIn = 0` means "no template", so SolidWorks made an empty page at
         # the default paper, and the `PaperSize` argument only matters when a template is
         # not supplying the size. Reuse the same GB template `create_drawing` uses.
+        # 0.8.315 (report 2026-11-12 D1): `NewSheet4` wants a drawing FORMAT (`.slddrt`),
+        # not a document template (`.drwdot`). Passing the `.drwdot` produced a page with
+        # the right SIZE and no frame/title block, while this function reported
+        # `template_applied: true`. Measured: the framed page's `GetTemplateName()` is
+        # `a2 - gb.slddrt`; the broken one's is `...\sheetformat\a2` (no extension, no file).
         try:
+            from .drawing import _find_sheet_format as _find_fmt
             from .drawing import _find_template as _find_drw_template
-            _tpl = _find_drw_template(str(paper or "A3").upper())
+            _tpl = (_find_fmt(str(paper or "A3"), doc)
+                    or _find_drw_template(str(paper or "A3").upper()))
         except Exception:
             _tpl = None
         _tpl_name = str(_tpl or "")
+        _tpl_kind = ("sheet_format" if _tpl_name.lower().endswith(".slddrt")
+                     else ("document_template" if _tpl_name else None))
         # TemplateIn: 0 = none, 1 = the named template, 2 = system default.
         _tpl_flag = 1 if _tpl_name else 0
 
@@ -1728,6 +1737,21 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
                 size_actual = [round(float(props[-2]), 5), round(float(props[-1]), 5)]
         except Exception:
             size_actual = None
+        # Did the page record a USABLE drawing format? `GetTemplateName` returns the format
+        # the page holds; a broken one comes back without an extension and the file does
+        # not exist (measured 2026-11-12: `...\sheetformat\a2`). A real one looks like
+        # `...\sheetformat\a2 - gb.slddrt`.
+        import os as _osx
+        _format_applied = False
+        _template_readback = None
+        try:
+            _template_readback = str(doc.GetCurrentSheet.GetTemplateName or "") or None
+            if _template_readback:
+                _format_applied = (bool(_osx.path.splitext(_template_readback)[1])
+                                   and _osx.path.exists(_template_readback))
+        except Exception:
+            _format_applied = False
+
         expected = {"A0": [1.189, 0.841], "A1": [0.841, 0.594], "A2": [0.594, 0.42],
                     "A3": [0.420, 0.297], "A4": [0.297, 0.210]}
         want = expected.get(str(paper or "A3").upper())
@@ -1741,13 +1765,30 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
             sheets_before=len(existing), sheets_after=len(after),
             created=True, sheet_name=target_name, paper=str(paper or "A3").upper(),
             scale=float(scale),
-            template_applied=bool(_tpl_name), template=_tpl_name or None,
+            # ── Report 2026-11-12 D1: three attempts, all measured, all failed ──────────
+            #   TemplateName = *.drwdot   -> right SIZE, no frame, no title block
+            #   TemplateName = *.slddrt   -> same
+            #   SetTemplateName + ReloadTemplate -> ReloadTemplate returns 0, ignored
+            # and `GetTemplateName()` echoes the REQUEST, not what was loaded, so the API
+            # cannot answer "did the frame arrive". It is therefore reported as null —
+            # never as `true`, which is what made the old receipt misleading.
+            template=_tpl_name or None,
+            template_kind=_tpl_kind,
+            template_readback=_template_readback,
+            sheet_format_applied=None,
+            template_applied=None,
+            frame_and_titleblock_verified=None,
             sheet_size_m_actual=size_actual,
             sheet_size_matches_request=size_ok,
             note=("新图纸页已建立：%s（%d 页，%s）"
                   % (target_name, len(after),
                      "%.1f×%.1f mm" % (size_actual[0] * 1000, size_actual[1] * 1000)
-                     if size_actual else "尺寸未读到")))
+                     if size_actual else "尺寸未读到"))
+            + " **图框与标题栏未验证，且本 build 上大概率没有**：`NewSheet4` 不会套上图纸"
+              "格式（`.drwdot` / `.slddrt` / `SetTemplateName+ReloadTemplate` 三种方式实测"
+              "均无效，`GetTemplateName` 回显的是请求值而非实际值）。这页可以写视图和尺寸，"
+              "但**不能作为正式交付页** —— 交付前必须导出 PDF 目视，或继续用"
+              "「多个 .SLDDRW + 外部合并」。")
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
     except Exception as exc:

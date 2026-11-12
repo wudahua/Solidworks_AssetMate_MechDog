@@ -4213,3 +4213,62 @@ else:                  high / "唯一匹配"     # ← 0 次匹配也落这里
 
 **「计数为 0」和「唯一」是同一条 `else` 的两端。** 只要置信度阶梯以裸 `else` 收尾，
 零值就会继承最高的那一档结论。阶梯要逐值显式，末档要留给真正的「其他」。
+
+---
+
+## 2026-11-12（v0.8.315）新页图框：定位到根因，三次尝试无效，回执改诚实（报告 D1）
+
+### 复现与定位（`door` 造两页 A2）
+
+| 页 | 渲染结果 | `GetTemplateName()` |
+|---|---|---|
+| 第 1 页（`create_drawing`） | 图框 + 标题栏表格齐全 | `v:/updated cs\a2 - gb.slddrt` |
+| 第 2 页（`add_sheet`） | **只有分区字母**，无图框无标题栏 | `...\sheetformat\a2`（无扩展名、文件不存在） |
+
+第 2 页图幅是对的（`[0.594, 0.42]` = A2），所以 `paper` 代码生效、**模板没生效**。
+`NewSheet4` 的 `TemplateName` 要的是**图纸格式 `.slddrt`**，而工具传的是**文档模板 `.drwdot`**
+—— SolidWorks 拿它拼了个不存在的 `sheetformat\a2`。
+
+### 三次尝试，全部无效
+
+| 尝试 | 结果 |
+|---|---|
+| `TemplateName = *.drwdot`（原实现） | 尺寸对，**无图框** |
+| `TemplateName = *.slddrt`（`a2 - gb.slddrt`，文件确实存在） | 尺寸对，**仍无图框** |
+| `SetTemplateName(.slddrt)` + `ReloadTemplate(True)` | `ReloadTemplate` 返回 **0**，`GetTemplateName` 不变 |
+
+**关键坑**：`GetTemplateName()` 回显的是**请求值**，不是实际加载的格式 ——
+第三种尝试里 `SetTemplateName` 明明没生效，读回却像是生效了。所以这个 API **无法**回答
+「图框到底套上没套上」。
+
+### 结论与改法
+
+这是 **API 边界**，不是实现缺陷：本 build 上 `NewSheet4` 创建的页拿不到图纸格式。
+
+回执改为不撒谎：
+
+```json
+"template": "a2 - gb.slddrt",
+"template_kind": "sheet_format",
+"sheet_format_applied": null,
+"template_applied": null,
+"frame_and_titleblock_verified": null,
+"note": "…图框与标题栏未验证，且本 build 上大概率没有…这页可以写视图和尺寸，
+          但不能作为正式交付页 —— 交付前必须导出 PDF 目视，或继续用
+          「多个 .SLDDRW + 外部合并」。"
+```
+
+旧版 `template_applied: true` 正是「图幅对就等于模板对」的误判来源。
+
+### 验收口径建议（给调用方）
+
+`add_sheet` 之后**不要**用 `template_applied` 判断能否交付。要么导出 PDF 目视，
+要么继续沿用「多个 `.SLDDRW` + 外部合并」。`add_view_to_sheet` / `activate_sheet` /
+`auto_dimension(sheet=…)` 这条多页链路本身是可用的（本机实测第 2 页写入 17 条尺寸、
+`placed_outside: 17`）。
+
+### 教训
+
+**一个 API 如果「写进去什么、读出来就是什么」，它就不能用来验证自己有没有生效。**
+`SetTemplateName` + `GetTemplateName` 正是这种自证循环；这种字段必须标 `null`，
+或者用**外部证据**（导出 PDF）判定，绝不能拿它当 `ok`。
