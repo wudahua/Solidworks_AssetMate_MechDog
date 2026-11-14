@@ -5041,8 +5041,20 @@ upper_present=True         lower_present=True          ← 自相矛盾
   但错的标签仍是错的标签，它掩盖了「绝大多数断言看不见逻辑错误」这件事。
 * `smoke.py` 新增 `a tolerance render never passes on a bare number`：真机建图 → 加公差 →
   `verify_render=True`，断言「`evidence != sign_text` 时 `pdf_render_matches` 绝不能是 `True`」。
-  **本机 P05 是导入实体，没有任何尺寸可加公差** → 该用例 `SKIP`（`FixtureMissing`），
-  smoke 明确打印 `NO CHECKS EXECUTED — NOT a passing run`。换一个有驱动尺寸的零件才会真跑。
+  **P05 是导入实体，没有任何尺寸可加公差** → 该用例 `SKIP`（`FixtureMissing`），
+  smoke 明确打印 `NO CHECKS EXECUTED — NOT a passing run`。
+
+  换 `接槽.SLDPRT`（49 个驱动尺寸）真跑：
+
+  ```
+  a tolerance render never passes on a bare number   PASS   32.2s
+  matches=None evidence='uncertain'
+  ```
+
+  `uncertain` 说明走了整页回退（窗口内没抓到 `0.05`）—— 正是 0.8.327 修好的那条路径：
+  所有字段现在同源，回执不再「一半窗口一半整页」。这条用例的价值不在于「判 pass」，
+  而在于**它真的会调 `add_dimension_tolerance(verify_render=True)` 并读回执**。
+  推荐夹具：`测试用例/接槽.SLDPRT`（有驱动尺寸，`auto_dimension` 插得进）。
 
 ### 验证
 
