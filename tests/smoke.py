@@ -126,6 +126,41 @@ class Runner:
         return 0
 
 
+def partial_is_acceptable(payload, allow_partial=False):
+    """May an `ok:false` payload be accepted because it still produced something? PURE.
+
+    0.8.329 (found by the full smoke run on 0.8.328): this decision used to be inline and
+    it read `not payload["error"]` — "no error means nothing failed". That was true until
+    0.8.319 §2.3 added `error: "delivery_incomplete"` to every incomplete run, which made
+    EVERY `allow_partial=True` check reject a perfectly good partial drawing. The full run
+    reported `assembly drawing not an empty shell -> call failed: delivery_incomplete`.
+
+    So the rule is explicit now, and names the one code that means "incomplete, not failed":
+
+      * `ok:true`                              -> acceptable
+      * `error` set, and it is NOT
+        `delivery_incomplete`                   -> a real failure, reject
+      * `blockers` non-empty                    -> a hard defect, reject even on a
+                                                   `delivery_incomplete` (that code is
+                                                   emitted for EVERY not-ok receipt, so it
+                                                   alone cannot distinguish "incomplete"
+                                                   from "broken")
+      * `execution_ok is False`                 -> the run did not finish, reject
+      * otherwise                               -> accept only if a step reported partial
+    """
+    if not allow_partial:
+        return False
+    if payload.get("ok") is True:
+        return True
+    if payload.get("error") not in (None, "delivery_incomplete"):
+        return False
+    if payload.get("blockers"):
+        return False
+    if payload.get("execution_ok") is False:
+        return False
+    return bool(payload.get("partial_steps"))
+
+
 def require(payload, key=None, value=None, allow_partial=False):
     """Assert a tool call succeeded.
 
@@ -140,18 +175,17 @@ def require(payload, key=None, value=None, allow_partial=False):
     precisely because nothing failed. Measured 2026-11-10: it sent me looking for a pipeline
     bug that did not exist.
 
-    `allow_partial=True` says "expect a partial result". It still rejects a run with an
-    `error`, so it cannot hide a genuine failure. Default stays strict, so the other 48
-    checks are unaffected.
+    `allow_partial=True` says "expect a partial result". It still rejects a run whose
+    `error` names a real failure, so it cannot hide one — the exact set of acceptable codes
+    lives in `partial_is_acceptable` (0.8.329: `delivery_incomplete` is incomplete, not
+    failed; reading `error` as fatal made every partial check fail on 0.8.328). Default
+    stays strict, so the other checks are unaffected.
     """
     assert isinstance(payload, dict), "expected dict, got %r" % type(payload)
     # `verify` lives in the sub-dicts (`callouts.verdict`), not at the top level — the
     # top-level `verdict` is the delivery judgement ("待设计审核"). What marks a run as
     # partial at this level is `partial_steps`, added in v0.8.285.
-    _partial_ok = (allow_partial
-                   and bool(payload.get("partial_steps"))
-                   and not payload.get("error"))
-    if not _partial_ok:
+    if not partial_is_acceptable(payload, allow_partial):
         assert payload.get("ok") is True, (
             "call failed: %s %s" % (payload.get("error"), payload.get("message")))
     if key is not None:
@@ -2861,7 +2895,8 @@ def main():
         #   ok=false, error=null, message=null, partial_steps=['hole_callouts'],
         #   view_count=3, 25 dimensions, callouts.verdict='partial'
         # The old assertion reported "call failed: None None" and read like a pipeline
-        # regression. `allow_partial=True` still rejects any payload carrying `error`.
+        # regression. `allow_partial=True` rejects any `error` that names a real failure
+        # (`partial_is_acceptable`); `delivery_incomplete` is explicitly not one of those.
         payload = require(pipeline.produce_drawing(asm_copy, output_path=asm_out),
                           allow_partial=True)
         # 0.8.301 (report 2026-11-11 §6): assert the completeness pair on a REAL assembly

@@ -5160,3 +5160,58 @@ README 的「两套件分开报」同步改成 `<N> assertions (<B> behavioural,
 **「让缺口可见」如果靠约定式标记，会把一个缺口变成三个数字。** docstring 是承诺，AST 才是
 事实；能由结构表达的东西（两个列表、两个 `len()`）永远优于由约定表达（一个 `BEHAVIOURAL` 字
 样）。另外：**探测器要能匹配自己**——第一次运行就把本函数判成违规，这是它有效而非失效的证据。
+
+---
+
+## 2026-11-14（v0.8.329）全量 smoke 抓到的第一件事：`delivery_incomplete` 把每个 partial 用例判死
+
+### 现象
+
+`python tests/smoke.py` 全量 29m13s：**66 passed / 1 skipped / 1 FAILED**。
+
+```text
+FAIL  assembly drawing not an empty shell
+      -> call failed: delivery_incomplete 步骤部分完成：hole_callouts（详见 partial_steps / pending）
+```
+
+### 根因：两个改动各自正确，撞在一起
+
+| 版本 | 改动 | 假设 |
+|---|---|---|
+| 0.8.285 | `produce_drawing` 的 partial 用 `ok:false` + `partial_steps` 表达 | — |
+| 0.8.290 | `smoke.require(allow_partial=True)` 的条件写成 `partial_steps 非空 且 **无 error**` | 「有 error 就是真失败」 |
+| **0.8.319 §2.3** | 失败回执补 `error: "delivery_incomplete"` + `message` + `hint` | 「`ok:false` 要解释为什么」 |
+
+0.8.319 之后，**每一次不完整出图都带 `error`**，于是 `allow_partial=True` 的第一条就被否掉 ——
+装配图明明产出了 3 视图 29 尺寸，报错却是「call failed: delivery_incomplete」。
+这条只在**全量**跑得到：57 条用例里只有它用装配体走 partial 路径。
+
+### 改法：把判据抽成纯函数并显式命名
+
+```python
+def partial_is_acceptable(payload, allow_partial=False):
+    if not allow_partial:                       return False
+    if payload.get("ok") is True:               return True
+    if payload.get("error") not in (None, "delivery_incomplete"):  return False
+    if payload.get("blockers"):                 return False   # 硬缺陷照样拒
+    if payload.get("execution_ok") is False:     return False   # 没跑完照样拒
+    return bool(payload.get("partial_steps"))
+```
+
+`blockers` 那一条不能省：`delivery_incomplete` 是**每个** not-ok 回执都会带的码，它本身分不清
+「不完整」与「有硬缺陷」；真正区分的是 `blockers` 是否为空。
+
+`require()` 只负责调用它 —— 规则只有一份。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| 单跑 `--only "assembly drawing not an empty shell"` | **PASS 138.1s**，`3 views, 29 dims, verdict=待设计审核` |
+| `regressions.py` 新增行为断言 | 六形态：incomplete → 接受；真 error / blocker / 未跑完 / 空 → 拒绝 |
+
+### 教训
+
+**两个各自正确的改动，可以在第三者身上互相抵消。** `error` 在 0.8.290 的世界里意味着「什么都没
+产出」，在 0.8.319 的世界里意味着「这次回执为什么不是 ok」——同一个字段换了语义，读它的地方没
+跟着改。全量 smoke 是唯一能发现这种跨模块语义漂移的检查：单跑用例时它是绿的。

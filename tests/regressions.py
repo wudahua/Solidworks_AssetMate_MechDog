@@ -9520,19 +9520,28 @@ def assert_require_distinguishes_failure_from_partial():
     with open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8") as fh:
         sm = fh.read()
 
-    i = sm.find("def require(")
-    assert i > 0, "require is gone"
-    j = sm.find("\ndef ", i + 10)
-    body = sm[i:j]
-    assert "allow_partial" in body, (
-        "require rejects a partial run again; the two meanings are conflated")
-    assert 'payload.get("partial_steps")' in body, (
-        "require keys off the wrong field — top-level `verdict` is the delivery judgement")
-    assert 'payload.get("error")' in body, (
+    def _body(name):
+        i = sm.find("def %s(" % name)
+        assert i > 0, "%s is gone" % name
+        j = sm.find("\ndef ", i + 10)
+        return sm[i:j]
+
+    body = _body("require")
+    # 0.8.329: the rule moved into `partial_is_acceptable` (a pure function the regression
+    # can CALL). `require` must delegate — a second copy of the rule is how the two readings
+    # of `error` got out of sync in the first place.
+    assert "partial_is_acceptable(payload, allow_partial)" in body, (
+        "require no longer delegates to the single rule; a second copy will drift")
+    rule = _body("partial_is_acceptable")
+    assert "allow_partial" in rule, (
+        "the rule ignores allow_partial; the two meanings are conflated")
+    assert 'payload.get("partial_steps")' in rule, (
+        "the rule keys off the wrong field — top-level `verdict` is the delivery judgement")
+    assert 'payload.get("error")' in rule, (
         "allow_partial no longer excludes real failures")
-    assert "allow_partial=False" in body, (
+    assert "allow_partial=False" in rule, (
         "the default is permissive; 49 existing checks would stop catching failures")
-    return "require separates a failed call from a partial one, and defaults to strict"
+    return "require delegates; the rule separates a failed call from a partial one"
 
 
 def assert_top_level_input_schemas_are_sealed():
@@ -10965,7 +10974,15 @@ def assert_the_coverage_numbers_come_from_the_lists():
         # THIS function does not match its own detector (it landed in the "smuggled" list on
         # the first run, which is the detector working, on itself).
         marker = "from " + "solidworks_assetmate_mechdog"
-        return marker in (ast.get_source_segment(text, node) or "")
+        seg = ast.get_source_segment(text, node) or ""
+        if marker in seg:
+            return True
+        # Second accepted form: it LOADS tests/smoke.py and calls a pure function from it
+        # (e.g. `partial_is_acceptable`). That executes real code, so it can fail for a
+        # logic reason — but the code under test is the harness, not the package.
+        # Both literals are assembled at runtime so this detector does not match itself.
+        return (("spec_from_file_" + "location") in seg
+                and ("smoke" + ".py") in seg)
 
     liars = [n for n in behav if not _imports_package(funcs[n])]
     assert not liars, ("filed as behavioural but never imports the package, so it cannot "
@@ -10986,6 +11003,48 @@ def assert_the_coverage_numbers_come_from_the_lists():
         "check_all parses the docstring marker again — that is the second counter")
     return ("%d behavioural + %d text/AST = %d; classification verified against imports"
             % (len(behav), len(static), len(behav) + len(static)))
+
+
+def assert_a_partial_drawing_is_not_a_failed_call():
+    """0.8.329 — found by the FULL smoke run on 0.8.328, not by a unit test.
+
+    `smoke.require(allow_partial=True)` used to reject any payload carrying `error`, on the
+    rule "an error means nothing was produced". 0.8.319 §2.3 then made every incomplete run
+    report `error: "delivery_incomplete"`, so the rule inverted: a partial drawing that DID
+    produce views and dimensions was reported as
+
+        assembly drawing not an empty shell -> call failed: delivery_incomplete
+
+    which reads like a pipeline regression and is not one. The decision is now a pure
+    function, asserted here over the shapes that matter — including the two that must still
+    be rejected (a real `error`, and a run that never finished).
+
+    BEHAVIOURAL: imports `tests/smoke.py` and calls its decision function.
+    """
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location("smoke_mod_for_regressions",
+                                        os.path.join(ROOT, "tests", "smoke.py"))
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    accept = mod.partial_is_acceptable
+
+    partial = {"ok": False, "error": "delivery_incomplete", "execution_ok": True,
+               "partial_steps": ["hole_callouts"], "blockers": []}
+    assert accept(partial, True) is True, (
+        "an incomplete-but-produced drawing is rejected again; every allow_partial=True "
+        "smoke check will report 'call failed: delivery_incomplete'")
+    assert accept(partial, False) is False, "the strict default must not accept ok:false"
+    assert accept(dict(partial, blockers=["视图重叠"]), True) is False, (
+        "a hard blocker was waved through on the strength of its error code")
+    assert accept(dict(partial, error="create_failed"), True) is False, (
+        "a genuine failure is accepted because it reported partial steps")
+    assert accept(dict(partial, execution_ok=False), True) is False, (
+        "a run that never finished is accepted")
+    assert accept(dict(partial, partial_steps=[]), True) is False, (
+        "nothing was produced, yet the payload was accepted")
+    assert accept({"ok": True}, True) is True
+    return "incomplete accepted; real error / blocker / unfinished / empty rejected"
 
 
 STATIC_REGRESSIONS = [
@@ -11308,6 +11367,7 @@ STATIC_REGRESSIONS = [
 #: itself: `len()` IS the count, and `assert_the_coverage_numbers_come_from_the_lists`
 #: verifies every member really does import the package.
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.329 partial is not a failure", assert_a_partial_drawing_is_not_a_failed_call),
     ("0.8.325 a bare number never passes", assert_a_bare_number_never_passes_a_tolerance_render_check),
     ("0.8.323 non-blocking hatch is narrow", assert_only_the_ratio_failure_may_be_non_blocking),
     ("0.8.322 non-blocking never trips the critical gate", assert_nonblocking_steps_never_reach_the_critical_gate),
