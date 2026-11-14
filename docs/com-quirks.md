@@ -4930,3 +4930,85 @@ ev(["14.20"])                    -> basic_no_deviation
 **「让强证据优先」不等于「把弱证据也提到强证据那一档」。** 0.8.323 把
 `_has_up`（子串匹配，本质是弱证据）和 `_signed_hit`（token 首字符，强证据）并进了同一个
 `elif`，于是弱证据继承了强证据的结论。分级的意思是一档一档判，不是合并条件。
+
+---
+
+## 2026-11-15（v0.8.326）limit/symmetric 仍在假通过 + 真机符号分离（报告 v0.8.325 §P0-1 / §P0-2）
+
+### P0-1：`limit` 与 `symmetric` 两条分支根本不看 `signed_hit`
+
+```python
+if "±" in joined and dev and dev in joined:
+    shape, evidence = "symmetric_plus_minus", "sign_text"     # 任何 ± 注记都算
+elif hi and hi != nominal and hi_count >= 1 and not num_up and not num_lo:
+    shape, evidence = "limit_values", "sign_text"             # 任何同值数字都算
+```
+
+这两条排在 `signed_hit` **之前**，且全是子串/计数判定。于是：
+
+* 请求 `limit`，窗口里只要有一个 `14.25`（哪怕是别的尺寸）→ `sign_text` → `matches=true`；
+* 请求 `symmetric`，窗口里只要一条 `±0.05` 注记（不属于这个尺寸）→ 同上。
+
+**commit message 写着「a bare number is a guess」，但只在 bilateral 分支成立。**
+
+改法（报告 §7 P0-1 补丁）：
+
+* `symmetric`：只有 `±` 与 nominal、dev **同行**（同一条文本 = 同一尺寸）才 `sign_text`，否则 `numeric_magnitude`；
+* `limit`：真机的 limit readback 会把上极限印**两次**（`['35.05','35.05']`），所以
+  `hi_count >= 2` 才 `sign_text`；`hi_count == 1` 降为 `numeric_magnitude`。
+
+六种形态实测：
+
+| 输入 | 请求 | evidence |
+|---|---|---|
+| `["14.20","14.25"]` | limit | `numeric_magnitude` ✅（修前 `sign_text`） |
+| `["14.20","14.25","14.25"]` | limit | `sign_text` ✅ |
+| `["14.20","±0.05"]` | symmetric | `numeric_magnitude` ✅（修前 `sign_text`） |
+| `["14.20 ±0.05"]` | symmetric | `sign_text` ✅ |
+| `["10","0.050","0.050"]`（真机） | bilateral | `numeric_magnitude` ✅ |
+| `["10","+","0.050","-","0.050"]`（分离 token） | bilateral | `numeric_magnitude` ✅ |
+
+### P0-2：真机上符号是独立文本对象 → `verify_render` 恒 `null`
+
+本机 PDF 文本层实测 `["10","0.050","0.050"]` —— **一个符号都没有**。SolidWorks 把 `+`/`-`
+导出成独立文本对象（甚至不导出），所以 `signed_hit` 永远 False → `numeric_magnitude`
+→ `matches: null`。
+
+反馈给了两条路线：
+
+* **A 恢复能力**：把窗口内的独立 `"+"` / `"-"` token 与邻近数值归并成带符号偏差；
+* **B 诚实降级**：明确写出「符号分离时恒为 `null`，这不是印错，是无法从文本层确认」。
+
+`["10","+","0.050","-","0.050"]` 这种「分离但存在」的形态用归并能救，但本机实测文本层
+**连 `+` 都没有** —— 归并对这台机无效。所以选 **B**，并把边界写进回执：
+
+```text
+补充：SolidWorks 可能把公差的 `+`/`-` 导出成独立文本对象，文本层里读不到符号时本工具
+只能给 `null`（既非通过也非失败）—— 这不是「印错了」，是「无法从文本层确认」，请导出 PDF 目视核对。
+```
+
+路线 A 未做，已在文档与反馈里标明：本机文本层没有符号 token，归并是空转。
+
+### P1-2：断言升级到真机形态
+
+`assert_a_bare_number_never_passes_a_tolerance_render_check` 现在覆盖 11 类输入：
+合成带符号（2）、裸数字（4）、无偏差（1）、**真机形态（2）**、limit/symmetric 正反各一（2）。
+其中真机形态与 limit/symmetric 的正常形态同时断言，防止「修假通过又引入假阴性」。
+
+### 未做（P1-1，已知）
+
+整页 fallback 时 `hits` / `deviation_count` 取窗口、`upper_present` / `lower_present` 取整页，
+回执一半一半。安全性没破（`uncertain` → `None`），但排查时会被误导。本轮未动。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 317/317（断言内容扩充，条数不变） |
+| 纯分类器六形态 | 见上表，全部符合 |
+| 真机 `add_dimension_tolerance(80.0, ±0.05)` | 仍 `numeric_magnitude` → `null`（本机符号不可读，正确） |
+
+### 教训
+
+**补一个分支不等于修一个概念。** 「裸数字是猜测」这条规则我上一版只落在 bilateral 上，
+另外两条分支还各自留着一句 `"sign_text"` 字面量。**只要还有第二处硬编码结论，规则就没有生效。**

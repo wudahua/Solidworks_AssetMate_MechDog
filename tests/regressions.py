@@ -10846,7 +10846,27 @@ def assert_a_bare_number_never_passes_a_tolerance_render_check():
 
     # Nothing at all is not a deviation.
     assert ev(["14.20"])["shape"] == "basic_no_deviation"
-    return "signed tokens pass; a bare number only ever registers as a guess"
+
+    # ── The layouts the PDF reader ACTUALLY gets on SolidWorks 2026 (report §P1-2) ──────
+    # The sign is either a separate text object or missing entirely, so `verify_render`
+    # can only answer `null` there. Asserted so nobody mistakes `sign_text` for "covered".
+    assert ev(["10", "0.050", "0.050"])["evidence"] == "numeric_magnitude"
+    assert ev(["10", "+", "0.050", "-", "0.050"])["evidence"] == "numeric_magnitude"
+    assert ev(["10", "0.050", "0.050"])["shape"] == "bilateral_two_deviations"
+
+    # A `limit` request must not be satisfied by ONE stray number, and a `symmetric`
+    # request must not be satisfied by a `±` note that is not attached to this nominal.
+    assert classify(["14.20", "14.25"], 14.20, "limit", 0.05, 0.05)[
+        "evidence"] != "sign_text"
+    assert classify(["14.20", "±0.05"], 14.20, "symmetric", 0.05, 0.05)[
+        "evidence"] != "sign_text"
+    # …while the REAL shapes still reach `sign_text` (no over-correction).
+    assert classify(["14.20", "14.25", "14.25"], 14.20, "limit", 0.05, 0.05)[
+        "evidence"] == "sign_text"
+    assert classify(["14.20 ±0.05"], 14.20, "symmetric", 0.05, 0.05)[
+        "evidence"] == "sign_text"
+    return ("signed tokens pass; a bare number, a lone limit value and a detached +/- "
+            "only ever register as guesses")
 
 
 def assert_only_the_ratio_failure_may_be_non_blocking():

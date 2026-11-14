@@ -7948,10 +7948,20 @@ def _tolerance_shape_from_lines(lines, nominal_mm, tol, upper_mm, lower_mm):
         or ("-%g" % round(abs(lower), 3)) in joined)
 
     tol_name = str(tol or "").lower().split("(")[0].strip()
+    # 0.8.326 (report 2026-11-14 v0.8.325 §P0-1): these two branches emitted `sign_text`
+    # WITHOUT looking at `signed_hit`, so a request for `limit` was satisfied by any one
+    # stray number and a request for `symmetric` by any `±` note nearby — `render_matches`
+    # said true on a sheet with no such tolerance. Only evidence ATTACHED to this nominal
+    # may claim `sign_text`; everything else is a guess.
     if "±" in joined and dev and dev in joined:
-        shape, evidence = "symmetric_plus_minus", "sign_text"
-    elif hi and hi != nominal and hi_count >= 1 and not num_up and not num_lo:
+        _attached = any(("±" in ln) and (nominal in ln) and (dev in ln) for ln in hits)
+        shape, evidence = ("symmetric_plus_minus",
+                           "sign_text" if _attached else "numeric_magnitude")
+    elif hi and hi != nominal and hi_count >= 2 and not num_up and not num_lo:
+        # A real limit readback prints the upper limit TWICE (nominal+dev on both sides).
         shape, evidence = "limit_values", "sign_text"
+    elif hi and hi != nominal and hi_count >= 1 and not num_up and not num_lo:
+        shape, evidence = "limit_values", "numeric_magnitude"
     elif signed_hit:
         # ONLY a signed token may say "printed correctly".
         shape, evidence = "bilateral_two_deviations", "sign_text"
@@ -8523,6 +8533,15 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
             _basis_now = pdf_probe.get("basis")
             _src = ("整页文本" if _basis_now != "magnitudes_in_window"
                     else "尺寸窗口内的裸数字")
+            if pdf_probe.get("basis") == "magnitudes_in_window":
+                # 0.8.326 (report 2026-11-14 v0.8.325 §P0-2 route B): on this build the
+                # sign is exported as its OWN text object, so the text layer often has no
+                # `+`/`-` at all. `null` is then the honest answer — say it plainly instead
+                # of leaving the caller to wonder whether the tolerance failed to print.
+                warnings.append(
+                    "补充：SolidWorks 可能把公差的 `+`/`-` 导出成独立文本对象，"
+                    "文本层里读不到符号时本工具只能给 `null`（既非通过也非失败）——"
+                    "这不是「印错了」，是「无法从文本层确认」，请导出 PDF 目视核对。")
             warnings.append(
                 "图面公差形状未能确定：证据来自%s（basis=%s，evidence=%s）。"
                 "同值的无关数字也可能凑成这个形状，所以 `pdf_render_matches` 记 `null` "
