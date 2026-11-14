@@ -1818,6 +1818,61 @@ def main():
     r.check("angular dimension is native or refused",
             _angular_dimension_is_native_or_refused)
 
+    def _a_nonblocking_create_failure_keeps_the_verdict():
+        """Report 2026-11-14 (v0.8.322) §7: the P0 that pure helpers could not catch.
+
+        0.8.320 and 0.8.321 both "fixed" the pipeline with assertions that only called pure
+        functions — and the bug lived BETWEEN them: `record()` re-labelled the step as
+        failed, then `_failed_critical` short-circuited at the end of the run and dropped
+        the verdict, the 14 executed steps and every warning.
+
+        This runs the REAL `produce_drawing` over a real sheet and only replaces
+        `create_drawing`'s RETURN value with the GB table/block failure shape (the sheet
+        was built first), which is exactly the shape that broke.
+        """
+        from unittest import mock
+
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_nb.SLDPRT")
+        drw = os.path.join(workdir, "smoke_nb.SLDDRW")
+        shutil.copy2(src, part)
+        # The sheet must REALLY be built — the later steps read it — so the patch runs the
+        # real function and only rewrites the RETURN value into the failure shape.
+        _real_create = drawing.create_drawing
+
+        def _create_with_failed_ratio(*a, **k):
+            real = _real_create(*a, **k)
+            out = dict(real or {})
+            out.update(ok=False, error="title_scale_not_synced", blocking=False,
+                       title_scale_synced={"text": "1:1", "written": [],
+                                           "error": "title_block_not_written"})
+            return out
+
+        with mock.patch.object(drawing, "create_drawing",
+                               side_effect=_create_with_failed_ratio):
+            got = pipeline.produce_drawing(part, output_path=drw, paper="A3",
+                                          views=["front"], overwrite=True)
+        # Deliberately NOT `require`: this part has no driving dimensions, so the run ends
+        # `delivery_incomplete` with a 0-dimension blocker. That is a property of the
+        # fixture, not of the thing under test — what matters is that the verdict survived.
+        assert isinstance(got, dict) and got, "produce_drawing returned nothing"
+        assert got.get("error") != "critical_step_failed", (
+            "a non-blocking create failure tripped the critical gate again: %r"
+            % (got.get("error"),))
+        assert got.get("execution_ok") is True, got
+        assert got.get("verdict") is not None, (
+            "the delivery verdict was dropped: error=%r message=%r"
+            % (got.get("error"), got.get("message")))
+        issues = [w.get("issue") for w in (got.get("creation_warnings") or [])]
+        assert "title_scale_unsynced" in issues, (
+            "the ratio failure never reached creation_warnings: %r" % (issues,))
+        return "verdict=%s, title_scale_unsynced forwarded" % got.get("verdict")
+
+    r.check("a non-blocking create keeps the verdict",
+            _a_nonblocking_create_failure_keeps_the_verdict)
+
     def _sketch_geometry_is_exact_and_honest():
         """Report 2026-11-12 §3 (the last P0 gap): the outline, point by point.
 

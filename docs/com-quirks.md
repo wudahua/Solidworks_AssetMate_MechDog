@@ -4802,3 +4802,57 @@ warning 文案也改成按 `basis` 分支：窗口内写「尺寸窗口内的裸
 **「降级到不确定」是最容易过头的修法。** 0.8.322 把一整类证据判死，连带把正确的也判死；
 真正的修法是**把证据分级**（符号 > 裸数值 > 整页），而不是把不确定的档位连到可信档位上。
 判据的分支顺序就是优先级本身 —— 写反了，最强的那条分支就永远走不到。
+
+---
+
+## 2026-11-14（v0.8.324）补上那条「端到端注入」断言（报告 §7）
+
+连续两轮我把「`smoke.py` 加注入式端到端断言」列进待办又跳过去，理由是「要真 COM、成本高」。
+结果就是 0.8.321 那个 P0：两条 pure 函数断言全绿，bug 却长在它们**之间** ——
+`record()` 把 step 重新标成 failed，`_failed_critical` 在末尾提前 return，判定全丢。
+
+### 用例设计
+
+关键难点：`create_drawing` 必须**真的建出图纸**（后面的 13 步要读它），但回执要变成失败形态。
+所以 patch 的不是返回值，而是 `side_effect` —— 真调用一次，再改写返回：
+
+```python
+_real_create = drawing.create_drawing
+
+def _create_with_failed_ratio(*a, **k):
+    real = _real_create(*a, **k)
+    out = dict(real or {})
+    out.update(ok=False, error="title_scale_not_synced", blocking=False,
+               title_scale_synced={"text": "1:1", "written": [],
+                                   "error": "title_block_not_written"})
+    return out
+
+with mock.patch.object(drawing, "create_drawing", side_effect=_create_with_failed_ratio):
+    got = pipeline.produce_drawing(part, output_path=drw, paper="A3",
+                                  views=["front"], overwrite=True)
+```
+
+断言四条：`error != "critical_step_failed"`、`execution_ok is True`、
+`verdict is not None`、`creation_warnings` 里有 `title_scale_unsynced`。
+
+**不用 `require`**：夹具是无驱动尺寸的导入实体，本来就以 `delivery_incomplete + 0 个尺寸`
+结束 —— 那是夹具属性，不是被测行为。
+
+### 中途两次失败（记录经过）
+
+| 尝试 | 结果 | 原因 |
+|---|---|---|
+| `return_value=fake`（图不真建） | `critical_step_failed: dimensions, save` | 后续步骤没有图可读 |
+| `side_effect` + `require(allow_partial=True)` | `delivery_incomplete 0 个尺寸` | `require` 把夹具的 blocker 当成失败 |
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 317/317 |
+| 真机 `a non-blocking create keeps the verdict` | **PASS，27.3 s**，`verdict=仅供参考/未完成, title_scale_unsynced forwarded` |
+
+### 教训
+
+**「成本高」不是跳过守护的理由，是这个 bug 能连出两轮的原因。** 这条用例 27 秒跑完，
+写它花的时间远少于两轮返工。凡是「两个纯函数之间」的 bug，pure 断言在结构上就看不见。
