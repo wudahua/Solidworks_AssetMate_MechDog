@@ -101,17 +101,29 @@ def main():
     # docstring regex) and printed 5 while the suite said 6 and the AST said 15.
     _counts = _counts_from_regressions(outputs.get("regressions"))
     if _counts:
-        print("  source-level : %d assertions (%d behavioural, %d text/AST)"
-              % (_counts["total"], _counts["behavioural"], _counts["text_ast"]))
+        # 0.8.330 (report 2026-11-14 v0.8.329 §5.3): "behavioural" hides that one of them
+        # exercises the smoke harness rather than the product. Name the split.
+        print("  source-level : %d assertions (%d behavioural = %d package + %d harness; "
+              "%d text/AST)"
+              % (_counts["total"], _counts["behavioural"],
+                 _counts.get("package", _counts["behavioural"]),
+                 _counts.get("harness", 0), _counts["text_ast"]))
     else:
         print("  source-level : UNKNOWN — `regressions.py` printed no `counts:` line "
               "(fix that before trusting any coverage number)")
     # 0.8.305 (report 2026-11-12 §4): this number is a STRING COUNT, not a runnable
     # suite. Calling them "checks" made "64 on-machine checks" read as coverage when
     # nothing had executed — and on a standard install most of them cannot run at all.
-    print("  on-machine   : %d r.check() calls counted, 0 executed here "
-          "(needs local fixtures + live SolidWorks) — `python tests/smoke.py`"
-          % _smoke_check_count())
+    # 0.8.330 (report 2026-11-14 v0.8.329 §5.2): "0 executed here" reads like a footnote.
+    # It is the single largest gap in this report, so it is printed as NOT RUN plus the exact
+    # commands that would close it. There is no CI wiring in this repo — saying so is cheaper
+    # than pretending the 69 checks ran.
+    print("  on-machine   : NOT RUN — %d r.check() cases need local fixtures + live "
+          "SolidWorks" % _smoke_check_count())
+    print("                 at minimum run: python tests/smoke.py "
+          "--only \"assembly drawing not an empty shell\"")
+    print("                                  python tests/smoke.py --part "
+          "<有驱动尺寸的零件> --only \"a tolerance render never passes on a bare number\"")
     return 0
 
 

@@ -356,6 +356,31 @@ def produce_drawing(
     produced is still usable, so its defect appears in `blockers` / `creation_warnings` and
     never in `failed_steps`.
 
+    **HOW TO TELL "incomplete" FROM "failed" — read `call_status`, not `ok`.**
+
+    `ok` answers one question: *is everything done?* An incomplete drawing therefore comes
+    back `ok: false` with `error: "delivery_incomplete"`, and that is by design — loosening
+    `ok` would re-open the `ok:true` + `completeness:"incomplete"` contradiction fixed in
+    0.8.299. But `ok: false` plus a non-null `error` is also the standard "call failed"
+    shape, so this tool now reports a third field:
+
+      * `call_status: "ok"`          — complete, nothing to do.
+      * `call_status: "incomplete"`  — **the drawing EXISTS**. Views, dimensions and the
+        saved file are there; a non-critical step did not finish (`partial_steps`) or a
+        human must fix something (`blockers`). Do NOT retry blindly and do NOT roll back.
+      * `call_status: "failed"`      — `execution_ok: false` or `failed_steps` non-empty.
+        Nothing usable was produced.
+
+    One-line client rule:
+
+    ```python
+    got = json.loads(produce_drawing(...))
+    if got["call_status"] == "incomplete":
+        print(got["verdict"], got["partial_steps"], got["blockers"])   # inspect, keep the file
+    elif got["call_status"] == "failed":
+        raise RuntimeError(got["message"])
+    ```
+
     `include_faces` (default False) lets the FINAL delivery check walk cylindrical faces,
     which costs roughly 10x. Without it the hole-callout judgement reports `not_checked`,
     so "no callouts" means "not measured" rather than "counted zero". The receipt echoes

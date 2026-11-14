@@ -251,7 +251,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 秒级：语法 + 结构 + 319 条历史回归
+python tests/check_all.py       # 秒级：语法 + 结构 + 321 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -438,6 +438,31 @@ tag_compare: no tag source (no CI env var, no _build_meta.json) and HEAD cannot 
 唯一允许的跳过：工作树里 HEAD 处在两个 tag 之间（正常的发布中途状态）。
 `git describe` 报 `not a git repository` 视为**无法判断**，不是「不在 tag 上」——
 这两种曾被混成一种，于是任何非仓库目录都能让门禁放行。
+
+### `produce_drawing`：不完整 ≠ 失败
+
+`ok` 只回答一个问题：**是不是全做完了**。所以「图纸已生成、某个非关键步骤没做完」会返回
+`ok: false` + `error: "delivery_incomplete"` —— 这是有意的（放宽 `ok` 会让
+`ok:true` + `completeness:"incomplete"` 那个 P0 复活）。但 `ok:false` + 非空 `error`
+恰好也是「调用失败」的标准形状，外部客户端很容易误判。
+
+判据只看一个字段 **`call_status`**：
+
+| 值 | 含义 | 该做什么 |
+|---|---|---|
+| `"ok"` | 全部完成 | 直接用 |
+| `"incomplete"` | **图纸已经生成**，有步骤没做完或需人工确认（`partial_steps` / `blockers`） | 打开图纸检查，**不要重试、不要回滚** |
+| `"failed"` | `execution_ok:false` 或 `failed_steps` 非空 | 这才是失败，重试或报错 |
+
+```python
+got = json.loads(produce_drawing(...))
+if got["call_status"] == "incomplete":
+    print(got["verdict"], got["partial_steps"], got["blockers"])
+elif got["call_status"] == "failed":
+    raise RuntimeError(got["message"])
+```
+
+`error: "delivery_incomplete"` 属于 `incomplete` 这一类，不是失败。
 
 ### 两套件分开报
 

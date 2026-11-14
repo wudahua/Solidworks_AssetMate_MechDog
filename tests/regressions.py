@@ -8633,6 +8633,8 @@ def assert_the_report_says_what_it_verified():
         "the regressions banner claims live verification again")
     assert "inspect source text" in reg and "call the package" in reg, (
         "the banner stopped distinguishing executed assertions from text inspection")
+    assert "exercise the smoke harness" in reg, (
+        "the banner lumps harness assertions in with package assertions again")
     with open(os.path.join(ROOT, "tests", "check_all.py"), encoding="utf-8") as fh:
         ca = fh.read()
     assert "on-machine" in ca and "NOT run here" in ca, (
@@ -11047,6 +11049,77 @@ def assert_a_partial_drawing_is_not_a_failed_call():
     return "incomplete accepted; real error / blocker / unfinished / empty rejected"
 
 
+def assert_call_status_separates_incomplete_from_failed():
+    """0.8.330 — report 2026-11-14 (v0.8.329) §5.1: `ok:false` reads as "call failed".
+
+    `produce_drawing` returns `ok:false` + `error:"delivery_incomplete"` for a drawing that
+    WAS produced. That is right for this toolkit (`ok` means "completely done", loosening it
+    re-opens the 0.8.299 P0) — but every MCP client sees the standard failure shape and
+    retries or rolls back. `ok` cannot say three things; `call_status` can.
+
+    BEHAVIOURAL: calls the pure derivation with the shapes the pipeline really emits.
+    """
+    from solidworks_assetmate_mechdog.tools.pipeline import _call_status
+
+    assert _call_status(True, True, [], None, []) == "ok"
+    # produced, not finished — INCLUDING with blockers: the file exists, a human must look
+    assert _call_status(False, True, [], "delivery_incomplete", []) == "incomplete"
+    assert _call_status(False, True, [], "delivery_incomplete", ["视图重叠"]) == "incomplete"
+    # nothing usable
+    assert _call_status(False, True, ["save"], "critical_step_failed", ["save"]) == "failed"
+    assert _call_status(False, False, [], "com_failed", []) == "failed"
+    assert _call_status(False, True, [], "create_failed", []) == "failed"
+    # and it must never claim success when ok is false
+    assert _call_status(False, True, [], None, []) == "incomplete"
+    return "ok / incomplete / failed derived from execution_ok, failed_steps, error"
+
+
+def assert_require_end_to_end_accepts_a_partial_drawing():
+    """0.8.330 — report 2026-11-14 (v0.8.329) §5.2: the guard tested the pure rule only.
+
+    `assert_a_partial_drawing_is_not_a_failed_call` calls `partial_is_acceptable` directly,
+    so a `require()` that stopped delegating — or delegated with the arguments swapped —
+    would leave it green. This drives `require()` ITSELF: the wiring is what broke the 0.8.328
+    full run, and the wiring is what was untested.
+
+    BEHAVIOURAL: imports tests/smoke.py and calls `require`, including the two shapes that
+    must raise.
+    """
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location("smoke_mod_require",
+                                        os.path.join(ROOT, "tests", "smoke.py"))
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    require = mod.require
+
+    partial = {"ok": False, "error": "delivery_incomplete", "execution_ok": True,
+               "partial_steps": ["hole_callouts"], "blockers": [], "verdict": "待设计审核"}
+    # 1) accepted with allow_partial=True — no exception
+    got = require(dict(partial), allow_partial=True)
+    assert got["verdict"] == "待设计审核", got
+
+    # 2) a hard blocker still raises
+    try:
+        require(dict(partial, blockers=["视图重叠"]), allow_partial=True)
+    except AssertionError as exc:
+        assert "call failed" in str(exc), exc
+    else:
+        raise AssertionError("a blocker was accepted by require(allow_partial=True)")
+
+    # 3) the default stays strict, so the other 68 checks still catch failures
+    try:
+        require(dict(partial))
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("require() accepted ok:false without allow_partial")
+
+    # 4) a clean payload needs no allowance at all
+    assert require({"ok": True, "verdict": "可交付"})["verdict"] == "可交付"
+    return "require() delegates: partial passes, blocker and default-strict both raise"
+
+
 STATIC_REGRESSIONS = [
     ("0.8.328 coverage numbers come from lists", assert_the_coverage_numbers_come_from_the_lists),
     ("0.8.319 title-scale failure lowers ok", assert_title_scale_failure_lowers_the_verdict),
@@ -11367,6 +11440,8 @@ STATIC_REGRESSIONS = [
 #: itself: `len()` IS the count, and `assert_the_coverage_numbers_come_from_the_lists`
 #: verifies every member really does import the package.
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.330 call_status splits incomplete", assert_call_status_separates_incomplete_from_failed),
+    ("0.8.330 require accepts a partial", assert_require_end_to_end_accepts_a_partial_drawing),
     ("0.8.329 partial is not a failure", assert_a_partial_drawing_is_not_a_failed_call),
     ("0.8.325 a bare number never passes", assert_a_bare_number_never_passes_a_tolerance_render_check),
     ("0.8.323 non-blocking hatch is narrow", assert_only_the_ratio_failure_may_be_non_blocking),
@@ -11386,9 +11461,33 @@ BEHAVIOURAL_REGRESSIONS = [
 ALL_REGRESSIONS = STATIC_REGRESSIONS + BEHAVIOURAL_REGRESSIONS
 
 
+def _behavioural_breakdown():
+    """(package, harness) counts for the behavioural list. Reads its own AST.
+
+    Report 2026-11-14 (v0.8.329) §5.3: the banner said "14 assertions call the package",
+    but one of them loads `tests/smoke.py` — it exercises the harness, not the product.
+    Saying 14 would be a small lie of the same family as the 5/6/15 numbers.
+    """
+    with open(os.path.abspath(__file__), encoding="utf-8") as fh:
+        text = fh.read()
+    tree = ast.parse(text)
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    marker = "from " + "solidworks_assetmate_mechdog"
+    package = harness = 0
+    for _name, _fn in BEHAVIOURAL_REGRESSIONS:
+        node = funcs.get(_fn.__name__)
+        seg = ast.get_source_segment(text, node) if node else ""
+        if seg and marker in seg:
+            package += 1
+        else:
+            harness += 1
+    return package, harness
+
+
 def main():
     failures = 0
     total = len(ALL_REGRESSIONS)
+    _pkg, _harness = _behavioural_breakdown()
     # 0.8.328 (report 2026-11-14 v0.8.327 §P1-1): both numbers now come from the LISTS.
     print("regression ledger — %d assertions (%d behavioural, %d text/AST)"
           % (total, len(BEHAVIOURAL_REGRESSIONS), len(STATIC_REGRESSIONS)))
@@ -11413,14 +11512,15 @@ def main():
     # Renaming the line is cheap and honest. Adding a real fixture for each of 254 is not.
     # 0.8.328 (report 2026-11-14 v0.8.327 §P2-2): one wording. "source inspection only"
     # sat next to "5 behavioural" and the reader had to guess which sentence was true.
-    print("source-level  %d/%d passed   (no live SolidWorks; %d assertions call the "
-          "package, %d inspect source text)"
-          % (total - failures, total, len(BEHAVIOURAL_REGRESSIONS),
+    print("source-level  %d/%d passed   (no live SolidWorks; %d execute code — %d call the "
+          "package, %d exercise the smoke harness; %d inspect source text)"
+          % (total - failures, total, len(BEHAVIOURAL_REGRESSIONS), _pkg, _harness,
              len(STATIC_REGRESSIONS)))
     # Machine-readable, and the ONLY place these numbers are computed — `check_all.py`
     # parses this line instead of recounting (report §P1-1: two counters, three answers).
-    print("counts: total=%d behavioural=%d text_ast=%d"
-          % (total, len(BEHAVIOURAL_REGRESSIONS), len(STATIC_REGRESSIONS)))
+    print("counts: total=%d behavioural=%d package=%d harness=%d text_ast=%d"
+          % (total, len(BEHAVIOURAL_REGRESSIONS), _pkg, _harness,
+             len(STATIC_REGRESSIONS)))
     return 0 if not failures else 1
 
 

@@ -5215,3 +5215,67 @@ def partial_is_acceptable(payload, allow_partial=False):
 **两个各自正确的改动，可以在第三者身上互相抵消。** `error` 在 0.8.290 的世界里意味着「什么都没
 产出」，在 0.8.319 的世界里意味着「这次回执为什么不是 ok」——同一个字段换了语义，读它的地方没
 跟着改。全量 smoke 是唯一能发现这种跨模块语义漂移的检查：单跑用例时它是绿的。
+
+---
+
+## 2026-11-15（v0.8.330）`ok:false` 对客户端就是「调用失败」——补 `call_status`
+
+### 问题：自家 smoke 认了，第三方不认
+
+0.8.329 的提交信息写着 `an incomplete drawing is not a failed call`，但改的只有
+`tests/smoke.py` 的 `require()`。`pipeline.py` / `server.py` 字节未变，真机回执仍是：
+
+```json
+{"ok": false, "error": "delivery_incomplete", "execution_ok": true,
+ "completeness": "incomplete", "verdict": "待设计审核",
+ "partial_steps": ["hole_callouts"], "failed_steps": [], "blockers": []}
+```
+
+对任何按 `if not result.get("ok"): 报错/回滚` 写的客户端，这就是失败。**修复范围与承诺范围不一致**
+——这比没修更容易误导。
+
+### 为什么不改 `ok`
+
+`ok` 已经背了一个判据：`ok = (completeness == "complete")`（0.8.299 修
+`ok:true` + `completeness:"incomplete"` 那个 P0 时定的）。放宽它会直接复活那个 P0。
+
+**`ok` 只能回答两个问题，而现实有三种结局**——所以补一个派生字段，而不是重新定义 `ok`：
+
+```python
+def _call_status(ok, execution_ok, failed_steps, error, blockers):
+    if execution_ok is False:                    return "failed"     # 传输/COM 放弃
+    if failed_steps:                             return "failed"     # 有步骤崩了
+    if ok:                                       return "ok"
+    if error not in (None, "delivery_incomplete"): return "failed"   # 真错误码
+    return "incomplete"                                              # 产出了，没做完
+```
+
+`blockers` **不**让它变 `failed`：图纸确实存在且可看，`blockers` 只是交付前必须有人修的清单。
+
+字段是**派生**的，不是第二个判据：它的每个分支都在读既有事实（`execution_ok` /
+`failed_steps` / `ok` / `error`），没有独立来源，因此不会与 `completeness` 漂移。
+
+### 配套
+
+* `server.py` 的 `produce_drawing` 描述写清判定顺序 + 一段客户端范例（客户端读的是这份 docstring）；
+* README 新增「`produce_drawing`：不完整 ≠ 失败」一节，三值表 + 代码；
+* 失败回的 `hint` 里点名：`error: delivery_incomplete` 属 `incomplete`，只有 `failed` 才重试/回滚。
+
+真机（接槽 A3）：`call_status: "incomplete"` / `ok:false` / `error:delivery_incomplete` /
+`execution_ok:true` / `verdict:待设计审核` / `partial_steps:["hole_callouts"]`，
+装配图 smoke 复跑 **PASS 251.4s**（3 views, 25 dims）。
+
+### 顺带两条（报告 §5.2 / §5.3）
+
+| 项 | 改法 |
+|---|---|
+| 新守护只测纯函数 | 补 `assert_require_end_to_end_accepts_a_partial_drawing`：**直接驱动 `require()`** —— partial 不抛、blocker 抛、默认严格抛、clean 直接过。纯函数断言看不见「delegate 写反」 |
+| banner 说 `14 assertions call the package` | 其中 1 条测的是 `tests/smoke.py`。`counts:` 行加 `package=` / `harness=`，banner 写成 `16 execute code — 14 call the package, 2 exercise the smoke harness` |
+| `0 executed here` 像脚注 | 改成 `on-machine : NOT RUN — 69 r.check() cases ...` + 直接给出最少该跑的两条命令 |
+
+### 教训
+
+**承诺的范围必须等于改动的范围。** 提交信息说「不完整不是失败」，但只有自家测试接受了这个说法，
+对外契约没动 —— 读者（包括未来的我）会以为 API 已经变了。要么改代码，要么改措辞，**不能只改
+测试然后沿用同一句话**。另外：`ok` 这种被复用的布尔量，每加一种结局就该新增一个**派生**字段，
+而不是给它加第四种含义。

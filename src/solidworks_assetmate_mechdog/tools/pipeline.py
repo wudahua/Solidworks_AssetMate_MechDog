@@ -130,6 +130,42 @@ _COMPLETENESS_RELEVANT = (
 )
 
 
+def _call_status(ok, execution_ok, failed_steps, error, blockers):
+    """One word a CLIENT can branch on: `"ok"` / `"incomplete"` / `"failed"`. PURE.
+
+    Report 2026-11-14 (v0.8.329) §5.1: `produce_drawing` reports `ok:false` +
+    `error:"delivery_incomplete"` when the sheet was BUILT but a non-critical step did not
+    finish. That is correct for this toolkit (0.8.299 made `ok` mean "completely done", and
+    loosening it would re-open the `ok:true` + `completeness:"incomplete"` P0), but to any
+    MCP client `ok:false` plus a non-null `error` is the standard "call failed" shape — so
+    a perfectly usable drawing gets retried or rolled back.
+
+    `ok` cannot express three outcomes. This field can, and it is DERIVED from the same
+    facts, not a second opinion:
+
+      * `execution_ok is False`                  -> `failed`  (transport/COM gave up)
+      * `failed_steps` non-empty                 -> `failed`  (a step crashed)
+      * `ok`                                     -> `ok`
+      * `error` set but not `delivery_incomplete` -> `failed`  (a real error code)
+      * otherwise                                -> `incomplete` (produced, not finished)
+
+    `blockers` does NOT make it `failed`: the drawing exists and is inspectable; the
+    blockers list what a human must fix before delivery.
+    """
+    try:
+        if execution_ok is False:
+            return "failed"
+        if failed_steps:
+            return "failed"
+        if ok:
+            return "ok"
+        if error not in (None, "delivery_incomplete"):
+            return "failed"
+        return "incomplete"
+    except Exception:
+        return "failed"
+
+
 def _failure_message(blockers, failed_steps, partial_steps, incomplete_reasons):
     """The most specific reason available. PURE.
 
@@ -758,6 +794,10 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             creation_warnings=creation_warnings,
             warnings=((audit.get("warnings") or []) + list(creation_warnings)),
             blockers=_failed_critical,
+            # Report 2026-11-14 (v0.8.329) §5.1: one word for clients that cannot read
+            # five fields. `failed` here — a critical step did not complete.
+            call_status=_call_status(False, True, _failed_critical,
+                                     "critical_step_failed", _failed_critical),
             completeness="incomplete",
             incomplete_reasons=[{"kind": "critical_step", "steps": _failed_critical}],
             documents_closed=closed)
@@ -813,12 +853,19 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         # `error` / `hint`, so a caller doing `payload.get("message")` saw `None` and learned
         # nothing about why. The first blocker IS the reason.
         error=(None if _final_ok else "delivery_incomplete"),
+        # `ok` answers "is it completely done"; this answers "should I treat the CALL as
+        # failed". They differ exactly for an incomplete-but-produced drawing.
+        call_status=_call_status(_final_ok, True, _failed_steps,
+                                 None if _final_ok else "delivery_incomplete", _blockers),
         message=(None if _final_ok else _failure_message(
             _blockers, _failed_steps, _partial_steps,
             _status.get("incomplete_reasons"))),
         hint=(None if _final_ok else
               "`blockers` 是阻断项；`failed_steps` / `partial_steps` 是没跑成的步骤；"
-              "`pending` 是可以接受但需人看一眼；`warnings` 是过程提示。"),
+              "`pending` 是可以接受但需人看一眼；`warnings` 是过程提示。"
+              "**判断调用是否失败请看 `call_status`**：`incomplete` 表示图纸已经生成、"
+              "只是有步骤没做完（`error: delivery_incomplete` 属于这一类，不是失败）；"
+              "只有 `failed` 才需要重试或回滚。"),
         partial_steps=_partial_steps,
         failed_steps=_failed_steps,
         # Steps that failed but cannot make the DRAWING undeliverable (cleanup, read-only
