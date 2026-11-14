@@ -8411,7 +8411,11 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
         # boxes (`basis: magnitudes_full_page`) and a same-column stray number inside the
         # window. The rule is now by EVIDENCE SOURCE: only "found inside the nominal's own
         # window" counts as certain. Anything wider is a guess and gets `None`.
-        _uncertain = (pdf_probe.get("evidence") == "uncertain"
+        # 0.8.322 (report 2026-11-14 v0.8.321 §5): a bare magnitude inside the window is
+        # STILL a guess — a roughness value, a scale ratio or another dimension's deviation
+        # can sit in the same column. Only explicit sign evidence (`+0.05` / `-0.05` / `±`)
+        # inside the window counts as certain. `None` is neither a pass nor a failure.
+        _uncertain = (pdf_probe.get("evidence") in ("uncertain", "numeric_magnitude")
                       or pdf_probe.get("basis") != "magnitudes_in_window")
         render_matches = (None if not pdf_probe.get("checked") or not _want or _uncertain
                           else _shape == _want)
@@ -9253,8 +9257,13 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                       if holes_in_drawing == 0 else
                       "背面或被遮挡的孔 SolidWorks 不给标注，需人工补或换视图"),
                    blocking=(holes_in_drawing == 0 and diameter_dims == 0),
+                   # 0.8.322 (report 2026-11-14 §6.1): without these two, a CHECKED run
+                   # reported `status: null` / `diameter_dimensions_status: null`, which
+                   # reads like "could not read" instead of "measured".
+                   status="checked",
                    hole_callout_objects=holes_in_drawing,
                    diameter_dimensions=diameter_dims,
+                   diameter_dimensions_status="checked",
                    covered_by_diameter_only=(holes_in_drawing == 0 and diameter_dims > 0),
                    covered=covered > 0)
         else:

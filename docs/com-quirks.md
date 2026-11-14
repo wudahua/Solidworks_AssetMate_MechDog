@@ -4673,3 +4673,63 @@ produce_drawing → ok:false / error:create_failed / execution_ok:false
 
 **一条建议如果指向一个需要参数的动作，那个参数必须在回执里。** 否则「可直接删掉」只是一句话，
 不是一条出路 —— 调用方还是得自己翻一遍。
+
+---
+
+## 2026-11-14（v0.8.322）第二道门：短路从「进门」挪到了「出门」（报告 §4 P0）
+
+### 现象
+
+0.8.320 修了第一道守卫（`_creation_is_blocking`），14 步真的全跑完了、文档也没泄漏 ——
+但顶层仍是：
+
+```
+ok:false / error:critical_step_failed / "the drawing is not usable"
+verdict:null / steps:null / creation_warnings:null / completeness:null
+```
+
+`message` 说「图纸不可用」，而 `hint` 里自己列着 14 步全跑完、`delivery_check=True`。
+
+### 根因：`record()` 与 `_failed_critical` 不知道 `blocking`
+
+```python
+# 1) record() 只看 payload["ok"] -> step 记成 ok:False / status:"failed"
+# 2) _CRITICAL = ("create_drawing", "dimensions", "save")
+# 3) _failed_critical -> ["create_drawing"] -> :677 提前 return，判定全丢
+```
+
+`blocking:false` 只走到了第一道门。**同一个非阻断事件在流水线末尾被重新判成致命。**
+
+### 改法（A + B + C 三条一起）
+
+| # | 改法 |
+|---|---|
+| **A** | `record()` 抽成纯函数 `_step_state(payload)`：`blocking:false` → `status: "warning"` + `non_blocking: true`；`_failed_critical` 抽成 `_failed_critical_steps(steps, critical)`，跳过 `non_blocking` |
+| **B** | 比例未同步**进 `_blockers`**：`ok:false` 由同一个 `_receipt_ok(_status)` 派生，`execution_ok` 保持 true，`verdict` / `completeness` / `incomplete_reasons` 全部保留 —— 缺陷反映到结论，但不删除结论 |
+| **C** | `critical_step_failed` 的 return 补 `verdict` / `steps` / `creation_warnings` / `warnings` / `blockers` / `completeness` / `incomplete_reasons` —— 它在整条链**之后**执行，这些值确实存在，丢掉它们只是遗漏 |
+
+C 的第一次插入我放错了位置（放在第 3 个位置参数 `hint` 之前），
+`SyntaxError: positional argument follows keyword argument` 立刻暴露 —— 这类错误编译器会拦，
+上一版的语义错误则不会。
+
+### 顺带
+
+* **§5**：`magnitudes_in_window` + `evidence="numeric_magnitude"` 也降为 `render_matches=None` ——
+  窗口内同列的无关数字（粗糙度、另一条尺寸的偏差）仍然能凑出形状，只有**同窗口内的符号证据**
+  才算确定。`None` 既不是通过也不是失败。
+* **§6.1**：`hole_callouts` 在**已核对**时补 `status: "checked"` /
+  `diameter_dimensions_status: "checked"` —— 之前已核对时这两个字段是 `null`，读起来像「没读到」。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 315/315（+1 条行为断言） |
+| 真机 `produce_drawing(接槽, A3)` | `execution_ok:true`、`verdict:待设计审核`、**`steps:14`**、`blockers:[]`、`error:delivery_incomplete` |
+| `_step_state` / `_failed_critical_steps` | 行为断言：非阻断 → `warning`/`non_blocking` 且不进 critical；真失败 → 进 |
+
+### 教训
+
+**一个标记要贯穿整条链路，而不是只喂给第一个读它的地方。** `blocking:false` 在第一道门被读懂、
+在最后一道门被忽略，等于没写。这次的修法是把「这个失败严不严重」的判定抽成**两个纯函数**，
+让两处读同一份逻辑 —— 只要有第二个地方自己写 `if not ok`，它就会再次分叉。

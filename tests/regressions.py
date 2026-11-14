@@ -10630,7 +10630,11 @@ def assert_uncertain_render_is_not_a_pass():
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                      "add_dimension_tolerance")) or ""
     assert "_uncertain" in body, "an uncertain render verdict can pass again"
-    assert 'evidence") == "uncertain"' in body
+    # 0.8.322: the test widened from "== uncertain" to "in (uncertain, numeric_magnitude)"
+    # because a bare magnitude inside the window is still a guess.
+    assert ('evidence") in ("uncertain", "numeric_magnitude")' in body
+            or 'evidence") == "uncertain"' in body), (
+        "the uncertain-evidence test no longer catches bare magnitudes")
     assert "or _uncertain" in body
     assert 'basis") != "magnitudes_in_window"' in body, (
         "only window-internal evidence may count as certain — a whole-page scan cannot")
@@ -10766,7 +10770,38 @@ def assert_failure_message_names_the_real_reason():
     return "blockers -> failed -> partial -> reasons, in that order"
 
 
+def assert_nonblocking_steps_never_reach_the_critical_gate():
+    """0.8.322 — report 2026-11-14 v0.8.321 §4 (P0): the SECOND gate.
+
+    `blocking:false` was honoured by the first guard (0.8.320) and then re-judged as fatal
+    by `_failed_critical` at the END of the chain, which returned `critical_step_failed`
+    and dropped the verdict, the 14 executed steps and the `title_scale_unsynced` warning.
+
+    BEHAVIOURAL: both decisions are pure functions and are called here — this is the pair
+    that produced the bug, not a string match on the source.
+    """
+    from solidworks_assetmate_mechdog.tools import pipeline as _pipeline
+
+    state = _pipeline._step_state
+    critical = _pipeline._failed_critical_steps
+
+    assert state({"ok": False, "error": "title_scale_not_synced",
+                  "blocking": False}) == (False, "warning", True)
+    assert state({"ok": False, "error": "create_failed"}) == (False, "failed", False)
+    assert state({"ok": True})[1] == "ok"
+    assert state({"ok": False, "verdict": "partial"})[1] == "partial"
+
+    gate = ("create_drawing", "dimensions", "save")
+    assert critical([{"step": "create_drawing", "ok": False, "status": "warning",
+                      "non_blocking": True}], gate) == []
+    assert critical([{"step": "create_drawing", "ok": False, "status": "failed"}],
+                    gate) == ["create_drawing"]
+    assert critical([], gate) == []
+    return "a non-blocking step is a warning and never trips the critical gate"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.322 non-blocking never trips the critical gate", assert_nonblocking_steps_never_reach_the_critical_gate),
     ("0.8.320 non-blocking create keeps pipeline", assert_produce_drawing_continues_after_a_nonblocking_create_failure),
     ("0.8.320 failure message names the reason", assert_failure_message_names_the_real_reason),
     ("0.8.319 title-scale failure lowers ok", assert_title_scale_failure_lowers_the_verdict),

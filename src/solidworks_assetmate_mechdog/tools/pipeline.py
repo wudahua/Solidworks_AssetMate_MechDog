@@ -153,6 +153,43 @@ def _failure_message(blockers, failed_steps, partial_steps, incomplete_reasons):
     return "完整性不足，见 incomplete_reasons"
 
 
+def _step_state(payload):
+    """(ok, status, non_blocking) for one step payload. PURE.
+
+    Report 2026-11-14 §4: `blocking:false` (the sheet exists, only its ratio label is
+    wrong) must be a WARNING step, not a failed one — otherwise the `_failed_critical`
+    gate at the end of the run re-judges the same event as fatal and discards the verdict.
+    """
+    try:
+        ok = bool(payload.get("ok")) if isinstance(payload, dict) else bool(payload)
+        verdict = payload.get("verdict") if isinstance(payload, dict) else None
+        non_blocking = bool(isinstance(payload, dict)
+                            and payload.get("blocking") is False and not ok)
+        status = ("warning" if non_blocking
+                  else "ok" if ok
+                  else ("partial" if verdict == "partial" else "failed"))
+        return ok, status, non_blocking
+    except Exception:
+        return False, "failed", False
+
+
+def _failed_critical_steps(steps, critical):
+    """Critical steps that ACTUALLY failed. PURE.
+
+    A step marked `non_blocking` is not one of them: the drawing exists and the delivery
+    verdict is still meaningful, so short-circuiting here would throw both away.
+    """
+    out = []
+    for st in (steps or []):
+        try:
+            if (st.get("step") in (critical or ()) and not st.get("ok")
+                    and not st.get("non_blocking")):
+                out.append(st.get("step"))
+        except Exception:
+            continue
+    return out
+
+
 def _creation_is_blocking(created):
     """Should a failed `create_drawing` stop the whole pipeline? PURE.
 
@@ -371,13 +408,14 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         # Now the step carries `status`, and `detail` falls back to `partial_reason`, so a
         # reader can tell "6 of 7 callouts failed and 2 diameters were skipped" from
         # "this step crashed".
-        _ok = bool(payload.get("ok")) if isinstance(payload, dict) else bool(payload)
-        _verdict = payload.get("verdict") if isinstance(payload, dict) else None
-        _status = "ok" if _ok else ("partial" if _verdict == "partial" else "failed")
+        _ok, _status, _non_blocking = _step_state(payload)
         _detail = ""
         if isinstance(payload, dict):
             _detail = detail or payload.get("partial_reason") or payload.get("error") or ""
-        steps.append({"step": name, "ok": _ok, "status": _status, "detail": _detail})
+        _step = {"step": name, "ok": _ok, "status": _status, "detail": _detail}
+        if _non_blocking:
+            _step["non_blocking"] = True
+        steps.append(_step)
         return payload if isinstance(payload, dict) else {}
 
     # 0.8.120: outline reads are COUNTERS, not a cache. Reset per run so the number in the
@@ -620,8 +658,7 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                          execution_ok=False)
 
     _CRITICAL = ("create_drawing", "dimensions", "save")
-    _failed_critical = [st["step"] for st in steps
-                        if st["step"] in _CRITICAL and not st["ok"]]
+    _failed_critical = _failed_critical_steps(steps, _CRITICAL)
     # Close what this run opened. Report 2026-11-05 (old backlog): the pipeline left the part
     # and the drawing open, so every run deposited a `~$*.SLDDRW` lock file and the NEXT run
     # could not open the same name — `OpenDoc6 returned null with errors=65536`, the exact
@@ -692,6 +729,17 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             # a caller reading `d.get("execution_ok")` got None. The pipeline DID run — it
             # just could not produce a usable sheet — so say so instead of dropping it.
             execution_ok=True,
+            # 0.8.322 (report 2026-11-14 §4.5 C): this branch runs AFTER the whole chain
+            # and AFTER delivery_check, so the verdict, the step list and the warnings all
+            # EXIST — dropping them here was the second half of "the short circuit moved
+            # from the front door to the back door".
+            verdict=(verdict or {}).get("verdict"),
+            steps=steps,
+            creation_warnings=creation_warnings,
+            warnings=((audit.get("warnings") or []) + list(creation_warnings)),
+            blockers=_failed_critical,
+            completeness="incomplete",
+            incomplete_reasons=[{"kind": "critical_step", "steps": _failed_critical}],
             documents_closed=closed)
 
     # ── top-level `ok` must not contradict a partial step (report 2026-11-09, A) ────────
@@ -724,6 +772,13 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                  ["delivery_check 未完成，交付判定丢失：%s"
                   % (str(verdict.get("message") or verdict.get("error")
                          or "unknown")[:120],)])
+    # 0.8.322 (report 2026-11-14 v0.8.321 §4.5 B): a wrong title-block ratio is a REAL
+    # delivery defect, so it belongs in `blockers` — that way `ok:false` comes from the
+    # same `_receipt_ok(_status)` derivation as everything else, `execution_ok` stays true,
+    # and `verdict` / `completeness` / `incomplete_reasons` all survive.
+    for _w in creation_warnings:
+        if isinstance(_w, dict) and _w.get("issue") == "title_scale_unsynced":
+            _blockers.append(str(_w.get("detail") or "标题栏比例未写入"))
     # 0.8.299: one derivation, ONE JUDGE. `ok` and `completeness` both come from `_status`
     # via `_receipt_ok`; 0.8.298 computed `ok` from `partial_steps` alone and shipped
     # `ok:true + completeness:"incomplete"` whenever a blocker existed.
