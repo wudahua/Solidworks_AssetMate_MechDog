@@ -1244,6 +1244,13 @@ def create_drawing(
             _ratio = _title_scale_synced.get("text") or "?"
             result["ok"] = False
             result["error"] = "title_scale_not_synced"
+            # 0.8.320 (report 2026-11-14 §4, P0): `ok:false` alone cannot say whether the
+            # SHEET exists. It does — the views, the dimensions and the file are all fine,
+            # only the ratio label is wrong. `produce_drawing` used `ok` as "did the
+            # drawing get built", so this one field made the whole pipeline bail out before
+            # a single step ran. `blocking` separates "nothing was produced" from "produced
+            # with a defect".
+            result["blocking"] = False
             result["message"] = (
                 "视图比例是 %s，但标题栏比例未能写入：%s。"
                 "图上标注的比例会与实际不符，按此图取尺寸会读错一倍。"
@@ -8388,8 +8395,13 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
         # 0.8.318 (report 2026-11-12 v0.8.317 §5): a shape inferred from the WHOLE PAGE is
         # a guess, and `render_matches: true` on a guess is the exact failure this guard
         # exists to catch (readback right, figure wrong). Uncertainty is `None`, not a pass.
+        # 0.8.320 (report 2026-11-14 §5): 0.8.318 only downgraded the FALLBACK branch, so
+        # two other shapes still passed: a whole-page scan when the PDF exposes no char
+        # boxes (`basis: magnitudes_full_page`) and a same-column stray number inside the
+        # window. The rule is now by EVIDENCE SOURCE: only "found inside the nominal's own
+        # window" counts as certain. Anything wider is a guess and gets `None`.
         _uncertain = (pdf_probe.get("evidence") == "uncertain"
-                      or pdf_probe.get("basis") == "magnitudes_full_page_fallback")
+                      or pdf_probe.get("basis") != "magnitudes_in_window")
         render_matches = (None if not pdf_probe.get("checked") or not _want or _uncertain
                           else _shape == _want)
         if _uncertain:

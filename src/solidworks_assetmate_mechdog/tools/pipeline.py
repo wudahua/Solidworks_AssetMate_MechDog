@@ -130,6 +130,50 @@ _COMPLETENESS_RELEVANT = (
 )
 
 
+def _failure_message(blockers, failed_steps, partial_steps, incomplete_reasons):
+    """The most specific reason available. PURE.
+
+    Report 2026-11-14 §6: `message` only ever looked at `blockers`, so the COMMON failure
+    shape — a partial step, no blocker — produced the placeholder 「完整性不足，见
+    incomplete_reasons」 while the real reason (`hole_callouts` skipped two chamfer-paired
+    diameters) sat right there in `partial_steps` / `incomplete_reasons`.
+    """
+    if blockers:
+        return str(blockers[0])
+    if failed_steps:
+        return "步骤失败：%s" % ", ".join(str(x) for x in failed_steps)
+    if partial_steps:
+        return "步骤部分完成：%s（详见 partial_steps / pending）" % ", ".join(
+            str(x) for x in partial_steps)
+    for item in (incomplete_reasons or []):
+        if isinstance(item, dict) and item.get("detail"):
+            return str(item["detail"])
+        if isinstance(item, str) and item:
+            return item
+    return "完整性不足，见 incomplete_reasons"
+
+
+def _creation_is_blocking(created):
+    """Should a failed `create_drawing` stop the whole pipeline? PURE.
+
+    Report 2026-11-14 §4 (P0): 0.8.319 used `created["ok"]` alone as that answer. `ok`
+    became false for "the sheet exists but its title-block ratio could not be written",
+    so on a GB table/block template the pipeline returned `create_failed` before one step
+    ran — no views, no dimensions, no verdict — and the two documents it had opened leaked.
+
+    `blocking: false` is `create_drawing`'s own statement that the failure does not stop
+    the rest (`title_scale_not_synced`). Absent that key, a failure blocks — the safe
+    default, because "I do not know whether the sheet exists" must not silently continue.
+    """
+    try:
+        payload = created or {}
+        if payload.get("ok"):
+            return False
+        return bool(payload.get("blocking", True))
+    except Exception:
+        return True
+
+
 def _step_partition(steps, verdict_ok):
     """Bucket the non-ok steps. PURE.
 
@@ -386,9 +430,37 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                          views=views or defaults.get("views") or ["front", "top", "isometric"],
                                                   paper=paper, projection=projection),
                      "")
-    if not created.get("ok"):
+    # ── 0.8.320 (report 2026-11-14 §4, P0): the guard ran BEFORE the warnings existed ────
+    # 0.8.319 turned "title-block scale not written" into `create_drawing`'s `ok:false`, but
+    # this guard treats `ok:false` as "no drawing was produced" — so on a GB table/block
+    # template the whole pipeline returned `create_failed` before ONE step ran
+    # (`steps:null`, `verdict:null`), the two documents it had opened leaked, and the
+    # `title_scale_unsynced` warning written just below was unreachable dead code.
+    #
+    # Two changes: collect the non-blocking problems FIRST, and only short-circuit when
+    # `create_drawing` says the failure actually blocks (`blocking: false` = the sheet
+    # exists, only its ratio label is wrong).
+    creation_warnings = []
+    _tsync = created.get("title_scale_synced") or {}
+    if isinstance(_tsync, dict) and _tsync.get("error"):
+        creation_warnings.append({
+            "issue": "title_scale_unsynced",
+            "detail": ("视图比例 %s，但标题栏比例未写入：%s。按图取尺寸会读错，"
+                       "交付前必须手工补填标题栏比例。"
+                       % (_tsync.get("text") or "?", _tsync.get("error")))})
+
+    if _creation_is_blocking(created):
+        # Take the documents this run opened with us — the old early return skipped the
+        # `close_when_done` block at the end and left two documents + `~$` locks behind.
+        if close_when_done:
+            for _opened in (target, path):
+                try:
+                    drawing_tools.close_document(_opened)
+                except Exception:
+                    continue
         return error("create_failed", created.get("message") or "view creation failed",
                      "Drawing not produced; see create_drawing errors.",
+                     creation_warnings=creation_warnings,
                      execution_ok=False)
 
     # Report 2026-11-06 (P1, second round on this): `create_drawing` already computes
@@ -398,7 +470,6 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # projection_notes entry about GB/T 14692; `produce_drawing` with the same arguments
     # returns `warnings: []`. The one-click entry point is what most callers use, so the
     # compliance hint was 100% lost there.
-    creation_warnings = []
     for _note in (created.get("projection_notes") or []):
         creation_warnings.append({"issue": "projection_note", "detail": str(_note)})
     _lay = created.get("layout") or {}
@@ -413,17 +484,6 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             "detail": ("auto_fit changed the scale: %s — the title block must agree, or the "
                        "shop measures at the wrong ratio"
                        % (created.get("auto_scale_adjustments"),))})
-    # 0.8.319 (report 2026-11-13 §1.3): `create_drawing` now reports a failed title-scale
-    # sync as `ok:false`, which the guard above turns into `create_failed`. That is too
-    # coarse: the sheet EXISTS and is usable, only its ratio label is wrong. Forward the
-    # real cause so the one-click entry point stops being silent about it.
-    _tsync = created.get("title_scale_synced") or {}
-    if isinstance(_tsync, dict) and _tsync.get("error"):
-        creation_warnings.append({
-            "issue": "title_scale_unsynced",
-            "detail": ("视图比例 %s，但标题栏比例未写入：%s。按图取尺寸会读错，"
-                       "交付前必须手工补填标题栏比例。"
-                       % (_tsync.get("text") or "?", _tsync.get("error")))})
 
     # Section 3 of the spec puts every write inside a drawing_batch scope, so that preference
     # changes are undone even when the body raises. Options are the defaults, which switch
@@ -675,11 +735,12 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         # `error` / `hint`, so a caller doing `payload.get("message")` saw `None` and learned
         # nothing about why. The first blocker IS the reason.
         error=(None if _final_ok else "delivery_incomplete"),
-        message=(None if _final_ok else
-                 (_blockers[0] if _blockers else "完整性不足，见 incomplete_reasons")),
+        message=(None if _final_ok else _failure_message(
+            _blockers, _failed_steps, _partial_steps,
+            _status.get("incomplete_reasons"))),
         hint=(None if _final_ok else
-              "`blockers` 是阻断项，`pending` 是可以接受但需人看一眼，"
-              "`warnings` 里是过程提示；三者的语义不同。"),
+              "`blockers` 是阻断项；`failed_steps` / `partial_steps` 是没跑成的步骤；"
+              "`pending` 是可以接受但需人看一眼；`warnings` 是过程提示。"),
         partial_steps=_partial_steps,
         failed_steps=_failed_steps,
         # Steps that failed but cannot make the DRAWING undeliverable (cleanup, read-only

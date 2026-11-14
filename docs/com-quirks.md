@@ -4539,3 +4539,85 @@ return ok(**result)                             # ← ok 仍是 True
 `title_scale_synced.error` 可见，但只要顶层 `ok` 不动，一键入口的调用方永远看不到它 ——
 这就是「记录」和「判定」之间的那道缝。同一个文件里对 `save_not_written` 早就写对了，
 这次只是把同一条规则用到隔壁分支。
+
+---
+
+## 2026-11-14（v0.8.320）一个字段删掉了整条流水线（报告 §4 P0 / §5 / §6）
+
+### §4 P0：我上版把「比例没写进去」升级成 ok:false，忘了管道第一行就查 ok
+
+0.8.319 的意图是对的（诚实地承认没写进去），但 `produce_drawing` 的第一道守卫是：
+
+```python
+if not created.get("ok"):          # ← 它问的是「图纸建出来了吗」
+    return error("create_failed", ...)
+```
+
+`ok:false` 被当成了「什么都没产出」，于是在 GB 表格/块模板上（`title_block_scale: partial`
+正是我上一版自己写的条目）：
+
+```
+produce_drawing → ok:false / error:create_failed / execution_ok:false
+                  verdict:null / steps:null / warnings:null
+                  两个已打开文档泄漏（提前 return 跳过 close_when_done）
+```
+
+**比我上一轮批评的那个 P0 更严重**：那次 13 步都跑完了，只是判定丢失；这次一步都没跑。
+
+而且同一版为「转发真实原因」新加的 `title_scale_unsynced` 警告，写在那个 `return` **之后** ——
+它只在「`ok:true` 且带 error」这种 0.8.319 刚刚消灭的旧形状下才执行。**修上一个版本的问题的代码，
+防不住自己这一版新造的问题。**
+
+修法三步：
+
+1. `create_drawing` 在降级时补 `blocking: false` —— 「图纸建出来了，只是标签错了」和
+   「什么都没产出」是两件事，一个布尔量说不清。
+2. `pipeline` 把守卫抽成纯函数 `_creation_is_blocking(created)`：
+   只有 `not ok` **且** `blocking` 不是 false 才短路；未知形状一律短路（不在「也许」上继续）。
+3. `creation_warnings` 的收集（含 `title_scale_unsynced`）**提到守卫之前**；
+   真短路时也补上 `close_when_done` 的清理，不再漏文档。
+
+### §5 公差护栏又有两条路假通过
+
+0.8.318 只把 **fallback** 那条路降级了，另两条仍判 `render_matches: true`：
+
+| 路径 | 0.8.318 | 现在 |
+|---|---|---|
+| 无 charbox、整页直扫（`basis: magnitudes_full_page`） | `true` ❌ | `null` ✅ |
+| 同列窗口内的无关 `0.05` | `true` ❌ | 窗口内仍可能 `true`，但这条只能靠「绑定到该尺寸的文本组」根治 |
+
+改成**按证据来源判定**：只有 `basis == "magnitudes_in_window"` 才算确定，其余一律 `null` + warning。
+「窗口内同列」那条挡不住，已如实记在上面的表里。
+
+### §6 `message` 在最常见的失败形态下是占位串
+
+0.8.319 的 `message` 只取 `_blockers[0]`，而最常见的失败是「某步骤 partial、无 blocker」——
+于是回执写着「完整性不足，见 incomplete_reasons」，真正的原因（`hole_callouts` 因两个倒角配对
+直径跳过）就在 `partial_steps` 里。抽出 `_failure_message()`，按
+`blockers → failed_steps → partial_steps → incomplete_reasons` 依次取具名原因。
+
+真机：`message: "步骤部分完成：hole_callouts（详见 partial_steps / pending）"`
+（修前是「完整性不足，见 incomplete_reasons」）。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 314/314（+2 条**行为**断言） |
+| 真机 `produce_drawing(接槽, A3)` | `execution_ok:true`、`verdict:待设计审核`、14 步全跑、`message` 具名 |
+| `_creation_is_blocking` 六种输入 | 行为断言覆盖：`blocking:false` → 继续；真失败/未知 → 短路 |
+
+### 未做（本轮 P2，记入待办）
+
+* `angular_pair_not_a_distance` 回执不给尺寸 `name`/`FullName`，hint 里建议的
+  `delete_annotation(name, ...)` 无法直接执行。
+* `produce_drawing` 没把 `delivery_check` 的 `hole_callouts.status` 与生效的 `include_faces`
+  透传到顶层 —— 开了开关也看不出跑没跑。
+* `produce_drawing` 的 docstring 未补 `include_faces` / 比例语义。
+
+### 教训
+
+**「加一个失败标记」要先问「谁在读这个标记，它读得懂吗」。** `ok` 被三个地方当三种意思用：
+`create_drawing` 用它说「全成了吗」，`pipeline` 用它说「还值得继续吗」，调用方用它说「能用吗」。
+一个布尔量承担三种语义，改动任何一处都会在另外两处炸。分开之后（`ok` / `blocking` / `verdict`）
+才各说各的。

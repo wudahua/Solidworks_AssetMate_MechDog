@@ -10632,6 +10632,8 @@ def assert_uncertain_render_is_not_a_pass():
     assert "_uncertain" in body, "an uncertain render verdict can pass again"
     assert 'evidence") == "uncertain"' in body
     assert "or _uncertain" in body
+    assert 'basis") != "magnitudes_in_window"' in body, (
+        "only window-internal evidence may count as certain — a whole-page scan cannot")
     probe = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                       "_tolerance_text_on_pdf")) or ""
     assert "_fallback_used" in probe, "the page fallback is no longer marked uncertain"
@@ -10709,7 +10711,64 @@ def assert_produce_drawing_explains_a_failure():
     return "a failed produce_drawing names its first blocker"
 
 
+def assert_produce_drawing_continues_after_a_nonblocking_create_failure():
+    """0.8.320 — report 2026-11-14 §4 (P0): one field deleted the whole pipeline.
+
+    0.8.319 made "title-block scale not written" a `create_drawing` failure, while the
+    pipeline guard still read `created["ok"]` as "was a drawing produced". On a GB
+    table/block template the run returned `create_failed` before ONE step executed
+    (`steps:null`, `verdict:null`), leaked the two documents it had opened, and turned the
+    `title_scale_unsynced` warning added in the same release into unreachable dead code.
+
+    BEHAVIOURAL: it calls the pure decision function, so it fails on the LOGIC rather than
+    on a missing string — the reason the six AST assertions of 0.8.318/319 could not.
+    """
+    from solidworks_assetmate_mechdog.tools import pipeline as _pipeline
+
+    blocking = _pipeline._creation_is_blocking
+    # the sheet exists, only its ratio label is wrong -> keep going
+    assert blocking({"ok": False, "error": "title_scale_not_synced",
+                     "blocking": False}) is False
+    # a real failure -> stop
+    assert blocking({"ok": False, "error": "create_failed"}) is True
+    # unknown shape -> stop; never continue on a maybe
+    assert blocking({"ok": False}) is True
+    assert blocking({}) is True
+    assert blocking(None) is True
+    # success -> continue
+    assert blocking({"ok": True}) is False
+
+    src = _read("tools/pipeline.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "produce_drawing")) or ""
+    warn_at = body.find("title_scale_unsynced")
+    guard_at = body.find("_creation_is_blocking(created)")
+    assert warn_at > 0 and guard_at > 0, "the guard or the warning moved; re-check"
+    assert warn_at < guard_at, (
+        "the warning is collected AFTER the guard — dead code for the failing branch")
+    return "a non-blocking create failure keeps the pipeline alive"
+
+
+def assert_failure_message_names_the_real_reason():
+    """0.8.320 — report 2026-11-14 §6: `message` was a placeholder in the COMMON case.
+
+    The usual failure shape is a partial step with no blocker, so `message` fell through to
+    「完整性不足，见 incomplete_reasons」 while the real reason sat in `partial_steps` /
+    `incomplete_reasons`. BEHAVIOURAL.
+    """
+    from solidworks_assetmate_mechdog.tools import pipeline as _pipeline
+
+    msg = _pipeline._failure_message
+    assert msg(["视图重叠"], [], [], []) == "视图重叠"
+    assert "hole_callouts" in msg([], [], ["hole_callouts"], [])
+    assert "孔标注" in msg([], [], [], [{"detail": "孔标注缺 2 个直径"}])
+    assert msg([], [], [], []), "message must never come back empty"
+    return "blockers -> failed -> partial -> reasons, in that order"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.320 non-blocking create keeps pipeline", assert_produce_drawing_continues_after_a_nonblocking_create_failure),
+    ("0.8.320 failure message names the reason", assert_failure_message_names_the_real_reason),
     ("0.8.319 title-scale failure lowers ok", assert_title_scale_failure_lowers_the_verdict),
     ("0.8.319 distance refuses an angle", assert_distance_dimension_refuses_to_call_an_angle_a_length),
     ("0.8.319 pipeline explains failures", assert_produce_drawing_explains_a_failure),
