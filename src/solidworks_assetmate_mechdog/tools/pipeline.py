@@ -182,9 +182,18 @@ def _failed_critical_steps(steps, critical):
     out = []
     for st in (steps or []):
         try:
-            if (st.get("step") in (critical or ()) and not st.get("ok")
-                    and not st.get("non_blocking")):
-                out.append(st.get("step"))
+            if st.get("step") not in (critical or ()) or st.get("ok"):
+                continue
+            # 0.8.323 (report 2026-11-14 v0.8.322 §8): the escape hatch was "any step that
+            # sets blocking:false". Only ONE combination is known to be non-fatal — a
+            # title-block ratio that could not be written, where the sheet itself exists.
+            # A `blocking:false` on `save` (disk full) or `dimensions` must still block;
+            # honouring the flag blindly would let a fatal failure through.
+            if (st.get("non_blocking")
+                    and st.get("step") == "create_drawing"
+                    and st.get("error") == "title_scale_not_synced"):
+                continue
+            out.append(st.get("step"))
         except Exception:
             continue
     return out
@@ -312,7 +321,14 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     Steps (each failure is recorded, not fatal — a partial drawing beats no drawing):
       1 ledger → 2 plan → 3 create views → 4 auto dimension → 5 center marks
       → 6 surface finish (category default) → 7 hole callouts (if holes exist)
-      → 8 audit → 9 ledger reconciliation → 10 delivery verdict
+      → 8 clamp → 9 save → 10 audit → 11 reconcile → 12 delivery verdict → 13 close
+      (read `steps[]` for what actually ran this time).
+
+    `steps[].status` is `ok` / `partial` / `failed` / **`warning`**. A `warning` step
+    carries `non_blocking: true`: it did not finish its job, but what it produced is still
+    usable (today only `create_drawing`, when the title-block ratio cannot be written).
+    Its defect is expressed through `blockers` / `creation_warnings`, never as a
+    `failed_step` — a warning must not delete the drawing or the delivery verdict.
 
     hole_budget_s defaults to 45 s, not 20: measured cost is ~1.7 s per circular edge, and
     a 20 s budget silently truncated a 35 s job to zero callouts — which then flipped the
@@ -413,6 +429,10 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         if isinstance(payload, dict):
             _detail = detail or payload.get("partial_reason") or payload.get("error") or ""
         _step = {"step": name, "ok": _ok, "status": _status, "detail": _detail}
+        if isinstance(payload, dict) and payload.get("error"):
+            # 0.8.323 (report 2026-11-14 v0.8.322 §8): the critical gate needs to know
+            # WHICH failure this is, not just that `blocking` said false.
+            _step["error"] = str(payload.get("error"))
         if _non_blocking:
             _step["non_blocking"] = True
         steps.append(_step)

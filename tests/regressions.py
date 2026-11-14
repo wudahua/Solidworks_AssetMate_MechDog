@@ -7565,7 +7565,11 @@ def assert_a_one_sided_bilateral_is_recognised():
                                                      "_tolerance_text_on_pdf")) or ""
     assert "_has_up" in body and "_has_lo" in body, (
         "the shape test counts occurrences again instead of asking which sides printed")
-    assert "elif _has_up or _has_lo:" in body, (
+    # 0.8.323: signed evidence now decides before the numeric branch, so the clause gained
+    # a leading condition. The guarantee is unchanged: a single printed deviation still
+    # lands in a bilateral branch.
+    assert ("elif _has_up or _has_lo:" in body
+            or "elif _signed_hit or _has_up or _has_lo:" in body), (
         "a single printed deviation no longer counts as bilateral — a `+x/0` tolerance "
         "will be called unrecognised again")
     assert "upper_present" in body and "lower_present" in body, (
@@ -10792,15 +10796,69 @@ def assert_nonblocking_steps_never_reach_the_critical_gate():
     assert state({"ok": False, "verdict": "partial"})[1] == "partial"
 
     gate = ("create_drawing", "dimensions", "save")
+    # 0.8.323 narrowed the hatch: the error code must name the ratio failure too.
     assert critical([{"step": "create_drawing", "ok": False, "status": "warning",
-                      "non_blocking": True}], gate) == []
+                      "non_blocking": True,
+                      "error": "title_scale_not_synced"}], gate) == []
     assert critical([{"step": "create_drawing", "ok": False, "status": "failed"}],
                     gate) == ["create_drawing"]
     assert critical([], gate) == []
     return "a non-blocking step is a warning and never trips the critical gate"
 
 
+def assert_signed_bilateral_verifiable_and_bare_number_is_not():
+    """0.8.323 — report 2026-11-14 v0.8.322 §6: the guard rejected the CORRECT case too.
+
+    `_magnitudes_of` stripped the sign, so `+0.05` and a stray `0.05` became the same
+    number, and the numeric branch sat BEFORE the signed one — which made `sign_text`
+    unreachable for bilateral pairs. Result: `pdf_render_matches` was `None` for every
+    correct bilateral sheet, i.e. the check lost the ability to say "printed correctly".
+
+    Both properties must hold together: signed evidence decides (so真公差 verifiable), and
+    a bare number stays uncertain (so a stray value cannot pass).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "_tolerance_text_on_pdf")) or ""
+    assert "return out, signed" in body, (
+        "the sign is stripped before classification — a real tolerance is indistinguishable "
+        "from a stray number")
+    assert "_signed_hit" in body, "signed evidence is not tracked at all"
+    assert "elif _signed_hit or _has_up or _has_lo:" in body, (
+        "the signed branch no longer precedes the numeric one, so it is unreachable")
+    i_signed = body.find('"bilateral_two_deviations", "sign_text"')
+    i_numeric = body.find('"bilateral_two_deviations", "numeric_magnitude"')
+    assert 0 < i_signed < i_numeric, (
+        "the numeric branch decides before the signed one again")
+    return "signed tokens decide first; a bare number stays uncertain"
+
+
+def assert_only_the_ratio_failure_may_be_non_blocking():
+    """0.8.323 — report 2026-11-14 v0.8.322 §8: the escape hatch had no boundary.
+
+    `_failed_critical_steps` honoured `non_blocking` on ANY critical step. `save` failing
+    with `disk_full` and `blocking:false` would have been waved through. Only one
+    combination is known to be non-fatal, and the gate must say so by name.
+    """
+    from solidworks_assetmate_mechdog.tools import pipeline as _pipeline
+
+    gate = ("create_drawing", "dimensions", "save")
+    assert _pipeline._failed_critical_steps(
+        [{"step": "create_drawing", "ok": False, "non_blocking": True,
+          "error": "title_scale_not_synced"}], gate) == []
+    for bad in ({"step": "save", "ok": False, "non_blocking": True,
+                 "error": "disk_full"},
+                {"step": "dimensions", "ok": False, "non_blocking": True,
+                 "error": "no_driving_dims"},
+                {"step": "create_drawing", "ok": False, "non_blocking": True,
+                 "error": "template_missing"}):
+        assert _pipeline._failed_critical_steps([bad], gate) == [bad["step"]], bad
+    return "only create_drawing + title_scale_not_synced is non-blocking"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.323 signed bilateral verified", assert_signed_bilateral_verifiable_and_bare_number_is_not),
+    ("0.8.323 non-blocking hatch is narrow", assert_only_the_ratio_failure_may_be_non_blocking),
     ("0.8.322 non-blocking never trips the critical gate", assert_nonblocking_steps_never_reach_the_critical_gate),
     ("0.8.320 non-blocking create keeps pipeline", assert_produce_drawing_continues_after_a_nonblocking_create_failure),
     ("0.8.320 failure message names the reason", assert_failure_message_names_the_real_reason),

@@ -4733,3 +4733,72 @@ C 的第一次插入我放错了位置（放在第 3 个位置参数 `hint` 之�
 **一个标记要贯穿整条链路，而不是只喂给第一个读它的地方。** `blocking:false` 在第一道门被读懂、
 在最后一道门被忽略，等于没写。这次的修法是把「这个失败严不严重」的判定抽成**两个纯函数**，
 让两处读同一份逻辑 —— 只要有第二个地方自己写 `if not ok`，它就会再次分叉。
+
+---
+
+## 2026-11-14（v0.8.323）带符号的公差被当成裸数字，护栏恒 null（报告 §6）
+
+### 现象
+
+`add_dimension_tolerance(verify_render=True)` 对**印对了**的双边公差返回
+`pdf_render_matches: null`：
+
+```
+shape: bilateral_two_deviations
+evidence: numeric_magnitude        ← 明明是 +0.050 / -0.050
+basis: magnitudes_in_window
+pdf_render_matches: null           ← 应为 true
+```
+
+而 0.8.322 的 warning 还自相矛盾：「证据来自**整页文本**（basis=`magnitudes_in_window`）」。
+
+### 根因：符号在分类前就被丢掉了
+
+| 步 | 位置 | 发生了什么 |
+|---|---|---|
+| 1 | `_magnitudes_of` | `lstrip("+-\u00b1")` 把 `+0.05` 剥成 `0.05`，与粗糙度 `0.05`、比例值 `0.05` 在数值上完全一样 |
+| 2 | `_num_up` | 于是裸数值匹配为真 |
+| 3 | 判定顺序 | `elif _num_up:` 排在 `elif _has_up or _has_lo:` **之前** → `sign_text` 对双边公差**不可达** |
+| 4 | 0.8.322 的 `_uncertain` | 一律拒绝 `numeric_magnitude` → 真公差也判 `null` |
+
+护栏本身没错，错在它读的那个标签永远不会是 `sign_text`。
+
+### 改法：幅值带上「原本有没有符号」，判定按证据强度排序
+
+```python
+def _magnitudes_of(lines):        # 返回 (值, 是否带符号)
+    ...
+    return out, signed
+
+_signed_hit = any(flag and (值等于上偏差 或 下偏差) for 值, flag in ...)
+
+elif _signed_hit or _has_up or _has_lo:      # 带符号 → 可信
+    shape, _evidence = "bilateral_two_deviations", "sign_text"
+elif _num_up or _num_lo:                     # 裸数字 → 仍不确定
+    shape, _evidence = "bilateral_two_deviations", "numeric_magnitude"
+```
+
+`_uncertain` 一行没改：真带符号的走 `sign_text` → `matches=true`；裸数字、整页回退仍是 `null`。
+**修好假通过和恢复真通过可以同时成立，不是二选一。**
+
+warning 文案也改成按 `basis` 分支：窗口内写「尺寸窗口内的裸数字」，整页才写「整页文本」。
+
+### 顺带（P2 / P3）
+
+* `record()` 把 `payload["error"]` 存进 step；`_failed_critical_steps` 的 `non_blocking`
+  豁免**收窄到 `create_drawing` + `error == "title_scale_not_synced"`** ——
+  `save` 磁盘满、`dimensions` 无驱动尺寸即使标了 `blocking:false` 也照样阻断。
+* `produce_drawing` 描述补上真实步数（14）与 `status="warning"` / `non_blocking` 的语义。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 317/317（+2 条断言，含符号证据顺序检查） |
+| 真机 `add_dimension_tolerance(80.0, bilateral ±0.05, verify_render=True)` | `evidence: sign_text`、`basis: magnitudes_in_window`、**`matches: True`** |
+
+### 教训
+
+**「降级到不确定」是最容易过头的修法。** 0.8.322 把一整类证据判死，连带把正确的也判死；
+真正的修法是**把证据分级**（符号 > 裸数值 > 整页），而不是把不确定的档位连到可信档位上。
+判据的分支顺序就是优先级本身 —— 写反了，最强的那条分支就永远走不到。

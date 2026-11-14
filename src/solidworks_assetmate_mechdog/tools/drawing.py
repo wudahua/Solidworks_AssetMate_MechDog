@@ -8050,14 +8050,20 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     # The shape test is NUMERIC now: parse each line as a magnitude and compare it with the
     # requested deviations. The sign-text test stays only as corroboration.
     def _magnitudes_of(text_lines):
-        out = []
+        # 0.8.323 (report 2026-11-14 v0.8.322 §6.3 step 1): the sign was STRIPPED and only
+        # magnitudes returned, so `+0.05` became indistinguishable from a bare `0.05`
+        # (roughness, a scale ratio, another dimension's deviation). Keep the flag.
+        out, signed = [], []
         for _ln in (text_lines or []):
-            _s = str(_ln).strip().lstrip("+-\u00b1").strip()
+            _s = str(_ln).strip()
+            _is_signed = bool(_s) and _s[0] in "+-\u00b1\u2212"
+            _body = _s.lstrip("+-\u00b1\u2212").strip()
             try:
-                out.append(abs(float(_s)))
+                out.append(abs(float(_body)))
+                signed.append(_is_signed)
             except Exception:
                 continue
-        return out
+        return out, signed
 
     _up_mag = abs(float(upper_mm)) if upper_mm is not None else None
     _lo_mag = abs(float(lower_mm)) if lower_mm is not None else None
@@ -8065,20 +8071,30 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     def _found(mags, target):
         return bool(target) and any(abs(_m - target) <= 1e-6 for _m in mags)
 
-    _magnitudes = _magnitudes_of(lines)
+    _magnitudes, _signed_flags = _magnitudes_of(lines)
     _num_up = _found(_magnitudes, _up_mag)
     _num_lo = _found(_magnitudes, _lo_mag)
+    # Did a SIGNED token match? `+0.05` / `-0.05` / `−0.05` count; a bare `0.05` does not.
+    # 0.8.323 (report 2026-11-14 v0.8.322 §6.3): without this flag the shape ladder could
+    # never tell a real tolerance from a stray number, so the `sign_text` evidence was
+    # unreachable for bilateral pairs and `render_matches` was `None` on every correct sheet.
+    _signed_hit = any(
+        _flag and (_found([_m], _up_mag) or _found([_m], _lo_mag))
+        for _m, _flag in zip(_magnitudes, _signed_flags))
     _fallback_used = False
     _basis = "magnitudes_in_window" if _window_used else "magnitudes_full_page"
     if _window_used and boxes and not (_num_up or _num_lo):
         # The window missed them: fall back to the whole page. Comparing MAGNITUDES keeps
         # the technical-requirements prose ("H7", "H8") from answering for a dimension —
         # those lines never parse as a bare float.
-        _page_mags = _magnitudes_of([b[4] for b in boxes])
+        _page_mags, _page_signed = _magnitudes_of([b[4] for b in boxes])
         _page_up = _found(_page_mags, _up_mag)
         _page_lo = _found(_page_mags, _lo_mag)
         if _page_up or _page_lo:
             _magnitudes, _num_up, _num_lo = _page_mags, _page_up, _page_lo
+            _signed_hit = any(
+                _flag and (_found([_m], _up_mag) or _found([_m], _lo_mag))
+                for _m, _flag in zip(_page_mags, _page_signed))
             _basis = "magnitudes_full_page_fallback"
             _window_used = False
             _fallback_used = True
@@ -8090,11 +8106,16 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
         shape, _evidence = "symmetric_plus_minus", "sign_text"
     elif hi and hi != nominal and hi_count >= 1 and not _num_up and not _num_lo:
         shape, _evidence = "limit_values", "sign_text"
-    elif _num_up or _num_lo:
-        # One magnitude is enough: a zero lower limit prints no second number.
-        shape, _evidence = "bilateral_two_deviations", "numeric_magnitude"
-    elif _has_up or _has_lo:
+    elif _signed_hit or _has_up or _has_lo:
+        # 0.8.323 (report 2026-11-14 v0.8.322 §6.3 step 3): this branch used to sit AFTER
+        # the numeric one, so a genuinely signed tolerance could never reach it and
+        # `render_matches` came back `None` for every correct bilateral sheet. Signed
+        # evidence decides first.
         shape, _evidence = "bilateral_two_deviations", "sign_text"
+    elif _num_up or _num_lo:
+        # One magnitude is enough: a zero lower limit prints no second number. A BARE
+        # number is still a guess, and `_uncertain` reports it as one.
+        shape, _evidence = "bilateral_two_deviations", "numeric_magnitude"
     elif _tol_name and _tol_name not in ("none", "basic") and dev_count == 0:
         shape, _evidence = "basic_no_deviation", "no_deviation_found"
     elif dev_count == 0:
@@ -8420,10 +8441,17 @@ def add_dimension_tolerance(drawing_path, value_mm, tolerance_type="bilateral",
         render_matches = (None if not pdf_probe.get("checked") or not _want or _uncertain
                           else _shape == _want)
         if _uncertain:
+            # 0.8.323 (report 2026-11-14 §6.5): the text said "整页文本" while the printed
+            # `basis` could be `magnitudes_in_window` — a self-contradicting sentence that
+            # sent the reader hunting for page-wide stray numbers. Name the real source.
+            _basis_now = pdf_probe.get("basis")
+            _src = ("整页文本" if _basis_now != "magnitudes_in_window"
+                    else "尺寸窗口内的裸数字")
             warnings.append(
-                "图面公差形状未能确定：证据来自整页文本（`basis=%s`），页面别处的同值数字"
-                "也可能凑成这个形状，所以 `pdf_render_matches` 记 `null` 而不是 `true`。"
-                "请导出 PDF 目视核对。" % pdf_probe.get("basis"))
+                "图面公差形状未能确定：证据来自%s（basis=%s，evidence=%s）。"
+                "同值的无关数字也可能凑成这个形状，所以 `pdf_render_matches` 记 `null` "
+                "—— 既不算通过也不算失败，请导出 PDF 目视核对。"
+                % (_src, _basis_now, pdf_probe.get("evidence")))
         if render_matches is False:
             warnings.append(
                 "图面与请求不符：要求 `%s`（应呈现为 %s），PDF 文本层实际是 `%s` —— "
