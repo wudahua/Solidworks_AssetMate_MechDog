@@ -251,7 +251,7 @@ pending:   27/53 尺寸读不到关联
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 秒级：语法 + 结构 + 317 条历史回归
+python tests/check_all.py       # 秒级：语法 + 结构 + 318 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -443,12 +443,18 @@ tag_compare: no tag source (no CI env var, no _build_meta.json) and HEAD cannot 
 
 ```text
 all offline checks passed
-  source-level : <N> assertions (text/AST only)
+  source-level : <N> assertions (<B> behavioural, <S> text/AST)
   on-machine   : <M> checks, NOT run here — `python tests/smoke.py`
 ```
 
-**`source-level` 只读源码文本**，不驱动 SolidWorks。把它当成行为证据是本项目犯过的错
+**`source-level` 一行都不驱动 SolidWorks**，但里面是两类：`<B>` 条**真的执行包代码**
+（`BEHAVIOURAL_REGRESSIONS`，能因逻辑错误失败），`<S>` 条只读源码文本
+（`STATIC_REGRESSIONS`，只会在文本变化时失败）。把这些数字当成行为证据是本项目犯过的错
 （v0.8.273 的断言通过了，图上主孔却没标）。真机覆盖只算 `smoke.py` 里那些 `r.check`。
+
+两个数字都由 `regressions.py` 用 `len()` 打印（`counts: total=… behavioural=… text_ast=…`），
+`check_all.py` 只解析这一行、**不再自己数**——v0.8.327 曾出现 5 / 6 / 15 三个互相矛盾的
+数字，根因就是两个计数器各自扫 docstring 标记。
 
 ### 部分结果不等于成功
 

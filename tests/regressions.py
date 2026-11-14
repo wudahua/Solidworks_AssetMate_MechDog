@@ -4428,7 +4428,10 @@ def assert_docs_numbers_match_the_code():
     assert int(m.group(1)) == registered, (
         "README says %s tools, server.py registers %d" % (m.group(1), registered))
 
-    static_count = len(STATIC_REGRESSIONS)
+    # 0.8.328 (report 2026-11-14 v0.8.327 §P1-1): the suite is TWO lists now, so the
+    # README count must be the union — comparing against `STATIC_REGRESSIONS` alone would
+    # say the file "lost" 13 assertions that were merely moved.
+    static_count = len(ALL_REGRESSIONS)
     m2 = re.search(r"(\d+) 条历史回归", readme)
     assert m2, "README no longer states a regression count; this assertion cannot verify it"
     assert int(m2.group(1)) == static_count, (
@@ -8623,10 +8626,13 @@ def assert_the_report_says_what_it_verified():
     """
     with open(os.path.join(ROOT, "tests", "regressions.py"), encoding="utf-8") as fh:
         reg = fh.read()
-    assert "source inspection only" in reg, (
-        "the regressions banner claims verification again")
-    assert "no SolidWorks involved" in reg, (
-        "the banner does not say the machine was never touched")
+    # 0.8.328: the wording changed on purpose (report §P2-2 — "source inspection only" and
+    # "5 behavioural" contradicted each other). What must survive is the CLAIM: no live
+    # SolidWorks, and the two kinds of assertion named.
+    assert "no live SolidWorks" in reg, (
+        "the regressions banner claims live verification again")
+    assert "inspect source text" in reg and "call the package" in reg, (
+        "the banner stopped distinguishing executed assertions from text inspection")
     with open(os.path.join(ROOT, "tests", "check_all.py"), encoding="utf-8") as fh:
         ca = fh.read()
     assert "on-machine" in ca and "NOT run here" in ca, (
@@ -10826,8 +10832,13 @@ def assert_a_bare_number_never_passes_a_tolerance_render_check():
 
     classify = _drawing._tolerance_shape_from_lines
 
-    def ev(lines):
-        return classify(lines, 14.20, "bilateral", 0.05, 0.05)
+    # 0.8.328 (report 2026-11-14 v0.8.327 §P2-1): `nominal` is a parameter, because the
+    # classifier FILTERS lines by it (`nominal in ln or dev in ln or hi in ln`). The machine
+    # shapes below carry nominal 10, so hard-coding 14.20 silently dropped the `"10"` line
+    # from `hits` — the assertions still passed, while covering a line set the PDF reader
+    # never produces.
+    def ev(lines, nominal=14.20):
+        return classify(lines, nominal, "bilateral", 0.05, 0.05)
 
     # Signed evidence is the ONLY thing that may say "printed correctly".
     assert ev(["14.20", "+0.05", "-0.05"])["evidence"] == "sign_text"
@@ -10850,9 +10861,16 @@ def assert_a_bare_number_never_passes_a_tolerance_render_check():
     # ── The layouts the PDF reader ACTUALLY gets on SolidWorks 2026 (report §P1-2) ──────
     # The sign is either a separate text object or missing entirely, so `verify_render`
     # can only answer `null` there. Asserted so nobody mistakes `sign_text` for "covered".
-    assert ev(["10", "0.050", "0.050"])["evidence"] == "numeric_magnitude"
-    assert ev(["10", "+", "0.050", "-", "0.050"])["evidence"] == "numeric_magnitude"
-    assert ev(["10", "0.050", "0.050"])["shape"] == "bilateral_two_deviations"
+    assert ev(["10", "0.050", "0.050"], 10.0)["evidence"] == "numeric_magnitude"
+    assert ev(["10", "+", "0.050", "-", "0.050"], 10.0)["evidence"] == "numeric_magnitude"
+    assert ev(["10", "0.050", "0.050"], 10.0)["shape"] == "bilateral_two_deviations"
+    # The nominal line must survive the filter. Asserted directly, because the two checks
+    # above pass either way — that is exactly how the wrong nominal stayed invisible.
+    assert ev(["10", "0.050", "0.050"], 10.0)["hits"] == ["10", "0.050", "0.050"], (
+        "the nominal's own line was filtered out of `hits` — the shape was decided on a "
+        "line set the PDF reader never produces")
+    assert ev(["10", "0.050", "0.050"])["hits"] != ["10", "0.050", "0.050"], (
+        "the filter no longer depends on `nominal`, so this fixture proves nothing about it")
 
     # A `limit` request must not be satisfied by ONE stray number, and a `symmetric`
     # request must not be satisfied by a `±` note that is not attached to this nominal.
@@ -10893,12 +10911,85 @@ def assert_only_the_ratio_failure_may_be_non_blocking():
     return "only create_drawing + title_scale_not_synced is non-blocking"
 
 
+def assert_the_coverage_numbers_come_from_the_lists():
+    """0.8.328 — report 2026-11-14 v0.8.327 §P1-1: ONE fact, THREE numbers.
+
+    `check_all.py` printed 5 behavioural assertions, `behavioural_count()` returned 6, and
+    an AST walk found 15 entries that actually execute the package. Nine of them were filed
+    as `text/AST`, so `312` was really `302` — the gap was described by three numbers that
+    disagreed.
+
+    Root cause: both counters read a `BEHAVIOURAL` marker in a DOCSTRING — a promise, not a
+    fact — and parsed it differently (line-start regex vs `in`). `behavioural_count()` also
+    had zero call sites.
+
+    The split is structural now: two lists, two `len()`s, and `check_all` parses the
+    `counts:` line the suite prints. This assertion is what keeps the classification
+    honest, so the numbers cannot drift away from the code again.
+
+    STILL SOURCE-LEVEL: it reads this file's own AST.
+    """
+    here = os.path.abspath(__file__)
+    with open(here, encoding="utf-8") as fh:
+        text = fh.read()
+    tree = ast.parse(text)
+
+    def _names_of(list_name):
+        node = next(n for n in tree.body if isinstance(n, ast.Assign)
+                    and any(getattr(t, "id", "") == list_name for t in n.targets))
+        return [e.elts[1].id for e in node.value.elts]
+
+    static = _names_of("STATIC_REGRESSIONS")
+    behav = _names_of("BEHAVIOURAL_REGRESSIONS")
+    assert static and behav, ("one of the two lists is empty: static=%d behavioural=%d"
+                              % (len(static), len(behav)))
+    overlap = sorted(set(static) & set(behav))
+    assert not overlap, "declared in both lists: %s" % overlap
+    assert len(set(static)) == len(static) and len(set(behav)) == len(behav), (
+        "a function is listed twice inside one list, so `len()` overstates the suite")
+
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    missing = [n for n in static + behav if n not in funcs]
+    assert not missing, "listed but not defined: %s" % missing
+
+    def _imports_package(node):
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.ImportFrom) and (sub.module or "").startswith(
+                    "solidworks_assetmate_mechdog"):
+                return True
+            if isinstance(sub, ast.Import) and any(
+                    (a.name or "").startswith("solidworks_assetmate_mechdog") for a in sub.names):
+                return True
+        # The stdio assertion starts a real server in a subprocess, so its import lives in
+        # a string — it still executes package code. The literal is assembled at runtime so
+        # THIS function does not match its own detector (it landed in the "smuggled" list on
+        # the first run, which is the detector working, on itself).
+        marker = "from " + "solidworks_assetmate_mechdog"
+        return marker in (ast.get_source_segment(text, node) or "")
+
+    liars = [n for n in behav if not _imports_package(funcs[n])]
+    assert not liars, ("filed as behavioural but never imports the package, so it cannot "
+                       "execute anything: %s" % liars)
+    smuggled = [n for n in static if _imports_package(funcs[n])]
+    assert not smuggled, ("imports the package yet is filed as text/AST, which is how nine "
+                          "real behavioural assertions went uncounted: %s" % smuggled)
+
+    # Assembled at runtime for the same reason as `marker`: the detector must not match
+    # its own source.
+    assert ("def " + "behavioural_" + "count") not in text, (
+        "the docstring-based counter is back; it was dead code that disagreed with `len()`")
+    with open(os.path.join(ROOT, "tests", "check_all.py"), encoding="utf-8") as fh:
+        ca = fh.read()
+    assert "counts:" in ca, ("check_all does not read the suite's own `counts:` line, so it "
+                             "is recounting again")
+    assert "BEHAVIOURAL" not in ca, (
+        "check_all parses the docstring marker again — that is the second counter")
+    return ("%d behavioural + %d text/AST = %d; classification verified against imports"
+            % (len(behav), len(static), len(behav) + len(static)))
+
+
 STATIC_REGRESSIONS = [
-    ("0.8.325 a bare number never passes", assert_a_bare_number_never_passes_a_tolerance_render_check),
-    ("0.8.323 non-blocking hatch is narrow", assert_only_the_ratio_failure_may_be_non_blocking),
-    ("0.8.322 non-blocking never trips the critical gate", assert_nonblocking_steps_never_reach_the_critical_gate),
-    ("0.8.320 non-blocking create keeps pipeline", assert_produce_drawing_continues_after_a_nonblocking_create_failure),
-    ("0.8.320 failure message names the reason", assert_failure_message_names_the_real_reason),
+    ("0.8.328 coverage numbers come from lists", assert_the_coverage_numbers_come_from_the_lists),
     ("0.8.319 title-scale failure lowers ok", assert_title_scale_failure_lowers_the_verdict),
     ("0.8.319 distance refuses an angle", assert_distance_dimension_refuses_to_call_an_angle_a_length),
     ("0.8.319 pipeline explains failures", assert_produce_drawing_explains_a_failure),
@@ -10914,7 +11005,6 @@ STATIC_REGRESSIONS = [
     ("0.8.313 delete reads display dimensions", assert_delete_dimensions_reads_display_dimensions),
     ("0.8.313 sheet index + cylinder honesty", assert_sheet_index_and_cylinder_faces_are_honest),
     ("0.8.312 tolerance render uses numbers", assert_tolerance_render_uses_numbers_not_signs),
-    ("0.8.312 plan views behaviour", assert_plan_views_are_validated_and_consistent),
     ("0.8.311 plan views + confidence", assert_plan_respects_views_and_labels_confidence),
     ("0.8.307 layout fits matches measure", assert_layout_fits_matches_measure_layout),
     ("0.8.306 sheet index + layout columns", assert_sheet_index_and_layout_columns_do_not_lie),
@@ -10938,9 +11028,7 @@ STATIC_REGRESSIONS = [
     ("0.8.293 bump --check fails closed", assert_bump_version_check_fails_closed),
     ("0.8.293 new checks really run", assert_no_composite_text_dialect_and_new_checks_really_run),
     ("0.8.292 top-level input schemas are sealed", assert_top_level_input_schemas_are_sealed),
-
     ("0.8.3 row/text ordering", assert_row_before_text),
-    ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
     ("0.8.5 dedupe before counting", assert_annotations_dedupe_before_counting),
     ("0.8.6 material failure branch", assert_material_top_level_not_always_ok),
     ("0.8.6 thickness 厚度 label", assert_thickness_matches_chinese_label),
@@ -10950,8 +11038,6 @@ STATIC_REGRESSIONS = [
     ("0.8.15 annotation Select(False)", assert_annotation_selected_with_select),
     ("finder sweeps views", assert_annotation_finder_sweeps_views),
     ("duplicate defs", assert_no_duplicate_defs_in_tools),
-    ("sw_version reported", assert_sw_version_reported),
-    ("capability statuses legal", assert_capability_statuses_legal),
     ("tools documented", assert_every_tool_has_docstring),
     ("smoke covers every tool", assert_every_tool_has_smoke_coverage),
     ("smoke calls match signatures", assert_smoke_calls_match_signatures),
@@ -10962,10 +11048,8 @@ STATIC_REGRESSIONS = [
     ("0.8.18 stale doc claims removed", assert_no_stale_doc_claims),
     ("0.8.19 full-name dedupe", assert_full_name_dedupe_deletes_copies),
     ("0.8.19 dimension type guard", assert_dimension_position_validates_type),
-    ("0.8.19 leader anchor parameter", assert_hole_callout_leader_is_parameterized),
     ("0.8.20 detail empty/scale guard", assert_detail_view_validates_edges_and_scale),
     ("0.8.20 GTOL text fallback", assert_gtol_symbol_text_fallback),
-    ("0.8.20 surface finish visibility", assert_surface_finish_position_and_pixel_check),
     ("0.8.21 section cut plane", assert_section_cut_plane_maps_model_coordinates),
     ("0.8.21 section sanity", assert_section_sanity_uses_kept_dimension),
     ("0.8.21 section wrapper", assert_section_wrapper_forwards_cut_plane),
@@ -11133,7 +11217,6 @@ STATIC_REGRESSIONS = [
     ("0.8.231 trash failure is not a lock", assert_a_trash_failure_is_not_blamed_on_the_document),
     ("0.8.233 unknown arguments are refused", assert_every_tool_rejects_unknown_arguments),
     ("0.8.235 a sheet line can be dash-dot", assert_a_sheet_line_can_be_dash_dot),
-    ("0.8.236 MCP entry refuses unknown args", assert_the_mcp_entry_rejects_unknown_arguments),
     ("0.8.236 skipped duplicate is removed", assert_a_skipped_duplicate_is_actually_removed),
     ("0.8.236 uncut section names itself", assert_a_section_that_did_not_cut_says_so),
     ("0.8.237 three P2 items", assert_three_p2_items_are_fixed),
@@ -11195,7 +11278,6 @@ STATIC_REGRESSIONS = [
     ("0.8.128 gap matcher units", assert_gap_matcher_converts_units),
     ("0.8.126 title block guards None", assert_title_block_guards_none_position),
     ("0.8.126 bilateral lower is negative", assert_bilateral_lower_is_negative),
-    ("0.8.124 perf receipt matches spec 9.1", assert_perf_receipt_matches_spec_schema),
     ("0.8.120 outline counted not cached", assert_outline_wrapper_is_pass_through),
     ("0.8.118 ledger open is structured", assert_ledger_open_failure_is_structured),
     ("0.8.113 gap planner no guessing", assert_gap_planner_only_fills_unambiguous_gaps),
@@ -11215,26 +11297,43 @@ STATIC_REGRESSIONS = [
 ]
 
 
-def behavioural_count():
-    """How many entries actually CALL the package (their docstring says BEHAVIOURAL).
+#: Assertions that EXECUTE package code: they import `solidworks_assetmate_mechdog` and
+#: reference it, or launch it in a subprocess. Everything in this list can fail for a
+#: LOGIC reason; everything in `STATIC_REGRESSIONS` can only fail because source text
+#: changed.
+#:
+#: Report 2026-11-14 (v0.8.327) §P1-1: the count of these used to be derived from a
+#: `BEHAVIOURAL` marker in each docstring — a promise, not a fact. Two counters read that
+#: marker and disagreed (5 vs 6) while the AST said 15. A list cannot disagree with
+#: itself: `len()` IS the count, and `assert_the_coverage_numbers_come_from_the_lists`
+#: verifies every member really does import the package.
+BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.325 a bare number never passes", assert_a_bare_number_never_passes_a_tolerance_render_check),
+    ("0.8.323 non-blocking hatch is narrow", assert_only_the_ratio_failure_may_be_non_blocking),
+    ("0.8.322 non-blocking never trips the critical gate", assert_nonblocking_steps_never_reach_the_critical_gate),
+    ("0.8.320 non-blocking create keeps pipeline", assert_produce_drawing_continues_after_a_nonblocking_create_failure),
+    ("0.8.320 failure message names the reason", assert_failure_message_names_the_real_reason),
+    ("0.8.312 plan views behaviour", assert_plan_views_are_validated_and_consistent),
+    ("0.8.4 bom wrapper signature", assert_bom_wrapper_signature),
+    ("sw_version reported", assert_sw_version_reported),
+    ("capability statuses legal", assert_capability_statuses_legal),
+    ("0.8.19 leader anchor parameter", assert_hole_callout_leader_is_parameterized),
+    ("0.8.20 surface finish visibility", assert_surface_finish_position_and_pixel_check),
+    ("0.8.236 MCP entry refuses unknown args", assert_the_mcp_entry_rejects_unknown_arguments),
+    ("0.8.124 perf receipt matches spec 9.1", assert_perf_receipt_matches_spec_schema),
+]
 
-    Report 2026-11-14 v0.8.325 §P1-2: `check_all` printed "317 assertions (text/AST only)"
-    even after several of them became real calls. The label was wrong in the SAFE
-    direction, but a wrong label is still a wrong label — and it hid how much of the suite
-    cannot see logic errors.
-    """
-    count = 0
-    for _name, _fn in STATIC_REGRESSIONS:
-        if "BEHAVIOURAL" in (getattr(_fn, "__doc__", "") or ""):
-            count += 1
-    return count
+ALL_REGRESSIONS = STATIC_REGRESSIONS + BEHAVIOURAL_REGRESSIONS
 
 
 def main():
     failures = 0
-    print("regression ledger — %d static assertions" % len(STATIC_REGRESSIONS))
+    total = len(ALL_REGRESSIONS)
+    # 0.8.328 (report 2026-11-14 v0.8.327 §P1-1): both numbers now come from the LISTS.
+    print("regression ledger — %d assertions (%d behavioural, %d text/AST)"
+          % (total, len(BEHAVIOURAL_REGRESSIONS), len(STATIC_REGRESSIONS)))
     print("-" * 78)
-    for name, fn in STATIC_REGRESSIONS:
+    for name, fn in ALL_REGRESSIONS:
         try:
             detail = fn()
             print("PASS  %-32s %s" % (name, detail))
@@ -11252,8 +11351,16 @@ def main():
     # was wrong.
     #
     # Renaming the line is cheap and honest. Adding a real fixture for each of 254 is not.
-    print("source-level  %d/%d passed   (source inspection only — no SolidWorks involved)"
-          % (len(STATIC_REGRESSIONS) - failures, len(STATIC_REGRESSIONS)))
+    # 0.8.328 (report 2026-11-14 v0.8.327 §P2-2): one wording. "source inspection only"
+    # sat next to "5 behavioural" and the reader had to guess which sentence was true.
+    print("source-level  %d/%d passed   (no live SolidWorks; %d assertions call the "
+          "package, %d inspect source text)"
+          % (total - failures, total, len(BEHAVIOURAL_REGRESSIONS),
+             len(STATIC_REGRESSIONS)))
+    # Machine-readable, and the ONLY place these numbers are computed — `check_all.py`
+    # parses this line instead of recounting (report §P1-1: two counters, three answers).
+    print("counts: total=%d behavioural=%d text_ast=%d"
+          % (total, len(BEHAVIOURAL_REGRESSIONS), len(STATIC_REGRESSIONS)))
     return 0 if not failures else 1
 
 

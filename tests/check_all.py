@@ -33,16 +33,28 @@ STEPS = [
 ]
 
 
-def _regression_count():
-    """How many entries `regressions.py` registers, without importing it."""
-    try:
-        with open(os.path.join(HERE, "regressions.py"), encoding="utf-8") as fh:
-            text = fh.read()
-        head = text.split("STATIC_REGRESSIONS = [", 1)[1]
-        body = head.split("\n]", 1)[0]
-        return body.count('\n    ("')
-    except Exception:
-        return 0
+def _counts_from_regressions(output):
+    """The numbers `regressions.py` computed from its own lists. No recounting here.
+
+    Report 2026-11-14 (v0.8.327) §P1-1: this file used to count list entries with a string
+    split AND a regex over docstrings, while `regressions.py` counted with a different
+    regex — three numbers for one fact (5 / 6 / 15). The suite now prints one machine-
+    readable line and this file only parses it, so there is exactly one place that can be
+    wrong.
+    """
+    for line in (output or "").splitlines():
+        if not line.startswith("counts:"):
+            continue
+        got = {}
+        for token in line.split()[1:]:
+            key, _, value = token.partition("=")
+            try:
+                got[key] = int(value)
+            except ValueError:
+                continue
+        if {"total", "behavioural", "text_ast"} <= set(got):
+            return got
+    return {}
 
 
 def _smoke_check_count():
@@ -56,6 +68,7 @@ def _smoke_check_count():
 
 def main():
     failures = []
+    outputs = {}
     for name, cmd in STEPS:
         print("=" * 78)
         print(">> %s" % name)
@@ -63,6 +76,7 @@ def main():
         result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace")
         output = (result.stdout or "").strip()
+        outputs[name] = output
         if output:
             print(output)
         if result.returncode != 0:
@@ -81,22 +95,17 @@ def main():
     # SolidWorks. Printing both counts side by side stops "all offline checks passed" from
     # implying the drawing itself was verified.
     print("all offline checks passed")
-    # 0.8.327 (report 2026-11-14 v0.8.325 §P1-2): "text/AST only" became wrong once some
-    # entries started calling the package. Split the count so the gap is visible instead of
-    # being averaged away.
-    _total = _regression_count()
-    # This file deliberately does NOT import `regressions` (it runs it as a subprocess),
-    # so the behavioural count is taken from the `BEHAVIOURAL` marker each such assertion
-    # carries in its docstring — an estimate, and labelled as one below.
-    _behavioural = 0
-    try:
-        import re as _re
-        with open(os.path.join(HERE, "regressions.py"), encoding="utf-8") as _fh:
-            _behavioural = len(_re.findall(r"^\s+BEHAVIOURAL", _fh.read(), _re.MULTILINE))
-    except Exception:
-        _behavioural = 0
-    print("  source-level : %d assertions (%d behavioural, %d text/AST)"
-          % (_total, _behavioural, _total - _behavioural))
+    # 0.8.328 (report 2026-11-14 v0.8.327 §P1-1): ONE source of these numbers. The suite
+    # prints `counts: total=… behavioural=… text_ast=…` from `len()` of its two lists; this
+    # file parses that line. Earlier versions recounted independently (list-split vs
+    # docstring regex) and printed 5 while the suite said 6 and the AST said 15.
+    _counts = _counts_from_regressions(outputs.get("regressions"))
+    if _counts:
+        print("  source-level : %d assertions (%d behavioural, %d text/AST)"
+              % (_counts["total"], _counts["behavioural"], _counts["text_ast"]))
+    else:
+        print("  source-level : UNKNOWN — `regressions.py` printed no `counts:` line "
+              "(fix that before trusting any coverage number)")
     # 0.8.305 (report 2026-11-12 §4): this number is a STRING COUNT, not a runnable
     # suite. Calling them "checks" made "64 on-machine checks" read as coverage when
     # nothing had executed — and on a standard install most of them cannot run at all.

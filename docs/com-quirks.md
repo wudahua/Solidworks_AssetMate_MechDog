@@ -5067,3 +5067,96 @@ upper_present=True         lower_present=True          ← 自相矛盾
 
 **「标签错了但方向安全」也还是错。** `text/AST only` 听起来像自谦，实际让「317 条全绿」
 读起来比它应有的更可信。把 5 / 312 摆出来，缺口就自己说话了。
+
+---
+
+## 2026-11-14（v0.8.328）覆盖数字三方矛盾 + 真机形态断言用错 nominal（报告 v0.8.327 §P1-1 / §P2-1 / §P2-2）
+
+### §P1-1：一个事实三个数字
+
+| 口径 | 数值 |
+|---|---|
+| `check_all.py` 正则（行首 `BEHAVIOURAL`） | **5** |
+| `regressions.behavioural_count()`（`in` 匹配） | **6** |
+| 真实「会执行包代码」的条数 | **15**（反馈口径）/ **13**（本仓库口径，见下） |
+| 打印的 `text/AST` | 312 |
+| 真实 text/AST | 302（多报 10） |
+| `behavioural_count()` 调用点 | **0**（死代码） |
+
+根因：两个计数器都读 **docstring 里的 `BEHAVIOURAL` 标记**——那是承诺，不是事实；而且两者
+解析同一标记的方式不同（行首正则 vs `in`），必然漂移。上一版的目标是「让覆盖缺口可见」，
+结果把缺口换成了三个互相矛盾的数字。
+
+改法（报告 §8 首选方案）：**按结构拆列表**。
+
+```python
+STATIC_REGRESSIONS = [...]        # 只读源码文本
+BEHAVIOURAL_REGRESSIONS = [...]   # import 包并引用它，能因逻辑错误失败
+ALL_REGRESSIONS = STATIC_REGRESSIONS + BEHAVIOURAL_REGRESSIONS
+```
+
+* `main()` 遍历 `ALL_REGRESSIONS`，头部与尾部所有数字都是 `len()`；
+* 尾部多打一行机器可读 `counts: total=… behavioural=… text_ast=…`；
+* `check_all.py` **只解析这一行**，`_regression_count()`（字符串切分）与「行首 BEHAVIOURAL」
+  正则全部删除——一个事实只有一个计算点；
+* `behavioural_count()` **删除**（死代码，且与 `len()` 必然分叉）。
+
+新增守卫 `assert_the_coverage_numbers_come_from_the_lists`：遍历本文件 AST，验证
+①两表不相交、②同一表内无重复、③**每条 behavioural 真的 import 了包**（含 subprocess 里
+的字符串 import）、④**没有一条 static 偷偷 import 包**、⑤`def behavioural_count` 不再存在、
+⑥`check_all` 里有 `counts:` 且没有 `BEHAVIOURAL`。这条断言第一次运行时把**自己**判成了
+smuggled —— 因为它的源码里含有被检测的字面量；两处字面量改成运行时拼接后通过。
+**探测器会匹配到自己，这不是 bug，是它真的在读源码。**
+
+**13 vs 反馈的 15**：反馈的 AST 口径把 `assert_sheet_index_and_layout_columns_do_not_lie`、
+`assert_layout_fits_matches_measure_layout` 也算进去了，但这两条只是把 `_pipeline.`、
+`drawing` 写进**字符串/docstring**，函数体没有任何 import。按「import 并引用」的严格口径是
+13 条。口径写在 `BEHAVIOURAL_REGRESSIONS` 的注释里，并由上面的守卫强制执行。
+
+### §P2-1：真机形态断言用错 nominal
+
+```python
+def ev(lines):
+    return classify(lines, 14.20, "bilateral", 0.05, 0.05)   # 真机读回的是 10
+```
+
+分类器按 `nominal in ln or dev in ln or hi in ln` 过滤，于是 `["10","0.050","0.050"]` 在
+nominal=14.20 时 `hits` 只剩 `['0.050','0.050']` —— 断言仍然 PASS，因为它只查 `evidence`，
+但覆盖的是**PDF 阅读器永远不会产出**的行集合。
+
+改：`ev(lines, nominal=14.20)`，真机形态改用 `10.0`；并**直接断言 `hits`**：
+
+```python
+assert ev(["10", "0.050", "0.050"], 10.0)["hits"] == ["10", "0.050", "0.050"]
+assert ev(["10", "0.050", "0.050"])["hits"] != ["10", "0.050", "0.050"]   # 证明过滤依赖 nominal
+```
+
+第二条是负向对照：如果哪天过滤不再看 nominal，这两条断言就失去意义，必须被红出来。
+
+### §P2-2：两处措辞互相否定
+
+`regressions.py` 打印「source inspection only — no SolidWorks involved」，`check_all.py` 同时
+打印「13 behavioural」——同一份汇总里两句话互相否定。
+
+统一为：
+
+```text
+source-level  318/318 passed   (no live SolidWorks; 13 assertions call the package, 305 inspect source text)
+```
+
+README 的「两套件分开报」同步改成 `<N> assertions (<B> behavioural, <S> text/AST)`，并写明
+两个数字都来自 `len()`、`check_all` 只解析 `counts:` 行。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `python tests/regressions.py` | `318/318 passed`，`counts: total=318 behavioural=13 text_ast=305` |
+| `python tests/check_all.py` | `all offline checks passed`，`source-level : 318 assertions (13 behavioural, 305 text/AST)` |
+| 守卫自检 | `behavioural + static = 318`，分类经 import 校验 |
+
+### 教训
+
+**「让缺口可见」如果靠约定式标记，会把一个缺口变成三个数字。** docstring 是承诺，AST 才是
+事实；能由结构表达的东西（两个列表、两个 `len()`）永远优于由约定表达（一个 `BEHAVIOURAL` 字
+样）。另外：**探测器要能匹配自己**——第一次运行就把本函数判成违规，这是它有效而非失效的证据。
