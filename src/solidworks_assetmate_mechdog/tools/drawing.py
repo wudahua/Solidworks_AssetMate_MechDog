@@ -7894,6 +7894,93 @@ def _find_dimension(doc, value_mm, view_name=None):
     return None, None, None
 
 
+def _tolerance_shape_from_lines(lines, nominal_mm, tol, upper_mm, lower_mm):
+    """Classify a tolerance readback from TEXT LINES. PURE — no PDF, no COM.
+
+    Report 2026-11-14 (v0.8.323) §7: the previous regression asserted source STRINGS and
+    happily locked in the bug. Pulling the decision out of the PDF reader lets a test feed
+    it real line sets (`["14.20", "+0.05", "-0.05"]` vs `["14.20", "0.05"]`) and assert the
+    OUTCOME, which is the only thing that matters here.
+
+    Evidence is graded, strongest first (report §6 patch B):
+
+      * a SIGNED token equal to a deviation  -> `sign_text`        (can say "printed right")
+      * a magnitude-only match               -> `numeric_magnitude` (a guess)
+      * `_has_up/_has_lo` substring only     -> `numeric_magnitude` (still a guess: `dev` is
+        a bare number like "0.05", so `"0.05" in "Ra 0.05"` is true and proves nothing)
+    """
+    nominal = "%g" % round(float(nominal_mm), 3)
+    upper = float(upper_mm) if upper_mm is not None else None
+    lower = float(lower_mm) if lower_mm is not None else None
+    dev = ("%g" % round(upper, 3)) if upper is not None else None
+    hi = ("%g" % round(float(nominal_mm) + upper, 3)) if upper is not None else None
+
+    clean = [str(x).strip() for x in (lines or []) if str(x).strip()]
+    hits = [ln for ln in clean if nominal in ln or (dev and dev in ln) or (hi and hi in ln)]
+    joined = " ".join(hits)
+    dev_count = joined.count(dev) if dev else 0
+    hi_count = joined.count(hi) if hi else 0
+
+    mags, signed = [], []
+    for ln in hits:
+        head = ln.strip()
+        is_signed = bool(head) and head[0] in "+-\u00b1\u2212"
+        body = head.lstrip("+-\u00b1\u2212").strip()
+        try:
+            mags.append(abs(float(body)))
+            signed.append(is_signed)
+        except Exception:
+            continue
+
+    up_mag = abs(upper) if upper is not None else None
+    lo_mag = abs(lower) if lower is not None else None
+
+    def _near(value, target):
+        return bool(target) and abs(value - target) <= 1e-6
+
+    num_up = any(_near(m, up_mag) for m in mags)
+    num_lo = any(_near(m, lo_mag) for m in mags)
+    signed_hit = any(f and (_near(m, up_mag) or _near(m, lo_mag))
+                     for m, f in zip(mags, signed))
+    has_up = bool(dev) and dev in joined and (upper is None or upper != 0)
+    has_lo = bool(lower) and lower != 0 and (
+        ("%g" % round(abs(lower), 3)) in joined
+        or ("-%g" % round(abs(lower), 3)) in joined)
+
+    tol_name = str(tol or "").lower().split("(")[0].strip()
+    if "±" in joined and dev and dev in joined:
+        shape, evidence = "symmetric_plus_minus", "sign_text"
+    elif hi and hi != nominal and hi_count >= 1 and not num_up and not num_lo:
+        shape, evidence = "limit_values", "sign_text"
+    elif signed_hit:
+        # ONLY a signed token may say "printed correctly".
+        shape, evidence = "bilateral_two_deviations", "sign_text"
+    elif num_up or num_lo:
+        # One magnitude is enough: a zero lower limit prints no second number.
+        shape, evidence = "bilateral_two_deviations", "numeric_magnitude"
+    elif has_up or has_lo:
+        # Substring fallback — still a guess, so it must NOT claim `sign_text`.
+        # 0.8.325 (report 2026-11-14 v0.8.323 §5): letting this branch emit `sign_text`
+        # revived the bare-number false pass that 0.8.322 had just closed.
+        shape, evidence = "bilateral_two_deviations", "numeric_magnitude"
+    elif tol_name and tol_name not in ("none", "basic") and dev_count == 0:
+        shape, evidence = "basic_no_deviation", "no_deviation_found"
+    elif dev_count == 0:
+        shape, evidence = "basic_no_deviation", "no_deviation_found"
+    else:
+        shape, evidence = "unrecognised", "ambiguous"
+
+    return {"shape": shape, "evidence": evidence, "hits": hits,
+            "deviation_count": dev_count, "limit_count": hi_count,
+            "numeric_deviation_count": ((int(num_up) + int(num_lo))
+                                        if (up_mag or 0) != (lo_mag or 0) else int(num_up)),
+            "numeric_up": num_up, "numeric_lo": num_lo,
+            "signed_hit": signed_hit,
+            "upper_present": bool(has_up or num_up),
+            "lower_present": bool(has_lo or num_lo),
+            "lower_expected": lower}
+
+
 def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     """What the PDF text layer actually shows around a toleranced dimension.
 
@@ -8101,27 +8188,16 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
     _num_count = ((int(_num_up) + int(_num_lo))
                   if (_up_mag or 0) != (_lo_mag or 0) else int(_num_up))
 
-    _tol_name = str(tol or "").lower().split("(")[0].strip()
-    if "±" in joined and dev and dev in joined:
-        shape, _evidence = "symmetric_plus_minus", "sign_text"
-    elif hi and hi != nominal and hi_count >= 1 and not _num_up and not _num_lo:
-        shape, _evidence = "limit_values", "sign_text"
-    elif _signed_hit or _has_up or _has_lo:
-        # 0.8.323 (report 2026-11-14 v0.8.322 §6.3 step 3): this branch used to sit AFTER
-        # the numeric one, so a genuinely signed tolerance could never reach it and
-        # `render_matches` came back `None` for every correct bilateral sheet. Signed
-        # evidence decides first.
-        shape, _evidence = "bilateral_two_deviations", "sign_text"
-    elif _num_up or _num_lo:
-        # One magnitude is enough: a zero lower limit prints no second number. A BARE
-        # number is still a guess, and `_uncertain` reports it as one.
-        shape, _evidence = "bilateral_two_deviations", "numeric_magnitude"
-    elif _tol_name and _tol_name not in ("none", "basic") and dev_count == 0:
-        shape, _evidence = "basic_no_deviation", "no_deviation_found"
-    elif dev_count == 0:
-        shape, _evidence = "basic_no_deviation", "no_deviation_found"
-    else:
-        shape, _evidence = "unrecognised", "ambiguous"
+    # 0.8.325: the decision lives in the PURE classifier so a regression can assert the
+    # OUTCOME instead of grepping for `elif` strings.
+    _shape_info = _tolerance_shape_from_lines(lines, nominal_mm, tol, upper_mm, lower_mm)
+    shape = _shape_info["shape"]
+    _evidence = _shape_info["evidence"]
+    hits = _shape_info["hits"]
+    dev_count = _shape_info["deviation_count"]
+    hi_count = _shape_info["limit_count"]
+    _num_count = _shape_info["numeric_deviation_count"]
+    _unused_tol_name = str(tol or "").lower().split("(")[0].strip()
 
     if _fallback_used:
         # The only support is "a number on this page equals the deviation" — the page has

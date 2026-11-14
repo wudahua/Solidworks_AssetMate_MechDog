@@ -318,11 +318,11 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
                     include_faces=False):
     """Run the whole chain and report each step plus the delivery verdict.
 
-    Steps (each failure is recorded, not fatal — a partial drawing beats no drawing):
-      1 ledger → 2 plan → 3 create views → 4 auto dimension → 5 center marks
-      → 6 surface finish (category default) → 7 hole callouts (if holes exist)
-      → 8 clamp → 9 save → 10 audit → 11 reconcile → 12 delivery verdict → 13 close
-      (read `steps[]` for what actually ran this time).
+    Steps (each failure is recorded, not fatal — a partial drawing beats no drawing).
+    The names below are the REAL `steps[].step` values, in order (14 total):
+      `ledger` → `plan` → `create_drawing` → `drawing_batch` → `dimensions`
+      → `center_marks` → `surface_finish` → `hole_callouts` → `clamp_dimensions`
+      → `save` → `audit` → `reconcile` → `delivery_check` → `close_documents`
 
     `steps[].status` is `ok` / `partial` / `failed` / **`warning`**. A `warning` step
     carries `non_blocking: true`: it did not finish its job, but what it produced is still

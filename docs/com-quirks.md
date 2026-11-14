@@ -4856,3 +4856,77 @@ with mock.patch.object(drawing, "create_drawing", side_effect=_create_with_faile
 
 **「成本高」不是跳过守护的理由，是这个 bug 能连出两轮的原因。** 这条用例 27 秒跑完，
 写它花的时间远少于两轮返工。凡是「两个纯函数之间」的 bug，pure 断言在结构上就看不见。
+
+---
+
+## 2026-11-14（v0.8.325）裸数字假通过复活 + 断言把错实现锁死（报告 §5 / §7 / §8 / §9）
+
+### §5 P0：0.8.323 把「子串兜底」也提前了，裸数字又拿到 `sign_text`
+
+0.8.323 为了让带符号证据优先，写成了：
+
+```python
+elif _signed_hit or _has_up or _has_lo:      # ← _has_up 是子串匹配
+    shape, _evidence = "bilateral_two_deviations", "sign_text"
+```
+
+而 `_has_up` 的定义是 `dev in joined`，`dev` 是**纯数字串** `"0.05"` —— 于是
+`"0.05" in "Ra 0.05"`、`"0.05" in "比例 0.05"`、两个裸 `0.05` 堆叠，全都算「带符号证据」，
+`_uncertain=False` → `pdf_render_matches=true`。**0.8.322 刚封住的假通过，一版之后复活。**
+
+修（报告 §6 补丁 B，7/7 用例）：
+
+```python
+elif signed_hit:                       # 只有真以 +/-/±/− 开头的 token
+    shape, evidence = "bilateral_two_deviations", "sign_text"
+elif num_up or num_lo:
+    shape, evidence = "bilateral_two_deviations", "numeric_magnitude"
+elif has_up or has_lo:                 # 子串兜底仍是猜测
+    shape, evidence = "bilateral_two_deviations", "numeric_magnitude"
+```
+
+`_uncertain` 未改：`sign_text` 才确定，其余（含子串兜底、整页回退）一律 `null`。
+
+### §7 P1：断言名承诺了它没测的东西，还锁死了错实现
+
+旧断言 `assert_signed_bilateral_verifiable_and_bare_number_is_not` 的 docstring 写着
+「a bare number stays uncertain」，实现却只 grep 源码字符串 —— 并且**断言了
+`elif _signed_hit or _has_up or _has_lo:` 这个字符串必须存在**，那正是制造假通过的那一行。
+按 §6 修完它就会变红，**测试在阻止正确修复**。
+
+改法：把判定抽成**纯函数** `_tolerance_shape_from_lines(lines, nominal, tol, upper, lower)`，
+`_tolerance_text_on_pdf` 只负责取文本、再调它。断言直接喂真实文本行：
+
+```python
+ev(["14.20", "+0.05", "-0.05"])  -> sign_text            (可判 true)
+ev(["14.20", "+0.05"])           -> sign_text            (单侧 +x/0)
+ev(["14.20", "0.05"])            -> numeric_magnitude    (猜测 → null)
+ev(["14.20", "Ra 0.05"])         -> numeric_magnitude    (猜测)
+ev(["14.20"])                    -> basic_no_deviation
+```
+
+三处只查 `elif` 字符串的断言同步改为「检查纯函数」或直接删除。
+
+### §8 / §9 文档改在调用方看不到的地方
+
+`pipeline.py` 的 docstring 改了，但 MCP 客户端读的是 **`server.py`** 的那份 ——
+`description` 长度与上一版完全相同，`non_blocking` 一次都没出现。现在 `server.py` 补了
+14 步真实 step 名与 `status="warning"` / `non_blocking` 语义；`pipeline.py` 的步骤名也
+对齐成真实 `steps[].step`（补上漏掉的 `drawing_batch`）。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 317/317（那条断言现在是**行为**断言，7 类用例） |
+| 真机 `add_dimension_tolerance(80.0, bilateral ±0.05)` | `evidence: numeric_magnitude`、`matches: None` |
+
+**真机为什么是 `None` 而不是 `True`**：本机模板导出时把 `+`/`-` 与数字分成两个文本对象，
+`_signed_hit` 读不到符号 —— 这时给 `None`（不确定）才是对的。0.8.323 在这同一张图上给出
+`sign_text` + `True`，靠的正是那条子串兜底，即假通过。
+
+### 教训
+
+**「让强证据优先」不等于「把弱证据也提到强证据那一档」。** 0.8.323 把
+`_has_up`（子串匹配，本质是弱证据）和 `_signed_hit`（token 首字符，强证据）并进了同一个
+`elif`，于是弱证据继承了强证据的结论。分级的意思是一档一档判，不是合并条件。

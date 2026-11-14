@@ -7568,8 +7568,11 @@ def assert_a_one_sided_bilateral_is_recognised():
     # 0.8.323: signed evidence now decides before the numeric branch, so the clause gained
     # a leading condition. The guarantee is unchanged: a single printed deviation still
     # lands in a bilateral branch.
-    assert ("elif _has_up or _has_lo:" in body
-            or "elif _signed_hit or _has_up or _has_lo:" in body), (
+    # 0.8.325: the shape ladder now lives in `_tolerance_shape_from_lines`.
+    classifier = ast.get_source_segment(
+        src, _function_node(ast.parse(src), "_tolerance_shape_from_lines")) or ""
+    assert ("elif has_up or has_lo:" in classifier
+            or "elif _has_up or _has_lo:" in body), (
         "a single printed deviation no longer counts as bilateral — a `+x/0` tolerance "
         "will be called unrecognised again")
     assert "upper_present" in body and "lower_present" in body, (
@@ -10441,7 +10444,10 @@ def assert_tolerance_render_uses_numbers_not_signs():
         "a tolerance outside the window is invisible again")
     assert "6.0 * _h" in body, (
         "the window is too tight for a two-line tolerance stack")
-    assert 'shape, _evidence = "bilateral_two_deviations", "numeric_magnitude"' in body, (
+    # 0.8.325: the branch moved into the pure classifier; check it there.
+    classifier = ast.get_source_segment(
+        src, _function_node(ast.parse(src), "_tolerance_shape_from_lines")) or ""
+    assert 'shape, evidence = "bilateral_two_deviations", "numeric_magnitude"' in classifier, (
         "a magnitude alone can no longer establish the shape")
     return "magnitudes decide the shape; window falls back to the whole page"
 
@@ -10806,31 +10812,41 @@ def assert_nonblocking_steps_never_reach_the_critical_gate():
     return "a non-blocking step is a warning and never trips the critical gate"
 
 
-def assert_signed_bilateral_verifiable_and_bare_number_is_not():
-    """0.8.323 — report 2026-11-14 v0.8.322 §6: the guard rejected the CORRECT case too.
+def assert_a_bare_number_never_passes_a_tolerance_render_check():
+    """0.8.325 — report 2026-11-14 v0.8.323 §5/§7: the guard was satisfied by a stray number.
 
-    `_magnitudes_of` stripped the sign, so `+0.05` and a stray `0.05` became the same
-    number, and the numeric branch sat BEFORE the signed one — which made `sign_text`
-    unreachable for bilateral pairs. Result: `pdf_render_matches` was `None` for every
-    correct bilateral sheet, i.e. the check lost the ability to say "printed correctly".
+    The old test of this was AST-only and asserted the presence of
+    `elif _signed_hit or _has_up or _has_lo:` — the very line that made a bare `0.05`
+    (or a `Ra 0.05` note) look like signed evidence, so `pdf_render_matches` said `true`
+    for a sheet with no tolerance on it. It also would have gone RED if the bug was fixed.
 
-    Both properties must hold together: signed evidence decides (so真公差 verifiable), and
-    a bare number stays uncertain (so a stray value cannot pass).
+    BEHAVIOURAL: feeds real line sets to the pure classifier and asserts the OUTCOME.
     """
-    src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "_tolerance_text_on_pdf")) or ""
-    assert "return out, signed" in body, (
-        "the sign is stripped before classification — a real tolerance is indistinguishable "
-        "from a stray number")
-    assert "_signed_hit" in body, "signed evidence is not tracked at all"
-    assert "elif _signed_hit or _has_up or _has_lo:" in body, (
-        "the signed branch no longer precedes the numeric one, so it is unreachable")
-    i_signed = body.find('"bilateral_two_deviations", "sign_text"')
-    i_numeric = body.find('"bilateral_two_deviations", "numeric_magnitude"')
-    assert 0 < i_signed < i_numeric, (
-        "the numeric branch decides before the signed one again")
-    return "signed tokens decide first; a bare number stays uncertain"
+    from solidworks_assetmate_mechdog.tools import drawing as _drawing
+
+    classify = _drawing._tolerance_shape_from_lines
+
+    def ev(lines):
+        return classify(lines, 14.20, "bilateral", 0.05, 0.05)
+
+    # Signed evidence is the ONLY thing that may say "printed correctly".
+    assert ev(["14.20", "+0.05", "-0.05"])["evidence"] == "sign_text"
+    assert ev(["14.20", "+0.05", "-0.05"])["shape"] == "bilateral_two_deviations"
+    assert ev(["14.20", "+0.05"])["evidence"] == "sign_text"          # unilateral +x/0
+    assert ev(["14.20", "+0.05"])["shape"] == "bilateral_two_deviations"
+
+    # A bare number in any garb is a GUESS, never `sign_text`.
+    for lines in (["14.20", "0.05"],
+                  ["14.20", "0.05", "0.05"],
+                  ["14.20", "Ra 0.05"],
+                  ["14.20", "比例 0.05"]):
+        got = ev(lines)
+        assert got["evidence"] == "numeric_magnitude", (lines, got["evidence"])
+        assert got["shape"] == "bilateral_two_deviations", lines
+
+    # Nothing at all is not a deviation.
+    assert ev(["14.20"])["shape"] == "basic_no_deviation"
+    return "signed tokens pass; a bare number only ever registers as a guess"
 
 
 def assert_only_the_ratio_failure_may_be_non_blocking():
@@ -10857,7 +10873,7 @@ def assert_only_the_ratio_failure_may_be_non_blocking():
 
 
 STATIC_REGRESSIONS = [
-    ("0.8.323 signed bilateral verified", assert_signed_bilateral_verifiable_and_bare_number_is_not),
+    ("0.8.325 a bare number never passes", assert_a_bare_number_never_passes_a_tolerance_render_check),
     ("0.8.323 non-blocking hatch is narrow", assert_only_the_ratio_failure_may_be_non_blocking),
     ("0.8.322 non-blocking never trips the critical gate", assert_nonblocking_steps_never_reach_the_critical_gate),
     ("0.8.320 non-blocking create keeps pipeline", assert_produce_drawing_continues_after_a_nonblocking_create_failure),

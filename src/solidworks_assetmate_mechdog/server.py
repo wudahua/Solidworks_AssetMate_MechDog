@@ -348,6 +348,14 @@ def produce_drawing(
     prune_to_plan=True makes the plan binding: dimensions the plan did not keep are deleted
     right after insertion. Set False for the old "import everything" behaviour.
 
+    `steps[]` records every step in the order it ran (14: `ledger`, `plan`,
+    `create_drawing`, `drawing_batch`, `dimensions`, `center_marks`, `surface_finish`,
+    `hole_callouts`, `clamp_dimensions`, `save`, `audit`, `reconcile`, `delivery_check`,
+    `close_documents`). `steps[].status` is `ok` / `partial` / `failed` / `warning`; a
+    `warning` step carries `non_blocking: true` — it did not finish its job, but what it
+    produced is still usable, so its defect appears in `blockers` / `creation_warnings` and
+    never in `failed_steps`.
+
     `include_faces` (default False) lets the FINAL delivery check walk cylindrical faces,
     which costs roughly 10x. Without it the hole-callout judgement reports `not_checked`,
     so "no callouts" means "not measured" rather than "counted zero". The receipt echoes
