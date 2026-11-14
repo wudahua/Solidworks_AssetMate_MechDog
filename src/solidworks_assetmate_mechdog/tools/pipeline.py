@@ -729,6 +729,9 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
     # `ok:true + completeness:"incomplete"` whenever a blocker existed.
     _status = _delivery_status(_blockers, _partial_steps, _failed_steps)
     _final_ok = _receipt_ok(_status)
+    # The hole-callout check decides whether "no callouts" was measured or merely skipped;
+    # `include_faces` is what changes it, so both go to the top level (§7.2).
+    _hc = ((verdict.get("checks") or {}).get("hole_callouts") or {})
     return ok(
         ok=_final_ok,
         # 0.8.319 (report 2026-11-13 §2.3): `ok:false` used to arrive with NO `message` /
@@ -758,6 +761,19 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         drawing=target,
         category=resolved_category,
         paper=paper,
+        # 0.8.321 (report 2026-11-14 §7.2): the caller could pass `include_faces` and pay
+        # the 10x cost, yet the one-click receipt looked IDENTICAL either way — no way to
+        # tell whether the hole-coverage judgement ran or reported `not_checked`. Both the
+        # switch and its result are surfaced now.
+        include_faces=bool(include_faces),
+        hole_callouts_check=(
+            {
+                "status": _hc.get("status"),
+                "hole_callout_objects": _hc.get("hole_callout_objects"),
+                "diameter_dimensions": _hc.get("diameter_dimensions"),
+                "diameter_dimensions_status": _hc.get("diameter_dimensions_status"),
+                "covered": _hc.get("covered"),
+            } if _hc else None),
         # The audit is already run for its own step; its detail was previously thrown away, so
         # a caller could not see which views exist or what the audit warned about without
         # running drawing_audit again. None of that is free (2 view reads), so surface it.

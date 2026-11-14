@@ -5516,6 +5516,16 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
         # angle. The dimension is real, so it stays on the sheet; the VERDICT is false and
         # says which way out.
         if _is_angular_dimension_type(dimension_type):
+            # 0.8.321 (report 2026-11-14 §7.1): the hint says "delete it with
+            # `delete_annotation`", which needs a NAME — and the receipt carried none, so
+            # the advice could not be followed without re-enumerating every annotation.
+            _ann_name = None
+            try:
+                _ann = win.Dispatch(call_method(display, "GetAnnotation"))
+                _nm = _ann.GetName
+                _ann_name = str(_nm() if callable(_nm) else _nm) or None
+            except Exception:
+                _ann_name = None
             return error(
                 "angular_pair_not_a_distance",
                 "这两条边（%s 与 %s）在图上互成角度，AddDimension2 生成的是**角度尺寸**"
@@ -5525,6 +5535,7 @@ def add_distance_dimension(drawing_path, edge_a, edge_b, x_m, y_m, view_name=Non
                 edge_a=int(edge_a), edge_b=int(edge_b), value_mm=None,
                 value_deg=value_deg, value_is_angular=True,
                 dimension_type=dimension_type,
+                annotation_name=_ann_name,
                 position_m=[round(float(x_m), 4), round(float(y_m), 4)])
         return drawing_ok(
             drawing=doc.GetTitle, view=str(target.Name),

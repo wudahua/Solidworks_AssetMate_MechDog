@@ -348,6 +348,16 @@ def produce_drawing(
     prune_to_plan=True makes the plan binding: dimensions the plan did not keep are deleted
     right after insertion. Set False for the old "import everything" behaviour.
 
+    `include_faces` (default False) lets the FINAL delivery check walk cylindrical faces,
+    which costs roughly 10x. Without it the hole-callout judgement reports `not_checked`,
+    so "no callouts" means "not measured" rather than "counted zero". The receipt echoes
+    both: `include_faces` (the switch) and `hole_callouts_check` (status + diameter counts).
+
+    A sheet scaled away from 1:1 whose title-block RATIO could not be written is reported
+    in `creation_warnings` as `title_scale_unsynced`. The drawing is still produced and
+    usable — but the ratio label must be filled in by hand before delivery, or the shop
+    measures every linear dimension at the wrong size.
+
     WHICH FIELD MEANS WHAT (0.8.299, report 2026-11-11 §5):
 
       * `ok` — ALWAYS equals `completeness == "complete"`. Both are derived from the same

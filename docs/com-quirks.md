@@ -4621,3 +4621,55 @@ produce_drawing → ok:false / error:create_failed / execution_ok:false
 `create_drawing` 用它说「全成了吗」，`pipeline` 用它说「还值得继续吗」，调用方用它说「能用吗」。
 一个布尔量承担三种语义，改动任何一处都会在另外两处炸。分开之后（`ok` / `blocking` / `verdict`）
 才各说各的。
+
+---
+
+## 2026-11-14（v0.8.321）三条 P2 收尾（报告 §7）
+
+### §7.1 `angular_pair_not_a_distance` 的 hint 无法执行
+
+回执写着「该角度尺寸已保留在图上，可直接用 `delete_annotation` 删掉」，而
+`delete_annotation(drawing_path, name, ...)` 要的是 **name**，回执里一个都没有 —— 调用方只能重新
+枚举全部注解找它。
+
+现在错误回执带 `annotation_name`（读 `GetAnnotation().GetName`，属性/方法两种形态都兼容）。
+
+真机：`ok:false / error:angular_pair_not_a_distance / annotation_name:"RD2" / value_deg:90.0`。
+
+### §7.2 逃生开关开了也看不出来
+
+`include_faces` 接通了，但 `produce_drawing` 的顶层回执在 `False` / `True` 两种配置下**完全一致** ——
+调用方花了 10 倍时间，却无法确认孔覆盖判定到底跑没跑。
+
+现在顶层带两个字段：
+
+```json
+"include_faces": false,
+"hole_callouts_check": {"status": "not_checked", "hole_callout_objects": 4,
+                        "diameter_dimensions": null,
+                        "diameter_dimensions_status": "not_checked", "covered": null}
+```
+
+开 `include_faces=True` 时 `status` 会变成 `checked`、`diameter_dimensions` 有数字、
+`covered` 有真假。
+
+真机（默认）：`include_faces: false` + `status: "not_checked"`。
+
+### §7.3 工具描述未同步两个新参数
+
+`produce_drawing` 的 docstring 补了两段：`include_faces` 与孔覆盖判定的关系
+（不传则 `not_checked`，「没有孔标注」= 「没测」而不是「测了是 0」），以及非 1:1 图纸的比例未写入
+会以 `title_scale_unsynced` 出现在 `creation_warnings` 里、交付前必须手工补填。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 314/314 |
+| 真机 `add_distance_dimension`（成角的边对） | `annotation_name: "RD2"` |
+| 真机 `produce_drawing`（默认） | `include_faces:false`、`hole_callouts_check.status:"not_checked"` |
+
+### 教训
+
+**一条建议如果指向一个需要参数的动作，那个参数必须在回执里。** 否则「可直接删掉」只是一句话，
+不是一条出路 —— 调用方还是得自己翻一遍。
