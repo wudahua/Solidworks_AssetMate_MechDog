@@ -8184,10 +8184,16 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
         # The window missed them: fall back to the whole page. Comparing MAGNITUDES keeps
         # the technical-requirements prose ("H7", "H8") from answering for a dimension —
         # those lines never parse as a bare float.
-        _page_mags, _page_signed = _magnitudes_of([b[4] for b in boxes])
+        _page_lines = [b[4] for b in boxes]
+        _page_mags, _page_signed = _magnitudes_of(_page_lines)
         _page_up = _found(_page_mags, _up_mag)
         _page_lo = _found(_page_mags, _lo_mag)
         if _page_up or _page_lo:
+            # 0.8.327 (report 2026-11-14 v0.8.325 §P1-1): the classifier below read the
+            # WINDOW lines while `_num_up/_num_lo` had already switched to the PAGE — so
+            # the receipt said `basic_no_deviation` and `upper_present: True` at once.
+            # Swapping `lines` keeps every field on the same evidence.
+            lines = _page_lines
             _magnitudes, _num_up, _num_lo = _page_mags, _page_up, _page_lo
             _signed_hit = any(
                 _flag and (_found([_m], _up_mag) or _found([_m], _lo_mag))
@@ -8224,8 +8230,10 @@ def _tolerance_text_on_pdf(pdf_path, nominal_mm, tol, upper_mm, lower_mm):
             # What the verdict rests on, so the caller can weigh it (report §2.5 item 3).
             "basis": _basis,
             "evidence": _evidence,
-            "upper_present": bool(_has_up or _num_up),
-            "lower_present": bool(_has_lo or _num_lo),
+            # Same source as `shape` / `evidence` (0.8.327, report §P1-1): mixing the
+            # window's `_has_up` with the page's `_num_up` made the receipt contradict itself.
+            "upper_present": _shape_info["upper_present"],
+            "lower_present": _shape_info["lower_present"],
             "lower_expected": _lo_value,
             "expected": tol}
 

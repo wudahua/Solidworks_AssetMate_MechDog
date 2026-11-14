@@ -10872,6 +10872,7 @@ def assert_a_bare_number_never_passes_a_tolerance_render_check():
 def assert_only_the_ratio_failure_may_be_non_blocking():
     """0.8.323 — report 2026-11-14 v0.8.322 §8: the escape hatch had no boundary.
 
+    BEHAVIOURAL: calls `_failed_critical_steps` with the three shapes that must still block.
     `_failed_critical_steps` honoured `non_blocking` on ANY critical step. `save` failing
     with `disk_full` and `blocking:false` would have been waved through. Only one
     combination is known to be non-fatal, and the gate must say so by name.
@@ -11212,6 +11213,21 @@ STATIC_REGRESSIONS = [
     ("0.8.92 filter takes plan dicts", assert_dimension_filter_accepts_plan_dicts_and_strings),
     ("0.8.90 no blank sheet leak", assert_create_drawing_does_not_leak_a_blank_sheet),
 ]
+
+
+def behavioural_count():
+    """How many entries actually CALL the package (their docstring says BEHAVIOURAL).
+
+    Report 2026-11-14 v0.8.325 §P1-2: `check_all` printed "317 assertions (text/AST only)"
+    even after several of them became real calls. The label was wrong in the SAFE
+    direction, but a wrong label is still a wrong label — and it hid how much of the suite
+    cannot see logic errors.
+    """
+    count = 0
+    for _name, _fn in STATIC_REGRESSIONS:
+        if "BEHAVIOURAL" in (getattr(_fn, "__doc__", "") or ""):
+            count += 1
+    return count
 
 
 def main():

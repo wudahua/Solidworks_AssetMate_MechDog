@@ -81,8 +81,22 @@ def main():
     # SolidWorks. Printing both counts side by side stops "all offline checks passed" from
     # implying the drawing itself was verified.
     print("all offline checks passed")
-    print("  source-level : %d assertions (text/AST only)"
-          % _regression_count())
+    # 0.8.327 (report 2026-11-14 v0.8.325 §P1-2): "text/AST only" became wrong once some
+    # entries started calling the package. Split the count so the gap is visible instead of
+    # being averaged away.
+    _total = _regression_count()
+    # This file deliberately does NOT import `regressions` (it runs it as a subprocess),
+    # so the behavioural count is taken from the `BEHAVIOURAL` marker each such assertion
+    # carries in its docstring — an estimate, and labelled as one below.
+    _behavioural = 0
+    try:
+        import re as _re
+        with open(os.path.join(HERE, "regressions.py"), encoding="utf-8") as _fh:
+            _behavioural = len(_re.findall(r"^\s+BEHAVIOURAL", _fh.read(), _re.MULTILINE))
+    except Exception:
+        _behavioural = 0
+    print("  source-level : %d assertions (%d behavioural, %d text/AST)"
+          % (_total, _behavioural, _total - _behavioural))
     # 0.8.305 (report 2026-11-12 §4): this number is a STRING COUNT, not a runnable
     # suite. Calling them "checks" made "64 on-machine checks" read as coverage when
     # nothing had executed — and on a standard install most of them cannot run at all.

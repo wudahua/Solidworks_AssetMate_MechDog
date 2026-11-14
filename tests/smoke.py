@@ -1873,6 +1873,47 @@ def main():
     r.check("a non-blocking create keeps the verdict",
             _a_nonblocking_create_failure_keeps_the_verdict)
 
+    def _a_tolerance_render_never_passes_on_a_bare_number():
+        """Report 2026-11-14 v0.8.325 §P1-2: no smoke case ever touched a tolerance.
+
+        On this build SolidWorks often exports the tolerance's `+`/`-` as its OWN text
+        object, so the text layer carries magnitudes without signs and the honest answer is
+        `null`. What must never happen is `True` inferred from a bare number.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_tol.SLDPRT")
+        drw = os.path.join(workdir, "smoke_tol.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, paper="A3", views=["front"]))
+        drawing.auto_dimension(drw, all_views=True)
+        listing = drawing.list_drawing_annotations(drw)
+        values = sorted({round(float(a["value_mm"]), 3)
+                         for a in (listing.get("annotations") or [])
+                         if a.get("kind") == "dimension" and a.get("value_mm")})
+        if not values:
+            # An imported body has no driving dimensions, so `auto_dimension` inserts none
+            # and there is nothing to tolerance. SKIP (not PASS) — a green line here would
+            # claim coverage this fixture cannot provide.
+            raise FixtureMissing("a part whose drawing gets at least one dimension")
+        got = drawing.add_dimension_tolerance(drw, values[0], tolerance_type="bilateral",
+                                              upper=0.05, lower=0.05, verify_render=True)
+        require(got)
+        probe = got.get("pdf_render") or {}
+        if probe.get("checked"):
+            evidence = probe.get("evidence")
+            if evidence != "sign_text":
+                assert got.get("pdf_render_matches") is not True, (
+                    "a bare magnitude produced a PASS: %r" % (probe,))
+            assert evidence in ("sign_text", "numeric_magnitude", "uncertain",
+                                "no_deviation_found", "ambiguous"), probe
+        return "matches=%r evidence=%r" % (got.get("pdf_render_matches"),
+                                           probe.get("evidence"))
+
+    r.check("a tolerance render never passes on a bare number",
+            _a_tolerance_render_never_passes_on_a_bare_number)
+
     def _sketch_geometry_is_exact_and_honest():
         """Report 2026-11-12 §3 (the last P0 gap): the outline, point by point.
 

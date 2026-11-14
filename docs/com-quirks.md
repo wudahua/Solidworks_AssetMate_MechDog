@@ -5012,3 +5012,46 @@ elif hi and hi != nominal and hi_count >= 1 and not num_up and not num_lo:
 
 **补一个分支不等于修一个概念。** 「裸数字是猜测」这条规则我上一版只落在 bilateral 上，
 另外两条分支还各自留着一句 `"sign_text"` 字面量。**只要还有第二处硬编码结论，规则就没有生效。**
+
+---
+
+## 2026-11-15（v0.8.327）fallback 证据同源 + 覆盖可见性（报告 v0.8.325 §P1-1 / §P1-2）
+
+### P1-1：整页 fallback 的回执一半窗口、一半整页
+
+`_tolerance_text_on_pdf` 在 fallback 时把 `_num_up/_num_lo` 换成整页证据并置
+`_fallback_used=True`，但随后调用分类器时传的仍是**窗口内**的 `lines`，而回执里的
+`upper_present` / `lower_present` 又用旧的 `_has_up or _num_up`（窗口 + 整页混合）。实测 J：
+
+```
+shape=basic_no_deviation   numeric_deviation_count=0   lines=['14.20']
+upper_present=True         lower_present=True          ← 自相矛盾
+```
+
+安全性没破（`uncertain` → `None`），但排查时会被带偏。
+
+改法两处：fallback 命中时**把 `lines` 换成整页**（分类器随之重算），
+`upper_present` / `lower_present` 一律取 `_shape_info`（与 shape 同源）。
+
+### P1-2：覆盖可见性
+
+* `check_all.py` 的汇总从 `317 assertions (text/AST only)` 改为
+  **`317 assertions (5 behavioural, 312 text/AST)`** —— 用每条断言 docstring 里的
+  `BEHAVIOURAL` 标记计数。这个标签以前在**安全方向**上是错的（有行为断言却统称 text/AST），
+  但错的标签仍是错的标签，它掩盖了「绝大多数断言看不见逻辑错误」这件事。
+* `smoke.py` 新增 `a tolerance render never passes on a bare number`：真机建图 → 加公差 →
+  `verify_render=True`，断言「`evidence != sign_text` 时 `pdf_render_matches` 绝不能是 `True`」。
+  **本机 P05 是导入实体，没有任何尺寸可加公差** → 该用例 `SKIP`（`FixtureMissing`），
+  smoke 明确打印 `NO CHECKS EXECUTED — NOT a passing run`。换一个有驱动尺寸的零件才会真跑。
+
+### 验证
+
+| check | 结果 |
+|---|---|
+| `check_all.py` | 317/317，`5 behavioural, 312 text/AST` |
+| `smoke --only "a tolerance render never passes..."` | SKIP（fixture 缺尺寸），RC=3 诚实报错 |
+
+### 教训
+
+**「标签错了但方向安全」也还是错。** `text/AST only` 听起来像自谦，实际让「317 条全绿」
+读起来比它应有的更可信。把 5 / 312 摆出来，缺口就自己说话了。
