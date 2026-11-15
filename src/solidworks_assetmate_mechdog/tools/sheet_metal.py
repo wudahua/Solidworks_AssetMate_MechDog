@@ -149,6 +149,73 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         key = round(c["radius_mm"], 2)
         radius_groups[key] = radius_groups.get(key, 0) + 1
 
+    # 0.8.340 (roadmap v0.9 step 1): classify every cylindrical face by its OWNER FEATURE.
+    # This is the discriminator the radius heuristic could not replace: on the panel box a
+    # Ø12/Ø14 concentric hole pair differs by exactly the thickness and was paired as a
+    # "bend" (80 cylinders → 36 fake bends, 8 holes). `IFace2.GetFeature.GetTypeName2`
+    # answers it directly — `OneBend` = bend fillet, `ICE`/`HoleWzd` = hole, `Fillet` =
+    # ordinary round, `LPattern` = patterned source (resolved one level up).
+    face_kinds = {"bend": [], "hole": [], "fillet": [], "pattern": [], "other": []}
+    for c in cylinders:
+        face_kinds.setdefault(c.get("kind") or "other", []).append(c)
+
+    def _summ(rows, limit=12):
+        seen, out = set(), []
+        for r in rows:
+            key = (r.get("owner_name"), round(r.get("radius_mm") or 0, 3))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"feature": r.get("owner_name"),
+                        "feature_type": r.get("owner_type"),
+                        "radius_mm": round(r.get("radius_mm") or 0, 3),
+                        "diameter_mm": round((r.get("radius_mm") or 0) * 2, 3),
+                        "axis": [round(float(v), 4) for v in (r.get("axis") or ())][:3],
+                        "via_pattern": bool(r.get("via_pattern"))})
+            if len(out) >= limit:
+                break
+        return out
+
+    # Pattern-owned faces: `GetParents` returns TOPOLOGICAL parents (bends/flange/extrude),
+    # not the pattern's seed, so the source cannot be read directly. Instead of guessing a
+    # kind, list the base features that could be the seed — same radius, parallel axis —
+    # and let the caller decide. `confidence` stays "low" by construction.
+    def _axis_dot(a, b):
+        try:
+            return abs(sum(float(x) * float(y) for x, y in zip(a[:3], b[:3])))
+        except Exception:
+            return 0.0
+
+    _base = [c for c in cylinders if (c.get("kind") or "") in ("bend", "hole", "fillet")]
+    pattern_hints = []
+    for c in face_kinds.get("pattern", []):
+        cands = [b for b in _base
+                 if abs((b.get("radius_mm") or 0) - (c.get("radius_mm") or 0)) <= 0.02
+                 and _axis_dot(b.get("axis"), c.get("axis")) >= 0.999]
+        pattern_hints.append({
+            "feature": c.get("owner_name"),
+            "feature_type": c.get("owner_type"),
+            "radius_mm": round(c.get("radius_mm") or 0, 3),
+            "candidate_source_features": sorted({b.get("owner_name") for b in cands}),
+            "confidence": "low",
+            "why": "阵列的 GetParents 给的是拓扑父级（折弯/法兰/拉伸），不是阵列源；"
+                   "候选按「同半径 + 轴平行」列出，需人确认",
+        })
+
+    classification = {
+        "basis": "IFace2.GetFeature → IFeature.GetTypeName2（不依赖半径）",
+        "checked": bool(include_cylinders) and not cylinder_error,
+        "counts": {k: len(v) for k, v in face_kinds.items()},
+        "bends": _summ(face_kinds["bend"]),
+        "holes": _summ(face_kinds["hole"]),
+        "fillets": _summ(face_kinds["fillet"]),
+        "unresolved": _summ(face_kinds["pattern"] + face_kinds["other"]),
+        "pattern_hints": pattern_hints,
+        "note": ("这解决的是「哪个圆柱面是孔、哪个是折弯圆角」；两段距离"
+                 "（最小折弯边 ≥4t+R、孔到折弯线 ≥2t+R）仍未计算，"
+                 "所以那两项继续保持 not_checked。"),
+    } if include_cylinders else None
+
     checks = []
 
     def add(item, status, detail, blocking=False):
@@ -156,6 +223,16 @@ def sheet_metal_qc(model_path, include_cylinders=False):
                        "blocking": blocking})
 
     add("is_sheet_metal", "pass", "SheetMetal 特征存在，%d 道弯折" % len(bends))
+    if include_cylinders:
+        if cylinder_error:
+            add("face_classification", "not_checked",
+                "圆柱面读取失败，无法分类：%s" % cylinder_error)
+        else:
+            _k = classification["counts"]
+            add("face_classification", "pass",
+                "圆柱面按所属特征分类：折弯 %d / 孔 %d / 普通圆角 %d / 未解析 %d"
+                "（依据 %s）" % (_k["bend"], _k["hole"], _k["fillet"],
+                                _k["pattern"] + _k["other"], classification["basis"]))
     if thickness:
         add("thickness", "pass", "板厚 %.3f mm（来源：%s）" % (thickness, thickness_source))
     else:
@@ -174,11 +251,11 @@ def sheet_metal_qc(model_path, include_cylinders=False):
     # instead of returning a green tick.
     for item, why in (
         ("min_flange_length",
-         "需测量折弯边实际长度（4t + R）。圆柱面几何已能取到，但折弯圆角与孔的分离不可靠"
-         "（半径差=板厚会把 Ø12/Ø14 同心孔误判为折弯），故不做判定"),
+         "折弯/孔已能按所属特征分开（见 face_classification），但最小折弯边还要量"
+         "「折弯切线到法兰边」的距离（≥4t + R）；这一步的几何测量未做，故不判定"),
         ("hole_to_bend_distance",
-         "需算孔心到折弯线距离（≥2t + R）。同上：折弯/孔分离不可靠，"
-         "试过面相邻性判据——已知折弯的内外圆角也不共享边，且遍历 80 个圆柱面的边需 200 s"),
+         "孔与折弯已能分开，但孔到折弯线还要算两根轴在 3D 里的最短距离再减 (R折弯 + R孔)"
+         "（≥2t + R）；这一步未做，故不判定"),
         ("bend_radius_vs_thickness", "需读折弯圆角半径并与 0.5t 比对；Feature 定义接口在本版本返回空"),
         ("thickness_consistency", "需逐特征比对板厚，当前只读到全局板厚"),
         ("k_factor_source", "见 flat_pattern_report：K 因子由 SolidWorks 决定，工具不读取也不计算"),
@@ -200,6 +277,7 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         cylinders_not_requested=(not include_cylinders),
         cylinder_count=len(cylinders) if include_cylinders else None,
         cylinder_error=cylinder_error,
+        cylinder_classification=classification,
         cylinder_radius_groups_mm=sorted(
             ({"radius_mm": r, "diameter_mm": round(r * 2, 2), "count": n}
              for r, n in radius_groups.items()),

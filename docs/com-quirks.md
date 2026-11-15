@@ -5697,3 +5697,61 @@ by_name 从 0 变成 10/4。
 | `check_all.py` | 323/323 |
 | 真机 `annotation writers (sheet/GT/finish/tolerance)` | PASS 31.9s |
 | 真机四种符号渲染 | 见上表 + PNG |
+
+---
+
+## 2026-11-15（v0.8.340）折弯 vs 孔：改用「面的所属特征」，不再猜半径（v0.9 第一步）
+
+### 旧判据为什么必然误判
+
+`pair_bends()` 用「同轴 + 半径差 = 板厚」配折弯。配电箱上一个 Ø12/Ø14 同心孔正好差 1.0 mm
+（= 板厚），于是 80 个圆柱面被配成 **36 个假折弯**、只剩 8 个孔。
+
+### 新判据
+
+`IFace2.GetFeature` → `IFeature.GetTypeName2`：
+
+| 所属特征类型 | kind |
+|---|---|
+| `OneBend` / `MiterFlange` / `Hem` / `JogBend` / `SketchBend` / `LoftedBend` / `SweptFlange` | `bend` |
+| `HoleWzd` / `AdvancedHole` / `ICE`（切除） | `hole` |
+| `Fillet` / `Chamfer` | `fillet` |
+| `*Pattern` / `Mirror*` | `pattern` |
+
+真机实测（SW32.4）：
+
+| 零件 | 折弯 | 孔 | 圆角 | 阵列 | 其它 | 耗时 |
+|---|---|---|---|---|---|---|
+| door.SLDPRT（61 面） | 8 面 = EdgeBend1–4（Ø5.08 内 / Ø7.08 外，Δ=2.0=板厚） | 4 面 = Cut-Extrude1/2/4 | 2 面 = Fillet1 | 3 面 = LPattern1–3 | 0 | — |
+| panel box.SLDPRT（80 面） | 24 面 | 2 面 | 2 面 | 48 面 | 4 面 | 146.6 s |
+
+`cylinder_classification` 进回执，`checks` 里多一条 `face_classification: pass`。
+
+### 阵列内的面：这里真的是天花板
+
+`LPattern` 的源特征读不到——三种路都试过：
+
+| 路 | 结果 |
+|---|---|
+| `IFeature.GetParents` | 返回**拓扑父级**（EdgeBend2 / Edge-Flange1 / Boss-Extrude1），不是阵列源 |
+| `GetSpecificFeature2` | `None` |
+| `GetDefinition` | `-2147352573` 找不到成员 |
+
+所以阵列面单列 `pattern`，不猜。能按「同半径 + 轴平行」匹配到基础特征时给 `pattern_hints`
+（`confidence: "low"`）：door 上 3 个阵列面分别指向 `Cut-Extrude1` / `Cut-Extrude4`，panel box
+上 45 个阵列面找不到候选（它们的源在阵列内部，原始面已不存在）。
+
+**不猜的正确性**：旧判据会把这些报成折弯（假阳性）；现在报 `pattern`（不确定），
+两种都不是"正确答案"，但后者不会让工程师去改一个不存在的折弯。
+
+### 没做（第二步）
+
+两段距离仍未算：最小折弯边 ≥4t+R、孔到折弯线 ≥2t+R。分类已经够用，缺的是
+「两轴最短距离 − (R折弯 + R孔)」与「折弯切线到法兰边」的几何测量，以及工艺阈值的口径确认。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | 323/323 |
+| 真机 door / panel box | 见上表；`face_classification` 均 `pass` |

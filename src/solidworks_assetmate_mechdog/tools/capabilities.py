@@ -218,13 +218,24 @@ CAPABILITIES = [
         "id": "sheet_metal_qc",
         "status": "partial",
         "summary": "钣金工艺检查",
-        "why": ("板厚 / 弯折数 / 止裂槽有无可判；`include_cylinders=True` 能给出圆柱面清单"
-                "（按半径分组，孔与折弯圆角一并列出）。最小折弯边与孔到折弯线仍需判定"
-                "「哪个圆柱面是孔、哪个是折弯圆角」——当前不可靠：半径差=板厚会把 Ø12/Ø14 "
-                "同心孔误判为折弯（80 个圆柱面被配成 36 个折弯），面相邻性判据也无效"
-                "（已知折弯的内外圆角同样不共享边），故这两项保持 not_checked"),
+        "why": ("板厚 / 弯折数 / 止裂槽有无可判；`include_cylinders=True` 给出圆柱面清单，"
+                "并且（0.8.340 起）按**面的所属特征**分类：`IFace2.GetFeature` → "
+                "`GetTypeName2`，`OneBend` 是折弯圆角、`ICE`/`HoleWzd` 是孔、`Fillet` 是"
+                "普通圆角。这一条取代了旧的「半径差 = 板厚」判据——那个会把 Ø12/Ø14 同心孔"
+                "配成折弯（80 个圆柱面 → 36 个假折弯）。"
+                "**仍然不判的是两段距离**：最小折弯边（≥4t+R）与孔到折弯线（≥2t+R）；"
+                "分类已经够用，缺的是几何测量那一步，所以这两项保持 `not_checked`。"
+                "**阵列内的面**（`LPattern`/`Mirror`/`FormToolInstance`）源特征在本 binding "
+                "读不到：`GetParents` 给的是拓扑父级（折弯/法兰/拉伸），`GetSpecificFeature2` "
+                "返回 None、`GetDefinition` 报「找不到成员」。这类面单列为 `pattern`，"
+                "并在能匹配到同半径+轴平行的基础特征时给 `pattern_hints`（低置信度）。"),
         "workaround": "not_checked 的项按 not_checked 处理，不要当作通过",
-        "evidence": "2026-10-28 实测箱体 3 道弯折无止裂槽 → blocker",
+        "evidence": ("2026-10-28 实测箱体 3 道弯折无止裂槽 → blocker；"
+                     "2026-11-15 实测 door.SLDPRT：折弯 8 面（EdgeBend1-4，Ø5.08/Ø7.08，"
+                     "Δ=2.0=板厚）/ 孔 4 面（Cut-Extrude1/2/4）/ 普通圆角 2 面（Fillet1）/ "
+                     "阵列 3 面（LPattern1-3，hint 指向 Cut-Extrude1/4）；"
+                     "panel box.SLDPRT 80 面：折弯 24 / 孔 2 / 圆角 2 / 阵列 48 / 其它 4，"
+                     "耗时 146.6 s"),
     },
     {
         "id": "flat_pattern_calc",

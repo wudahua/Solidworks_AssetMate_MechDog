@@ -101,8 +101,99 @@ def extract_cylinders(body, call_method):
         radius_mm = params[6] * 1000.0
         if radius_mm <= 0:
             continue
-        cylinders.append({"point": point, "axis": axis, "radius_mm": round(radius_mm, 3)})
+        # 0.8.340: a cylindrical face knows its OWNER FEATURE, and that is a far better
+        # hole/bend discriminator than the radius: `OneBend` is a bend fillet, `ICE`
+        # (cut-extrude) / `HoleWzd` is a hole. The old radius-delta heuristic paired
+        # Ø12/Ø14 concentric holes (Δr = t) as "bends" — 80 cylinders became 36 bends.
+        owner_name = owner_type = None
+        try:
+            owner = win.Dispatch(face.GetFeature)
+            owner_name = str(owner.Name)
+            owner_type = str(owner.GetTypeName2)
+        except Exception:
+            pass
+        kind = _cylinder_kind(owner_type, owner_name)
+        via_pattern = False
+        if kind == "pattern" and owner_name is not None:
+            # A patterned hole's own feature is `LPattern`; its SOURCE is the cut. Resolve
+            # it here, where the feature object is already in hand.
+            resolved = resolve_pattern_kind(owner, win.Dispatch, win)
+            if resolved:
+                kind, via_pattern = resolved, True
+        cylinders.append({"point": point, "axis": axis, "radius_mm": round(radius_mm, 3),
+                          "owner_name": owner_name, "owner_type": owner_type,
+                          "kind": kind, "via_pattern": via_pattern})
     return cylinders
+
+
+#: Feature types whose cylindrical faces ARE bend fillets (sheet-metal tooling).
+BEND_FEATURE_TYPES = frozenset({
+    "OneBend", "MiterFlange", "Hem", "JogBend", "SketchBend", "LoftedBend",
+    "SweptFlange", "EdgeFlange", "SheetMetal",
+})
+#: …and whose cylindrical faces are holes.
+HOLE_FEATURE_TYPES = frozenset({
+    "HoleWzd", "AdvancedHole", "ICE", "Cut", "ExtrudedCut", "CutExtrude", "CutSweep",
+})
+#: Ordinary rounds — neither a bend nor a hole.
+FILLET_FEATURE_TYPES = frozenset({"Fillet", "Chamfer"})
+
+
+def _cylinder_kind(owner_type, owner_name):
+    """`bend` / `hole` / `fillet` / `pattern` / `other`, from the owning feature. PURE.
+
+    `pattern` is honest rather than guessed: a patterned hole's own feature is
+    `LPattern`, so the caller must resolve it through the pattern's source feature.
+    """
+    t = str(owner_type or "")
+    n = str(owner_name or "")
+    if t in BEND_FEATURE_TYPES:
+        return "bend"
+    if t in HOLE_FEATURE_TYPES:
+        return "hole"
+    if t in FILLET_FEATURE_TYPES:
+        return "fillet"
+    if "Pattern" in t or "Mirror" in t:
+        return "pattern"
+    return "other"
+
+
+def resolve_pattern_kind(face_owner, call_method, win_dispatch, depth=2):
+    """Walk a pattern's parents and return the kind of its source feature, or None. PURE-ish.
+
+    Measured on door.SLDPRT: three cylindrical faces belong to `LPattern1..3`, whose parent
+    is a cut-extrude — i.e. patterned holes. Without this they were counted as `pattern`
+    and silently dropped from BOTH the bend list and the hole list.
+    """
+    seen = set()
+    stack = [(face_owner, 0)]
+    found = set()
+    while stack:
+        node, level = stack.pop()
+        if node is None or level > depth:
+            continue
+        try:
+            key = str(node.Name)
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            parents = list(node.GetParents or ())
+        except Exception:
+            parents = []
+        for raw in parents:
+            try:
+                parent = win_dispatch(raw)
+                kind = _cylinder_kind(parent.GetTypeName2, parent.Name)
+            except Exception:
+                continue
+            if kind in ("bend", "hole", "fillet"):
+                found.add(kind)
+            else:
+                stack.append((parent, level + 1))
+    return found.pop() if len(found) == 1 else None
 
 
 def pair_bends(cylinders, thickness_mm, radius_eps_ratio=0.25, concentric_eps=CONCENTRIC_EPS,

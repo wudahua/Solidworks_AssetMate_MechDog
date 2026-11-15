@@ -11191,7 +11191,41 @@ def assert_gdt_symbols_are_native_not_chinese_text():
     return "GD&T symbols are native (IGTOL-*); no Chinese fallback table remains"
 
 
+def assert_bend_vs_hole_is_classified_by_owner_feature():
+    """0.8.340 (roadmap v0.9 step 1) — the radius heuristic could not be fixed.
+
+    `pair_bends()` paired coaxial cylinders whose radii differ by the thickness. On the
+    panel box a Ø12/Ø14 concentric hole pair differs by exactly the 1.0 mm sheet, so 80
+    cylinders became 36 fake bends and 8 holes. No threshold fixes that: the pair is
+    geometrically identical to a bend.
+
+    `IFace2.GetFeature.GetTypeName2` answers it instead — `OneBend` is a bend fillet,
+    `ICE`/`HoleWzd` a hole, `Fillet` an ordinary round. Measured on door.SLDPRT: 4 bends
+    (Ø5.08/Ø7.08, Δ=2.0=t), 4 hole faces, 2 fillet faces, 3 pattern faces.
+
+    STILL SOURCE-LEVEL (the counts came from a live run).
+    """
+    geo = _read("tools/geometry.py")
+    tree = ast.parse(geo)
+    for name in ("BEND_FEATURE_TYPES", "HOLE_FEATURE_TYPES", "FILLET_FEATURE_TYPES"):
+        assert name in geo, "the %s whitelist is gone" % name
+    kind = ast.get_source_segment(geo, _function_node(tree, "_cylinder_kind")) or ""
+    for want in ('return "bend"', 'return "hole"', 'return "fillet"', 'return "pattern"'):
+        assert want in kind, "the classifier no longer distinguishes %s" % want
+    assert "face.GetFeature" in geo, (
+        "the owning feature is not read any more — the radius heuristic is back")
+    sm = _read("tools/sheet_metal.py")
+    assert "cylinder_classification" in sm, (
+        "sheet_metal_qc does not publish the classification")
+    assert "pattern_hints" in sm, (
+        "pattern-owned faces are silently dropped instead of being reported")
+    for item in ("min_flange_length", "hole_to_bend_distance"):
+        assert item in sm
+    return "bend/hole/fillet/pattern come from the owning feature, not from radii"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.340 bend vs hole by owner feature", assert_bend_vs_hole_is_classified_by_owner_feature),
     ("0.8.339 gdt symbols are native", assert_gdt_symbols_are_native_not_chinese_text),
     ("0.8.338 planned dims accounted for", assert_planned_dimensions_are_accounted_for_one_by_one),
     ("0.8.328 coverage numbers come from lists", assert_the_coverage_numbers_come_from_the_lists),
