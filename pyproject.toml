@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solidworks-assetmate-mechdog"
-version = "0.8.333"
-description = "SolidWorks MCP toolkit: recolor assemblies, inspect structure, export previews — with the COM pitfalls documented."
+version = "0.8.334"
+description = "SolidWorks MCP 服务：一条命令出工程图，并如实回答「这张图缺什么、能不能交」——出图、标注、自检与原生 BOM，附带 COM 踩坑文档。"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
