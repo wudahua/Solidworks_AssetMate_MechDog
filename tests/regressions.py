@@ -11159,7 +11159,40 @@ def assert_planned_dimensions_are_accounted_for_one_by_one():
     return "every planned dimension is accounted for, with one of two named reasons"
 
 
+def assert_gdt_symbols_are_native_not_chinese_text():
+    """0.8.339 — the Chinese fallback table outlived the problem it worked around.
+
+    0.8.20 wrote 位置度/垂直度 into the symbol cell because the legacy path treated
+    `<MOD-*-PAR>` as literal text. Since 0.6.0 the frame goes through the 2022+ XML
+    (`_GD_T_SYMBOL_NAMES` → `IGTOL-POSI`), and 0.8.339 re-measured four symbols on SW32.4:
+    all `ok`, `symbol_is_text: false`, `symbol_render_verified: true`, and the PDF shows
+    真几何符号 (⌖ / ⊥ / ▱ / ∥).
+
+    `GTOL_SYMBOLS` (the Chinese table) was therefore dead code that made every reader —
+    and this project's own roadmap — believe the symbols were still text. Deleted; this
+    assertion keeps it deleted and keeps the native map complete.
+    """
+    src = _read("tools/drawing.py")
+    assert "GTOL_SYMBOLS =" not in src, (
+        "the Chinese symbol fallback table is back; it is not what the frame writes")
+    # `_GD_T_SYMBOL_NAMES` is an ASSIGNMENT, not a function: slice it by markers.
+    _i = src.find("_GD_T_SYMBOL_NAMES = {")
+    assert _i > 0, "the native symbol map is gone"
+    native = src[_i:src.find("}", _i) + 1]
+    for wanted in ("position", "perpendicularity", "flatness", "parallelism",
+                   "concentricity", "runout"):
+        assert '"%s"' % wanted in native, "no native symbol name for %s" % wanted
+    assert '"IGTOL-POSI"' in native
+    # Deliberately NOT asserting `"位置度" not in src`: the comments cite it while explaining
+    # why the table was removed. The signal is the table itself (`GTOL_SYMBOLS =`).
+    lay = _read("tools/layout.py")
+    assert "GTOL_SYMBOLS" not in lay, (
+        "layout still re-exports the deleted table, so the import blows up at module load")
+    return "GD&T symbols are native (IGTOL-*); no Chinese fallback table remains"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.339 gdt symbols are native", assert_gdt_symbols_are_native_not_chinese_text),
     ("0.8.338 planned dims accounted for", assert_planned_dimensions_are_accounted_for_one_by_one),
     ("0.8.328 coverage numbers come from lists", assert_the_coverage_numbers_come_from_the_lists),
     ("0.8.319 title-scale failure lowers ok", assert_title_scale_failure_lowers_the_verdict),

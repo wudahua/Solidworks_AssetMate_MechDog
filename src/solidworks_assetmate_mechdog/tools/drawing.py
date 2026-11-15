@@ -12496,23 +12496,11 @@ def add_surface_finish(drawing_path, x, y, roughness="3.2", sym_type="machining"
 #   SetFrameSymbols2(1, "位置度", ...) -> GetFrameSymbols2(1) == ('位置度','',...)
 # SetFrameSymbols2 returns None even on success, so a read-back is the only proof.
 # These are readable WORDS in the first frame cell, not true GD&T glyphs.
-GTOL_SYMBOLS = {
-    "position": "位置度",
-    "concentricity": "同轴度",
-    "perpendicularity": "垂直度",
-    "parallelism": "平行度",
-    "flatness": "平面度",
-    "straightness": "直线度",
-    "circularity": "圆度",
-    "cylindricity": "圆柱度",
-    "profile_line": "线轮廓度",
-    "profile_surface": "面轮廓度",
-    "angularity": "倾斜度",
-    "symmetry": "对称度",
-    "runout": "圆跳动",
-    "total_runout": "全跳动",
-    "none": "",
-}
+# 0.8.339: `GTOL_SYMBOLS` (Chinese text fallback: "位置度"/"垂直度"…) was deleted.
+# It was the 0.8.20 workaround for a path that no longer exists: since 0.6.0 the frame
+# is written through the 2022+ XML (`_GD_T_SYMBOL_NAMES` → `IGTOL-POSI`), which renders
+# the real glyph. Keeping the Chinese table around made every reader believe the
+# symbols were still text — the roadmap still listed "形位公差符号" as v0.9 work.
 
 
 def _delete_gtol(doc, gtol):

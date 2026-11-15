@@ -15,7 +15,7 @@ from .. import perf_hooks
 
 from ..sw_session import byref_dispatch_null, error, get_sw
 from .bom_native import default_template, populate_top_level_bom
-from .drawing import _open_drawing, _iter_views, drawing_ok, _save_drawing, GTOL_SYMBOLS  # noqa: F401
+from .drawing import _open_drawing, _iter_views, drawing_ok, _save_drawing  # noqa: F401
 
 
 def _prop_put(obj, name, value):

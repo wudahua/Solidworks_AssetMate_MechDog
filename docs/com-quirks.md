@@ -5645,3 +5645,55 @@ by_name 从 0 变成 10/4。
 
 **「筛选生效了」和「计划到齐了」是两件事。** 旧回执只证明前者，而用户关心的是后者。
 把「没到齐」拆成两种**可行动**的原因（去补标 vs 无解），比笼统报一个覆盖率有用。
+
+---
+
+## 2026-11-15（v0.8.339）形位公差符号：早就解决了，是文档没跟上
+
+### 结论：原生符号一直可用
+
+`add_geometric_tolerance(symbol="position")` 走的是 2022+ 的 `IGtolFrame.SetSymbolXml`，
+写入 `IGTOL-POSI` 这类名字，SolidWorks 自己渲染成几何符号。今天（SW32.4 / 0.8.339）复测四种：
+
+| 符号 | 回执 |
+|---|---|
+| 位置度 | `ok:true`、`symbol_written:"IGTOL-POSI"`、`symbol_is_text:false`、`symbol_render_verified:true` |
+| 垂直度 | 同上 `IGTOL-PERP` |
+| 平面度 | 同上 `IGTOL-FLAT` |
+| 平行度 | 同上 `IGTOL-PARA` |
+
+导出 PDF 后渲染（`logs/gtol_probe/gtol_p1.png`）目视确认框格左格是 **⌖ / ⊥ / ▱ / ∥ 四个真几何符号**，
+不是中文文字、也不是空白。
+
+### 为什么路线图里还挂着「形位公差符号」
+
+0.8.20 为了解决旧路径，把符号格写成**中文文字**（`GTOL_SYMBOLS = {"position": "位置度", ...}`），
+0.6.0 换成原生路径后这张表**再没被引用**，但一直留在 `drawing.py` 里，
+`layout.py` 还把它 re-export 出去。于是：读代码的人以为符号还是文字，路线图也就一直没敢删那条。
+
+本版删除：
+
+- `GTOL_SYMBOLS` 表（死代码）；
+- `layout.py` 的 `from .drawing import ... GTOL_SYMBOLS`（re-export 链）；
+- README / ROADMAP 的 v0.9「形位公差符号」条目，改成 ✅ 并注明验证方式。
+
+新增断言 `assert_gdt_symbols_are_native_not_chinese_text`：表不许回来、`_GD_T_SYMBOL_NAMES`
+必须覆盖 position/perpendicularity/flatness/parallelism/concentricity/runout、`layout.py`
+不许再 re-export。
+
+### 删「死代码」时踩到的两件事
+
+1. **它不是局部死代码**：`layout.py` 顶层 import 了它，删掉后 `import layout` 直接
+   `ImportError` —— 由 `0.8.4 bom wrapper signature` 断言捕获，同时让 MCP stdio 那条也红了
+   （服务端起不来）。**删常量前先 grep 全仓 import，不只 grep 使用点。**
+2. **断言写法**：`_GD_T_SYMBOL_NAMES` 是**赋值**不是函数，`_function_node` 取不到，
+   第一版断言因此恒失败；改成按 `NAME = {` 标记切片。另外不能断言「文件里没有『位置度』」——
+   注释里为了解释历史还会提到它，要断言的是那张表本身。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | 323/323 |
+| 真机 `annotation writers (sheet/GT/finish/tolerance)` | PASS 31.9s |
+| 真机四种符号渲染 | 见上表 + PNG |
