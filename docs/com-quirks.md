@@ -5910,3 +5910,40 @@ P05 无尺寸）——文件存在、结论在、JSON 能解析且与回执一�
 **「未检查」和「通过」在文档里必须长得不一样。** `delivery_check` 的 `not_checked` 条目
 `ok` 是 `true`（没失败），第一版渲染直接按 `ok` 输出「通过」——那份清单会把「孔标注没核对」
 写成合格。断言现在钉住这一条。
+
+---
+
+## 2026-11-15（v0.8.344）全量 smoke 复核：0.8.330–0.8.343 十四个版本一起上
+
+### 结果
+
+```text
+68 passed, 1 skipped, 0 failed   RC=0   1h30m
+```
+
+| 项 | 说明 |
+|---|---|
+| 唯一 SKIP | `a tolerance render never passes on a bare number` —— 默认夹具 P05 无驱动尺寸 |
+| 补跑 | `--part 接槽.SLDPRT` 单跑 **PASS 26.7s** |
+| 新增工具 | `delivery manifest is a real file` **PASS 140.4s**（6291 bytes） |
+| 关键路径 | 装配图 `3 views, 22 dims`、`views/dimensions/title block`、GTOL、钣金分类 全绿 |
+
+### 一个值得记下的观察：公差用例的 evidence 变了
+
+补跑时 evidence 从 `numeric_magnitude` 变成 **`uncertain`**。不是回归，原因链条是：
+
+```text
+0.8.337 auto_fit 会放大（单视图 1:1 → 2:1）
+   → 图纸比例变了
+   → PDF 里公差文本的切分位置与行高不同
+   → 落在读数窗口里的 token 不同
+   → 分类器给 uncertain 而不是 numeric_magnitude
+```
+
+两者都不会「因为裸数字就判通过」，断言仍然成立，而 `uncertain` 比 `numeric_magnitude` **更保守**。
+**记住这一点**：`evidence` 是「这次读到了什么」，不是「产品能力变强/变弱」；把它当能力指标会误判。
+
+### 教训
+
+**跨十几个版本攒着不跑全量，等于把风险堆在一次运行里。** 这次绿，不代表中间每一步都绿——
+它只说明「合在一起还能用」。真正的定位仍然靠单跑（`--only`）。
