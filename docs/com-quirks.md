@@ -5357,3 +5357,44 @@ README 的「环境与安装」改成 venv 优先，并写明三条真机踩到�
 「装 / 跑 / 判断 / 边界」放到读者会问的那一屏，把历史沿革和判据细节留在后面。
 另外：徽章只放**不会变**的四个（许可证/平台/Python/CAD），版本号不进 README —— 本仓门禁
 本身就不允许文档写会漂的数字。
+
+---
+
+## 2026-11-15（v0.8.333）`GetPolylines7` 判死：轮廓采样这条路不要再来
+
+### 复核动机
+
+README 的 v0.9 路线图把 `GetPolylines7` 列成待做项，而 `docs/com-quirks.md` 早在 0.8.x
+就写过「`GetPolylines7` / `GetEdgeCount` / `IDisplayData.GetEdgeCount` 在这个晚绑定环境
+不可用，别用它们判空」。两条自相矛盾，重探一次收口。
+
+### 实测
+
+对象：`logs/pipe_probe/pipedoor3.SLDDRW` 的第 2 个视图（图纸 0.42×0.297，视图 0.1486,0.2205 → 0.2154,0.2483）。
+
+| 调用 | 结果 |
+|---|---|
+| `GetPolylines7(0)` | `-2147352561` 非选择性的参数（缺参） |
+| `GetPolylines7(0, True)` / `(0, False)` | `-2147352571` 类型不匹配，argerr=**2** |
+| `GetPolylines7(0, 0)` / `(1, 0)` / `(2, 0)` / `(3, 0)` | 同上，argerr=2 |
+| `GetPolylines7()` | 缺参 |
+| `_FlagAsMethod("GetPolylines7")` 之后再试 | 无变化 |
+| `GetPolylines7(0, True, None/[]/0)`、`(0, -1, None)`、`(0, Empty, None)`、4 参 | 全部 argerr=2 |
+
+`argerr=2` 与传什么无关，说明第二个形参的类型在本 binding 上没有可用的封送方式 ——
+和 0.8.x 记录的 `GetEdgeCount` 同类，不是「参数还没试对」。
+
+对照：同一视图 `GetOutline` 返回 `[0.1486, 0.2205, 0.2154, 0.2483]`，
+`precise_outline` 返回 11.9 mm 内缩后的矩形。**11.9 mm 的恒定内缩就是「视图偏小、留白多」
+的直接原因**：一个 67×28 mm 的视图被当成 43×4 mm 来排版。
+
+### 结论
+
+- 从 README 与 ROADMAP 的待做清单移除，改写为「已判死 + 替代路线」；
+- 轮廓精度改走 **导出 PDF → 用 pypdfium2 量真实 ink bbox → 回算比例/位置** 的闭环
+  （链路已存在：`export_drawing` + `render_drawing`），不依赖任何 COM 轮廓 API。
+
+### 教训
+
+**「限制清单」和「待做清单」同时存在时，先让它们互相对账。** 一处写「该 API 不可用」、
+另一处写「v0.9 做它」，读者（和下一轮的我）只会照着后者去撞墙。

@@ -689,7 +689,8 @@ python tests/smoke.py --skip-export --skip-drawing --eng-cases --eng-sample 1
 - ~~v0.6 形位公差 / `produce_drawing` 流水线~~ ✅（0.6.1）
 - ~~v0.7 排版能力 / 钣金 QC / 展开依据~~ ✅
 - ~~v0.8 BOM 明细栏 / 第四道静态防线 / 边枚举提速~~ ✅（0.8.2）
-- **v0.9 待做**：几何测距（折弯边/孔到折弯线）、尺寸精准筛选、图面利用率、`GetPolylines7`
+- **v0.9 待做**：几何测距（最小折弯边/孔到折弯线）、尺寸精准筛选、图面利用率、形位公差符号、交付清单文件
+- ~~`GetPolylines7`~~ **已判死**：晚绑定下 6 种参数组合全部 `类型不匹配`（argerr=2），`GetEdgeCount` / `IDisplayData.GetEdgeCount` 同样不可用（2026-11-15 复核，见 docs/com-quirks.md）；轮廓精度改用「导出 PDF 量真实 ink」闭环
 
 ---
 
