@@ -5755,3 +5755,63 @@ by_name 从 0 变成 10/4。
 |---|---|
 | `check_all.py` | 323/323 |
 | 真机 door / panel box | 见上表；`face_classification` 均 `pass` |
+
+---
+
+## 2026-11-15（v0.8.341）孔到折弯线：能算了（v0.9 第二步 a）
+
+### 为什么这条能先做
+
+折弯圆角和孔都已按所属特征分开，而且**两侧都有轴**（`ISurface.CylinderParams`）。
+「孔离折弯线太近」在几何上就是**两条 3D 直线的最短距离**：
+
+```text
+edge_clearance = |axis_hole : axis_bend| − R_bend − R_hole
+判定            edge_clearance >= 2t + R      （厂内口径）
+```
+
+新增纯函数 `geometry.skew_line_distance(p1,d1,p2,d2)`：叉积法算公垂线距离，
+平行时退化为点到直线距离（自测：crossing 1.0 / parallel 0.5 / 同线 0.0）。
+
+### 真机（door.SLDPRT，t=2.0，三个折弯 R内=2.54 → 阈值 4.54 mm）
+
+| 孔 | 直径 | 最近折弯 | 轴距 | 边缘余量 | 结论 |
+|---|---|---|---|---|---|
+| Cut-Extrude1 | Ø3.05 | EdgeBend3 | 3.46 | **−0.60** | too_close（孔边已进折弯区） |
+| Cut-Extrude2 | Ø8.0 | EdgeBend4 | 8.96 | 2.42 | too_close |
+| Cut-Extrude4 | Ø15.0 | EdgeBend4 | 73.96 | 63.92 | pass |
+
+`checks` 里 `hole_to_bend_distance: warn`（3 处过近），**不是 fail**：2t+R 是厂内惯例，
+不是 GB 条文，不能单凭它把图纸判死。
+
+### 途中抓到的分类错误：`ICE` 既是切除也是凸台
+
+`panel box.SLDPRT` 上 `Boss-Extrude2`（Ø3 凸台）被当成孔，报「离折弯线过近 −1.58」。
+`GetTypeName2` 对 `Cut-Extrude` 与 `Boss-Extrude` **都返回 `ICE`**，唯一能分的是**特征名**：
+
+| 特征名 | kind |
+|---|---|
+| 含 `Cut` / `切除` | hole |
+| 含 `Boss` / `凸台` / `拉伸` | other（轴、凸台，不是孔） |
+
+补了这条分支后，door 的 4 个孔不变，panel box 的凸台不再进孔列表。
+
+### 顺带的去重
+
+一个通孔有**两个圆柱面**（两侧孔壁），初版把同一个孔列了两次且数值完全相同。现按
+`(孔特征, 直径, 折弯)` 合并取更紧的那条，并给 `faces` 让去重可见而不是静默。
+
+### 没做（第二步 b）
+
+**最小折弯边 ≥4t+R** 仍未判。它要「折弯切线 → 法兰外缘」的距离；探测确认折弯面上
+**4 条边里 2 条是直线且 `ICurve.LineParams` 可用**（切线段），模型空间的 `GetStartVertex`
+这次也返回了顶点（与「图纸视图轮廓边永远拿不到顶点」是两码事）。缺的是沿相切边走到相邻
+平面、再取该平面外轮廓——这是一次邻接遍历，留到下一步。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | 325/325 |
+| 真机 door | 3 孔有数，1 处 pass、2 处 too_close；`hole_to_bend_distance: warn` |
+| 耗时（panel box，80 面） | 187.8 s（含分类 + 距离） |

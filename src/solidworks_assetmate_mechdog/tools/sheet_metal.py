@@ -216,6 +216,72 @@ def sheet_metal_qc(model_path, include_cylinders=False):
                  "所以那两项继续保持 not_checked。"),
     } if include_cylinders else None
 
+    # ── 0.8.341 (v0.9 step 2a): hole-to-bend clearance ──────────────────────────────────
+    # Both sides are cylinders with an axis, so this is a pure 3D skew-line distance:
+    #   edge_clearance = |axis_hole × axis_bend| distance − R_bend − R_hole
+    # compared with the shop convention 2t + R. `min_flange_length` stays not_checked:
+    # it needs the FLANGE outline (tangent line → outer edge), which is a different walk.
+    from . import geometry as _geo
+
+    bend_groups = {}
+    for c in (face_kinds.get("bend") or []):
+        key = c.get("owner_name") or "?"
+        g = bend_groups.setdefault(key, {"axis": c.get("axis"), "point": c.get("point"),
+                                         "radii": []})
+        if c.get("radius_mm"):
+            g["radii"].append(float(c["radius_mm"]))
+    bends_geom = []
+    for name, g in bend_groups.items():
+        if not g["radii"]:
+            continue
+        bends_geom.append({"feature": name,
+                           "r_inner_mm": round(min(g["radii"]), 3),
+                           "r_outer_mm": round(max(g["radii"]), 3),
+                           "point": g["point"], "axis": g["axis"]})
+
+    hole_to_bend = []
+    if thickness and bends_geom:
+        for h in (face_kinds.get("hole") or []):
+            best = None
+            for b in bends_geom:
+                d_mm, how = _geo.skew_line_distance(h.get("point"), h.get("axis"),
+                                                    b["point"], b["axis"])
+                if d_mm is None:
+                    continue
+                d_mm *= 1000.0
+                if best is None or d_mm < best["axis_distance_mm"]:
+                    best = {"axis_distance_mm": round(d_mm, 2), "how": how, "bend": b}
+            if best is None:
+                continue
+            b = best["bend"]
+            clearance = best["axis_distance_mm"] - b["r_inner_mm"] - float(h["radius_mm"])
+            threshold = 2.0 * float(thickness) + b["r_inner_mm"]
+            hole_to_bend.append({
+                "hole_feature": h.get("owner_name"),
+                "hole_diameter_mm": round(float(h["radius_mm"]) * 2.0, 2),
+                "bend_feature": b["feature"],
+                "bend_r_inner_mm": b["r_inner_mm"],
+                "axis_distance_mm": best["axis_distance_mm"],
+                "edge_clearance_mm": round(clearance, 2),
+                "threshold_mm": round(threshold, 2),
+                "rule": "edge_clearance >= 2t + R（厂内口径，可按需覆盖）",
+                "status": "pass" if clearance >= threshold else "too_close",
+            })
+    # A through hole owns TWO cylindrical faces (one per wall), so the same hole would be
+    # listed twice with identical numbers. Collapse by (hole, diameter, bend) keeping the
+    # tighter clearance, and keep the face count so the dedupe is visible rather than silent.
+    _collapsed = {}
+    for r in hole_to_bend:
+        key = (r["hole_feature"], r["hole_diameter_mm"], r["bend_feature"])
+        prev = _collapsed.get(key)
+        if prev is None or r["edge_clearance_mm"] < prev["edge_clearance_mm"]:
+            r["faces"] = (prev or {}).get("faces", 1) + 1 if prev else 1
+            _collapsed[key] = r
+        else:
+            prev["faces"] = prev.get("faces", 1) + 1
+    hole_to_bend = list(_collapsed.values())
+    _too_close = [r for r in hole_to_bend if r["status"] == "too_close"]
+
     checks = []
 
     def add(item, status, detail, blocking=False):
@@ -223,6 +289,28 @@ def sheet_metal_qc(model_path, include_cylinders=False):
                        "blocking": blocking})
 
     add("is_sheet_metal", "pass", "SheetMetal 特征存在，%d 道弯折" % len(bends))
+    # hole-to-bend is measured now (v0.9 step 2a). Three states stay distinguishable:
+    # not measurable (no thickness / no bends / no holes), measured-and-clear, measured
+    # and too close. "to close" is `warn`, not `fail`: the 2t+R rule is shop convention,
+    # not a GB clause, so it must not block a drawing on its own.
+    if not thickness:
+        add("hole_to_bend_distance", "not_checked", "未读到板厚，无法套用 2t + R 口径")
+    elif not bends_geom:
+        add("hole_to_bend_distance", "not_checked", "没有可识别的折弯面（OneBend）")
+    elif not hole_to_bend:
+        add("hole_to_bend_distance", "not_checked", "没有可识别的孔面或轴距不可算")
+    elif _too_close:
+        add("hole_to_bend_distance", "warn",
+            "%d 处孔离折弯线过近（口径 2t+R）：%s" % (
+                len(_too_close),
+                "；".join("%s→%s 余量 %.2f < %.2f mm" % (
+                    r["hole_feature"], r["bend_feature"],
+                    r["edge_clearance_mm"], r["threshold_mm"]) for r in _too_close[:3])))
+    else:
+        add("hole_to_bend_distance", "pass",
+            "%d 个孔到折弯线余量均 ≥ 2t+R（最小 %.2f mm）" % (
+                len(hole_to_bend),
+                min(r["edge_clearance_mm"] for r in hole_to_bend)))
     if include_cylinders:
         if cylinder_error:
             add("face_classification", "not_checked",
@@ -253,9 +341,7 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         ("min_flange_length",
          "折弯/孔已能按所属特征分开（见 face_classification），但最小折弯边还要量"
          "「折弯切线到法兰边」的距离（≥4t + R）；这一步的几何测量未做，故不判定"),
-        ("hole_to_bend_distance",
-         "孔与折弯已能分开，但孔到折弯线还要算两根轴在 3D 里的最短距离再减 (R折弯 + R孔)"
-         "（≥2t + R）；这一步未做，故不判定"),
+
         ("bend_radius_vs_thickness", "需读折弯圆角半径并与 0.5t 比对；Feature 定义接口在本版本返回空"),
         ("thickness_consistency", "需逐特征比对板厚，当前只读到全局板厚"),
         ("k_factor_source", "见 flat_pattern_report：K 因子由 SolidWorks 决定，工具不读取也不计算"),
@@ -278,6 +364,9 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         cylinder_count=len(cylinders) if include_cylinders else None,
         cylinder_error=cylinder_error,
         cylinder_classification=classification,
+        # Per-hole numbers, not just a verdict: a shop can re-check the arithmetic and
+        # override the 2t+R convention without re-deriving anything.
+        hole_to_bend=hole_to_bend,
         cylinder_radius_groups_mm=sorted(
             ({"radius_mm": r, "diameter_mm": round(r * 2, 2), "count": n}
              for r, n in radius_groups.items()),

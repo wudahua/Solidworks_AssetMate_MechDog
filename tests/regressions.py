@@ -11224,7 +11224,36 @@ def assert_bend_vs_hole_is_classified_by_owner_feature():
     return "bend/hole/fillet/pattern come from the owning feature, not from radii"
 
 
+def assert_hole_to_bend_is_measured_with_a_named_rule():
+    """0.8.341 (v0.9 step 2a) — the clearance is now a number with a stated rule.
+
+    Both sides are cylinders, so "hole too close to the bend line" is a pure skew-line
+    distance: `|axis_hole : axis_bend| − R_bend − R_hole`, compared with the shop convention
+    `2t + R`. Measured on door.SLDPRT: Cut-Extrude1 → EdgeBend3 clearance −0.60 (inside the
+    bend), Cut-Extrude2 → EdgeBend4 2.42, threshold 4.54 → both `too_close`.
+
+    Two things this pins beyond the arithmetic:
+      * `ICE` is BOTH cut-extrude and boss-extrude — the Ø3 shaft on panel box was counted
+        as a hole and reported "too close to the bend". Only the feature NAME separates
+        them on this binding, so the name branch must stay.
+      * the verdict is `warn`, never `fail`: 2t+R is shop convention, not a GB clause.
+    """
+    geo = _read("tools/geometry.py")
+    assert "def skew_line_distance(" in geo, "the 3D line distance is gone"
+    kind = ast.get_source_segment(geo, _function_node(ast.parse(geo), "_cylinder_kind")) or ""
+    assert 'if t == "ICE":' in kind and '"boss"' in kind, (
+        "boss-extrude is a hole again — a shaft will be reported as too close to a bend")
+    sm = _read("tools/sheet_metal.py")
+    assert "hole_to_bend=hole_to_bend" in sm, "the per-hole numbers are not published"
+    for token in ("edge_clearance_mm", "threshold_mm", '"rule"', "2.0 * float(thickness)"):
+        assert token in sm, "the receipt does not state %s" % token
+    assert 'add("hole_to_bend_distance", "warn"' in sm, (
+        "a shop-convention rule now blocks a drawing")
+    return "clearance measured per hole, rule named, boss-extrude excluded"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.341 hole-to-bend measured", assert_hole_to_bend_is_measured_with_a_named_rule),
     ("0.8.340 bend vs hole by owner feature", assert_bend_vs_hole_is_classified_by_owner_feature),
     ("0.8.339 gdt symbols are native", assert_gdt_symbols_are_native_not_chinese_text),
     ("0.8.338 planned dims accounted for", assert_planned_dimensions_are_accounted_for_one_by_one),

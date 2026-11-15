@@ -502,7 +502,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 秒级：语法 + 结构 + 324 条历史回归
+python tests/check_all.py       # 秒级：语法 + 结构 + 325 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -696,7 +696,8 @@ python tests/smoke.py --skip-export --skip-drawing --eng-cases --eng-sample 1
 - ~~尺寸精准筛选~~ ✅ 0.8.338：`dimension_coverage` 逐条说明计划内的尺寸为什么没落到图上
 - ~~形位公差符号~~ ✅ 0.6.0 起就是**原生符号**（`IGTOL-POSI` → ⌖），0.8.339 删除过期的
   中文文字兜底表并复测四种符号
-- **v0.9 待做**：几何测距（最小折弯边/孔到折弯线）、交付清单文件
+- ~~孔到折弯线~~ ✅ 0.8.341：两轴 3D 最短距离 − (R折弯 + R孔)，与 `2t + R` 比较，结论 `warn` 不 `fail`
+- **v0.9 待做**：最小折弯边（≥4t+R）、交付清单文件
 - ~~`GetPolylines7`~~ **已判死**：晚绑定下 6 种参数组合全部 `类型不匹配`（argerr=2），`GetEdgeCount` / `IDisplayData.GetEdgeCount` 同样不可用（2026-11-15 复核，见 docs/com-quirks.md）；轮廓精度改用「导出 PDF 量真实 ink」闭环
 
 ---

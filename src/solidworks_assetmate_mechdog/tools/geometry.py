@@ -149,6 +149,16 @@ def _cylinder_kind(owner_type, owner_name):
     n = str(owner_name or "")
     if t in BEND_FEATURE_TYPES:
         return "bend"
+    if t == "ICE":
+        # `ICE` covers BOTH cut-extrude and boss-extrude: a Ø3 shaft was counted as a hole
+        # and then reported "too close to the bend". The feature NAME is the only
+        # discriminator this binding exposes (`GetTypeName2` is the same for both).
+        low = n.lower()
+        if "cut" in low or "切除" in n:
+            return "hole"
+        if "boss" in low or "凸台" in n or "拉伸" in n:
+            return "other"          # a boss / shaft, not a hole
+        return "other"
     if t in HOLE_FEATURE_TYPES:
         return "hole"
     if t in FILLET_FEATURE_TYPES:
@@ -194,6 +204,38 @@ def resolve_pattern_kind(face_owner, call_method, win_dispatch, depth=2):
             else:
                 stack.append((parent, level + 1))
     return found.pop() if len(found) == 1 else None
+
+
+def skew_line_distance(p1, d1, p2, d2):
+    """Shortest distance between two 3D lines given a point and a direction each. PURE.
+
+    Returns (distance, kind) where kind is "crossing" (the common perpendicular exists
+    inside both segments' infinite lines) or "parallel". Used for hole-axis to bend-axis,
+    which is what "hole too close to the bend line" actually means.
+
+    Units follow the inputs (metres here). Returns (None, "degenerate") if a direction is
+    zero-length.
+    """
+    import math as _m
+
+    def _norm(v):
+        n = _m.sqrt(sum(float(x) * float(x) for x in v[:3]))
+        return None if n <= 1e-12 else [float(x) / n for x in v[:3]]
+
+    u, v = _norm(d1), _norm(d2)
+    if u is None or v is None:
+        return None, "degenerate"
+    w = [float(p2[i]) - float(p1[i]) for i in range(3)]
+    cross = [u[1] * v[2] - u[2] * v[1],
+             u[2] * v[0] - u[0] * v[2],
+             u[0] * v[1] - u[1] * v[0]]
+    cnorm = _m.sqrt(sum(c * c for c in cross))
+    if cnorm <= 1e-9:                       # parallel
+        # distance from p2 to the line (p1, u)
+        dot = sum(w[i] * u[i] for i in range(3))
+        perp = [w[i] - dot * u[i] for i in range(3)]
+        return _m.sqrt(sum(c * c for c in perp)), "parallel"
+    return abs(sum(w[i] * cross[i] for i in range(3))) / cnorm, "crossing"
 
 
 def pair_bends(cylinders, thickness_mm, radius_eps_ratio=0.25, concentric_eps=CONCENTRIC_EPS,
