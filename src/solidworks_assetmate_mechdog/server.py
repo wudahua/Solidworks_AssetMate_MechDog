@@ -192,7 +192,8 @@ _TOOL_PROFILES = {
     "drawing": [
         # plan -> build -> annotate -> check -> export
         "plan_drawing", "produce_drawing", "create_drawing", "drawing_audit",
-        "delivery_check", "reconcile_ledger", "plan_dimension_gaps", "survey_drawings",
+        "delivery_check", "export_delivery_report", "reconcile_ledger",
+        "plan_dimension_gaps", "survey_drawings",
         "survey_dimensions_by_view", "build_feature_ledger",
         "export_sketch_geometry",
         "add_sheet", "activate_sheet", "add_view_to_sheet", "place_views", "set_view",
@@ -1279,6 +1280,34 @@ def survey_drawings(
         folder, sample_size=sample_size, seed=seed, html_path=html_path,
         pattern=pattern,
     ))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def export_delivery_report(
+    model_path: Annotated[str, Field(description="The part/assembly the drawing was made from; the ledger numbers come from it. Same argument order as `delivery_check`.")],
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW, absolute path. It is only READ — the manifest never opens or saves the drawing.")],
+    output_path: Annotated[str, Field(description="Where to write the Markdown manifest. Defaults to the drawing's folder with a `.delivery.md` suffix.")] = None,
+    include_faces: Annotated[bool, Field(description="Let delivery_check walk cylindrical faces (~10x slower) so the hole-coverage judgement is real instead of not_checked.")] = False,
+    include_sheet_metal: Annotated[bool, Field(description="Also run sheet_metal_qc on the model (thickness, relief, hole-to-bend, min flange). Adds 150-300 s on a part with many faces.")] = False,
+) -> str:
+    """Write a one-page delivery manifest (Markdown) from `delivery_check`.
+
+    This tool adds NO new judgement: every line restates `delivery_check` — verdict,
+    blockers, pending items, per-check results, measured facts, per-sheet numbers — plus an
+    optional sheet-metal section and the raw receipt as a JSON block at the end.
+
+    Why a file: a receipt is fine for a program and useless in a document pack. The manifest
+    is the page you file next to the drawing, and it survives after the session ends.
+
+    Read as: 「未检查」 means the evaluation did not run — NOT that it passed. 「待设计审核」
+    means the drawing objects are correct but carry values a human must confirm.
+    """
+    from .tools import manifest as manifest_tools
+
+    return _json(manifest_tools.export_delivery_report(
+        model_path, drawing_path, output_path=output_path,
+        include_faces=include_faces, include_sheet_metal=include_sheet_metal))
 
 
 @mcp.tool()

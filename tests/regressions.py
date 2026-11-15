@@ -4419,8 +4419,8 @@ def assert_docs_numbers_match_the_code():
                     registered += 1
     # 71 since v0.8.284 (`list_tool_profiles`). Bump this line IN THE SAME COMMIT that adds
     # a tool — the check exists so a new tool cannot slip in without anyone noticing.
-    assert registered == 73, (
-        "expected 73 registered tools, AST found %d — update this expectation "
+    assert registered == 74, (
+        "expected 74 registered tools, AST found %d — update this expectation "
         "deliberately when a tool is added" % registered)
 
     # Whitespace-tolerant because README wraps the sentence; `assert m` because not
@@ -11603,7 +11603,41 @@ STATIC_REGRESSIONS = [
 #: marker and disagreed (5 vs 6) while the AST said 15. A list cannot disagree with
 #: itself: `len()` IS the count, and `assert_the_coverage_numbers_come_from_the_lists`
 #: verifies every member really does import the package.
+def assert_delivery_manifest_restates_and_never_upgrades():
+    """0.8.343 (roadmap 交付清单) — the one page you can file with the drawing.
+
+    The manifest adds no judgement: every line comes from `delivery_check`. Two properties
+    matter and both are asserted here on real payload shapes:
+
+      * a `not_checked` check must read 未检查, not 通过 — `ok: true` on an evaluation that
+        never ran is the lie this project keeps removing;
+      * the JSON appendix must round-trip, so the page is machine-readable too.
+
+    BEHAVIOURAL: imports `manifest` and calls `render_manifest` on a sample payload.
+    """
+    from solidworks_assetmate_mechdog.tools import manifest as _m
+
+    md = _m.render_manifest({
+        "verdict": "待设计审核", "ok": False, "model": "p.SLDPRT", "drawing": "p.SLDDRW",
+        "checks": {"views_present": {"ok": True, "detail": "3 个视图"},
+                   "hole_callouts": {"ok": True, "status": "not_checked",
+                                     "detail": "未核对"}},
+        "blockers": [], "pending": [{"check": "dimension_attachments", "detail": "3/21"}],
+        "facts": {"dimensions": 21},
+        "sheets": [{"name": "图纸1", "size_m": [0.42, 0.297], "view_count": 3,
+                    "dimensions": 21, "issues": []}],
+    })
+    assert "**结论：待设计审核**" in md
+    assert "| hole_callouts | 未检查 |" in md, "an unrun check reads as 通过 again"
+    assert "| views_present | 通过 |" in md
+    assert "## 原始回执" in md and '"verdict": "待设计审核"' in md, (
+        "the JSON appendix is missing or does not carry the verdict")
+    assert "未检查" in md and "不等于通过" in md, "the 口径 note is gone"
+    return "manifest restates the receipt; not_checked stays 未检查; JSON round-trips"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.343 delivery manifest", assert_delivery_manifest_restates_and_never_upgrades),
     ("0.8.330 call_status splits incomplete", assert_call_status_separates_incomplete_from_failed),
     ("0.8.330 require accepts a partial", assert_require_end_to_end_accepts_a_partial_drawing),
     ("0.8.329 partial is not a failure", assert_a_partial_drawing_is_not_a_failed_call),

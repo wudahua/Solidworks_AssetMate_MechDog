@@ -5870,3 +5870,43 @@ door 的四道折弯两侧是 `[210.32, 6.46]` —— 一侧是整块门板，�
 |---|---|
 | `check_all.py` | 326/326 |
 | 真机 door / panel box | 见上表 |
+
+---
+
+## 2026-11-15（v0.8.343）交付清单：一页 Markdown，只复述不判断（v0.9 收尾）
+
+### 为什么要文件
+
+`delivery_check` 回的是 JSON —— 程序好用，放进图纸包没人看。清单解决的是「归档」：
+一页纸，写清结论、阻断项、待确认、逐项检查、实测数字、逐页信息，末尾附原始回执。
+
+### 实现要点
+
+| 决定 | 理由 |
+|---|---|
+| 新增工具 `export_delivery_report`，而不是给 `delivery_check` 加参数 | 判定与排版是两件事；清单失败不该影响判定 |
+| 参数顺序 `(model_path, drawing_path)` | 与 `delivery_check` 一致，避免调用方记两套顺序（第一版写反了，smoke 立刻抓到 `model_unreadable: got *.SLDDRW`） |
+| 渲染逻辑 `render_manifest()` 是**纯函数** | 可以离线断言：`not_checked` 必须渲染成「未检查」，JSON 附录必须能 round-trip |
+| 章节固定，空章节也出现 | 缺一节会被读成「没检查」，和「检查了但为空」是两回事 |
+| 结尾写「口径」 | 明确：`未检查` 不等于通过；清单不新增判断 |
+| 图纸**只读** | 清单不应该打开/保存图纸；数字全部来自 `delivery_check` |
+
+### 真机
+
+接槽 A3（3 视图、21 尺寸）：
+
+```text
+7023 bytes | verdict=待设计审核 | blockers=0 | pending=2 | checks=16
+```
+
+页面里 `hole_callouts` 渲染成 **未检查**（`include_faces=False`），`dimension_attachments`
+渲染成 **未通过** 但列在「待确认」——两者都不是「通过」。
+
+smoke：`delivery manifest is a real file` **PASS 63.5s**（6291 bytes，verdict=仅供参考/未完成，
+P05 无尺寸）——文件存在、结论在、JSON 能解析且与回执一致。
+
+### 教训
+
+**「未检查」和「通过」在文档里必须长得不一样。** `delivery_check` 的 `not_checked` 条目
+`ok` 是 `true`（没失败），第一版渲染直接按 `ok` 输出「通过」——那份清单会把「孔标注没核对」
+写成合格。断言现在钉住这一条。

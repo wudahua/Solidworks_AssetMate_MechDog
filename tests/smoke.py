@@ -244,7 +244,7 @@ def main():
     from solidworks_assetmate_mechdog.tools import (assembly, bodies, bom, drawing, export,
                                                     layout, ledger, recolor, capabilities,
                                                     sheet_metal, planner, rename, material,
-                                                    pipeline)
+                                                    pipeline, manifest)
 
     try:
         get_sw()
@@ -1906,6 +1906,42 @@ def main():
 
     r.check("a non-blocking create keeps the verdict",
             _a_nonblocking_create_failure_keeps_the_verdict)
+
+    def _delivery_manifest_is_a_real_file():
+        """0.8.343: the manifest must exist, carry the verdict, and restate the receipt.
+
+        A tool nobody calls is a tool nobody knows is broken — `smoke covers every tool`
+        enforces that, and this is the call. What it checks is deliberately shallow: file
+        exists, has the conclusion and the JSON appendix, and the JSON parses back to the
+        same verdict. The content itself is `delivery_check`'s.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_manifest.SLDPRT")
+        drw = os.path.join(workdir, "smoke_manifest.SLDDRW")
+        out = os.path.join(workdir, "smoke_manifest.delivery.md")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        got = manifest.export_delivery_report(part, drw, out)
+        assert got.get("ok") is True, got
+        assert os.path.exists(out), "the manifest path was reported but no file exists"
+        text = open(out, encoding="utf-8").read()
+        assert "**结论：" in text, "the manifest has no conclusion line"
+        assert "## 原始回执" in text, "the raw receipt appendix is gone"
+        start = text.find("```json")
+        blob = text[start + 7:text.rfind("```")]
+        payload = json.loads(blob)
+        assert payload.get("verdict") == got.get("verdict"), (
+            "the file says %r, the receipt says %r"
+            % (payload.get("verdict"), got.get("verdict")))
+        try:
+            drawing.close_document(drw)
+        except Exception:
+            pass
+        return "%d bytes, verdict=%s" % (got.get("bytes"), got.get("verdict"))
+
+    r.check("delivery manifest is a real file", _delivery_manifest_is_a_real_file)
 
     def _a_tolerance_render_never_passes_on_a_bare_number():
         """Report 2026-11-14 v0.8.325 §P1-2: no smoke case ever touched a tolerance.

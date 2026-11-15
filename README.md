@@ -219,7 +219,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | 装配与零件 | `get_assembly_tree`、`export_bom`、`recolor_assembly`、`build_feature_ledger` |
 | 导出 | `export_drawing`（PDF/DWG/DXF）、`render_drawing`（PNG 目视）、`batch_export`（STEP） |
 
-全部 73 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
+全部 74 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
 
 ## 三个能力域
 
@@ -242,7 +242,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 | `export_sketch_geometry` | **草图逐点几何**（0.8.309 新增）：每段线/弧的长度、直线端点由 `LineParams`+`GetLength` 精确算出、圆弧给圆心/轴/半径/包角并从点集反解端点；`plane_frame` 恒 null（本 binding 读不到基准面），坐标是**草图局部坐标** |
 
-### 二、工程图（43）
+### 二、工程图（44）
 
 | 工具 | 作用 |
 |---|---|
@@ -301,13 +301,14 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `reconcile_ledger` | **台账对账**：模型的 58 个尺寸，图纸上缺哪 7 个 |
 | `plan_dimension_gaps` | **缺口补偿规划**：把真缺的尺寸配成边对，唯一匹配才补 |
 | `delivery_check` | **这张图能不能交** |
+| `export_delivery_report` | **交付清单**（0.8.343 新增）：把 `delivery_check` 的结论落成一页 Markdown（阻断项/待确认/检查项/实测数据/逐页/可选钣金），末尾附原始 JSON 回执；**不新增判断**，只复述 |
 | `sheet_metal_qc` | 板厚/弯折数/止裂槽；做不到的检查标 `not_checked`，不给假通过 |
 | `flat_pattern_report` | 展开尺寸**谁算的**、工具没做什么、图上该写什么措辞 |
 | `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 |
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
 | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案；回显**运行中的版本 + 源码路径 + 解释器** |
 | `ping` | **最轻的存活探针**（约 18 ms，不碰 ActiveDoc）：SW 版本、往返延迟、上一个工具、自愈计数 |
-| `list_tool_profiles` | 73 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
+| `list_tool_profiles` | 74 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
 | `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
 | `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
 
@@ -502,7 +503,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 秒级：语法 + 结构 + 326 条历史回归
+python tests/check_all.py       # 秒级：语法 + 结构 + 327 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -601,7 +602,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 73 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 74 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash
@@ -698,7 +699,8 @@ python tests/smoke.py --skip-export --skip-drawing --eng-cases --eng-sample 1
   中文文字兜底表并复测四种符号
 - ~~孔到折弯线~~ ✅ 0.8.341：两轴 3D 最短距离 − (R折弯 + R孔)，与 `2t + R` 比较，结论 `warn` 不 `fail`
 - ~~最小折弯边~~ ✅ 0.8.342：折弯内面→切线边→相邻平面→最远直边，近似值 + `borderline` ±0.2 mm
-- **v0.9 待做**：交付清单文件
+- ~~交付清单文件~~ ✅ 0.8.343：`export_delivery_report` 一页 Markdown（不新增判断）
+- **v0.9 全部完成**；下一档 v1.0：接口冻结、多配置与显示状态、升级说明
 - ~~`GetPolylines7`~~ **已判死**：晚绑定下 6 种参数组合全部 `类型不匹配`（argerr=2），`GetEdgeCount` / `IDisplayData.GetEdgeCount` 同样不可用（2026-11-15 复核，见 docs/com-quirks.md）；轮廓精度改用「导出 PDF 量真实 ink」闭环
 
 ---
