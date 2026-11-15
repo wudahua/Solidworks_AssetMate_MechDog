@@ -5579,3 +5579,69 @@ views_fill_ratio = 所有视图面积之和 / 视图组包围盒面积
 **同一个词在两处有不同定义时，验收指标会指错地方。** `views_fill_ratio`（打包密度）与
 `area_ratio_of_sheet`（图纸占用）是两件事，我拿前者当后者用，于是把「网格空一格」读成
 「图纸空 74%」。指标名里带 `ratio` 不代表它就是我以为的那个分母。
+
+---
+
+## 2026-11-15（v0.8.338）尺寸精准筛选：把「计划 16、图上 12」逐条对账（v0.9 第一项）
+
+### 之前是什么样
+
+`auto_dimension(dimension_filter=plan["keep_dimensions"])` 会删掉计划外的尺寸，但**没有任何字段
+说明计划内的有没有到齐**。实测接槽 A3：
+
+```text
+plan keep 16  →  filter 后图上 12 个不同数值  →  回执只写「生效」
+```
+
+少的那 4 条从回执里看不出来，更看不出原因。
+
+### 现在：`dimension_coverage`
+
+`_filter_inserted_dimensions` 增加第五个返回值，逐条判每条计划：
+
+| 结论 | 含义 | 怎么补 |
+|---|---|---|
+| `matched_by: name` | 图纸侧 full name 与计划同名（含跨视图草图重编号的松散键） | — |
+| `matched_by: value` | 名字对不上，靠数值命中 | 同名尺寸有歧义风险 |
+| `bbox_derived` | 外形/总长这类**包围盒值**，模型里没有对应驱动尺寸，导入永远拿不到 | `list_drawing_edges` + `add_distance_dimension` |
+| `not_inserted` | 真驱动尺寸，导入器没放上去（特征不在已激活视图、被压缩、孔向导草图） | `add_drawing_dimension(view_name=...)` |
+
+真机（接槽 A3，3 视图）：
+
+```text
+planned 16 | by_name 10 | by_value 2 | coverage 0.75
+missing: 总长 55.0 (bbox_derived)
+         D2@草图6 31.0 / D1@切除-拉伸4 30.0 / D1@倒角2 1.5 (not_inserted)
+```
+
+门板（2 视图）：`planned 8 | by_name 4 | by_value 2 | coverage 0.75`，缺 `总长 163.0`
+（bbox_derived）与 `D1@Sketch19 3.05`（not_inserted）。
+
+回执 `advisory` 同步一句话：「规划里 4 条尺寸没有落到图上（覆盖 75%）：bbox_derived=1、
+not_inserted=3」，`produce_drawing` 的 `dimension_gap.coverage` 原样带出。
+
+### 途中抓到自己一个 bug
+
+第一版覆盖报告只处理 `feature` 里带 `@` 的形式，而 `plan_drawing` 把**短名**放在 `feature`
+（`"草图1"`）、**全名**放在 `dimension`（`"D1@草图1@part.Part"`）。于是 `matched_by_name`
+恒为 0，每条计划都掉进「按数值匹配」——数值撞车时会给出错误的「已覆盖」。补短名分支后
+by_name 从 0 变成 10/4。
+
+### 没做的（能力边界）
+
+- **按值筛选的插入接口**不存在：`InsertModelAnnotations3` 只能「全插或按视图插」，所以
+  「只插计划内那 12 条」做不到，只能插完删。这一条不是没做，是 API 没有。
+- `not_inserted` 的自动补标（选边 → `add_distance_dimension`）没有自动串起来，只在 hint 里
+  给出路径；自动选边在孔/倒角几何上容易标错边，值不值得做要看反馈。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | 322/322（+1 条断言，钉住两种 reason 与短名分支） |
+| 真机接槽 / 门板 | 覆盖 0.75，missing 逐条带 reason 与 hint |
+
+### 教训
+
+**「筛选生效了」和「计划到齐了」是两件事。** 旧回执只证明前者，而用户关心的是后者。
+把「没到齐」拆成两种**可行动**的原因（去补标 vs 无解），比笼统报一个覆盖率有用。

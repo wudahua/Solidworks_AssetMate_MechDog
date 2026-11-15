@@ -959,6 +959,11 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             # `keep_dimensions` above is the COUNT (planned: 9). The dicts are `keep_list`.
             "derived_unfilled": [d for d in keep_list
                                  if str(d.get("kind") or "").lower() == "derived"],
+            # 0.8.338 (roadmap "尺寸精准筛选"): the per-entry verdict, straight from
+            # `auto_dimension.dimension_coverage`. Two causes are named apart —
+            # `bbox_derived` (不是模型尺寸，永远插不进来) and `not_inserted` (导入器没放上去).
+            # `pruned_to_plan` alone said "the plan ran", never "the plan landed".
+            "coverage": (_dims_res or {}).get("dimension_coverage"),
             "note": (
                 # Report 2026-11-06 (P2): this sentence was unconditional — it said "the
                 # plan took effect" whenever `prune_to_plan` was true, without looking at

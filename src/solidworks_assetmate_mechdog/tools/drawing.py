@@ -1880,7 +1880,19 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
 
     Safety valve: if NOTHING matches, nothing is deleted and `aborted` says why. A filter
     that recognises zero dimensions is far more likely to be wrong than the sheet is.
-    Returns (kept, removed, failures, aborted_reason).
+
+    0.8.338 (roadmap "尺寸精准筛选"): returns a fifth value — a per-entry COVERAGE report.
+    The plan can promise 16 dimensions while 12 reach the sheet, and until now nothing said
+    which four were missing or why. Two different reasons looked identical from outside:
+
+      * `bbox_derived` — the entry is a bounding-box size (`外形/总长`), which is NOT a model
+        dimension; no importer can ever insert it. It needs `add_distance_dimension` on two
+        edges instead.
+      * `not_inserted` — a real driving dimension the importer did not place (feature not
+        visible in any activated view, suppressed, or a hole-wizard sketch SolidWorks keeps
+        to itself).
+
+    Returns (kept, removed, failures, aborted_reason, coverage).
     """
     features = set()
     full_prefixes = set()
@@ -1950,8 +1962,75 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
             value = _value_of(annotation)
             candidates.append((sheet_name, full, feature, value, annotation))
 
+    def _coverage():
+        """Per-entry verdict: did this planned dimension actually reach the sheet?"""
+        rows, missing = [], []
+        by_name = by_value = 0
+        for entry in (keep or []):
+            if isinstance(entry, str):
+                entry = {"dimension": entry}
+            if not isinstance(entry, dict):
+                continue
+            full_want = str(entry.get("feature") or "")
+            try:
+                want_value = float(entry.get("value_mm"))
+            except Exception:
+                want_value = None
+            name_hit = False
+            if "@" not in full_want and full_want:
+                # `plan_drawing` puts the SHORT feature name in `feature` ("草图1") and the
+                # full name in `dimension` ("D1@草图1@part.Part"). The first version of this
+                # report only looked at the "@" form, so every entry fell through to value
+                # matching and `matched_by_name` was 0 even when the names agreed.
+                name_hit = any((c[2] or "") == full_want for c in candidates)
+            if "@" in full_want:
+                name_hit = any((c[1] or "").startswith(full_want) for c in candidates)
+                if not name_hit:
+                    _wp = full_want.split("@")
+                    _wd = _wp[0].strip()
+                    _wf = "".join(ch for ch in (_wp[1] if len(_wp) > 1 else "")
+                                  if not ch.isdigit())
+                    for c in candidates:
+                        _cp = (c[1] or "").split("@")
+                        if (len(_cp) > 1 and _cp[0].strip() == _wd
+                                and "".join(ch for ch in _cp[1] if not ch.isdigit()) == _wf):
+                            name_hit = True
+                            break
+            value_hit = False
+            if not name_hit and want_value is not None:
+                tol = max(0.05, abs(want_value) * 1e-4)
+                value_hit = any(c[3] is not None and abs(c[3] - want_value) <= tol
+                                for c in candidates)
+            row = {"dimension": entry.get("dimension") or full_want,
+                   "value_mm": None if want_value is None else round(want_value, 3),
+                   "kind": entry.get("kind") or "unknown"}
+            if name_hit:
+                by_name += 1
+                row["matched_by"] = "name"
+                rows.append(row)
+            elif value_hit:
+                by_value += 1
+                row["matched_by"] = "value"
+                rows.append(row)
+            else:
+                # Two causes, deliberately named apart — see the docstring.
+                derived = (row["kind"] == "derived"
+                           or str(entry.get("feature") or "") in ("外形", "总长", "总宽", "总高"))
+                row["reason"] = "bbox_derived" if derived else "not_inserted"
+                row["hint"] = ("外形尺寸不是模型尺寸，导入永远拿不到；用 list_drawing_edges + "
+                               "add_distance_dimension 从两条边标注"
+                               if derived else
+                               "该驱动尺寸没有被导入（特征不在任何已激活视图里、被压缩，或属于"
+                               "孔向导草图）；补标用 add_drawing_dimension(view_name=...)")
+                missing.append(row)
+        return {"planned": by_name + by_value + len(missing),
+                "matched_by_name": by_name, "matched_by_value": by_value,
+                "missing": missing, "complete": not missing,
+                "coverage_ratio": round((by_name + by_value)
+                                        / max(by_name + by_value + len(missing), 1), 4)}
+
     if not candidates:
-        return 0, [], [], "no dimensions were inserted by this call"
+        return 0, [], [], "no dimensions were inserted by this call", _coverage()
 
     def _keep(candidate):
         _, full, feature, value, _ = candidate
@@ -1989,7 +2068,8 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
     if not kept:
         return 0, [], [], ("none of the %d inserted dimensions matched the plan "
                            "(%d features / %d loose / %d values) — deleted nothing"
-                           % (len(candidates), len(features), len(loose_keys), len(values)))
+                           % (len(candidates), len(features), len(loose_keys), len(values))), \
+            _coverage()
 
     removed, failed = [], []
     for sheet_name, full, _, _, annotation in candidates:
@@ -2015,7 +2095,7 @@ def _filter_inserted_dimensions(doc, before_names, win, keep):
             doc.ClearSelection2(True)
         except Exception:
             pass
-    return len(kept), removed, failed, None
+    return len(kept), removed, failed, None, _coverage()
 
 
 @perf_hooks.timed("dim_outside")
@@ -2648,10 +2728,15 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
         # the same dimension is not counted twice, and only ever deletes annotations this
         # call inserted (`before_names`).
         filter_kept, filter_removed, filter_failed, filter_aborted = None, [], [], None
+        # 0.8.338 (roadmap "尺寸精准筛选"): the plan can promise more than the importer can
+        # deliver. `dimension_coverage` names every planned entry that did not reach the
+        # sheet and says which of the two reasons applies.
+        dimension_coverage = None
         if dimension_filter:
             try:
-                filter_kept, filter_removed, filter_failed, filter_aborted = \
-                    _filter_inserted_dimensions(doc, before_names, _win_auto, dimension_filter)
+                (filter_kept, filter_removed, filter_failed, filter_aborted,
+                 dimension_coverage) = _filter_inserted_dimensions(
+                    doc, before_names, _win_auto, dimension_filter)
             except Exception as exc:
                 filter_aborted = "filter pass failed: %s" % str(exc)[:120]
         # PR1 of the 2026-11-03 performance spec: a pipeline run saved four times and
@@ -2775,6 +2860,19 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
                 notes.append("dimension_filter 生效：保留 %s 条、删除 %d 条不符合规划"
                              "的尺寸（失败 %d 条）。"
                              % (filter_kept, len(filter_removed), len(filter_failed)))
+            _cov = dimension_coverage or {}
+            if _cov.get("missing"):
+                _by_reason = {}
+                for _m in _cov["missing"]:
+                    _by_reason[_m["reason"]] = _by_reason.get(_m["reason"], 0) + 1
+                notes.append(
+                    "规划里 %s 条尺寸没有落到图上（覆盖 %.0f%%）：%s。"
+                    "`bbox_derived` 是外形尺寸、本就不是模型尺寸；`not_inserted` 是导入器"
+                    "没放上去的驱动尺寸 —— 两种都要补标，见 `dimension_coverage.missing` 的 hint。"
+                    % (_cov.get("planned", 0) - (_cov.get("matched_by_name", 0)
+                                                  + _cov.get("matched_by_value", 0)),
+                       float(_cov.get("coverage_ratio") or 0) * 100,
+                       "、".join("%s=%d" % kv for kv in sorted(_by_reason.items()))))
         # P0-1: push this call's dimensions outside their views, stacked by side.
         outside_placed = 0
         outside_failed = []
@@ -2979,6 +3077,9 @@ def auto_dimension(drawing_path, all_views=True, include_unmarked=False, elimina
             filter_removed_names=filter_removed[:20],
             filter_failed=filter_failed[:10],
             filter_aborted=filter_aborted,
+            # 0.8.338: which planned dimensions actually reached the sheet, and why the rest
+            # did not (`bbox_derived` = not a model dimension; `not_inserted` = importer gap).
+            dimension_coverage=dimension_coverage,
             duplicate_dimension_names=len(duplicate_report),
             duplicate_examples=dict(list(duplicate_report.items())[:5]),
             dedupe_applied=bool(eliminate_duplicates),

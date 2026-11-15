@@ -484,6 +484,7 @@ A3 / 1:2、带标注的情况下实测：
 | **`material_library` 按文件名查找不可靠** | 传绝对路径可用（UTF-16 已修）；按文件名在 PROGRAMDATA/APPDATA 下遍历可能漏 | 建议传完整路径 |
 | **A3 最多 3 个视图** | 视图多了会互相挤占；剖视的强制对齐已可用 `set_view(break_alignment=True)` 解除（内部先 `IView.RemoveAlignment` 再写坐标） | 必要时拆两张图（结构 + 展开） |
 | **装配体拿不到包围盒** | `IAssemblyDoc` 没有 `GetPartBox`，组件 `GetBox` 在轻化下返回 None | 比例靠实测安全区推算 + 建完测量降档兜底 |
+| **计划内的尺寸不保证都能落到图上** | `InsertModelAnnotations3` 只能整体/按视图插入，且部分驱动尺寸（孔向导草图、被压缩特征）不暴露；外形总长是包围盒值、根本没有对应尺寸 | `dimension_coverage` 逐条给出 `bbox_derived` / `not_inserted` 与补标路径 |
 | **尺寸跨视图去重需外部传值** | 图纸尺寸是投影长度，同一条边不同视图值不同 | 去重只能靠调用方给 `known_values` |
 | **`produce_drawing` 会多标尺寸** | 默认 `prune_to_plan=true` 已按规划删除多余尺寸；`dimension_filter` 全不匹配时一条不删 | 看 `dimension_gap.pruned_to_plan` 与 `filter_aborted` |
 | **图面利用率低** | 布局只保证不越界，不保证填满 | 视图偏小、留白多，需人工放大 |
@@ -501,7 +502,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 秒级：语法 + 结构 + 321 条历史回归
+python tests/check_all.py       # 秒级：语法 + 结构 + 322 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```

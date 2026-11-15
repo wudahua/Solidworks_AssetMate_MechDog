@@ -11123,7 +11123,44 @@ def assert_require_end_to_end_accepts_a_partial_drawing():
     return "require() delegates: partial passes, blocker and default-strict both raise"
 
 
+def assert_planned_dimensions_are_accounted_for_one_by_one():
+    """0.8.338 (roadmap 尺寸精准筛选) — a plan can promise more than the sheet receives.
+
+    Measured on 接槽 A3: `plan_drawing` kept 16, the filter kept 12, and NOTHING said which
+    four were missing. Two very different causes hid behind the same silence:
+
+      * `bbox_derived` — 外形/总长 is a bounding-box value, not a model dimension; no
+        importer can ever insert it (it needs `add_distance_dimension` between two edges).
+      * `not_inserted` — a real driving dimension the importer skipped (feature not visible
+        in any activated view, suppressed, or a hole-wizard sketch).
+
+    Also pins the short-name branch: `plan_drawing` puts "草图1" in `feature` and the full
+    name in `dimension`, so a report that only looks for "@" reports `matched_by_name: 0`
+    and silently degrades every entry to value matching.
+
+    STILL SOURCE-LEVEL (the live numbers came from a real COM run, not from here).
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "_filter_inserted_dimensions")) or ""
+    for token in ("bbox_derived", "not_inserted", "coverage_ratio", "matched_by_name"):
+        assert token in body, "the coverage report lost `%s`" % token
+    assert 'if "@" not in full_want and full_want:' in body, (
+        "short feature names ('草图1') are ignored again — every entry will fall back to "
+        "value matching")
+    assert body.count("_coverage()") >= 3, (
+        "a return path of `_filter_inserted_dimensions` still returns four values")
+    auto = ast.get_source_segment(src, _function_node(ast.parse(src), "auto_dimension")) or ""
+    assert "dimension_coverage=dimension_coverage" in auto, (
+        "auto_dimension no longer surfaces the per-entry verdict")
+    pipe = _read("tools/pipeline.py")
+    assert '"coverage": (_dims_res or {}).get("dimension_coverage")' in pipe, (
+        "produce_drawing drops the coverage so the caller cannot see it")
+    return "every planned dimension is accounted for, with one of two named reasons"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.338 planned dims accounted for", assert_planned_dimensions_are_accounted_for_one_by_one),
     ("0.8.328 coverage numbers come from lists", assert_the_coverage_numbers_come_from_the_lists),
     ("0.8.319 title-scale failure lowers ok", assert_title_scale_failure_lowers_the_verdict),
     ("0.8.319 distance refuses an angle", assert_distance_dimension_refuses_to_call_an_angle_a_length),
