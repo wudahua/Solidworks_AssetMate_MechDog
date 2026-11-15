@@ -11252,7 +11252,35 @@ def assert_hole_to_bend_is_measured_with_a_named_rule():
     return "clearance measured per hole, rule named, boss-extrude excluded"
 
 
+def assert_min_flange_length_is_measured_and_called_approximate():
+    """0.8.342 (v0.9 step 2b) — 4t+R needs a number, and an honest error bar.
+
+    Walk: inner bend face → its two tangent LINES (`ICurve.LineParams`) → the planar face
+    across each tangent → farthest straight edge → flange length. Measured on door.SLDPRT
+    (t=1.0, R=2.54): sides 210.32 / 6.46 mm, threshold 6.54 → margin −0.08 mm.
+
+    A 0.08 mm gap is noise for a method that takes the WIDEST point of a flange, so
+    `borderline` (±0.2 mm) exists and the verdict is `warn`, never `fail`. What this
+    asserts is that the tolerance and the confidence label cannot quietly disappear.
+    """
+    geo = _read("tools/geometry.py")
+    assert "def bend_flange_lengths(" in geo
+    body = ast.get_source_segment(geo, _function_node(ast.parse(geo),
+                                                     "bend_flange_lengths")) or ""
+    assert '"confidence": "approx"' in body, (
+        "the measurement no longer labels itself approximate")
+    assert "GetTwoAdjacentFaces2" in body, "the tangent edge is not walked to its neighbour"
+    sm = _read("tools/sheet_metal.py")
+    for token in ("min_flange=flange_rows", "min_side_mm", "margin_mm", "tolerance_mm",
+                  '"borderline"'):
+        assert token in sm, "the receipt does not carry %s" % token
+    assert 'add("min_flange_length", "warn"' in sm, (
+        "a shop-convention rule now blocks a drawing")
+    return "flange length measured per side, approximate and borderline made explicit"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.342 min flange length measured", assert_min_flange_length_is_measured_and_called_approximate),
     ("0.8.341 hole-to-bend measured", assert_hole_to_bend_is_measured_with_a_named_rule),
     ("0.8.340 bend vs hole by owner feature", assert_bend_vs_hole_is_classified_by_owner_feature),
     ("0.8.339 gdt symbols are native", assert_gdt_symbols_are_native_not_chinese_text),

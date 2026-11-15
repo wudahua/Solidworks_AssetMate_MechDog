@@ -67,7 +67,7 @@ def point_line_distance(point, line_point, line_dir):
     return math.sqrt(_dot(_sub(point, closest), _sub(point, closest)))
 
 
-def extract_cylinders(body, call_method):
+def extract_cylinders(body, call_method, include_face=False):
     """Return every cylindrical face on a body as (point, axis, radius_mm).
 
     Uses `IBody2.GetFaces` (a method — attribute access raises) and
@@ -120,9 +120,14 @@ def extract_cylinders(body, call_method):
             resolved = resolve_pattern_kind(owner, win.Dispatch, win)
             if resolved:
                 kind, via_pattern = resolved, True
-        cylinders.append({"point": point, "axis": axis, "radius_mm": round(radius_mm, 3),
-                          "owner_name": owner_name, "owner_type": owner_type,
-                          "kind": kind, "via_pattern": via_pattern})
+        entry = {"point": point, "axis": axis, "radius_mm": round(radius_mm, 3),
+                 "owner_name": owner_name, "owner_type": owner_type,
+                 "kind": kind, "via_pattern": via_pattern}
+        if include_face:
+            # Private: the COM face, so callers can walk its edges without a second
+            # full GetFaces pass. Never serialised into a receipt.
+            entry["_face"] = face
+        cylinders.append(entry)
     return cylinders
 
 
@@ -236,6 +241,115 @@ def skew_line_distance(p1, d1, p2, d2):
         perp = [w[i] - dot * u[i] for i in range(3)]
         return _m.sqrt(sum(c * c for c in perp)), "parallel"
     return abs(sum(w[i] * cross[i] for i in range(3))) / cnorm, "crossing"
+
+
+def _line_dir(curve):
+    """Direction of an `ICurve` line as a unit vector, or None."""
+    import math as _m
+    try:
+        vals = [float(x) for x in curve.LineParams]
+    except Exception:
+        return None
+    if len(vals) < 6:
+        return None
+    d = vals[3:6]
+    n = _m.sqrt(sum(x * x for x in d))
+    return None if n <= 1e-12 else [x / n for x in d]
+
+
+def _point_of(curve):
+    try:
+        vals = [float(x) for x in curve.LineParams]
+    except Exception:
+        return None
+    return vals[:3] if len(vals) >= 6 else None
+
+
+def _perp_distance(p0, axis, q0):
+    """Distance from point q0 to the line through p0 with direction axis."""
+    import math as _m
+    w = [q0[i] - p0[i] for i in range(3)]
+    n = _m.sqrt(sum(x * x for x in axis))
+    if n <= 1e-12:
+        return None
+    d = [x / n for x in axis]
+    dot = sum(w[i] * d[i] for i in range(3))
+    perp = [w[i] - dot * d[i] for i in range(3)]
+    return _m.sqrt(sum(x * x for x in perp))
+
+
+def bend_flange_lengths(bend_face, dispatch, call_method=None):
+    """Approximate flange length on BOTH sides of a bend, in mm. Reads geometry only.
+
+    0.8.342 (v0.9 step 2b). The 4t+R rule is about how much material each side of a bend
+    has before its free edge. Walk: inner bend face -> its two tangent LINES -> the planar
+    face on the other side of each -> every straight edge of that plane -> the largest
+    perpendicular distance to the tangent line.
+
+    APPROXIMATE BY CONSTRUCTION (`confidence: "approx"`):
+      * an L-shaped or notched flange gives its farthest edge, so the number is an upper
+        bound of the width at the worst point, not the minimum width;
+      * a plane that spans two bends reports the strip width, which is what the rule wants
+        there anyway.
+
+    Returns `{"sides": [{"length_mm": .., "edges_seen": n}], "confidence": "approx"}`.
+    Missing pieces are reported as `sides: []` with a `reason`, never guessed.
+    """
+    axis = None
+    try:
+        params = [float(v) for v in bend_face.GetSurface.CylinderParams]
+        axis = params[3:6]
+    except Exception:
+        return {"sides": [], "reason": "cylinder params unreadable", "confidence": None}
+    try:
+        edges = list(bend_face.GetEdges or ())
+    except Exception:
+        return {"sides": [], "reason": "bend face has no readable edges",
+                "confidence": None}
+
+    sides = []
+    for raw in edges:
+        try:
+            edge = dispatch(raw)
+            curve = dispatch(edge.GetCurve)
+        except Exception:
+            continue
+        origin = _point_of(curve)
+        if origin is None:                # not a line (arc edge of the fillet)
+            continue
+        try:
+            adj = edge.GetTwoAdjacentFaces2
+            adj = adj() if callable(adj) else adj
+        except Exception:
+            adj = None
+        for araw in (adj or ()):
+            try:
+                face = dispatch(araw)
+                if not bool(face.GetSurface.IsPlane):
+                    continue
+                far = 0.0
+                seen = 0
+                for eraw in (face.GetEdges or ()):
+                    try:
+                        ec = dispatch(dispatch(eraw).GetCurve)
+                    except Exception:
+                        continue
+                    p = _point_of(ec)
+                    if p is None:
+                        continue
+                    d = _perp_distance(origin, axis, p)
+                    if d is None:
+                        continue
+                    seen += 1
+                    far = max(far, d * 1000.0)
+                if seen:
+                    sides.append({"length_mm": round(far, 2), "edges_seen": seen})
+            except Exception:
+                continue
+    if not sides:
+        return {"sides": [], "reason": "no planar neighbour with readable edges",
+                "confidence": None}
+    return {"sides": sides, "confidence": "approx"}
 
 
 def pair_bends(cylinders, thickness_mm, radius_eps_ratio=0.25, concentric_eps=CONCENTRIC_EPS,

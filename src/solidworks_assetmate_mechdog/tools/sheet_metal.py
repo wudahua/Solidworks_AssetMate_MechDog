@@ -141,7 +141,7 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         bodies = list(_call(model, "GetBodies2", 0, True) or ())
         if bodies:
             body = win.Dispatch(bodies[0])
-            cylinders = geo.extract_cylinders(body, _call)
+            cylinders = geo.extract_cylinders(body, _call, include_face=True)
       except Exception as exc:
         cylinder_error = str(exc)[:120]
     radius_groups = {}
@@ -239,6 +239,54 @@ def sheet_metal_qc(model_path, include_cylinders=False):
                            "r_outer_mm": round(max(g["radii"]), 3),
                            "point": g["point"], "axis": g["axis"]})
 
+    # ── 0.8.342 (v0.9 step 2b): min flange length, 4t + R ──────────────────────────────
+    # For each bend take the INNER face, walk its two tangent lines to the planar face on
+    # the other side, and take the farthest straight edge in that plane. Approximate by
+    # construction (`confidence: "approx"`): a notched flange reports its widest point.
+    flange_rows = []
+    if thickness:
+        for b in bends_geom:
+            face = next((c.get("_face") for c in (face_kinds.get("bend") or [])
+                         if c.get("owner_name") == b["feature"]
+                         and abs((c.get("radius_mm") or 0) - b["r_inner_mm"]) <= 0.01), None)
+            if face is None:
+                continue
+            import win32com.client as _win
+
+            info = _geo.bend_flange_lengths(face, _win.Dispatch)
+            sides = [s["length_mm"] for s in (info.get("sides") or [])]
+            if not sides:
+                flange_rows.append({"bend_feature": b["feature"],
+                                    "r_inner_mm": b["r_inner_mm"],
+                                    "sides_mm": [], "min_side_mm": None,
+                                    "threshold_mm": round(4.0 * float(thickness)
+                                                          + b["r_inner_mm"], 2),
+                                    "status": "unknown",
+                                    "reason": info.get("reason")})
+                continue
+            shortest = min(sides)
+            threshold = 4.0 * float(thickness) + b["r_inner_mm"]
+            # The measurement is an upper bound taken from face edges (see
+            # `bend_flange_lengths`), so a millimetre-level difference is noise. Treat
+            # |margin| <= tol as `borderline` instead of calling a 0.08 mm gap "too short".
+            tol = 0.2
+            margin = shortest - threshold
+            status = ("pass" if margin > tol
+                      else "borderline" if margin >= -tol else "too_short")
+            flange_rows.append({
+                "bend_feature": b["feature"], "r_inner_mm": b["r_inner_mm"],
+                "sides_mm": sides, "min_side_mm": round(shortest, 2),
+                "threshold_mm": round(threshold, 2),
+                "margin_mm": round(margin, 2),
+                "tolerance_mm": tol,
+                "rule": "min_side >= 4t + R（厂内口径）",
+                "confidence": info.get("confidence"),
+                "status": status,
+            })
+    _too_short = [r for r in flange_rows if r["status"] == "too_short"]
+    _borderline = [r for r in flange_rows if r["status"] == "borderline"]
+    _flange_unknown = [r for r in flange_rows if r["status"] == "unknown"]
+
     hole_to_bend = []
     if thickness and bends_geom:
         for h in (face_kinds.get("hole") or []):
@@ -289,6 +337,34 @@ def sheet_metal_qc(model_path, include_cylinders=False):
                        "blocking": blocking})
 
     add("is_sheet_metal", "pass", "SheetMetal 特征存在，%d 道弯折" % len(bends))
+    if not thickness:
+        add("min_flange_length", "not_checked", "未读到板厚，无法套用 4t + R 口径")
+    elif not flange_rows:
+        add("min_flange_length", "not_checked", "没有可测的折弯面")
+    elif _too_short:
+        add("min_flange_length", "warn",
+            "%d 道折弯的短边小于 4t+R：%s" % (
+                len(_too_short),
+                "；".join("%s 最短 %.2f < %.2f mm" % (
+                    r["bend_feature"], r["min_side_mm"], r["threshold_mm"])
+                    for r in _too_short[:3])))
+    elif _borderline:
+        add("min_flange_length", "warn",
+            "%d 道折弯的短边贴着 4t+R 临界（测量为近似值，±0.2 mm）：%s" % (
+                len(_borderline),
+                "；".join("%s 最短 %.2f vs %.2f mm（差 %.2f）" % (
+                    r["bend_feature"], r["min_side_mm"], r["threshold_mm"],
+                    r["margin_mm"]) for r in _borderline[:3])))
+    elif _flange_unknown:
+        add("min_flange_length", "not_checked",
+            "%d 道折弯的相邻平面读不到边（%s）" % (
+                len(_flange_unknown),
+                (_flange_unknown[0].get("reason") or "")[:60]))
+    else:
+        add("min_flange_length", "pass",
+            "%d 道折弯的短边均 ≥ 4t+R（最短 %.2f mm，口径 4t+R，近似测量）" % (
+                len(flange_rows), min(r["min_side_mm"] for r in flange_rows)))
+
     # hole-to-bend is measured now (v0.9 step 2a). Three states stay distinguishable:
     # not measurable (no thickness / no bends / no holes), measured-and-clear, measured
     # and too close. "to close" is `warn`, not `fail`: the 2t+R rule is shop convention,
@@ -338,9 +414,7 @@ def sheet_metal_qc(model_path, include_cylinders=False):
     # These need solid geometry distance maths that this build does not do yet. Say so
     # instead of returning a green tick.
     for item, why in (
-        ("min_flange_length",
-         "折弯/孔已能按所属特征分开（见 face_classification），但最小折弯边还要量"
-         "「折弯切线到法兰边」的距离（≥4t + R）；这一步的几何测量未做，故不判定"),
+
 
         ("bend_radius_vs_thickness", "需读折弯圆角半径并与 0.5t 比对；Feature 定义接口在本版本返回空"),
         ("thickness_consistency", "需逐特征比对板厚，当前只读到全局板厚"),
@@ -367,6 +441,7 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         # Per-hole numbers, not just a verdict: a shop can re-check the arithmetic and
         # override the 2t+R convention without re-deriving anything.
         hole_to_bend=hole_to_bend,
+        min_flange=flange_rows,
         cylinder_radius_groups_mm=sorted(
             ({"radius_mm": r, "diameter_mm": round(r * 2, 2), "count": n}
              for r, n in radius_groups.items()),

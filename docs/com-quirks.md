@@ -5815,3 +5815,58 @@ edge_clearance = |axis_hole : axis_bend| − R_bend − R_hole
 | `check_all.py` | 325/325 |
 | 真机 door | 3 孔有数，1 处 pass、2 处 too_close；`hole_to_bend_distance: warn` |
 | 耗时（panel box，80 面） | 187.8 s（含分类 + 距离） |
+
+---
+
+## 2026-11-15（v0.8.342）最小折弯边 4t+R：能量了，但要带误差棒（v0.9 第二步 b）
+
+### 怎么量的
+
+```text
+折弯内面 → 4 条边里 2 条是直线（ICurve.LineParams 可用）= 切线
+       → 每条切线 IEdge.GetTwoAdjacentFaces2 → 取 ISurface.IsPlane 的那一侧
+       → 该平面所有直线边到切线的垂距（垂直于折弯轴）→ 取最远 = 该侧法兰长度
+两侧取短的一侧，比 4t + R
+```
+
+探路时的三个坑（都在这一步之前踩完了）：
+
+| 坑 | 事实 |
+|---|---|
+| `IEdge.GetCurve` | 必须先 `win.Dispatch`，否则 `LineParams` 报 `'NoneType' object is not iterable` |
+| `IFace2.GetEdges` | 在模型面上是**属性**（tuple），`GetEdges()` 直接 `TypeError` |
+| `IEdge.GetTwoAdjacentFaces2` | 属性/方法两种形态都遇过，取一次判 callable |
+
+### 真机
+
+| 零件 | 折弯 | pass | borderline | too_short | 耗时 |
+|---|---|---|---|---|---|
+| door.SLDPRT（t=1.0，R=2.54，阈值 6.54） | 4 | 0 | **4**（6.46，差 −0.08） | 0 | 含在 61 面那一轮里 |
+| panel box.SLDPRT | 12 | 8 | 0 | **4**（4.46 < 6.54） | 299.2 s |
+
+door 的四道折弯两侧是 `[210.32, 6.46]` —— 一侧是整块门板，另一侧是 6.5 mm 的折边。
+**−0.08 mm 不能判「过短」**：这个方法取的是「该平面内离切线最远的直边」，本身就是上界；
+所以内置 `tolerance_mm = 0.2`，落在 ±0.2 内的记 `borderline`，`checks` 里写「贴着临界」
+而不是「小于 4t+R」。
+
+### 这是近似值，说清楚在哪
+
+| 项 | 说明 |
+|---|---|
+| `confidence` | 恒为 `"approx"` |
+| 形状 | L 形/缺口法兰取到的是**最宽点**，不是最窄处 → 偏乐观 |
+| 两侧 | 一个折弯只有两条切线，若某侧平面读不到边就记 `unknown` + `reason`，不猜 |
+| 结论 | 一律 `warn` 不 `fail`：4t+R 是厂内惯例，不是 GB 条文 |
+
+### 性能
+
+`panel box`（80 圆柱面、12 道折弯）整轮 **299.2 s**，比只算孔到折弯线（187.8 s）多约 111 s——
+每道折弯要遍历其相邻平面的全部边。**这已经是这个功能的上限成本**，没有更快且不牺牲覆盖的路；
+回执里保留逐折弯数据（`sides_mm` / `margin_mm`），调用方可按需要不要这一步。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | 326/326 |
+| 真机 door / panel box | 见上表 |
