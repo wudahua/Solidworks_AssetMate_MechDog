@@ -2088,7 +2088,10 @@ def assert_layout_prediction_matches_reality():
         "the phantom outline margin is still ignored")
     assert "candidate_box[0] + inflate" in body, (
         "_fit_scale compares model size against sheet size unscaled")
-    assert "cols = 1 if count <= 2 else 2" in body, (
+    # 0.8.337: the shape is hoisted (`_cols/_rows`) so the scale estimate and the placement
+    # cannot disagree. Accept either spelling, reject the "always 2x2" version.
+    assert ("cols = 1 if count <= 2 else 2" in body
+            or "_cols = 1 if _count <= 2 else 2" in body), (
         "the grid still assumes the 2x2 packer regardless of how many views were asked for")
     return "prediction accounts for the outline margin and the view count"
 

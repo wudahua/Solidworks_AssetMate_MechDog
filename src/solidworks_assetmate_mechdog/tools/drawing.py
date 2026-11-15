@@ -360,13 +360,31 @@ def _standard_scale(fit, tolerance=0.05):
     absorbs, yet the strict test dropped a whole step to 1:10. The caller still gets the
     post-build `auto_scale_adjustments` stepper if the guess was too generous.
     """
+    limit = fit * (1.0 + float(tolerance)) + 1e-9
+    # 0.8.337: the ladder only went DOWN, so `_fit_scale`'s 1.0 cap was never questioned —
+    # a Ø60 part stayed at 1:1 on an A3 with 74% of the sheet blank. Enlargement is part of
+    # the same preferred series (GB/T 14690: 2:1, 2.5:1, 5:1), so the ladder is ascending
+    # when the raw fit allows it. `AUTO_SCALE_MAX` still bounds it; a 3 mm pin will not be
+    # blown up 10x by accident.
+    if limit > 1.0:
+        for candidate in (2.0, 2.5, 4.0, 5.0, 10.0):
+            if candidate <= limit:
+                return min(candidate, AUTO_SCALE_MAX)
+        return 1.0
     for candidate in (1.0, 0.5, 0.4, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002):
-        if candidate <= fit * (1.0 + float(tolerance)) + 1e-9:
+        if candidate <= limit:
             return candidate
     return 0.002
 
 
 OUTLINE_MARGIN_M = 0.0119  # measured constant: GetOutline is 11.9 mm larger per side
+
+#: How far `auto_fit` may ENLARGE beyond 1:1 (0.8.337). Enlarging is what fills a sheet when
+#: the part is small — before this, a Ø60 part stayed at 1:1 on an A3 and used 26% of it,
+#: because `_fit_scale` capped the return at 1.0 and the ladder had no upward rung.
+#: 2.0 is deliberate: it covers the common "small part, A3" case without silently turning a
+#: 5 mm pin into a 5:1 sheet that no shop asked for.
+AUTO_SCALE_MAX = 2.0
 
 
 #: Outline-read instrumentation (0.8.120). Deliberately NOT a cache.
@@ -685,11 +703,27 @@ def create_drawing(
         # 0.293 vs a 0.287 safe edge on a 0.297 sheet.
         inflate = 2.0 * OUTLINE_MARGIN_M
 
+        # The grid shape decides how much room the views need, so it is computed ONCE here
+        # and used by both the scale estimate and the placement itself. 0.8.337: the old
+        # `_fit_scale` always assumed the 2x2 packer (w + gap + depth on BOTH axes), so a
+        # single-view sheet was sized as if it held four — one of the reasons a Ø60 part
+        # never got past 1:1.
+        _wanted = [v for v in views if str(v).strip().lower() in VIEW_ALIASES]
+        _count = max(len(_wanted), 1)
+        _cols = 1 if _count <= 2 else 2
+        _rows = 1 if _count <= 1 else 2
+
         def _fit_scale(candidate_box):
-            width_need = (candidate_box[0] + inflate) + gap + (candidate_box[2] + inflate)
-            height_need = (candidate_box[1] + inflate) + gap + (candidate_box[2] + inflate)
-            return min(avail_w / max(width_need, 1e-6),
-                       avail_h / max(height_need, 1e-6), 1.0)
+            ww1 = candidate_box[0] + inflate
+            hh1 = candidate_box[1] + inflate
+            dd1 = candidate_box[2] + inflate
+            need_w = ww1 if _cols == 1 else (ww1 + gap + dd1)
+            need_h = hh1 if _rows == 1 else (hh1 + gap + dd1)
+            # 0.8.337: the cap used to be 1.0 — "fit" meant "shrink until it fits", never
+            # "grow until it fills". Growth is bounded by AUTO_SCALE_MAX and still has to
+            # pass the predicted-layout check below, which steps back down on overflow.
+            return min(avail_w / max(need_w, 1e-6),
+                       avail_h / max(need_h, 1e-6), AUTO_SCALE_MAX)
 
         # Why this scale: callers had no way to tell "chosen because the model is big"
         # from "chosen by accident" — a report saw a 210 mm part land at 1:5 with the
@@ -705,6 +739,10 @@ def create_drawing(
                 "standard_scale": chosen_scale,
                 "ratio": "1:%g" % round(1.0 / chosen_scale, 3) if chosen_scale else None,
                 "rule": "largest standard scale not exceeding raw_fit",
+                # 0.8.337: say whether this sheet was ENLARGED — "why is this 2:1 when it
+                # fit at 1:1" must be answerable from the receipt, not from the picture.
+                "grown": bool(raw_fit > 1.0 + 1e-9),
+                "max_auto_scale": AUTO_SCALE_MAX,
             }
         elif chosen_scale is None:
             chosen_scale = 1.0
@@ -719,10 +757,10 @@ def create_drawing(
             # (front+top / right+iso), so a single view was placed in the TOP row of a
             # 2-row frame and touched it: measured view top 0.293 vs a 0.287 safe edge.
             # One view -> one cell, two -> one column, three or more -> the 2x2 grid.
-            wanted = [v for v in views if str(v).strip().lower() in VIEW_ALIASES]
-            count = max(len(wanted), 1)
-            cols = 1 if count <= 2 else 2
-            rows = 1 if count <= 1 else 2
+            # 0.8.337: the shape is computed once above (`_cols` / `_rows`) because the
+            # scale estimate needs the same answer; recomputing it here is how the two
+            # drifted apart.
+            cols, rows = _cols, _rows
             total_w = ww if cols == 1 else (ww + gap + dd)
             total_h = hh if rows == 1 else (hh + gap + dd)
             over = (total_w > avail_w + 1e-6) or (total_h > avail_h + 1e-6)
