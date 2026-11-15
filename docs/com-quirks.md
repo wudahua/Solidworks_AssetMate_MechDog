@@ -5279,3 +5279,40 @@ def _call_status(ok, execution_ok, failed_steps, error, blockers):
 对外契约没动 —— 读者（包括未来的我）会以为 API 已经变了。要么改代码，要么改措辞，**不能只改
 测试然后沿用同一句话**。另外：`ok` 这种被复用的布尔量，每加一种结局就该新增一个**派生**字段，
 而不是给它加第四种含义。
+
+---
+
+## 2026-11-15（v0.8.331）项目 venv + `mcp` 2.x 的环境陷阱
+
+### 现象
+
+同一天里 `tests/smoke.py` 先能跑、后崩溃，报：
+
+```text
+ModuleNotFoundError: No module named 'pythoncom'          # PATH 上的 python
+ModuleNotFoundError: No module named 'mcp.server.fastmcp' # 系统 3.11（mcp 已 2.x）
+```
+
+原因不是代码：PATH 上的 `python` 变成了 WorkBuddy 自带的 **3.13**（无 pywin32），而系统
+**3.11** 的 `mcp` 已被升到 **2.x** —— 2.x 移除了 `mcp.server.fastmcp`，`server.py` 第 28 行
+直接 ImportError。整个项目要求 `mcp>=1.2,<2`。
+
+### 处理
+
+给仓库建**自己的** `.venv`（3.11 + `mcp` 1.30.0 + pywin32 312 + pypdfium2 + Pillow），
+README 的「环境与安装」改成 venv 优先，并写明三条真机踩到的坑：
+
+| 报错 | 原因 | 处理 |
+|---|---|---|
+| `invalid command 'bdist_wheel'` | 全新 venv 没有 `wheel`，又加了 `--no-build-isolation` | `pip install setuptools wheel` 再装 |
+| `No module named 'mcp.server.fastmcp'` | 装到了 mcp 2.x 的环境 | 用仓库 `.venv`（锁定 `mcp<2`） |
+| `No module named 'pythoncom'` | 用了 WorkBuddy 自带的 3.13 | 同上 |
+
+验证：`.venv/Scripts/python.exe tests/check_all.py`（321/321）、`tests/stdio_contract.py`（6/6）、
+`tests/smoke.py --only "attach + version"`（PASS，`v0.8.330`，说明 COM 与 SolidWorks 也通）。
+
+### 教训
+
+**依赖的“可用”是有时效的。** 上午还能跑的 `python`，下午就变成了另一个解释器；`mcp` 也可能在
+系统环境里被别的项目顺手升到 2.x。**把运行时钉进仓库的 `.venv`，并在 README 写明为什么**——
+否则下一个人（或下一轮的我）会在 import 阶段就卡住，而那不是产品缺陷。

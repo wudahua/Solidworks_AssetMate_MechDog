@@ -6,6 +6,7 @@
 
 - `Solidworks_AssetMate_MechDog`：SolidWorks 工具集 MCP。GitHub 仓库名 = MCP 注册名（大小写一致），账号 `wudahua`，PUBLIC，分支 main。
 - 工作区根即仓库根；`src/solidworks_assetmate_mechdog/`（工具在 `tools/`，COM 统一走 `sw_session.py`，MCP 外壳在 `server.py`）。
+- **运行环境：只用仓库 `.venv`**（`py -3.11 -m venv .venv` + `pip install -e .`）。系统 3.11 的 `mcp` 可能已被升到 2.x（`mcp.server.fastmcp` 被删 → `server.py` ImportError）；PATH 上的 `python` 可能是 WorkBuddy 自带 3.13（无 pywin32）。全新 venv 装 `-e .` 前必须 `pip install setuptools wheel`，否则 `invalid command 'bdist_wheel'`。
 - 依赖：`mcp>=1.2,<2`（FastMCP）；Windows + pywin32；Python 包名小写。MCP 客户端读的是 **`server.py` 的 docstring**，改 `pipeline.py` 的注释对调用方不可见。
 - 工具规范：全部返回 JSON；写操作默认 dry-run、执行前快照原值；慢 COM 只取一次；COM 不可用不得编造结果。
 - 发布流程：`python tools/bump_version.py --to X.Y.Z` → `check_all` → `git commit` + `git tag` + push + `gh release create`。推送偶发代理 502（`CONNECT tunnel failed`），**只重试、不 `--force`**；`api.github.com` 常通而 `github.com:443` 不通。

@@ -10,10 +10,23 @@
 
 Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 注册名：`Solidworks_AssetMate_MechDog`。
 
+**适合**：批量零件出图、已有图纸的尺寸/标注补齐与自检、装配 BOM 与上色、把「这张图能不能交」变成可复核的回执。
+**不适合**：自由曲面造型、仿真（静力学/模态）、CAM 刀路、没有真实 SolidWorks 与许可的「云端出图」。
+
 差异化不在"会调 API"，而在把 SolidWorks COM 的坑固化进代码与文档 → [docs/com-quirks.md](docs/com-quirks.md)。
 
 最近一轮外部反馈的逐条对照（11 条问题、根因、证据强度、未做的理由）→
 [docs/2026-11-05-feedback-closure.md](docs/2026-11-05-feedback-closure.md)。
+
+| 我想… | 看这里 |
+|---|---|
+| 装好并接进 MCP 客户端 | [环境与安装](#环境与安装) |
+| 直接出一张图 | [快速上手](#快速上手)、[工程图闭环](#工程图闭环) |
+| 查某个工具的参数 | [三个能力域](#三个能力域)（73 个工具全表） |
+| 判断这张图能不能交 | [`produce_drawing`：不完整 ≠ 失败](#produce_drawing不完整--失败)、[真实图纸基线](#真实图纸基线) |
+| 知道哪些做不到 / 为什么 | [能力边界（诚实披露）](#能力边界诚实披露) |
+| 看历史踩坑与 COM 口径 | [docs/com-quirks.md](docs/com-quirks.md) |
+| 改代码 / 发版 | [发布与自检](#发布与自检)、[真机回归](#真机回归) |
 
 ---
 
@@ -360,27 +373,45 @@ A3 / 1:2、带标注的情况下实测：
 - Windows + SolidWorks 2020+（开发验证 2024 SP4；用户实测 2026 SP0 可用）
 - 64 位 Python 3.10+，与 SolidWorks 位数一致
 
-```bash
-pip install .
-# Pillow 与 pypdfium2 已随包安装（0.8.23 起）——渲染是自检链路的一环，不是可选装饰。
-# 旧命令 pip install ".[png]" 仍然可用，作为兼容别名。
+**先建项目自己的 venv，不要装进系统 Python。** 不是洁癖：`mcp` 2.x 删掉了
+`mcp.server.fastmcp`，装进系统解释器后 `server.py` 直接 `ImportError`；而 pywin32 又必须与
+SolidWorks 的位数一致。两者分开最省事。
+
+```bat
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+`--no-build-isolation` 时 venv 里必须有 `wheel`，否则报 `invalid command 'bdist_wheel'`
+（2026-11-15 本机实测）。Pillow 与 pypdfium2 从 0.8.23 起是**硬依赖**——渲染是自检链路的一环，
+不是可选装饰；旧命令 `pip install ".[png]"` 仍可用作兼容别名。
+
+装完自检（都不需要 SolidWorks，但都在同一个 venv 里跑）：
+
+```bat
+.\.venv\Scripts\python.exe tests\check_all.py         :: 语法 + 结构 + 321 条回归，秒级
+.\.venv\Scripts\python.exe tests\stdio_contract.py    :: 真实 stdio 进程的 MCP 契约
+.\.venv\Scripts\python.exe tests\smoke.py             :: 需 SolidWorks + 本地夹具，26–90 min
 ```
 
 | 现象 | 处理 |
 |---|---|
-| 隔离构建下载 `setuptools` 失败 | Python ≥3.12 的全新 venv 先 `pip install setuptools wheel`，再 `pip install -e ".[png]" --no-build-isolation` |
+| `invalid command 'bdist_wheel'` | venv 里缺 `wheel`：`pip install setuptools wheel` 后再装 |
+| `No module named 'mcp.server.fastmcp'` | 装到了 mcp 2.x 的环境；本项目要求 `mcp>=1.2,<2`，用仓库 `.venv` |
+| 隔离构建下载 `setuptools` 失败 | 先 `pip install setuptools wheel`，再加 `--no-build-isolation` |
 | 镜像报 `from versions: none`（实为 403） | 换源 `-i https://mirrors.aliyun.com/pypi/simple/` |
-| 找不到 `solidworks-assetmate-mechdog` 命令 | 入口在 `<python>\Scripts`，改用 `python -m` |
+| 找不到 `solidworks-assetmate-mechdog` 命令 | 入口在 `.venv\Scripts`，或改用 `-m` |
 | 工程图视图创建返回空 | 0.3.0 已处理（中文版视图名 `*前视`） |
 | 所有工具报 `int() argument must be ... VARIANT` | 0.1.5 已修复（强制晚绑定） |
 
-MCP 注册（不依赖 PATH）：
+MCP 注册（指向 venv，不依赖 PATH）：
 
 ```json
 {
   "mcpServers": {
     "Solidworks_AssetMate_MechDog": {
-      "command": "python",
+      "command": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\.venv\\Scripts\\python.exe",
       "args": ["-m", "solidworks_assetmate_mechdog.server"]
     }
   }
