@@ -1,6 +1,6 @@
 # Solidworks_AssetMate_MechDog
 
-![Before: all parts white / After: 19 part types in distinct colors](docs/images/recolor-before-after.png)
+![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![SolidWorks](https://img.shields.io/badge/SolidWorks-2020%2B-orange) ![MCP](https://img.shields.io/badge/MCP-stdio-purple)
 
 **一个会出图、也能证明这张图不能交的 SolidWorks MCP 服务。**
 
@@ -10,23 +10,31 @@
 
 Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 注册名：`Solidworks_AssetMate_MechDog`。
 
-**适合**：批量零件出图、已有图纸的尺寸/标注补齐与自检、装配 BOM 与上色、把「这张图能不能交」变成可复核的回执。
-**不适合**：自由曲面造型、仿真（静力学/模态）、CAM 刀路、没有真实 SolidWorks 与许可的「云端出图」。
-
-差异化不在"会调 API"，而在把 SolidWorks COM 的坑固化进代码与文档 → [docs/com-quirks.md](docs/com-quirks.md)。
-
-最近一轮外部反馈的逐条对照（11 条问题、根因、证据强度、未做的理由）→
-[docs/2026-11-05-feedback-closure.md](docs/2026-11-05-feedback-closure.md)。
+- **适合**：批量零件出图、已有图纸的尺寸/标注补齐与自检、装配 BOM 与上色、把「这张图能不能交」变成可复核的回执。
+- **不适合**：自由曲面造型、仿真（静力学/模态）、CAM 刀路、没有真实 SolidWorks 与许可的「云端出图」。
 
 | 我想… | 看这里 |
 |---|---|
-| 装好并接进 MCP 客户端 | [环境与安装](#环境与安装) |
-| 直接出一张图 | [快速上手](#快速上手)、[工程图闭环](#工程图闭环) |
-| 查某个工具的参数 | [三个能力域](#三个能力域)（73 个工具全表） |
-| 判断这张图能不能交 | [`produce_drawing`：不完整 ≠ 失败](#produce_drawing不完整--失败)、[真实图纸基线](#真实图纸基线) |
-| 知道哪些做不到 / 为什么 | [能力边界（诚实披露）](#能力边界诚实披露) |
-| 看历史踩坑与 COM 口径 | [docs/com-quirks.md](docs/com-quirks.md) |
-| 改代码 / 发版 | [发布与自检](#发布与自检)、[真机回归](#真机回归) |
+| 装好并接进 MCP 客户端 | [环境要求](#环境要求) · [安装](#安装) |
+| 直接出一张图并看到预期回执 | [快速开始](#快速开始) |
+| 查某个工具的参数 | [功能一览](#功能一览) · [三个能力域](#三个能力域) |
+| 判断这张图能不能交 | [工程图闭环](#工程图闭环从台账到交付判定) |
+| 看真实图纸的统计基线 | [真实图纸基线](#真实图纸基线) |
+| 知道哪些做不到、为什么 | [能力边界（诚实披露）](#能力边界诚实披露) |
+| 改代码 / 发版 / 跑真机 | [开发与自检](#开发与自检) · [真机回归](#真机回归) |
+| 查历史踩坑与 COM 口径 | [docs/com-quirks.md](docs/com-quirks.md) |
+
+---
+
+## 特性
+
+- **原生参数化**：尺寸、孔标注、形位公差、粗糙度、BOM 明细栏、标题栏全部是 SolidWorks 原生对象，改模型会跟着变；不是画线拼的图元。
+- **能证明「不能交」**：`delivery_check` 给三档结论（可制造 / 待设计审核 / 仅供参考），`call_status` 区分「不完整」与「失败」——两者都不靠「生成成功」交差。
+- **台账驱动**：`build_feature_ledger` 先数清模型有哪些特征/驱动尺寸/孔，`plan_drawing` 决定只标哪 11 个（真实图纸尺寸中位数），一条命令走完。
+- **每一步回读**：孔径、公差类型、剖切实际位置、粗糙度像素 diff、标注挂没挂到几何——`ok:true` 不等于图上是对的。
+- **失败可解释**：COM 不可用、模板不套框、角度落在平行边上，都返回结构化错误码 + `docs/com-quirks.md` 的对应章节，不假装成功。
+- **统一会话层**：所有工具共用 `sw_session`，慢调用只取一次；`ping` 约 18 ms，忙时退避重试、断线自动重连。
+- **依赖可复现**：仓库自带 `.venv` 安装步骤并锁定 `mcp>=1.2,<2`，避开 `mcp` 2.x 移除 `mcp.server.fastmcp` 的坑。
 
 ---
 
@@ -63,6 +71,155 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 ![门零件图](docs/images/sample_door.png)
 
 ---
+
+## 环境要求
+
+| 项目 | 要求 |
+|---|---|
+| 系统 | Windows x64 |
+| Python | 3.10+ x64，**与 SolidWorks 位数一致** |
+| CAD | SolidWorks 2020 或更新（开发验证 2024 SP4；用户实测 2026 SP0 可用） |
+| 渲染依赖 | Pillow、pypdfium2（0.8.23 起为硬依赖：`render_drawing` 与像素自检要用） |
+| 接口 | MCP stdio（`mcp>=1.2,<2`，FastMCP） |
+| 许可 | 你自己的 SolidWorks 许可；MIT 只覆盖本项目代码与文档 |
+
+SolidWorks 安装、模板与许可需自行准备；`测试用例/` 因体积与版权不入库，真机回归要自备模型。
+
+## 安装
+
+**先建项目自己的 venv，不要装进系统 Python。** 不是洁癖：`mcp` 2.x 删掉了
+`mcp.server.fastmcp`，装进系统解释器后 `server.py` 直接 `ImportError`；而 pywin32 又必须与
+SolidWorks 的位数一致。两者分开最省事。
+
+1. 取源码（`git clone` 或 release tarball），进入仓库根目录。
+
+2. 建 venv 并安装：
+
+   ```bat
+   py -3.11 -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+   .\.venv\Scripts\python.exe -m pip install -e .
+   ```
+
+   `--no-build-isolation` 时 venv 里必须有 `wheel`，否则报 `invalid command 'bdist_wheel'`
+   （2026-11-15 本机实测）。Pillow 与 pypdfium2 已随包安装；旧命令 `pip install ".[png]"` 仍可用作兼容别名。
+
+3. 装完自检（都不需要 SolidWorks，但都在同一个 venv 里跑）：
+
+   ```bat
+   .\.venv\Scripts\python.exe tests\check_all.py         :: 语法 + 结构 + 321 条回归，秒级
+   .\.venv\Scripts\python.exe tests\stdio_contract.py    :: 真实 stdio 进程的 MCP 契约
+   ```
+
+4. 接进 MCP 客户端（指向 venv，不依赖 PATH）：
+
+   ```json
+   {
+     "mcpServers": {
+       "Solidworks_AssetMate_MechDog": {
+         "command": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\.venv\\Scripts\\python.exe",
+         "args": ["-m", "solidworks_assetmate_mechdog.server"]
+       }
+     }
+   }
+   ```
+
+5. 重启客户端后调用 `ping`（应给出版本与往返延迟），再 `check_capabilities` 确认这台机器上哪些能力可用。
+
+| 现象 | 处理 |
+|---|---|
+| `invalid command 'bdist_wheel'` | venv 里缺 `wheel`：`pip install setuptools wheel` 后再装 |
+| `No module named 'mcp.server.fastmcp'` | 装到了 mcp 2.x 的环境；本项目要求 `mcp>=1.2,<2`，用仓库 `.venv` |
+| `No module named 'pythoncom'` | 解释器位数与 SolidWorks 不一致，或没装 pywin32 |
+| 隔离构建下载 `setuptools` 失败 | 先 `pip install setuptools wheel`，再加 `--no-build-isolation` |
+| 镜像报 `from versions: none`（实为 403） | 换源 `-i https://mirrors.aliyun.com/pypi/simple/` |
+| 找不到 `solidworks-assetmate-mechdog` 命令 | 入口在 `.venv\Scripts`，或改用 `-m` |
+| 工程图视图创建返回空 | 0.3.0 已处理（中文版视图名 `*前视`） |
+| 所有工具报 `int() argument must be ... VARIANT` | 0.1.5 已修复（强制晚绑定） |
+
+---
+
+## 快速开始
+
+一条命令出一张图，然后看回执判断能不能交：
+
+```json
+// produce_drawing：台账 → 规划 → 建图 → 标注 → 自检 → 判定
+{ "model_path": "D:/parts/接槽.SLDPRT",
+  "output_path": "D:/out/接槽.SLDDRW",
+  "paper": "A3" }
+```
+
+跑完应看到（A3、单零件、默认参数，本机实测）：
+
+```json
+{ "ok": false, "call_status": "incomplete", "execution_ok": true,
+  "error": "delivery_incomplete", "completeness": "incomplete",
+  "verdict": "待设计审核",
+  "partial_steps": ["hole_callouts"], "failed_steps": [], "blockers": [] }
+```
+
+**`ok:false` 不等于调用失败。** 图纸已经生成，只是孔标注那一步没做完。判据只看 `call_status`：
+`incomplete` = 打开图纸检查，**不要重试、不要回滚**；`failed` 才是失败。详见
+[工程图闭环](#工程图闭环从台账到交付判定)。
+
+两个约定：
+
+- **先问再画**：`check_capabilities` 声明这台机器哪些能力不可用，`plan_drawing` 给出该标哪几个尺寸——真实图纸尺寸中位数 11 个，全量导入会把 70 个驱动尺寸全倒上去。
+- **写操作默认 dry-run**：`apply:false` 返回修改前的值，确认后再 `apply:true`。
+
+### 常见调用
+
+**出一张图并自检**
+
+```json
+// 1. 建图
+{ "model_path": "D:/parts/P05.SLDPRT", "output_path": "D:/out/P05.SLDDRW",
+  "views": ["front", "right"], "paper": "A3", "view_scales": { "right": 0.2 } }
+
+// 2. 标注（导入 + 中心标记 + 标题栏）
+{ "drawing_path": "D:/out/P05.SLDDRW", "all_views": true, "include_unmarked": false }
+{ "drawing_path": "D:/out/P05.SLDDRW", "name": "履带轮", "code": "P05", "apply": true }
+
+// 3. 判定能不能交
+{ "model_path": "D:/parts/P05.SLDPRT", "drawing_path": "D:/out/P05.SLDDRW" }
+```
+
+**查缺哪些尺寸**
+
+```json
+{ "model_path": "D:/parts/P05.SLDPRT", "drawing_path": "D:/out/P05.SLDDRW" }
+→ coverage 0.879, unmatched_by_feature: { "Cut-Extrude1": [1.0, 30.0], "Vent1": [1.0] }
+```
+
+**装配上色**
+
+```json
+{ "assembly_path": "D:/models/beast.SLDASM",
+  "palette": { "Crank": [0.88, 0.20, 0.18], "Frame": [0.36, 0.40, 0.45] },
+  "apply": false }
+```
+
+dry-run 确认零件与匹配数无误后，再 `apply=true`。
+
+![Body-level recolor: 8 solid bodies, 8 colors](docs/images/recolor-bodies.png)
+
+---
+
+## 功能一览
+
+| 类别 | 代表工具 |
+|---|---|
+| 一条命令出图 | `produce_drawing`（台账 → 规划 → 建图 → 标注 → 自检 → 判定） |
+| 建模视图与版面 | `create_drawing`、`add_section_view`、`add_detail_view`、`add_flat_pattern_view`、`place_views` |
+| 尺寸与公差 | `auto_dimension`、`add_distance_dimension`、`add_angular_dimension`、`add_dimension_tolerance` |
+| 制造标注 | `add_hole_callouts`、`add_geometric_tolerance`、`add_surface_finish`、`add_datum_feature`、`add_weld_symbol` |
+| 图纸对象 | `add_bom_table`、`set_title_block`、`add_technical_requirements`、`add_sheet` |
+| 自检与判定 | `drawing_audit`、`reconcile_ledger`、`verify_dimension_attachments`、`delivery_check` |
+| 装配与零件 | `get_assembly_tree`、`export_bom`、`recolor_assembly`、`build_feature_ledger` |
+| 导出 | `export_drawing`（PDF/DWG/DXF）、`render_drawing`（PNG 目视）、`batch_export`（STEP） |
+
+全部 73 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
 
 ## 三个能力域
 
@@ -156,7 +313,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP 
 
 ---
 
-## 工程图闭环
+## 工程图闭环：从台账到交付判定
 
 ```
 特征台账 ──→ 出图 ──→ 标注 ──→ 自检 ──→ 交付判定
@@ -189,6 +346,41 @@ pending:   27/53 尺寸读不到关联
 > 上面这条记录来自 v0.4 那次实测。现在孔标注已经能做（`add_hole_callouts`），
 > 如果重跑，那行 blocker 会消失——但**工具依然会如实报出当时真实存在的缺陷**，
 > 而不是因为"新版本支持了"就把历史问题抹掉。
+
+### `produce_drawing`：不完整 ≠ 失败
+
+`ok` 只回答一个问题：**是不是全做完了**。所以「图纸已生成、某个非关键步骤没做完」会返回
+`ok: false` + `error: "delivery_incomplete"` —— 这是有意的（放宽 `ok` 会让
+`ok:true` + `completeness:"incomplete"` 那个 P0 复活）。但 `ok:false` + 非空 `error`
+恰好也是「调用失败」的标准形状，外部客户端很容易误判。
+
+判据只看一个字段 **`call_status`**：
+
+| 值 | 含义 | 该做什么 |
+|---|---|---|
+| `"ok"` | 全部完成 | 直接用 |
+| `"incomplete"` | **图纸已经生成**，有步骤没做完或需人工确认（`partial_steps` / `blockers`） | 打开图纸检查，**不要重试、不要回滚** |
+| `"failed"` | `execution_ok:false` 或 `failed_steps` 非空 | 这才是失败，重试或报错 |
+
+```python
+got = json.loads(produce_drawing(...))
+if got["call_status"] == "incomplete":
+    print(got["verdict"], got["partial_steps"], got["blockers"])
+elif got["call_status"] == "failed":
+    raise RuntimeError(got["message"])
+```
+
+`error: "delivery_incomplete"` 属于 `incomplete` 这一类，不是失败。
+
+### 部分结果不等于成功
+
+`ok()` 用 `setdefault`，调用方可以传 `ok=False`；`add_hole_callouts` 在跳过倒角歧义直径时
+就传 `ok=False, verdict="partial"`，并写 `partial_reason` 与 `excluded_diameters_mm`。
+`produce_drawing` 会把它抬到顶层（`ok:false` + `partial_steps`）、写进 `pending`，
+并由 `_callout_warning()` 说明缺哪几个直径。
+
+单孔 `add_hole_callout` 另给 `text_flags`：读不到图面文字时报 `text_unreadable`，
+带深度符号时报 `depth_on_a_through_bore_suspect` —— **`ok:true` 不等于文字是对的**。
 
 ---
 
@@ -228,92 +420,6 @@ pending:   27/53 尺寸读不到关联
 ```
 
 固定 `seed` 保证样本可复现，改阈值前后能直接对比。
-
----
-
-## 破坏性变更记录
-
-| 版本 | 变更 | 影响 |
-|---|---|---|
-| 0.4.7 | `set_part_material` 的 `material` 参数改名 `material_name` | 旧调用会 schema 校验失败，需同步改参数名（改名是为了修参数遮蔽模块名的 bug） |
-
-## 能力边界（诚实披露）
-
-权威来源是 `check_capabilities` 的输出——下表是它的摘要，若与工具输出冲突，以工具为准。
-
-| 限制 | 原因 | 影响 |
-|---|---|---|
-| **孔标注只覆盖朝向观察者的孔边** | 同一孔的两个面只有正面能标，背面返回 null（实测 door.SLDPRT：Ø8/Ø15 成功，Ø6 背面 8 条全失败） | 记 `hidden_side`，用 Ø 尺寸补；或换视图 |
-| **`material_library` 按文件名查找不可靠** | 传绝对路径可用（UTF-16 已修）；按文件名在 PROGRAMDATA/APPDATA 下遍历可能漏 | 建议传完整路径 |
-| **A3 最多 3 个视图** | 视图多了会互相挤占；剖视的强制对齐已可用 `set_view(break_alignment=True)` 解除（内部先 `IView.RemoveAlignment` 再写坐标） | 必要时拆两张图（结构 + 展开） |
-| **装配体拿不到包围盒** | `IAssemblyDoc` 没有 `GetPartBox`，组件 `GetBox` 在轻化下返回 None | 比例靠实测安全区推算 + 建完测量降档兜底 |
-| **尺寸跨视图去重需外部传值** | 图纸尺寸是投影长度，同一条边不同视图值不同 | 去重只能靠调用方给 `known_values` |
-| **`produce_drawing` 会多标尺寸** | 默认 `prune_to_plan=true` 已按规划删除多余尺寸；`dimension_filter` 全不匹配时一条不删 | 看 `dimension_gap.pruned_to_plan` 与 `filter_aborted` |
-| **图面利用率低** | 布局只保证不越界，不保证填满 | 视图偏小、留白多，需人工放大 |
-| **件号圆圈（BOM balloon）** | `InsertBOMBalloon2` 需 9 个必填参数；`InsertBalloon` 在 SW2024/SW2026 均 `DISP_E_UNKNOWNNAME` | 用 `add_note` 写数字，引线可用 `add_sheet_line`（**需 `AddToDB`，见工具表**），或界面手插 |
-| **展开计算与校验（flat_pattern_calc）** | 工具不读 K 因子，展开由 SolidWorks 自己算 | 用 `flat_pattern_report` 声明依据，不要拿它做展开验证 |
-| **把驱动尺寸补插到第二个视图** | `InsertModelAnnotations3` 是文档级幂等，参数改不出来 | 用 `list_drawing_edges` + `add_drawing_dimension(view_name=...)` 在该视图重新标注 |
-| **建模 / 特征创建（geometry_creation）** | 本工具只处理已有模型的出图，不做 CAD 建模 | 用 SolidWorks 或 solidpilot 类工具建模 |
-| **批量读图需逐张关闭** | SolidWorks 开 40+ 文档后任何新文件都打不开 | 批量脚本必须 `CloseDoc` |
-| **`model_clean` 不再阻断交付** | 本工具出图与自检，**明确不重建模型**；源模型 `needs_rebuild` 属模型侧状态，调用方在工具链内无法消除 | 0.8.23 起降为 pending 提示项，不再让 verdict 永远到不了「可制造」 |
-| **没有线程级硬超时** | pywin32 在拥有对象的 STA 线程上派发；把调用丢到工作线程再「超时放弃」会破坏 COM 公寓，而不是取消调用 | 改为「存活探针（18 ms，2 秒节流）+ 忙时退避重试 2 次 + 断线自动重连」，`ping` 可分辨"活着但忙"与"死了"；单次真正挂死仍会阻塞 |
-| **DXF/DWG 逆向建模** | 未实现 | 只有 SolidWorks 原生图纸能读 |
-
-设计原则第一条就是：**工具返回成功 ≠ 图纸正确**。所以每步都回读。
-
-开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
-
-```bash
-python tests/check_all.py       # 秒级：语法 + 结构 + 321 条历史回归
-python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
-python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
-```
-
-`stdio_contract.py` 起一个真进程走 MCP 握手，验证 `tools/list` 中每个 tool 顶层
-`inputSchema.additionalProperties` 都是 `false`、pydantic 生成的嵌套声明未被误改、
-正常调用仍能通过校验、未知参数被 `_install_argument_guard` 拒绝。**schema 声明与
-运行时守卫是两件事**：mcp 1.30.0 下只有声明、没有守卫时，`ping({"bogus_param":123})`
-照样 `ok:true`（pydantic `extra="ignore"` 丢键）；而客户端也可能在发送前按 schema
-本地过滤，让服务端守卫看不到原始参数。两者不能互相替代，详见
-[docs/com-quirks.md](docs/com-quirks.md) 的 2026-11-10（v0.8.292）一节。
-
----
-
-## 快速上手
-
-**出一张图并自检**
-
-```json
-// 1. 建图
-{ "model_path": "D:/parts/P05.SLDPRT", "output_path": "D:/out/P05.SLDDRW",
-  "views": ["front", "right"], "paper": "A3", "view_scales": { "right": 0.2 } }
-
-// 2. 标注（导入 + 中心标记 + 标题栏）
-{ "drawing_path": "D:/out/P05.SLDDRW", "all_views": true, "include_unmarked": false }
-{ "drawing_path": "D:/out/P05.SLDDRW", "name": "履带轮", "code": "P05", "apply": true }
-
-// 3. 判定能不能交
-{ "model_path": "D:/parts/P05.SLDPRT", "drawing_path": "D:/out/P05.SLDDRW" }
-```
-
-**查缺哪些尺寸**
-
-```json
-{ "model_path": "D:/parts/P05.SLDPRT", "drawing_path": "D:/out/P05.SLDDRW" }
-→ coverage 0.879, unmatched_by_feature: { "Cut-Extrude1": [1.0, 30.0], "Vent1": [1.0] }
-```
-
-**装配上色**
-
-```json
-{ "assembly_path": "D:/models/beast.SLDASM",
-  "palette": { "Crank": [0.88, 0.20, 0.18], "Frame": [0.36, 0.40, 0.45] },
-  "apply": false }
-```
-
-dry-run 确认零件与匹配数无误后，再 `apply=true`。
-
-![Body-level recolor: 8 solid bodies, 8 colors](docs/images/recolor-bodies.png)
 
 ---
 
@@ -368,59 +474,55 @@ A3 / 1:2、带标注的情况下实测：
 
 真实图纸尺寸中位 11 个；全量导入会把 70 个驱动尺寸全倒上去——制图是筛选，不是搬运。
 
-## 环境与安装
+## 能力边界（诚实披露）
 
-- Windows + SolidWorks 2020+（开发验证 2024 SP4；用户实测 2026 SP0 可用）
-- 64 位 Python 3.10+，与 SolidWorks 位数一致
+权威来源是 `check_capabilities` 的输出——下表是它的摘要，若与工具输出冲突，以工具为准。
 
-**先建项目自己的 venv，不要装进系统 Python。** 不是洁癖：`mcp` 2.x 删掉了
-`mcp.server.fastmcp`，装进系统解释器后 `server.py` 直接 `ImportError`；而 pywin32 又必须与
-SolidWorks 的位数一致。两者分开最省事。
+| 限制 | 原因 | 影响 |
+|---|---|---|
+| **孔标注只覆盖朝向观察者的孔边** | 同一孔的两个面只有正面能标，背面返回 null（实测 door.SLDPRT：Ø8/Ø15 成功，Ø6 背面 8 条全失败） | 记 `hidden_side`，用 Ø 尺寸补；或换视图 |
+| **`material_library` 按文件名查找不可靠** | 传绝对路径可用（UTF-16 已修）；按文件名在 PROGRAMDATA/APPDATA 下遍历可能漏 | 建议传完整路径 |
+| **A3 最多 3 个视图** | 视图多了会互相挤占；剖视的强制对齐已可用 `set_view(break_alignment=True)` 解除（内部先 `IView.RemoveAlignment` 再写坐标） | 必要时拆两张图（结构 + 展开） |
+| **装配体拿不到包围盒** | `IAssemblyDoc` 没有 `GetPartBox`，组件 `GetBox` 在轻化下返回 None | 比例靠实测安全区推算 + 建完测量降档兜底 |
+| **尺寸跨视图去重需外部传值** | 图纸尺寸是投影长度，同一条边不同视图值不同 | 去重只能靠调用方给 `known_values` |
+| **`produce_drawing` 会多标尺寸** | 默认 `prune_to_plan=true` 已按规划删除多余尺寸；`dimension_filter` 全不匹配时一条不删 | 看 `dimension_gap.pruned_to_plan` 与 `filter_aborted` |
+| **图面利用率低** | 布局只保证不越界，不保证填满 | 视图偏小、留白多，需人工放大 |
+| **件号圆圈（BOM balloon）** | `InsertBOMBalloon2` 需 9 个必填参数；`InsertBalloon` 在 SW2024/SW2026 均 `DISP_E_UNKNOWNNAME` | 用 `add_note` 写数字，引线可用 `add_sheet_line`（**需 `AddToDB`，见工具表**），或界面手插 |
+| **展开计算与校验（flat_pattern_calc）** | 工具不读 K 因子，展开由 SolidWorks 自己算 | 用 `flat_pattern_report` 声明依据，不要拿它做展开验证 |
+| **把驱动尺寸补插到第二个视图** | `InsertModelAnnotations3` 是文档级幂等，参数改不出来 | 用 `list_drawing_edges` + `add_drawing_dimension(view_name=...)` 在该视图重新标注 |
+| **建模 / 特征创建（geometry_creation）** | 本工具只处理已有模型的出图，不做 CAD 建模 | 用 SolidWorks 或 solidpilot 类工具建模 |
+| **批量读图需逐张关闭** | SolidWorks 开 40+ 文档后任何新文件都打不开 | 批量脚本必须 `CloseDoc` |
+| **`model_clean` 不再阻断交付** | 本工具出图与自检，**明确不重建模型**；源模型 `needs_rebuild` 属模型侧状态，调用方在工具链内无法消除 | 0.8.23 起降为 pending 提示项，不再让 verdict 永远到不了「可制造」 |
+| **没有线程级硬超时** | pywin32 在拥有对象的 STA 线程上派发；把调用丢到工作线程再「超时放弃」会破坏 COM 公寓，而不是取消调用 | 改为「存活探针（18 ms，2 秒节流）+ 忙时退避重试 2 次 + 断线自动重连」，`ping` 可分辨"活着但忙"与"死了"；单次真正挂死仍会阻塞 |
+| **DXF/DWG 逆向建模** | 未实现 | 只有 SolidWorks 原生图纸能读 |
 
-```bat
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
-.\.venv\Scripts\python.exe -m pip install -e .
+设计原则第一条就是：**工具返回成功 ≠ 图纸正确**。所以每步都回读。
+
+开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
+
+```bash
+python tests/check_all.py       # 秒级：语法 + 结构 + 321 条历史回归
+python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
+python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
 
-`--no-build-isolation` 时 venv 里必须有 `wheel`，否则报 `invalid command 'bdist_wheel'`
-（2026-11-15 本机实测）。Pillow 与 pypdfium2 从 0.8.23 起是**硬依赖**——渲染是自检链路的一环，
-不是可选装饰；旧命令 `pip install ".[png]"` 仍可用作兼容别名。
-
-装完自检（都不需要 SolidWorks，但都在同一个 venv 里跑）：
-
-```bat
-.\.venv\Scripts\python.exe tests\check_all.py         :: 语法 + 结构 + 321 条回归，秒级
-.\.venv\Scripts\python.exe tests\stdio_contract.py    :: 真实 stdio 进程的 MCP 契约
-.\.venv\Scripts\python.exe tests\smoke.py             :: 需 SolidWorks + 本地夹具，26–90 min
-```
-
-| 现象 | 处理 |
-|---|---|
-| `invalid command 'bdist_wheel'` | venv 里缺 `wheel`：`pip install setuptools wheel` 后再装 |
-| `No module named 'mcp.server.fastmcp'` | 装到了 mcp 2.x 的环境；本项目要求 `mcp>=1.2,<2`，用仓库 `.venv` |
-| 隔离构建下载 `setuptools` 失败 | 先 `pip install setuptools wheel`，再加 `--no-build-isolation` |
-| 镜像报 `from versions: none`（实为 403） | 换源 `-i https://mirrors.aliyun.com/pypi/simple/` |
-| 找不到 `solidworks-assetmate-mechdog` 命令 | 入口在 `.venv\Scripts`，或改用 `-m` |
-| 工程图视图创建返回空 | 0.3.0 已处理（中文版视图名 `*前视`） |
-| 所有工具报 `int() argument must be ... VARIANT` | 0.1.5 已修复（强制晚绑定） |
-
-MCP 注册（指向 venv，不依赖 PATH）：
-
-```json
-{
-  "mcpServers": {
-    "Solidworks_AssetMate_MechDog": {
-      "command": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "solidworks_assetmate_mechdog.server"]
-    }
-  }
-}
-```
+`stdio_contract.py` 起一个真进程走 MCP 握手，验证 `tools/list` 中每个 tool 顶层
+`inputSchema.additionalProperties` 都是 `false`、pydantic 生成的嵌套声明未被误改、
+正常调用仍能通过校验、未知参数被 `_install_argument_guard` 拒绝。**schema 声明与
+运行时守卫是两件事**：mcp 1.30.0 下只有声明、没有守卫时，`ping({"bogus_param":123})`
+照样 `ok:true`（pydantic `extra="ignore"` 丢键）；而客户端也可能在发送前按 schema
+本地过滤，让服务端守卫看不到原始参数。两者不能互相替代，详见
+[docs/com-quirks.md](docs/com-quirks.md) 的 2026-11-10（v0.8.292）一节。
 
 ---
 
-## 发布与自检
+## 破坏性变更记录
+
+| 版本 | 变更 | 影响 |
+|---|---|---|
+| 0.4.7 | `set_part_material` 的 `material` 参数改名 `material_name` | 旧调用会 schema 校验失败，需同步改参数名（改名是为了修参数遮蔽模块名的 bug） |
+
+## 开发与自检
 
 ### 版本号只用脚本改
 
@@ -470,31 +572,6 @@ tag_compare: no tag source (no CI env var, no _build_meta.json) and HEAD cannot 
 `git describe` 报 `not a git repository` 视为**无法判断**，不是「不在 tag 上」——
 这两种曾被混成一种，于是任何非仓库目录都能让门禁放行。
 
-### `produce_drawing`：不完整 ≠ 失败
-
-`ok` 只回答一个问题：**是不是全做完了**。所以「图纸已生成、某个非关键步骤没做完」会返回
-`ok: false` + `error: "delivery_incomplete"` —— 这是有意的（放宽 `ok` 会让
-`ok:true` + `completeness:"incomplete"` 那个 P0 复活）。但 `ok:false` + 非空 `error`
-恰好也是「调用失败」的标准形状，外部客户端很容易误判。
-
-判据只看一个字段 **`call_status`**：
-
-| 值 | 含义 | 该做什么 |
-|---|---|---|
-| `"ok"` | 全部完成 | 直接用 |
-| `"incomplete"` | **图纸已经生成**，有步骤没做完或需人工确认（`partial_steps` / `blockers`） | 打开图纸检查，**不要重试、不要回滚** |
-| `"failed"` | `execution_ok:false` 或 `failed_steps` 非空 | 这才是失败，重试或报错 |
-
-```python
-got = json.loads(produce_drawing(...))
-if got["call_status"] == "incomplete":
-    print(got["verdict"], got["partial_steps"], got["blockers"])
-elif got["call_status"] == "failed":
-    raise RuntimeError(got["message"])
-```
-
-`error: "delivery_incomplete"` 属于 `incomplete` 这一类，不是失败。
-
 ### 两套件分开报
 
 ```text
@@ -512,15 +589,7 @@ all offline checks passed
 `check_all.py` 只解析这一行、**不再自己数**——v0.8.327 曾出现 5 / 6 / 15 三个互相矛盾的
 数字，根因就是两个计数器各自扫 docstring 标记。
 
-### 部分结果不等于成功
-
-`ok()` 用 `setdefault`，调用方可以传 `ok=False`；`add_hole_callouts` 在跳过倒角歧义直径时
-就传 `ok=False, verdict="partial"`，并写 `partial_reason` 与 `excluded_diameters_mm`。
-`produce_drawing` 会把它抬到顶层（`ok:false` + `partial_steps`）、写进 `pending`，
-并由 `_callout_warning()` 说明缺哪几个直径。
-
-单孔 `add_hole_callout` 另给 `text_flags`：读不到图面文字时报 `text_unreadable`，
-带深度符号时报 `depth_on_a_through_bore_suspect` —— **`ok:true` 不等于文字是对的**。
+---
 
 ## 真机回归
 

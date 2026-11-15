@@ -1,4 +1,4 @@
 """Solidworks_AssetMate_MechDog — a SolidWorks toolkit exposed as an MCP server."""
 
-__version__ = "0.8.331"
+__version__ = "0.8.332"
 SERVER_NAME = "Solidworks_AssetMate_MechDog"
