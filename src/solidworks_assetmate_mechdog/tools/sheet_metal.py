@@ -211,9 +211,6 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         "fillets": _summ(face_kinds["fillet"]),
         "unresolved": _summ(face_kinds["pattern"] + face_kinds["other"]),
         "pattern_hints": pattern_hints,
-        "note": ("这解决的是「哪个圆柱面是孔、哪个是折弯圆角」；两段距离"
-                 "（最小折弯边 ≥4t+R、孔到折弯线 ≥2t+R）仍未计算，"
-                 "所以那两项继续保持 not_checked。"),
     } if include_cylinders else None
 
     # ── 0.8.341 (v0.9 step 2a): hole-to-bend clearance ──────────────────────────────────
@@ -329,6 +326,18 @@ def sheet_metal_qc(model_path, include_cylinders=False):
             prev["faces"] = prev.get("faces", 1) + 1
     hole_to_bend = list(_collapsed.values())
     _too_close = [r for r in hole_to_bend if r["status"] == "too_close"]
+
+    # 0.8.345 (report §P1-2): the note is written AFTER the numbers, so it cannot claim
+    # "still not computed" while `checks` says `warn`.
+    if classification is not None:
+        classification["note"] = (
+            "折弯/孔/普通圆角按**面的所属特征**分类（不依赖半径）。"
+            + ("孔到折弯线与最小折弯边**已计算**（0.8.341/342）：见 `checks`、`hole_to_bend`、"
+               "`min_flange`；口径 2t+R / 4t+R 是厂内惯例，结论 `warn` 不 `fail`，"
+               "最小折弯边为近似值（±0.2 mm 内记 borderline）。"
+               if (hole_to_bend or flange_rows) else
+               "孔到折弯线与最小折弯边**本次未算出**：%s"
+               % ("未读到板厚" if not thickness else "没有可识别的折弯面/孔面")))
 
     checks = []
 

@@ -106,6 +106,22 @@ async def _probe():
                    and seal.get("sealed") == len(tools),
                    "seal=%r isError=%s" % (seal, getattr(good, "isError", None)))
 
+            # 0.8.345 (report 2026-11-15 v0.8.344 §P1-3): the tool description tells clients
+            # to branch on `call_status`. Two rounds of reports measured that the early-exit
+            # receipts did not carry it, so that branch raised KeyError on exactly the
+            # failures a client hits first. This drives the real failure over MCP.
+            early = await session.call_tool("produce_drawing", {
+                "model_path": "C:/definitely/not/here.SLDPRT",
+                "output_path": "C:/definitely/not/here.SLDDRW"})
+            try:
+                early_payload = json.loads(_text(early))
+            except Exception as exc:
+                early_payload = {"parse_error": str(exc)}
+            record("early exit carries call_status",
+                   early_payload.get("call_status") == "failed",
+                   "call_status=%r error=%r"
+                   % (early_payload.get("call_status"), early_payload.get("error")))
+
             bad = await session.call_tool("list_tool_profiles", {"bogus_param": 123})
             bad_text = _text(bad)
             try:

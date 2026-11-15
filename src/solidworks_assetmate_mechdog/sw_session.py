@@ -696,7 +696,18 @@ def ok(**payload):
 
 
 def error(code, message, hint=None, **extra):
-    payload = {"ok": False, "error": code, "message": message}
+    """A failed call. Always carries `execution_ok` and `call_status`.
+
+    0.8.345 (report 2026-11-15 v0.8.344 §P1-3, second round): `produce_drawing` answered
+    `call_status` on its SUCCESS path but not on six early exits, and the tool description's
+    one-line client rule (`got["call_status"]`) raised KeyError on exactly the failures a
+    client hits first — `bad_input`, `output_exists`, `ledger_failed`. Two rounds of reports
+    asked for this. Deriving it HERE, once, is the only place that cannot be forgotten:
+    an `error()` receipt did not execute, so `execution_ok` is False and `call_status` is
+    `failed` unless the caller says otherwise.
+    """
+    payload = {"ok": False, "error": code, "message": message,
+               "execution_ok": False, "call_status": "failed"}
     if hint:
         payload["hint"] = hint
     if extra:

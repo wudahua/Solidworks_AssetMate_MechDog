@@ -6,8 +6,8 @@
 |---|---|
 | 模型 | D:\WorkBuddy_space\Solidworks_AssetMate_MechDog\logs\callstatus_probe\csdoor.SLDPRT |
 | 图纸 | D:\WorkBuddy_space\Solidworks_AssetMate_MechDog\logs\callstatus_probe\csdoor.SLDDRW |
-| 生成时间 | 2026-11-15 18:10:51 |
-| 工具版本 | 0.8.342 |
+| 生成时间 | 2026-11-15 21:05:54 |
+| 工具版本 | 0.8.344 |
 | 回执 ok | true |
 
 ## 阻断项
@@ -58,11 +58,19 @@
 | features | 20 |
 | model_doubts | [] |
 
+## 尺寸覆盖（计划）
+
+无 —— `delivery_check` 不提供计划级覆盖；数字在 `auto_dimension` 的 `dimension_coverage` 里（`produce_drawing` 的 `dimension_gap.coverage` 会带出）。台账覆盖率见「待确认」中的 `ledger_reconciled`。
+
 ## 页面
 
 | 页 | 图幅 mm | 视图 | 尺寸 | 问题 |
 |---|---|---|---|---|
 | 图纸1 | 420×297 | 3 | 21 |  |
+
+## 钣金工艺
+
+无 —— 本次未要求（`include_sheet_metal=True` 才会跑，80 面零件约 150–300 s）
 
 ## 口径
 
@@ -74,8 +82,8 @@ verdict 依据流程 §7；blockers 非空即不可宣称可制造，ai_supplied
 
 ```json
 {
- "generated_at": "2026-11-15 18:10:51",
- "tool_version": "0.8.342",
+ "generated_at": "2026-11-15 21:05:54",
+ "tool_version": "0.8.344",
  "model": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\logs\\callstatus_probe\\csdoor.SLDPRT",
  "drawing": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\logs\\callstatus_probe\\csdoor.SLDDRW",
  "verdict": "待设计审核",
@@ -216,6 +224,7 @@ verdict 依据流程 §7；blockers 非空即不可宣称可制造，ai_supplied
   }
  ],
  "note": "verdict 依据流程 §7；blockers 非空即不可宣称可制造，ai_supplied 非空则只能算待设计审核。无关联实体的尺寸计入 **pending**（不是 blockers）——它表示「图纸还不能交付审核」，与「不可制造」是两个等级。当前：blockers 0 项、pending 2 项、ai_supplied 0 项。",
- "sheet_metal": null
+ "sheet_metal": null,
+ "dimension_coverage": null
 }
 ```

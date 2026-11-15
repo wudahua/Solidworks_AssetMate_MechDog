@@ -107,8 +107,10 @@ SolidWorks 的位数一致。两者分开最省事。
 3. 装完自检（都不需要 SolidWorks，但都在同一个 venv 里跑）：
 
    ```bat
-   .\.venv\Scripts\python.exe tests\check_all.py         :: 语法 + 结构 + 321 条回归，秒级
-   .\.venv\Scripts\python.exe tests\stdio_contract.py    :: 真实 stdio 进程的 MCP 契约
+   REM 语法 + 结构 + 330 条回归，约 3 分钟
+   .\.venv\Scripts\python.exe tests\check_all.py
+   REM 真实 stdio 进程的 MCP 契约（不需 SolidWorks）
+   .\.venv\Scripts\python.exe tests\stdio_contract.py
    ```
 
 4. 接进 MCP 客户端（指向 venv，不依赖 PATH）：
@@ -117,7 +119,7 @@ SolidWorks 的位数一致。两者分开最省事。
    {
      "mcpServers": {
        "Solidworks_AssetMate_MechDog": {
-         "command": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\.venv\\Scripts\\python.exe",
+         "command": "<仓库路径>\\.venv\\Scripts\\python.exe",
          "args": ["-m", "solidworks_assetmate_mechdog.server"]
        }
      }
@@ -143,7 +145,7 @@ SolidWorks 的位数一致。两者分开最省事。
 
 一条命令出一张图，然后看回执判断能不能交：
 
-```json
+```jsonc
 // produce_drawing：台账 → 规划 → 建图 → 标注 → 自检 → 判定
 { "model_path": "D:/parts/接槽.SLDPRT",
   "output_path": "D:/out/接槽.SLDDRW",
@@ -172,7 +174,7 @@ SolidWorks 的位数一致。两者分开最省事。
 
 **出一张图并自检**
 
-```json
+```jsonc
 // 1. 建图
 { "model_path": "D:/parts/P05.SLDPRT", "output_path": "D:/out/P05.SLDDRW",
   "views": ["front", "right"], "paper": "A3", "view_scales": { "right": 0.2 } }
@@ -463,7 +465,7 @@ A3 / 1:2、带标注的情况下实测：
 
 ## 出图前先问两句
 
-```json
+```jsonc
 // 1. 什么做不了？
 { "operation": "hole_callout" }
 → status: pilot, why: 视图可见边 + AddHoleCallout2，SW2026 无弹窗；背面孔返回 null
@@ -503,7 +505,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 秒级：语法 + 结构 + 327 条历史回归
+python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 330 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```

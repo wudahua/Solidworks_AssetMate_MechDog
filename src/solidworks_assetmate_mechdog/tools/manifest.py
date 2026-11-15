@@ -41,7 +41,19 @@ def render_manifest(payload):
     filed next to its predecessors. Empty sections still appear, with 「无」 — a missing
     section reads as "not checked", which is a different claim.
     """
-    payload = payload or {}
+    payload = payload if isinstance(payload, dict) else {}
+
+    def _as_dict(value):
+        # 0.8.345 (report 2026-11-15 v0.8.344 §P1-1/§P2): a public "PURE — takes a dict"
+        # function used to raise AttributeError on `checks: list` or `blockers: ["str"]`.
+        # Production passes dicts, but a manifest is exactly the thing third parties build
+        # by hand, so coerce instead of exploding.
+        return value if isinstance(value, dict) else {}
+
+    def _as_rows(value):
+        rows = value if isinstance(value, (list, tuple)) else []
+        return [r if isinstance(r, dict) else {"detail": r} for r in rows]
+
     lines = []
     verdict = payload.get("verdict") or "未判定"
     lines.append("# 交付清单")
@@ -63,18 +75,18 @@ def render_manifest(payload):
         lines.append(body if body else "无")
         lines.append("")
 
-    blockers = payload.get("blockers") or []
+    blockers = _as_rows(payload.get("blockers"))
     _section("阻断项", _table(["检查", "说明"],
                               [(b.get("check") or b.get("name"), b.get("detail"))
                                for b in blockers]) if blockers else "无（没有阻断交付的问题）")
 
-    pending = payload.get("pending") or []
+    pending = _as_rows(payload.get("pending"))
     _section("待确认（不阻断，但需人看一眼）",
              _table(["检查", "说明"],
                     [(p.get("check") or p.get("name"), p.get("detail"))
                      for p in pending]) if pending else "无")
 
-    checks = payload.get("checks") or {}
+    checks = _as_dict(payload.get("checks"))
     rows = []
     for name, item in checks.items():
         if not isinstance(item, dict):
@@ -91,15 +103,14 @@ def render_manifest(payload):
         rows.append((name, state, item.get("detail")))
     _section("检查项", _table(["检查", "结果", "说明"], rows) if rows else "无")
 
-    facts = payload.get("facts") or {}
-    if facts:
-        _section("实测数据", _table(["指标", "值"],
-                                  [(k, json.dumps(v, ensure_ascii=False)
-                                    if isinstance(v, (list, dict)) else v)
-                                   for k, v in facts.items()]))
+    facts = _as_dict(payload.get("facts"))
+    _section("实测数据", _table(["指标", "值"],
+                              [(k, json.dumps(v, ensure_ascii=False)
+                                if isinstance(v, (list, dict)) else v)
+                               for k, v in facts.items()]) if facts else "")
 
-    cov = payload.get("dimension_coverage")
-    if isinstance(cov, dict) and cov:
+    cov = _as_dict(payload.get("dimension_coverage"))
+    if cov:
         body = ["计划 %s 条，落到图上 %s 条（覆盖 %s%%）。" % (
             cov.get("planned"), (cov.get("matched_by_name") or 0)
             + (cov.get("matched_by_value") or 0),
@@ -110,18 +121,30 @@ def render_manifest(payload):
             body.append(_table(["未落图的尺寸", "数值 mm", "原因", "补标路径"],
                                [((m.get("dimension") or ""), m.get("value_mm"),
                                  m.get("reason"), m.get("hint")) for m in missing]))
-        _section("尺寸覆盖", "\n".join(body))
+        _section("尺寸覆盖（计划）", "\n".join(body))
+    else:
+        # 0.8.345 (report §P1-1): this section used to vanish while the receipt's `sections`
+        # claimed it. `delivery_check` has NO plan-level coverage — the number lives in
+        # `auto_dimension.dimension_coverage` — so say that instead of implying a check
+        # that never ran.
+        _section("尺寸覆盖（计划）",
+                 "无 —— `delivery_check` 不提供计划级覆盖；数字在 `auto_dimension` 的 "
+                 "`dimension_coverage` 里（`produce_drawing` 的 `dimension_gap.coverage` 会带出）。"
+                 "台账覆盖率见「待确认」中的 `ledger_reconciled`。")
 
-    sheets = payload.get("sheets") or []
-    if sheets:
-        _section("页面", _table(["页", "图幅 mm", "视图", "尺寸", "问题"],
-                               [(s.get("name"),
-                                 "×".join("%.0f" % (v * 1000) for v in (s.get("size_m") or []))
-                                 if s.get("size_m") else "",
-                                 s.get("view_count"), s.get("dimensions"),
-                                 "；".join(s.get("issues") or [])) for s in sheets]))
+    sheets = _as_rows(payload.get("sheets"))
+    _section("页面", _table(["页", "图幅 mm", "视图", "尺寸", "问题"],
+                           [(s.get("name"),
+                             "×".join("%.0f" % (v * 1000) for v in (s.get("size_m") or []))
+                             if s.get("size_m") else "",
+                             s.get("view_count"), s.get("dimensions"),
+                             "；".join(s.get("issues") or [])) for s in sheets])
+             if sheets else "")
 
     sm = payload.get("sheet_metal")
+    if not (isinstance(sm, dict) and sm.get("ok")):
+        _section("钣金工艺", "无 —— 本次未要求（`include_sheet_metal=True` 才会跑，"
+                              "80 面零件约 150–300 s）")
     if isinstance(sm, dict) and sm.get("ok"):
         body = [_table(["检查", "结果", "说明"],
                        [(c.get("check"),
@@ -167,7 +190,8 @@ def render_manifest(payload):
 
 
 def export_delivery_report(model_path, drawing_path, output_path=None,
-                           include_faces=False, include_sheet_metal=False):
+                           include_faces=False, include_sheet_metal=False,
+                           dimension_coverage=None):
     """Write the manifest and return its path plus the verdict it carries.
 
     Read-only with respect to the drawing: nothing is opened, saved or modified — the
@@ -217,6 +241,10 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
         "sheets": check.get("sheets") or [],
         "note": check.get("note"),
         "sheet_metal": sm,
+        # Only when the caller has a plan-level number (it comes from `auto_dimension`, not
+        # from `delivery_check`). Left out otherwise — the section then says so instead of
+        # disappearing while the receipt claims it exists.
+        "dimension_coverage": dimension_coverage,
     }
     text = render_manifest(payload)
 
@@ -241,8 +269,12 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
         pending=len(payload["pending"]),
         checks=len(payload["checks"]),
         includes_sheet_metal=bool(sm and sm.get("ok")),
-        sections=["正文", "阻断项", "待确认", "检查项", "实测数据",
-                  "尺寸覆盖", "页面", "钣金工艺", "口径", "原始回执"],
-        note=("清单一页，内容全部来自 delivery_check；它不新增判断，"
-              "「未检查」不等于通过。"),
+        # 0.8.345 (report 2026-11-15 v0.8.344 §P1-1): `sections` used to be a hard-coded
+        # list of ten names, two of which could never be rendered. Derive it from the text
+        # we actually wrote — a receipt that describes a different file than it produced is
+        # the same lie the rest of this project spent the day removing.
+        sections=[ln[3:].strip() for ln in text.splitlines() if ln.startswith("## ")],
+        note=("清单一页：结论与检查项来自 delivery_check，不新增判断；"
+              "「尺寸覆盖（计划）」只在调用方传入 dimension_coverage 时有数字，"
+              "否则明写「无」；「未检查」不等于通过。"),
     )

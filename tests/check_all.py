@@ -103,11 +103,15 @@ def main():
     if _counts:
         # 0.8.330 (report 2026-11-14 v0.8.329 §5.3): "behavioural" hides that one of them
         # exercises the smoke harness rather than the product. Name the split.
-        print("  source-level : %d assertions (%d behavioural = %d package + %d harness; "
-              "%d text/AST)"
+        # 0.8.345 (report 2026-11-15 v0.8.344 §P2): the suite now splits the subprocess
+        # launch out of "call the package" — it executes package code, but out of process.
+        print("  source-level : %d assertions (%d behavioural = %d package + %d subprocess "
+              "+ %d harness%s; %d text/AST)"
               % (_counts["total"], _counts["behavioural"],
                  _counts.get("package", _counts["behavioural"]),
-                 _counts.get("harness", 0), _counts["text_ast"]))
+                 _counts.get("subprocess", 0), _counts.get("harness", 0),
+                 (" + %d unknown" % _counts["unknown"]) if _counts.get("unknown") else "",
+                 _counts["text_ast"]))
     else:
         print("  source-level : UNKNOWN — `regressions.py` printed no `counts:` line "
               "(fix that before trusting any coverage number)")

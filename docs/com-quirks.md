@@ -5947,3 +5947,53 @@ P05 无尺寸）——文件存在、结论在、JSON 能解析且与回执一�
 
 **跨十几个版本攒着不跑全量，等于把风险堆在一次运行里。** 这次绿，不代表中间每一步都绿——
 它只说明「合在一起还能用」。真正的定位仍然靠单跑（`--only`）。
+
+---
+
+## 2026-11-15（v0.8.345）回执说十段、文件只有七段：清单的「段」改成从产物里数
+
+### 三个 P1
+
+| 问题 | 根因 | 修法 |
+|---|---|---|
+| `sections` 硬编码 10 个名字 | 与渲染结果无关；「尺寸覆盖」永远不可能出现（`delivery_check` 没有计划级覆盖），「钣金工艺」只在 `include_sheet_metal=True` 时出现 | `sections` 改成**解析刚写出的文本**的 `## ` 标题；空段一律渲染「无」 |
+| `sheet_metal_qc` 同一回执「已算」与「仍未计算」并存 | note 是 0.8.340 写的，0.8.341/342 实现两项后没同步 | note 移到**计算之后**赋值，按 `hole_to_bend` / `min_flange` 是否非空说话 |
+| 6 条早退路径缺 `call_status`（连续两轮报告） | 只在 `produce_drawing` 主路径写，`error()` 不知道 | 在 `sw_session.error()` 一次派生：`execution_ok=False` + `call_status="failed"`（调用方可覆盖） |
+
+### 清单的「段」怎么数
+
+```python
+sections=[ln[3:].strip() for ln in text.splitlines() if ln.startswith("## ")]
+```
+
+真机：`['阻断项','待确认（不阻断，但需人看一眼）','检查项','实测数据','尺寸覆盖（计划）','页面','钣金工艺','口径','原始回执']`（9 段），文件里这 9 个标题全部存在。
+
+「尺寸覆盖（计划）」现在明写：
+
+> 无 —— `delivery_check` 不提供计划级覆盖；数字在 `auto_dimension` 的 `dimension_coverage` 里
+> （`produce_drawing` 的 `dimension_gap.coverage` 会带出）。台账覆盖率见「待确认」中的 `ledger_reconciled`。
+
+调用方若传 `dimension_coverage`（dict），该段才出数字并列出未落图尺寸。
+
+### 顺手修的 P2
+
+| 项 | 改法 |
+|---|---|
+| `_behavioural_breakdown()` 靠源码字符串分类 | 改纯 AST；subprocess 单列一类。真机口径 `16 package + 1 subprocess + 2 harness`，`unknown=0` |
+| README「321 条回归，秒级」 | 改为「330 条，约 3 分钟」（实测 check_all ≈186 s） |
+| bat 块里的 `::` 行内注释 / JSON 块里的 `//` | `::` 改成 `REM` 独立行；含注释的块标 `jsonc` |
+| MCP 配置硬编码作者路径 | 换成 `<仓库路径>` |
+| `render_manifest` 对畸形 payload 抛 `AttributeError` | `checks`/`facts` 强制 dict、`blockers`/`pending`/`sheets` 强制行列表 |
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | **330/330**（+3 条断言：清单段落真实、note 与数字一致、每个 error 带 call_status） |
+| `stdio_contract.py` | **7/7**，新增 `early exit carries call_status → failed (bad_input)`（真 MCP 调用） |
+| 真机清单 | 7437 B / 9 段，与回执 `sections` 完全一致 |
+
+### 教训
+
+**回执描述的是「我以为写了什么」，产物才是「实际写了什么」。** 两者只要有一处可以手写，就会漂。
+把 `sections` 从常量换成解析产物，成本一行，收益是「文档级假阳性」这一类问题从此不可能再出现。

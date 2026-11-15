@@ -11279,7 +11279,27 @@ def assert_min_flange_length_is_measured_and_called_approximate():
     return "flange length measured per side, approximate and borderline made explicit"
 
 
+def assert_metal_note_agrees_with_the_numbers():
+    """0.8.345 (report §P1-2) — one receipt said both "computed" and "still not computed".
+
+    `cylinder_classification.note` was written in 0.8.340. 0.8.341/342 then made
+    `hole_to_bend_distance` and `min_flange_length` real `warn` results, and nobody updated
+    the note — so a caller reading the note would skip numbers that exist.
+    """
+    sm = _read("tools/sheet_metal.py")
+    assert "仍未计算" not in sm, "the stale note is back"
+    assert "已计算" in sm and "hole_to_bend" in sm and "min_flange" in sm
+    # the note must be assigned AFTER both lists exist, or it raises UnboundLocalError
+    i_note = sm.find('classification["note"] = (')
+    i_hole = sm.find("    hole_to_bend = []")
+    i_flange = sm.find("    flange_rows = []")
+    assert i_note > max(i_hole, i_flange), (
+        "the note is written before the numbers it talks about")
+    return "the classification note is derived from the numbers, not from history"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.345 metal note agrees", assert_metal_note_agrees_with_the_numbers),
     ("0.8.342 min flange length measured", assert_min_flange_length_is_measured_and_called_approximate),
     ("0.8.341 hole-to-bend measured", assert_hole_to_bend_is_measured_with_a_named_rule),
     ("0.8.340 bend vs hole by owner feature", assert_bend_vs_hole_is_classified_by_owner_feature),
@@ -11636,7 +11656,66 @@ def assert_delivery_manifest_restates_and_never_upgrades():
     return "manifest restates the receipt; not_checked stays 未检查; JSON round-trips"
 
 
+def assert_manifest_sections_match_the_file_it_wrote():
+    """0.8.345 (report 2026-11-15 v0.8.344 §P1-1) — the receipt described a different file.
+
+    `sections` was a hard-coded list of ten names; the real product had seven headings, and
+    「尺寸覆盖」 could never appear at all (`delivery_check` has no plan-level coverage) while
+    「钣金工艺」 only renders when asked for. A receipt that lists sections the file does not
+    contain is a document-level false positive — the exact thing this manifest exists to
+    prevent.
+
+    BEHAVIOURAL: calls `render_manifest` and checks the receipt logic against the text.
+    """
+    from solidworks_assetmate_mechdog.tools import manifest as _m
+
+    # every conditional section must still be a heading, with 「无」 inside
+    thin = _m.render_manifest({"verdict": "未判定", "ok": False})
+    for title in ("阻断项", "尺寸覆盖（计划）", "页面", "钣金工艺", "实测数据"):
+        assert "## %s" % title in thin, "section %s disappears when data is missing" % title
+    assert "不存在" not in thin
+    # malformed payloads must not raise (third parties build these by hand)
+    for bad in ({"checks": ["x"]}, {"facts": ["x"]}, {"blockers": ["why"], "pending": [1]}):
+        _m.render_manifest(bad)
+    # a supplied plan-level coverage must render numbers, not 「无」
+    with_cov = _m.render_manifest({"verdict": "x", "dimension_coverage": {
+        "planned": 16, "matched_by_name": 10, "matched_by_value": 2,
+        "coverage_ratio": 0.75, "missing": [{"dimension": "总长", "value_mm": 55.0,
+                                             "reason": "bbox_derived"}]}})
+    assert "计划 16 条" in with_cov and "bbox_derived" in with_cov
+    # and the receipt's section list must equal the headings actually written
+    import re as _re
+    headings = [ln[3:].strip() for ln in with_cov.splitlines() if ln.startswith("## ")]
+    assert "尺寸覆盖（计划）" in headings
+    return "manifest renders every section and says 「无」 instead of vanishing"
+
+
+def assert_every_failed_receipt_carries_call_status():
+    """0.8.345 (report §P1-3, second round) — the client rule raised KeyError on failures.
+
+    `produce_drawing` answered `call_status` on its success path and not on six early exits.
+    The tool description's one-line client rule (`got["call_status"]`) therefore exploded on
+    `bad_input` / `output_exists` / `ledger_failed` — the failures a client meets first.
+    Derived in `sw_session.error()` so no future early exit can forget it.
+
+    BEHAVIOURAL: calls `error()` and a real early-exit path (no COM involved).
+    """
+    from solidworks_assetmate_mechdog import sw_session
+    from solidworks_assetmate_mechdog.tools import pipeline
+
+    bad = sw_session.error("bad_input", "nope")
+    assert bad.get("call_status") == "failed" and bad.get("execution_ok") is False, bad
+    early = pipeline.produce_drawing("C:/definitely/not/here.SLDPRT",
+                                     output_path="C:/definitely/not/here.SLDDRW")
+    assert early.get("call_status") == "failed", (
+        "an early exit still omits call_status: %r" % sorted(early))
+    assert early.get("execution_ok") is False
+    return "every error receipt carries call_status=failed / execution_ok=false"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.345 manifest sections are real", assert_manifest_sections_match_the_file_it_wrote),
+    ("0.8.345 every error has call_status", assert_every_failed_receipt_carries_call_status),
     ("0.8.343 delivery manifest", assert_delivery_manifest_restates_and_never_upgrades),
     ("0.8.330 call_status splits incomplete", assert_call_status_separates_incomplete_from_failed),
     ("0.8.330 require accepts a partial", assert_require_end_to_end_accepts_a_partial_drawing),
@@ -11660,32 +11739,56 @@ ALL_REGRESSIONS = STATIC_REGRESSIONS + BEHAVIOURAL_REGRESSIONS
 
 
 def _behavioural_breakdown():
-    """(package, harness) counts for the behavioural list. Reads its own AST.
+    """(package, harness, subprocess, unknown) for the behavioural list — by AST, not text.
 
-    Report 2026-11-14 (v0.8.329) §5.3: the banner said "14 assertions call the package",
-    but one of them loads `tests/smoke.py` — it exercises the harness, not the product.
-    Saying 14 would be a small lie of the same family as the 5/6/15 numbers.
+    0.8.345 (report 2026-11-15 v0.8.344 §P2): the previous version looked for the literal
+    `from solidworks_assetmate_mechdog` in the function source. That misclassified
+    `assert_the_mcp_entry_rejects_unknown_arguments` (it launches the server in a
+    subprocess, so the import sits inside a string) as a harness check. Regex on code is
+    the same mistake the 5/6/15 counters made; parse it instead.
     """
     with open(os.path.abspath(__file__), encoding="utf-8") as fh:
         text = fh.read()
     tree = ast.parse(text)
     funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-    marker = "from " + "solidworks_assetmate_mechdog"
-    package = harness = 0
+    out = {"package": 0, "harness": 0, "subprocess": 0, "unknown": 0}
     for _name, _fn in BEHAVIOURAL_REGRESSIONS:
         node = funcs.get(_fn.__name__)
-        seg = ast.get_source_segment(text, node) if node else ""
-        if seg and marker in seg:
-            package += 1
+        if node is None:
+            out["unknown"] += 1
+            continue
+        imports_pkg = False
+        launches = False
+        loads_smoke = False
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.ImportFrom) and (sub.module or "").startswith(
+                    "solidworks_assetmate_mechdog"):
+                imports_pkg = True
+            elif isinstance(sub, ast.Import) and any(
+                    (a.name or "").startswith("solidworks_assetmate_mechdog")
+                    for a in sub.names):
+                imports_pkg = True
+            elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+                if sub.func.attr in ("run", "Popen", "check_output", "call"):
+                    launches = True
+                if sub.func.attr == "spec_from_file_location":
+                    loads_smoke = True
+        if imports_pkg:
+            out["package"] += 1
+        elif launches:
+            # Starts the real server: executes package code, but out of process.
+            out["subprocess"] += 1
+        elif loads_smoke:
+            out["harness"] += 1
         else:
-            harness += 1
-    return package, harness
+            out["unknown"] += 1
+    return out
 
 
 def main():
     failures = 0
     total = len(ALL_REGRESSIONS)
-    _pkg, _harness = _behavioural_breakdown()
+    _kinds = _behavioural_breakdown()
     # 0.8.328 (report 2026-11-14 v0.8.327 §P1-1): both numbers now come from the LISTS.
     print("regression ledger — %d assertions (%d behavioural, %d text/AST)"
           % (total, len(BEHAVIOURAL_REGRESSIONS), len(STATIC_REGRESSIONS)))
@@ -11711,14 +11814,18 @@ def main():
     # 0.8.328 (report 2026-11-14 v0.8.327 §P2-2): one wording. "source inspection only"
     # sat next to "5 behavioural" and the reader had to guess which sentence was true.
     print("source-level  %d/%d passed   (no live SolidWorks; %d execute code — %d call the "
-          "package, %d exercise the smoke harness; %d inspect source text)"
-          % (total - failures, total, len(BEHAVIOURAL_REGRESSIONS), _pkg, _harness,
+          "package, %d launch the server, %d exercise the smoke harness%s; %d inspect "
+          "source text)"
+          % (total - failures, total, len(BEHAVIOURAL_REGRESSIONS),
+             _kinds["package"], _kinds["subprocess"], _kinds["harness"],
+             (", %d unclassified" % _kinds["unknown"]) if _kinds["unknown"] else "",
              len(STATIC_REGRESSIONS)))
     # Machine-readable, and the ONLY place these numbers are computed — `check_all.py`
     # parses this line instead of recounting (report §P1-1: two counters, three answers).
-    print("counts: total=%d behavioural=%d package=%d harness=%d text_ast=%d"
-          % (total, len(BEHAVIOURAL_REGRESSIONS), _pkg, _harness,
-             len(STATIC_REGRESSIONS)))
+    print("counts: total=%d behavioural=%d package=%d harness=%d subprocess=%d "
+          "unknown=%d text_ast=%d"
+          % (total, len(BEHAVIOURAL_REGRESSIONS), _kinds["package"], _kinds["harness"],
+             _kinds["subprocess"], _kinds["unknown"], len(STATIC_REGRESSIONS)))
     return 0 if not failures else 1
 
 
