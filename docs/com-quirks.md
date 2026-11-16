@@ -6200,3 +6200,74 @@ normalise_dimension_coverage(value) -> (clean, status, reasons)   # PURE
 
 **宽松与严格要分开关。** schema 严（客户端能看到字段）但运行时宽（每种输入都变成结构化回执），
 比 schema 宽、运行时报栈要好；而两者都严格时，报错会分成两种方言，客户端要写两套处理。
+
+---
+
+## 2026-11-16（v0.8.348）计时装饰器挂到了三行的 helper 上：性能回执把 22 s 记成 0.111 ms
+
+### 现场
+
+0.8.347 在 `_paths_to_close` 上方插了一个 helper，而 `@perf_hooks.timed("delivery_check")`
+本来贴在 `_paths_to_close` 上 —— 装饰器于是落到了 `_normcased`（三行路径规范化）：
+
+```text
+delivery_check     __wrapped__=False   ← 没装饰
+_normcased         __wrapped__=True    ← 被装饰，键却叫 delivery_check
+```
+
+`perf_hooks` 记账于是变成「一次真实读取 = 6 次微秒调用」：真机 48.4 s 的清单调用报
+`timings['delivery_check'] = 0.111 ms / counts = 6`。而既有守护 `assert_perf_receipt_matches_spec_schema`
+只检查回执的**形状**（9 顶层 / 13 timing / 4 count），假值照样 PASS —— 和「`sections` 硬编码」
+是同一类问题，只是发生在性能层。
+
+### 改法
+
+装饰器搬回 `delivery_check` 上方；`_normcased` 保持无装饰，并在 docstring 里写明为什么。
+`_paths_to_close` 同理（它本来也不该被计成 `delivery_check`）。
+
+新增行为断言 `assert_the_delivery_check_timer_is_on_the_real_function`，两路互证：
+
+| 路 | 判据 |
+|---|---|
+| 运行时 | `delivery_check.__wrapped__` 存在；三个 helper **都**不存在 |
+| AST | 带 `timed("delivery_check")` 的装饰器，其紧随的 `FunctionDef` 必须是 `delivery_check`。这一条能防「装饰器又贴到新插的 helper 上」 |
+
+AST 那条只钉这一个键：其余工具有意用短键（`drawing_audit` → `"audit"`），全局要求键名等于函数名会误伤。
+
+### 真机验证（接槽 A3，单视图）
+
+```text
+delivery_check ms: 22363.9   calls: 1
+timings: annotations 7081 | audit 1601 | delivery_check 22364 |
+         dim_attachments 93 | ledger 10125 | reconcile 2715
+```
+
+一个自检用的不变量：**`delivery_check ≈ ledger + audit + annotations + reconcile`**
+（10.1 + 1.6 + 7.1 + 2.7 ≈ 21.5 s vs 22.4 s）。哪次它掉到毫秒级，就是计时器又挂错了。
+
+### 顺带两条 P2 / 一条 P3
+
+| 问题 | 改法 |
+|---|---|
+| `render_manifest` 的「已拒绝」段是死代码：它只重新 normalize `payload["dimension_coverage"]`，而生产路径校验失败时根本不写文件 | 渲染改为**读 `payload["dimension_coverage_status"]`**，拒绝时用 `dimension_coverage_reasons` 出「已拒绝 + 原因」，且**不出数字**；回执补 `dimension_coverage_reasons`。README 同时写明「拒绝时不写文件，原因在回执里」 |
+| `close_opened=False` 时三个文档字段全 `[]`（真机明明 2 个文档开着） | 早退分支改为先算快照 diff，再报 `documents_left_open`（调用方原有）与 `documents_not_closed_newly_opened`（本次打开未关） |
+| `matched_by_name = -5` 被 accepted，页面印「落到图上 -5 条」 | 校验补三条：两个计数非负、二者之和 ≤ `planned` |
+
+真机 disabled 分支：`status=disabled`、`left=['perf.SLDPRT']`、`new=['perf.SLDRW']` —— 不再是三个空列表。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | **335/335**，4 套件 |
+| 真机 perf | `delivery_check 22363.9 ms / 1 次`，且等于内部四项之和 |
+| 真机 disabled | `left=['perf.SLDPRT']`、`new=['perf.SLDRW']`、最终 0 文档 |
+| 真机 smoke | `delivery manifest is a real file` PASS 26.7s |
+
+### 教训
+
+**装饰器是靠「位置」绑定的，插入一行就能把它送给别人。** 每次在已装饰函数上方插 helper，都要
+回头确认装饰器还在原函数上；能运行时自证（`__wrapped__`）就不要只依赖 review。
+
+**形状检查不等于值检查。** 性能回执的 schema 一直是对的，错的是数字。凡是有「回执里的数」的地方，
+至少要有一条断言证明这个数与产生它的东西**量级一致**（这里是它内部四项之和）。

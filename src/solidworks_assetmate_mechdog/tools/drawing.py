@@ -9317,9 +9317,15 @@ def list_drawing_annotations(drawing_path, view_name=None):
         return error("annotations_failed", str(exc))
 
 
-@perf_hooks.timed("delivery_check")
 def _normcased(path):
-    """One path spelling, used for every comparison in this module."""
+    """One path spelling, used for every comparison in this module.
+
+    NOT timed. 0.8.347 accidentally left `@perf_hooks.timed("delivery_check")` on this
+    helper when it was inserted above `_paths_to_close`, so the perf receipt reported
+    `delivery_check = 0.111 ms / 6 calls` for a 30-90 s read (report 2026-11-16 v0.8.347
+    §4). The decorator belongs on the public function; asserted by
+    `assert_the_delivery_check_timer_is_on_the_real_function`.
+    """
     return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
 
 
@@ -9374,6 +9380,7 @@ def _paths_to_close(before, after, candidates):
     return to_close, left_open, to_close, "ok"
 
 
+@perf_hooks.timed("delivery_check")
 def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False,
                    strict_attachments=False, include_faces=False, close_opened=True):
     """`_delivery_check_impl`, plus closing the documents this call opened.
@@ -9393,12 +9400,6 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
                                  require_gdt=require_gdt,
                                  strict_attachments=strict_attachments,
                                  include_faces=include_faces)
-    if not close_opened:
-        result["documents_closed"] = []
-        result["documents_left_open"] = []
-        result["documents_close_status"] = "disabled"
-        return result
-
     after = open_document_paths()
     candidates = (model_path, drawing_path)
     to_close, left_open, newly, status = _paths_to_close(before, after, candidates)
@@ -9410,6 +9411,17 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
     for candidate in candidates:
         if candidate:
             spelling[_normcased(candidate)] = os.path.abspath(str(candidate))
+
+    if not close_opened:
+        # Report what is open even when asked not to touch it. 0.8.347 returned three EMPTY
+        # lists here while two documents were open, so a caller that chose
+        # `close_opened=False` had no list to clean up from (report 2026-11-16 v0.8.347 §5).
+        result["documents_closed"] = []
+        result["documents_closed_titles"] = []
+        result["documents_left_open"] = [spelling.get(p, p) for p in left_open]
+        result["documents_not_closed_newly_opened"] = [spelling.get(p, p) for p in newly]
+        result["documents_close_status"] = "disabled"
+        return result
 
     closed_paths, closed_titles = [], []
     for path in to_close:

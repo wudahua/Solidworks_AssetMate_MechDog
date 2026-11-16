@@ -11890,6 +11890,14 @@ def assert_delivery_check_closes_only_what_it_opened():
         "comparable path sets")
     assert "close_document(model_path)" not in wrapper, (
         "closing the given paths unconditionally is back — that discards the user's edits")
+    # 0.8.348 (report 2026-11-16 v0.8.347 §5): `close_opened=False` used to answer three
+    # EMPTY lists while two documents were open, so the caller had nothing to clean up.
+    disabled = wrapper[wrapper.find("if not close_opened:"):]
+    disabled = disabled[:disabled.find("return result")]
+    for field in ("documents_left_open", "documents_not_closed_newly_opened"):
+        assert field in disabled, (
+            "the close_opened=False branch returns an empty %s instead of what is open"
+            % field)
     return "only the newly opened documents are closed; caller-owned ones are reported"
 
 
@@ -11930,6 +11938,10 @@ def assert_dimension_coverage_is_validated_before_it_reaches_the_page():
                 {"planned": 16, "coverage_ratio": 0.75, "missing": ["总长"]},
                 {"planned": 16, "coverage_ratio": 0.75, "missing": [None]},
                 {"planned": 16, "coverage_ratio": 0.75, "missing": {"a": 1}},
+                # 0.8.348 (report 2026-11-16 v0.8.347 §5): counts must agree with each other
+                {"planned": 10, "coverage_ratio": 0.5, "matched_by_name": -5},
+                {"planned": 10, "coverage_ratio": 0.5, "matched_by_name": 8,
+                 "matched_by_value": 4},
                 "oops", [1, 2, 3]):
         clean, status, reasons = _m.normalise_dimension_coverage(bad)
         assert status == "rejected_invalid", (bad, status)
@@ -11946,6 +11958,17 @@ def assert_dimension_coverage_is_validated_before_it_reaches_the_page():
                                "dimension_coverage_status": "rejected_invalid"}
                               ).count("## 尺寸覆盖（计划）") == 1
 
+    # a payload that CARRIES the verdict must not print numbers either: 0.8.347 read only
+    # the object, so this branch was reachable only by calling the renderer with a raw dict
+    md_receipt = _m.render_manifest({
+        "verdict": "x", "dimension_coverage": valid,
+        "dimension_coverage_status": "rejected_invalid",
+        "dimension_coverage_reasons": ["planned 必须是整数（收到 None）"]})
+    assert "计划 16 条" not in md_receipt, (
+        "a receipt that declared the coverage rejected still rendered its numbers")
+    assert "结构不合法" in md_receipt and "planned 必须是整数" in md_receipt, (
+        "the rejection reasons from the payload are ignored")
+
     # rejection happens before COM: these paths do not exist, and that is the point
     got = _m.export_delivery_report("C:/nope/m.SLDPRT", "C:/nope/d.SLDDRW",
                                     dimension_coverage={"planned": "sixteen"})
@@ -11956,10 +11979,58 @@ def assert_dimension_coverage_is_validated_before_it_reaches_the_page():
     assert got.get("documents_close_status") == "not_started", (
         "the receipt has to say no document was touched, not leave the field null")
     assert got.get("documents_closed") == []
+    assert got.get("dimension_coverage_reasons"), (
+        "the rejection receipt no longer carries the reasons, so a caller cannot re-render")
     return "coverage validated: valid renders, invalid refuses with a receipt (no COM, no crash)"
 
 
+def assert_the_delivery_check_timer_is_on_the_real_function():
+    """0.8.348 (report 2026-11-16 v0.8.347 §4, P1) — the perf receipt measured a helper.
+
+    0.8.347 inserted `_normcased()` directly under the `@perf_hooks.timed("delivery_check")`
+    line that belonged to `_paths_to_close`, so the decorator landed on a three-line path
+    helper. `perf_hooks` then reported `delivery_check = 0.111 ms / 6 calls` for a run whose
+    real read took 48 s — and the existing guard (`assert_perf_receipt_matches_spec_schema`)
+    only checks the receipt's SHAPE, so it passed. Same family as the hard-coded `sections`
+    list: a receipt describing something other than what happened.
+
+    Two independent checks, because either alone can be satisfied by accident:
+      * runtime: `functools.wraps` leaves `__wrapped__`, so the decorated object is provable;
+      * AST: the decorator's immediately following FunctionDef must be `delivery_check` —
+        this one catches the misplacement even if the wrapper is later renamed.
+
+    BEHAVIOURAL: imports the module and inspects the live objects.
+    """
+    from solidworks_assetmate_mechdog.tools import drawing as _d
+
+    assert hasattr(_d.delivery_check, "__wrapped__"), (
+        "delivery_check is not timed any more — the perf receipt will not report it")
+    for helper in ("_normcased", "_paths_to_close", "_delivery_check_impl"):
+        assert not hasattr(getattr(_d, helper), "__wrapped__"), (
+            "%s is decorated; a microsecond helper is being reported as delivery_check"
+            % helper)
+
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    timed_names = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            text = ast.get_source_segment(src, dec) or ""
+            if "perf_hooks.timed" in text:
+                timed_names.append((node.name, text))
+    owners = {name: text for name, text in timed_names if '"delivery_check"' in text}
+    assert list(owners) == ["delivery_check"], (
+        'the `timed("delivery_check")` decorator is on %r' % (list(owners),))
+    # Other tools deliberately use short keys (`drawing_audit` -> "audit"), so only this
+    # key is pinned: it is the one a reader uses to answer "how long does a delivery check
+    # take", and a helper answering it is worse than no number.
+    return "the perf timer sits on delivery_check; helpers are untimed"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.348 perf timer on the real function", assert_the_delivery_check_timer_is_on_the_real_function),
     ("0.8.347 coverage is validated", assert_dimension_coverage_is_validated_before_it_reaches_the_page),
     ("0.8.346 mcp exposes dimension_coverage", assert_mcp_manifest_exposes_and_forwards_dimension_coverage),
     ("0.8.346 close only what was opened", assert_delivery_check_closes_only_what_it_opened),

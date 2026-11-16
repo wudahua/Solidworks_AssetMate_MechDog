@@ -511,7 +511,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 334 条历史回归
+python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 335 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -603,7 +603,9 @@ man  = json.loads(export_delivery_report(model, drawing,
 | 关卡 | 触发 | 回执 |
 |---|---|---|
 | MCP schema | 参数根本不是对象（传了字符串/数字） | `isError`，报文说类型不对；工具未执行 |
-| 工具内校验 | 是对象但缺键 / 类型不对 / 比例不是 0–1 / `missing` 不是对象数组 | `ok:false` + `error:"invalid_dimension_coverage"` + `call_status:"failed"` + 拒绝原因逐条 |
+| 工具内校验 | 是对象但缺键 / 类型不对 / 比例不是 0–1 / 计数为负或超过 `planned` / `missing` 不是对象数组 | `ok:false` + `error:"invalid_dimension_coverage"` + `call_status:"failed"` + 拒绝原因逐条（`dimension_coverage_reasons`） |
+
+校验失败时**不写清单文件** —— 原因全部在回执里；把回执喂回 `render_manifest`（或手工构造 payload 带上 `dimension_coverage_status`）时，该段会渲染成「已拒绝 + 原因」，仍然不出数字。
 
 ```json
 {"ok": false, "error": "invalid_dimension_coverage", "call_status": "failed",
@@ -707,6 +709,11 @@ python tests/smoke.py --skip-export --skip-drawing --eng-cases --eng-sample 1
 | `survey_drawings`（100 张真实图） | 1916 s（19 s/张） |
 
 首次操作单个装配请预留 2–3 分钟，不要用默认 30–60 秒超时。
+
+`perf_hooks.start()/stop()` 可按步骤记账。**`delivery_check` 的计时覆盖整段读取**
+（模型台账 + 图纸审计 + 标注清单 + 对账），实测接槽 A3 一次 22.4 s，且约等于它内部四项之和 ——
+这条不变量可以自检：`timings.delivery_check ≈ ledger + audit + annotations + reconcile`。
+若哪次它掉到毫秒级，说明计时器又被挂到了 helper 上（0.8.348 修过一次）。
 
 ---
 

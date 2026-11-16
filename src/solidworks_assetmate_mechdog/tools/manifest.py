@@ -85,6 +85,10 @@ def normalise_dimension_coverage(value):
         got = value.get(key, 0)
         if isinstance(got, bool) or not isinstance(got, int):
             reasons.append("%s 必须是整数（收到 %r）" % (key, got))
+        elif got < 0:
+            # 0.8.348 (report 2026-11-16 v0.8.347 §5, P3): `matched_by_name: -5` was
+            # accepted and the page printed "落到图上 -5 条（覆盖 50%）".
+            reasons.append("%s 不能为负（收到 %r）" % (key, got))
 
     missing = value.get("missing")
     if missing is None:
@@ -97,6 +101,13 @@ def normalise_dimension_coverage(value):
         if bad:
             reasons.append("missing 的第 %s 项不是对象"
                            % "、".join(str(i) for i in bad[:3]))
+
+    # Counts have to agree with each other: you cannot land more dimensions than you
+    # planned. Checked only when both numbers are usable, so a bad value is reported once.
+    if not reasons:
+        landed = (value.get("matched_by_name", 0) or 0) + (value.get("matched_by_value", 0) or 0)
+        if landed > planned:
+            reasons.append("落到图上的条数（%s）大于计划条数（%s）" % (landed, planned))
 
     if reasons:
         return None, "rejected_invalid", reasons
@@ -194,6 +205,15 @@ def render_manifest(payload):
     # is reachable from `tools/call`, where the client writes the dict by hand.
     cov, cov_status, cov_reasons = normalise_dimension_coverage(
         payload.get("dimension_coverage"))
+    # A payload may CARRY the verdict instead of the raw object (the receipt does). Trust
+    # the verdict over the object: a page must never show numbers that were declared
+    # rejected. 0.8.347 read only the object, so this branch was unreachable outside the
+    # pure function (report 2026-11-16 v0.8.347 §5).
+    if payload.get("dimension_coverage_status") == "rejected_invalid":
+        cov = None
+        cov_status = "rejected_invalid"
+        cov_reasons = list(payload.get("dimension_coverage_reasons") or cov_reasons
+                           or ["（回执没有给出原因）"])
     if cov:
         body = ["计划 %s 条，落到图上 %s 条（覆盖 %s%%）。" % (
             cov.get("planned"), (cov.get("matched_by_name") or 0)
@@ -339,7 +359,8 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
                      "dimension_coverage 结构不合法，未写出清单：%s" % "；".join(cov_reasons),
                      "传 `auto_dimension` 回执里的 `dimension_coverage`，"
                      "或 `produce_drawing` 的 `dimension_gap.coverage`；"
-                     "或干脆不传 —— 该段会写明「无」并指出数字在哪。")
+                     "或干脆不传 —— 该段会写明「无」并指出数字在哪。",
+                     dimension_coverage_reasons=cov_reasons)
 
     if not os.path.exists(drawing_abs):
         return _fail("bad_input", "drawing not found: %s" % drawing_abs)

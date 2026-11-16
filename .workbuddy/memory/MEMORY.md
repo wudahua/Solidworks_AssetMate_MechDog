@@ -39,6 +39,9 @@
   非法要回结构化 `error` 回执（带 `call_status`），不许印数字、不许让异常逃出；校验放在最贵的操作（COM）之前。
 - **schema 严 / 运行时宽**：pydantic 模型只做提示（`Model | dict | None`），只用模型会让类型错在工具执行前
   被拒成 `ToolError`（无回执）。校验器才是权威。
+- **装饰器靠位置绑定**：在已装饰函数上方插入 helper 会把装饰器送走。`perf_hooks.timed` 易踩；
+  断言要同时看 `__wrapped__` 与 AST「装饰器后紧跟的函数名」。性能回执要有一条「量级自检」
+  （`delivery_check ≈ ledger+audit+annotations+reconcile`）。
 - 过滤器一律白名单（黑名单永远落后于下一次新增的步骤）。
 
 ## COM / SolidWorks 硬口径
