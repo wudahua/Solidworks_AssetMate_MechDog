@@ -635,6 +635,11 @@ man  = json.loads(export_delivery_report(model, drawing,
 | `accepted` | 结构合法，页面出数字 |
 | `rejected_invalid` | 传了但不合法，页面写「无 + 原因」，回执带 `error` |
 | `absent` | 没传，页面写「无」并指出数字在哪 |
+| `not_started` | 没走到校验（文件不存在等早退） |
+
+**必填只有两个**：`planned`（整数）与 `coverage_ratio`（0–1 比例）。按 schema 只传这两个是**合法**的 ——
+`matched_by_name` / `matched_by_value` / `missing` 省略即可，缺省按 0 / 0 / 空数组处理（0.8.351 起，
+此前 MCP 层会把未提供的字段写成 `null`，校验器又把 `null` 当类型错，合法对象因此写不出清单）。
 
 必填：`planned`（整数）、`coverage_ratio`（**0–1 的比例**，不是百分数；75 会被拒并说明）。
 `missing` 必须是对象数组。校验在 COM 读取之前完成，所以传错只花毫秒。

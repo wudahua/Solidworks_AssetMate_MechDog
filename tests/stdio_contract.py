@@ -98,10 +98,16 @@ async def _probe():
             # any object at all. "Untouched" is still worth asserting (nobody may rewrite
             # pydantic's output to `additionalProperties: false`), but it is not a
             # substitute for "nested schemas are TYPED".
-            record("nested schemas untouched",
-                   all(value is True for _, _, value in nested),
-                   "%d inline nested declarations, all true=%s"
-                   % (len(nested), all(v is True for _, _, v in nested)))
+            # 0.8.351 (report 2026-11-16 v0.8.350 §5.2): this used to require
+            # `additionalProperties: true` and call that a PASS — i.e. it asserted the
+            # LOOSE shape, so tightening a nested object would have failed the gate. The
+            # real invariant is "nobody rewrites what pydantic produced": a nested
+            # declaration may be permissive (we do that on purpose for the `dict` branch)
+            # but must not be silently sealed to `false`, which would make the published
+            # schema reject payloads the tool accepts.
+            record("pydantic nested schemas not rewritten",
+                   all(value is not False for _, _, value in nested),
+                   "%d inline nested declarations, none sealed to false" % len(nested))
 
             def _nested_object(tool_name, key):
                 """Resolve a property to its object schema, following $ref into $defs."""
@@ -166,6 +172,30 @@ async def _probe():
                    early_payload.get("call_status") == "failed",
                    "call_status=%r error=%r"
                    % (early_payload.get("call_status"), early_payload.get("error")))
+
+            # 0.8.351 (report 2026-11-16 v0.8.350 §4, the actual gap): every existing
+            # guard checked the SCHEMA, none drove a schema-legal payload through
+            # `tools/call`. `model_dump()` turned every unset optional field into an
+            # explicit None, the validator read those as type errors, and a client that
+            # followed the schema could not write a manifest at all. This call passes a
+            # minimal object at paths that do not exist: validation runs first, so the
+            # receipt must say `accepted` and fail on `bad_input` — never on
+            # `invalid_dimension_coverage`.
+            minimal = await session.call_tool("export_delivery_report", {
+                "model_path": "C:/definitely/not/here.SLDPRT",
+                "drawing_path": "C:/definitely/not/here.SLDDRW",
+                "dimension_coverage": {"planned": 2, "coverage_ratio": 0.5}})
+            try:
+                minimal_payload = json.loads(_text(minimal))
+            except Exception as exc:
+                minimal_payload = {"parse_error": str(exc), "raw": _text(minimal)[:200]}
+            record("a schema-minimal coverage reaches the tool",
+                   minimal_payload.get("dimension_coverage_status") == "accepted"
+                   and minimal_payload.get("error") == "bad_input",
+                   "status=%r error=%r reasons=%r"
+                   % (minimal_payload.get("dimension_coverage_status"),
+                      minimal_payload.get("error"),
+                      (minimal_payload.get("dimension_coverage_reasons") or [])[:1]))
 
             bad = await session.call_tool("list_tool_profiles", {"bogus_param": 123})
             bad_text = _text(bad)

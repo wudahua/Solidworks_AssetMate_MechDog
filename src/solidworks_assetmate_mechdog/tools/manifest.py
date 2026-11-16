@@ -68,21 +68,34 @@ def normalise_dimension_coverage(value):
 
     reasons = []
     planned = value.get("planned")
-    if isinstance(planned, bool) or not isinstance(planned, int):
+    if planned is None:
+        # 0.8.351 (report 2026-11-16 v0.8.350 §4/§5): "收到 None" read like a type error
+        # when the real problem is a missing required field. Say which.
+        reasons.append("planned 缺失或为空（必填，整数）")
+    elif isinstance(planned, bool) or not isinstance(planned, int):
         reasons.append("planned 必须是整数（收到 %r）" % (planned,))
     elif planned < 0:
         reasons.append("planned 不能为负（收到 %r）" % (planned,))
 
     ratio = value.get("coverage_ratio")
-    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
+    if ratio is None:
+        reasons.append("coverage_ratio 缺失或为空（必填，0–1 的比例）")
+    elif isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
         reasons.append("coverage_ratio 必须是 0–1 的数字（收到 %r）" % (ratio,))
     elif not (0.0 <= float(ratio) <= 1.0):
         # 75 is the percentage, not the ratio. Printing "覆盖 7500%" is not a rounding
         # problem, it is a unit error the caller can fix in one place.
         reasons.append("coverage_ratio 是 0–1 的比例，不是百分数（收到 %r）" % (ratio,))
 
+    counts = {}
     for key in _COVERAGE_INT_FIELDS:
-        got = value.get(key, 0)
+        got = value.get(key)
+        if got is None:
+            # Optional, and an explicit `None` means "not supplied" — the same reading the
+            # `missing` branch has always used. `model_dump()` used to emit those nulls,
+            # which made a schema-legal object fail here (report 2026-11-16 v0.8.350 §4).
+            got = 0
+        counts[key] = got
         if isinstance(got, bool) or not isinstance(got, int):
             reasons.append("%s 必须是整数（收到 %r）" % (key, got))
         elif got < 0:
@@ -105,17 +118,20 @@ def normalise_dimension_coverage(value):
     # Counts have to agree with each other: you cannot land more dimensions than you
     # planned. Checked only when both numbers are usable, so a bad value is reported once.
     if not reasons:
-        landed = (value.get("matched_by_name", 0) or 0) + (value.get("matched_by_value", 0) or 0)
+        landed = (counts.get("matched_by_name") or 0) + (counts.get("matched_by_value") or 0)
         if landed > planned:
             reasons.append("落到图上的条数（%s）大于计划条数（%s）" % (landed, planned))
 
     if reasons:
         return None, "rejected_invalid", reasons
 
+    # Built from the NORMALISED values, never from the caller's dict: `value.get(k, 0)`
+    # returns `None` when the key exists with a null, and that is exactly how a legal object
+    # became a page full of nulls (report 2026-11-16 v0.8.350 §4).
     clean = {
         "planned": planned,
-        "matched_by_name": value.get("matched_by_name", 0),
-        "matched_by_value": value.get("matched_by_value", 0),
+        "matched_by_name": counts["matched_by_name"],
+        "matched_by_value": counts["matched_by_value"],
         "coverage_ratio": float(ratio),
         "missing": [dict(row) for row in missing],
     }
@@ -303,7 +319,8 @@ def render_manifest(payload):
         % (len(_closed), _names(_closed), len(_left), _names(_left),
            {"not_enumerated": "本次无法枚举会话文档，因此没有关闭任何文档"
                               "（不拿「看不到」当「没有」）。",
-            "disabled": "调用方要求保留打开状态（`close_opened=False`）。",
+            "disabled": "本次打开 %d 个、按要求保留 %d 个（`close_opened=False`）。"
+                        % (len(_unclosed), len(_unclosed)),
             "close_failed": "关闭时出错，见 `documents_close_status`。",
             "skipped_caller_documents": "凡是有一个在调用前就已打开，本次就一个都不关 —— "
                                         "关闭其中一个会把它一起带走（实测 2026-11-16）；"
@@ -433,8 +450,7 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
         with open(out, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
     except OSError as exc:
-        return error("write_failed", str(exc)[:160], "清单未写入磁盘",
-                     output_path=out)
+        return _fail("write_failed", str(exc)[:160], "清单未写入磁盘", output_path=out)
 
     return ok(
         output_path=out,

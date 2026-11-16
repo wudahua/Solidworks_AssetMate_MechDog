@@ -1307,16 +1307,21 @@ class DimensionCoverage(BaseModel):
     authority.
     """
 
-    planned: int | None = Field(
-        default=None, description="How many dimensions the plan asked to keep.")
-    matched_by_name: int | None = Field(
-        default=None, description="How many of them were found on the sheet by name.")
-    matched_by_value: int | None = Field(
-        default=None, description="How many were matched by value only (name mismatch).")
-    coverage_ratio: float | None = Field(
-        default=None, description="0–1 ratio, NOT a percentage. 0.75 means 75%.")
-    missing: list[dict] | None = Field(
-        default=None,
+    # REQUIRED, because a coverage sentence cannot be written without them:
+    # "计划 ? 条，落到图上 ? 条（覆盖 ?%）". 0.8.351 (report 2026-11-16 v0.8.350 §4): the
+    # schema said all five were optional while the validator required these two — a client
+    # that believed the schema got `invalid_dimension_coverage`, so the two layers now say
+    # the same thing.
+    planned: int = Field(description="How many dimensions the plan asked to keep.")
+    coverage_ratio: float = Field(
+        description="0–1 ratio, NOT a percentage. 0.75 means 75%.")
+    # Optional with real defaults; omitted is not an error.
+    matched_by_name: int = Field(
+        default=0, description="How many of them were found on the sheet by name.")
+    matched_by_value: int = Field(
+        default=0, description="How many were matched by value only (name mismatch).")
+    missing: list[dict] = Field(
+        default_factory=list,
         description="Planned dimensions that did not reach the sheet, each a row like "
                     "{'dimension','value_mm','reason','hint'}.")
 
@@ -1364,9 +1369,15 @@ def export_delivery_report(
     # The MCP layer always hands over a `DimensionCoverage` instance; a direct Python caller
     # may hand a plain dict (0.8.346's signature). Accept both — the package validates the
     # shape either way, so this is only about not raising AttributeError on the way in.
+    #
+    # `exclude_none=True` is the whole fix for report 2026-11-16 v0.8.350 §4: `model_dump()`
+    # wrote every UNSET optional field as an explicit `None`, and the validator reads an
+    # explicit `None` as a type error. A client that followed the schema — send `planned`
+    # and `coverage_ratio`, omit the rest — was refused, while the same dict called
+    # directly on the package passed. One kwarg, and the two paths agree.
     coverage = dimension_coverage
     if coverage is not None and hasattr(coverage, "model_dump"):
-        coverage = coverage.model_dump()
+        coverage = coverage.model_dump(exclude_none=True)
 
     return _json(manifest_tools.export_delivery_report(
         model_path, drawing_path, output_path=output_path,

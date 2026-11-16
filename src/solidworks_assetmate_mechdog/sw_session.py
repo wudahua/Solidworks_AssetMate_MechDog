@@ -191,6 +191,11 @@ def health(deep=False):
              # exist. Same value as `package_version`, spelled the way callers look for it.
              # `runtime` is the same block `ping` already returns (which copy, which python).
              "server_version": _package_version,
+             # 0.8.351 (report 2026-11-16 v0.8.350 §5.3): `package_path` is the .py file;
+             # clients that wanted the DIRECTORY read `server_path` and got nothing at the
+             # top level. Same value as `runtime.server_path`, spelled where they look.
+             "server_path": os.path.dirname(os.path.abspath(_package_path))
+             if _package_path else None,
              "runtime": runtime_info(),
              "python_executable": _sys.executable}
     try:

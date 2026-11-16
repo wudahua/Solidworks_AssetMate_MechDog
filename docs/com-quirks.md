@@ -6390,3 +6390,75 @@ SKIP 变成「说清楚哪一步断了」而不是「这个夹具没有尺寸」
 
 **「夹具不够」和「功能没做」在回执里长得很像。** 一条永远 SKIP 的用例，看起来像「环境不全」，
 实际是「这条守护从未生效」。能自己补的前置条件（这里是一条尺寸）就不要挂在夹具上。
+
+---
+
+## 2026-11-16（v0.8.351）schema 说「可选」，MCP 却把未提供的字段写成 null 再当类型错误
+
+### 事实链
+
+```text
+DimensionCoverage：五个字段全部 default=None        → tools/list required=None（都对）
+model_dump()                                        → 未提供的字段 = 显式 None
+normalise_dimension_coverage()：isinstance(None, int) → False → "必须是整数（收到 None）"
+```
+
+于是**按 schema 构造的最小合法对象经 MCP 必被拒**，而同一个 dict 直接调包内函数却通过：
+
+| 输入 | 直接调包 | 经 MCP（0.8.350） |
+|---|---|---|
+| `{"planned":2,"coverage_ratio":0.5}` | accepted | **rejected_invalid**（两条 `必须是整数（收到 None）`） |
+| 五个字段全填 | accepted | accepted |
+
+推荐路径（`auto_dimension.dimension_coverage`）总是五个字段齐全，所以真机样例一直是绿的 ——
+这正是 337 条回归没抓到它的原因：**没有一条断言走 MCP 传「少填几个字段」的对象**。
+
+### 改法：三层口径对齐
+
+| 层 | 改动 |
+|---|---|
+| schema | `planned` / `coverage_ratio` 改为**必填**（`required`），其余三个带真正默认值（0 / 0 / []） |
+| MCP 入口 | `model_dump(exclude_none=True)` —— 未设置的字段不再序列化成 `null` |
+| 校验器 | 可选字段显式 `None` 一律当「未提供」（0），与 `missing=None` 一直以来的读法一致；`clean` 改为从**归一化后的值**构造（原来 `value.get(k, 0)` 在键存在但值为 null 时返回 None，这正是页面出现 null 的另一半原因） |
+| 报错文案 | 缺必填字段说「缺失或为空（必填，整数）」，不再说「必须是整数（收到 None）」 |
+
+真机（经 `server.export_delivery_report`，即 MCP 包装）：
+
+```text
+minimal  ok=True  status=accepted  计划 2 条，落到图上 0 条（覆盖 50%）。
+nulls    ok=True  status=accepted   ← 0.8.347 那种「显式 null」形状现在也合法
+missing  ok=False status=rejected_invalid  coverage_ratio 缺失或为空（必填，0–1 的比例）
+```
+
+### 新守护：走 MCP，而不是直接调包
+
+`stdio_contract.py` 新增 `a schema-minimal coverage reaches the tool`：真 `tools/call` 传
+`{"planned":2,"coverage_ratio":0.5}`、路径故意不存在 —— 校验在 COM 之前，所以回执必须是
+`dimension_coverage_status=accepted` + `error=bad_input`，**不能**是 `invalid_dimension_coverage`。
+（10/10）
+
+回归里另加三层一致性断言：模型的 `required` 集合 == `{planned, coverage_ratio}`、`model_dump` 里
+没有 `None` 值、带显式 null 的 dict 判 `accepted`。
+
+### 顺带三条
+
+| 项 | 改法 |
+|---|---|
+| `nested schemas untouched` 把 `additionalProperties:true` 判 PASS（守的方向相反） | 改为 `pydantic nested schemas not rewritten`：只断言没有人把它改成 `false`；「有类型」由另一条 `dimension_coverage schema is typed` 负责 |
+| `health_check` 顶层没有 `server_path` | 补上（与 `runtime.server_path` 同值） |
+| `close_opened=False` 的会话行写「关闭（0 个）」让人以为没打开过 | 改成「本次打开 N 个、按要求保留 N 个」；`write_failed` 也走 `_fail`，不再留 `null` 字段 |
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | 337/337，4 套件 |
+| `stdio_contract.py` | **10/10**（新增 MCP 最小对象用例） |
+| 真机三例 | 见上；会话结束 0 文档 |
+| 真机 smoke | `delivery manifest is a real file` PASS 39.1s、`health()` PASS |
+
+### 教训
+
+**同一个词（optional）在三层可以有三个意思。** schema 的 optional 指「可以不给」；`model_dump` 把它
+变成「给了个 null」；校验器又把 null 读成「类型错」。三层都「没错」，合起来是「合法输入被拒」。
+**凡是跨层传递的数据结构，必须有一条走真实入口的行为断言** —— 直接调包内函数永远看不见序列化这一层。

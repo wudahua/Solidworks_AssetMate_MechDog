@@ -12007,6 +12007,27 @@ def assert_dimension_coverage_is_validated_before_it_reaches_the_page():
                                "dimension_coverage_status": "rejected_invalid"}
                               ).count("## 尺寸覆盖（计划）") == 1
 
+    # 0.8.351 (report 2026-11-16 v0.8.350 §4): the three layers must agree on "optional".
+    from solidworks_assetmate_mechdog import server as _server
+
+    model = _server.DimensionCoverage
+    required = {name for name, field in model.model_fields.items() if field.is_required()}
+    assert required == {"planned", "coverage_ratio"}, (
+        "the schema's required set no longer matches what the validator needs: %r"
+        % (required,))
+    dumped = model(planned=2, coverage_ratio=0.5).model_dump(exclude_none=True)
+    # What matters is that no UNSET field is serialised as `null`: the validator reads an
+    # explicit None as "wrong type", so a legal object died on the way through MCP.
+    assert None not in dumped.values(), (
+        "model_dump still emits nulls (%r); the MCP path sends them and the validator "
+        "refuses a schema-legal object" % (dumped,))
+    assert _m.normalise_dimension_coverage(dumped)[1] == "accepted", dumped
+    # the MCP-shaped dict (explicit nulls for omitted optionals) is a valid object
+    clean, status, _ = _m.normalise_dimension_coverage(
+        {"planned": 2, "coverage_ratio": 0.5, "matched_by_name": None,
+         "matched_by_value": None, "missing": None})
+    assert status == "accepted" and clean["matched_by_name"] == 0, (status, clean)
+
     # a payload that CARRIES the verdict must not print numbers either: 0.8.347 read only
     # the object, so this branch was reachable only by calling the renderer with a raw dict
     md_receipt = _m.render_manifest({
