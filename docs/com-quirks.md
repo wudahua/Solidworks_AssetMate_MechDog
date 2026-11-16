@@ -6094,3 +6094,32 @@ SolidWorks 在最后一个引用它的文档关闭时，会把**静默打开**�
 
 **「只读」要说清是哪种只读。** 不写文件 ≠ 不打开文件。承诺一旦写成绝对句，就得让实现去对齐它，
 而不是让读者去猜边界。
+
+---
+
+## 2026-11-16（v0.8.346 复核）全量 smoke：68 passed / 1 skipped / 0 failed，17m41s
+
+### 结果
+
+```text
+68 passed, 1 skipped (fixture missing)  / 69 run   RC=0   17m41s
+```
+
+| 项 | 说明 |
+|---|---|
+| SKIP | `a tolerance render never passes on a bare number` —— 默认夹具 P05 无驱动尺寸 |
+| 补跑 | `--part 接槽.SLDPRT` 单跑 **PASS 80.0s**（`evidence='uncertain'`，与 0.8.344 一致） |
+| 本轮改动面 | `delivery_check` 收尾（打开/关闭判据）、`server.py` 两个参数、`check_all` 增加第 4 套件 |
+| 关键用例 | `delivery manifest is a real file` PASS 21.3s / 7309 B；`assembly drawing not an empty shell` PASS 101.6s（3 视图 27 尺寸）；`close document` PASS 0.4s；`server wrapper contract` PASS（74 wrappers，65 forwarding calls bind） |
+
+### 值得记的一点
+
+同机同套用例：0.8.329 那轮 **29m**、0.8.329 修复后 **1h33m**、0.8.344 **1h30m**、本轮 **17m41m**。
+差异不在代码，在 SolidWorks 会话状态（内存/临时文件/是否刚重启）。**别把 smoke 时长当性能指标**，
+它只能回答「这次有没有红」。
+
+### 这轮为什么不升版本
+
+只跑了验证、没有行为改动。升版本会让 `tools/bump_version.py` 把样例清单里的版本字面量改到新号，
+而样例内容仍是 0.8.346 生成的 —— 那正好是 0.8.345 修掉的那类「产物说自己不是它」。
+**版本号跟随代码，验证记录进文档。**
