@@ -24,7 +24,7 @@ except Exception:  # a read-only cwd must not stop the server from starting
 
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
 
 from . import SERVER_NAME, __version__
@@ -1282,6 +1282,45 @@ def survey_drawings(
     ))
 
 
+class DimensionCoverage(BaseModel):
+    """The shape `auto_dimension.dimension_coverage` really has.
+
+    0.8.347 (report 2026-11-16 v0.8.346 §4.1): `dict | None` closed only the TOP level of
+    the schema, so `tools/list` advertised
+    `{"type": "object", "additionalProperties": true}` and any client could send
+    `{"foo": 1}` — which then rendered as `计划 None 条，落到图上 0 条（覆盖 0%）` in a page
+    meant for filing. Declaring the fields makes the schema self-documenting (IDE hints,
+    required keys) and turns most mistakes into a visible error instead of a fake number.
+
+    Every field stays OPTIONAL on purpose: a missing key must reach
+    `normalise_dimension_coverage()` so the tool can answer with `ok:false` +
+    `call_status:"failed"` and a list of what is wrong, rather than a pydantic stack trace
+    that never passes through `sw_session.error()`.
+
+    The tool declares `DimensionCoverage | dict | None` rather than just this model.
+    Measured 2026-11-16: with the model alone, `{"planned": "sixteen"}` is rejected by
+    pydantic BEFORE the tool runs — the client gets `ToolError`, no receipt and no
+    `call_status`, which is the same inconsistency §4 reported for exceptions. The extra
+    `dict` branch lets every shape reach the tool, so every rejection has one shape:
+    `error: "invalid_dimension_coverage"` + `call_status: "failed"`. The model still
+    supplies the typed schema (IDE hints, field docs); it is a hint, the validator is the
+    authority.
+    """
+
+    planned: int | None = Field(
+        default=None, description="How many dimensions the plan asked to keep.")
+    matched_by_name: int | None = Field(
+        default=None, description="How many of them were found on the sheet by name.")
+    matched_by_value: int | None = Field(
+        default=None, description="How many were matched by value only (name mismatch).")
+    coverage_ratio: float | None = Field(
+        default=None, description="0–1 ratio, NOT a percentage. 0.75 means 75%.")
+    missing: list[dict] | None = Field(
+        default=None,
+        description="Planned dimensions that did not reach the sheet, each a row like "
+                    "{'dimension','value_mm','reason','hint'}.")
+
+
 @mcp.tool()
 @_reject_unknown_arguments
 def export_delivery_report(
@@ -1290,7 +1329,8 @@ def export_delivery_report(
     output_path: Annotated[str, Field(description="Where to write the Markdown manifest. Defaults to the drawing's folder with a `.delivery.md` suffix.")] = None,
     include_faces: Annotated[bool, Field(description="Let delivery_check walk cylindrical faces (~10x slower) so the hole-coverage judgement is real instead of not_checked.")] = False,
     include_sheet_metal: Annotated[bool, Field(description="Also run sheet_metal_qc on the model (thickness, relief, hole-to-bend, min flange). Adds 150-300 s on a part with many faces.")] = False,
-    dimension_coverage: Annotated[dict | None, Field(description="Plan-level dimension coverage to print in the 「尺寸覆盖（计划）」 section. Pass the `dimension_coverage` object from `auto_dimension`, or `dimension_gap.coverage` from `produce_drawing`. Omit and the section says 「无」 plus where the number lives.")] = None,
+    dimension_coverage: Annotated[DimensionCoverage | dict | None, Field(description="Plan-level dimension coverage for the 「尺寸覆盖（计划）」 section. Pass the `dimension_coverage` object from `auto_dimension`, or `dimension_gap.coverage` from `produce_drawing`. It is VALIDATED: a wrong shape is refused with `error: invalid_dimension_coverage` and the section is never given invented numbers. Omit it and the section says 「无」 plus where the number lives.")] = None,
+    close_opened: Annotated[bool, Field(description="Close the model/drawing again if THIS call opened them (default true). If either of the two was already open before the call, NEITHER is closed — closing one takes the other down with it (measured), and that could discard unsaved edits. The receipt reports documents_closed / documents_left_open / documents_not_closed_newly_opened / documents_close_status.")] = True,
 ) -> str:
     """Write a one-page delivery manifest (Markdown) from `delivery_check`.
 
@@ -1321,10 +1361,17 @@ def export_delivery_report(
     """
     from .tools import manifest as manifest_tools
 
+    # The MCP layer always hands over a `DimensionCoverage` instance; a direct Python caller
+    # may hand a plain dict (0.8.346's signature). Accept both — the package validates the
+    # shape either way, so this is only about not raising AttributeError on the way in.
+    coverage = dimension_coverage
+    if coverage is not None and hasattr(coverage, "model_dump"):
+        coverage = coverage.model_dump()
+
     return _json(manifest_tools.export_delivery_report(
         model_path, drawing_path, output_path=output_path,
         include_faces=include_faces, include_sheet_metal=include_sheet_metal,
-        dimension_coverage=dimension_coverage))
+        dimension_coverage=coverage, close_opened=close_opened))
 
 
 @mcp.tool()

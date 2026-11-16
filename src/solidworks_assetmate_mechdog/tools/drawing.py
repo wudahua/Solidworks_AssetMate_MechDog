@@ -9318,6 +9318,11 @@ def list_drawing_annotations(drawing_path, view_name=None):
 
 
 @perf_hooks.timed("delivery_check")
+def _normcased(path):
+    """One path spelling, used for every comparison in this module."""
+    return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
+
+
 def _paths_to_close(before, after, candidates):
     """Which of `candidates` this call may close. PURE.
 
@@ -9329,13 +9334,18 @@ def _paths_to_close(before, after, candidates):
     All three inputs are sets of normalised paths (`open_document_paths()` format), and
     `before`/`after` may be `None`, meaning "the session could not be enumerated".
 
-    Returns `(to_close, left_open, status)`:
+    Returns `(to_close, left_open, newly_opened, status)`:
 
-      before or after is None   -> `([], [], "not_enumerated")` — close NOTHING. "I cannot
-                                   tell what is open" must never look like "nothing is open".
+      before or after is None   -> `([], [], [], "not_enumerated")` — close NOTHING. "I
+                                   cannot tell what is open" must never look like "nothing
+                                   is open".
       a candidate was ALREADY
-      open before this call     -> `([], left_open, "skipped_caller_documents")`
-      otherwise                 -> `(newly_opened ∩ candidates, [], "ok")`
+      open before this call     -> `([], left_open, newly, "skipped_caller_documents")`
+      otherwise                 -> `(newly, [], newly, "ok")`
+
+    `newly_opened` is always returned so a skipped call can tell the caller exactly which
+    documents it opened and did NOT close (0.8.347, report 2026-11-16 v0.8.346 §5.4):
+    without it the caller has no way to clean up on its own terms.
 
     Why skipping instead of "close only mine": measured 2026-11-16, closing the drawing
     ALSO closed a part the session already held — SolidWorks releases a silently-opened
@@ -9345,26 +9355,23 @@ def _paths_to_close(before, after, candidates):
     close entirely and says so.
     """
     if before is None or after is None:
-        return [], [], "not_enumerated"
-
-    def _norm(path):
-        return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
+        return [], [], [], "not_enumerated"
 
     # Normalise BOTH sides. `open_document_paths()` already returns normcase/normpath
     # strings, but a caller that assembled the snapshots by hand (or a test) may not, and
     # a separator mismatch silently disabled every close — measured while testing this
     # helper: "c:/a/x" never equalled "c:////a////x".
-    wanted = {_norm(c) for c in (candidates or ()) if c}
-    before = {_norm(p) for p in before}
-    after = {_norm(p) for p in after}
+    wanted = {_normcased(c) for c in (candidates or ()) if c}
+    before = {_normcased(p) for p in before}
+    after = {_normcased(p) for p in after}
     newly = {p for p in after if p not in before}
     to_close = sorted(p for p in newly if p in wanted)
     left_open = sorted(p for p in after if p in wanted and p in before)
     if left_open:
         # One of the documents we would close shares a session with a document the caller
         # already had open. Closing ours can take theirs down with it (measured), so stop.
-        return [], left_open, "skipped_caller_documents"
-    return to_close, left_open, "ok"
+        return [], left_open, to_close, "skipped_caller_documents"
+    return to_close, left_open, to_close, "ok"
 
 
 def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False,
@@ -9393,17 +9400,30 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
         return result
 
     after = open_document_paths()
-    to_close, left_open, status = _paths_to_close(before, after,
-                                                 (model_path, drawing_path))
-    closed = []
+    candidates = (model_path, drawing_path)
+    to_close, left_open, newly, status = _paths_to_close(before, after, candidates)
+
+    # Report PATHS, not titles. 0.8.346 mixed the two: `documents_closed` held SolidWorks
+    # titles ("AM_DOOR - 图纸1") while `documents_left_open` held full lower-cased paths,
+    # so the two lists could not be compared or subtracted (report 2026-11-16 §6).
+    spelling = {}
+    for candidate in candidates:
+        if candidate:
+            spelling[_normcased(candidate)] = os.path.abspath(str(candidate))
+
+    closed_paths, closed_titles = [], []
     for path in to_close:
         receipt = close_document(path)
         if receipt.get("ok"):
-            closed.extend(receipt.get("closed") or [])
+            closed_paths.append(spelling.get(path, path))
+            closed_titles.extend(receipt.get("closed") or [])
         else:
             status = "close_failed"
-    result["documents_closed"] = closed
-    result["documents_left_open"] = left_open
+    result["documents_closed"] = closed_paths
+    result["documents_closed_titles"] = closed_titles
+    result["documents_left_open"] = [spelling.get(p, p) for p in left_open]
+    result["documents_not_closed_newly_opened"] = [spelling.get(p, p) for p in newly
+                                                   if p not in to_close]
     result["documents_close_status"] = status
     return result
 

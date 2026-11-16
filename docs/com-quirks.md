@@ -6123,3 +6123,80 @@ SolidWorks 在最后一个引用它的文档关闭时，会把**静默打开**�
 只跑了验证、没有行为改动。升版本会让 `tools/bump_version.py` 把样例清单里的版本字面量改到新号，
 而样例内容仍是 0.8.346 生成的 —— 那正好是 0.8.345 修掉的那类「产物说自己不是它」。
 **版本号跟随代码，验证记录进文档。**
+
+---
+
+## 2026-11-16（v0.8.347）`dimension_coverage` 零校验：页面会印出「覆盖 0%」，类型错会直接抛
+
+### 现象
+
+0.8.346 把参数接到 MCP 了，但 `dict | None` 只约束了顶层：pydantic 生成的 schema 是
+`{"type":"object","additionalProperties":true}`，对象内部完全不设限。`render_manifest` 拿到任意
+dict 就 `.get()` / `float()`：
+
+```text
+{"foo": 1}                 -> "计划 None 条，落到图上 0 条（覆盖 0%）。"   ok:true
+{"missing": ["总长"]}       -> AttributeError: 'str' object has no attribute 'get'
+{"coverage_ratio": "75%"}  -> ValueError: could not convert string to float
+```
+
+两条都很严重：一条让**归档页**印出编造的数字（`ok:true`，没有任何提示），另一条让异常逃出工具 ——
+MCP 客户端拿到 `ToolError`，没有回执、没有 `call_status`，与「所有 error 回执都带 `call_status`」
+的承诺自相矛盾。
+
+### 改法：校验前移 + 三道关
+
+```python
+normalise_dimension_coverage(value) -> (clean, status, reasons)   # PURE
+    None / {}      -> (None, "absent", [])
+    非 dict        -> (None, "rejected_invalid", ["必须是对象…"])
+    缺键/类型错/比例越界/missing 不是对象数组 -> (None, "rejected_invalid", [原因…])
+    合法           -> (干净 dict, "accepted", [])
+```
+
+- `render_manifest`：只有 `accepted` 才印数字；`rejected_invalid` 印「无 + 逐条原因 + 正确来源」；
+  `absent` 印原来的「数字在哪」。
+- `export_delivery_report`：**在 COM 读取之前**校验，非法直接 `error("invalid_dimension_coverage", ...)`，
+  带上 `call_status:"failed"`、`dimension_coverage_status:"rejected_invalid"`，以及
+  `documents_*` 三个空值（不留 `null`）。传错只花毫秒，不打开 SolidWorks。
+- 回执新增 `dimension_coverage_status`：`accepted` / `rejected_invalid` / `absent`，不看 Markdown 也知道数字可不可信。
+
+`server.py` 用 pydantic 模型 `DimensionCoverage` 让 schema 带 `properties`（IDE 有提示），
+但签名写成 `DimensionCoverage | dict | None`：只用模型时，`{"planned": "sixteen"}` 会在**工具执行前**
+被 pydantic 拒绝 → `ToolError`，又回到「没有回执」的老问题。多一个 `dict` 分支让每种形状都进工具，
+于是拒绝只有一种形状。**模型是提示，校验器才是权威** —— 这一点写进了模型 docstring。
+
+### 值域也管了
+
+`coverage_ratio` 必须是 **0–1 的比例**：传 `75` 会被拒并说明「比例不是百分数」。不拦的话页面会写
+「覆盖 7500%」—— 那不是精度问题，是单位问题。
+
+### 顺带（P1/P2）
+
+| 项 | 改法 |
+|---|---|
+| 清单工具没有 `close_opened` | 暴露并转发，与 `delivery_check` 对齐 |
+| 「有一个已打开就一个都不关」只写在 README | 写进两个 MCP description（客户端只看得到 description） |
+| `skipped_caller_documents` 时不知道漏了谁 | `_paths_to_close` 改为返回 4 元组，回执新增 `documents_not_closed_newly_opened`（本次打开但没关的路径） |
+| `documents_closed` 是标题、`documents_left_open` 是路径 | 两者统一为**完整路径**；标题另放 `documents_closed_titles` |
+| 错误路径三个 session 字段是 `null` | 改为 `[]` / `[]` / `"not_started"` |
+| `stdio_contract` 把「嵌套无约束」判 PASS | 新增 `dimension_coverage schema is typed`（解析 `$ref` 到 `$defs` 查 `properties`）与 `close_opened is reachable on both tools`；原「untouched」断言保留但只说明「没有被人为改写」 |
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | **334/334**，4 套件 |
+| `stdio_contract.py` | **9/9**（新增两条嵌套 schema 检查） |
+| 真机样例 | 合法 dict：`计划 16 条，落到图上 12 条（覆盖 75%）`，10160 B，`documents_closed` 两条路径 |
+| 非法 dict | `invalid_dimension_coverage` + `call_status: failed` + 逐条原因，**0 次 COM 调用** |
+| 真机 smoke | `delivery manifest is a real file` PASS 40.7s |
+
+### 教训
+
+**「接了参数」和「校验了参数」是两件事。** 上一轮把能力接到 MCP 就算完，这一轮才发现接进来的东西
+可以伪造归档页上的数字。凡是**会进入交付文档的数字**，都必须先过一道纯函数校验，且校验要在最贵的
+操作（COM 读取）之前。
+
+**宽松与严格要分开关。** schema 严（客户端能看到字段）但运行时宽（每种输入都变成结构化回执），
+比 schema 宽、运行时报栈要好；而两者都严格时，报错会分成两种方言，客户端要写两套处理。

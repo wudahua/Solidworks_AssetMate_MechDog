@@ -30,6 +30,87 @@ def _table(headers, rows):
     return "\n".join(out)
 
 
+#: The shape `auto_dimension.dimension_coverage` really has (drawing.py). Anything else is
+#: not "coverage" — it is a caller's guess, and a delivery page must not print guesses.
+_COVERAGE_INT_FIELDS = ("matched_by_name", "matched_by_value")
+
+
+def normalise_dimension_coverage(value):
+    """`(clean, status, reasons)` for a caller-supplied coverage object. PURE.
+
+    0.8.347 (report 2026-11-16 v0.8.346 §4, P0): `dimension_coverage` reached MCP with NO
+    structural check. `render_manifest` then did `.get()` / `float()` on whatever arrived, so:
+
+        {"foo": 1}                  -> "计划 None 条，落到图上 0 条（覆盖 0%）。"  (fabricated)
+        {"missing": ["总长"]}        -> AttributeError: 'str' object has no attribute 'get'
+        {"coverage_ratio": "75%"}   -> ValueError: could not convert string to float
+
+    A receipt that says `ok: true` while the page carries invented numbers is the exact
+    failure this project keeps removing, and an exception that escapes to MCP leaves the
+    client with no `call_status` at all.
+
+    Three outcomes, named:
+
+      "absent"            nothing supplied (or an empty object) -> section says where the
+                          number lives. This is the honest default, not an error.
+      "rejected_invalid"  something was supplied and it does not fit the shape -> the
+                          section states the input was rejected and why. NEVER numbers.
+      "accepted"          the shape matches -> `clean` is a fresh dict with only the known
+                          keys, so the page cannot be steered by extra ones.
+    """
+    if value is None:
+        return None, "absent", []
+    if not isinstance(value, dict):
+        return None, "rejected_invalid", [
+            "dimension_coverage 必须是对象（收到 %s）" % type(value).__name__]
+    if not value:
+        return None, "absent", []
+
+    reasons = []
+    planned = value.get("planned")
+    if isinstance(planned, bool) or not isinstance(planned, int):
+        reasons.append("planned 必须是整数（收到 %r）" % (planned,))
+    elif planned < 0:
+        reasons.append("planned 不能为负（收到 %r）" % (planned,))
+
+    ratio = value.get("coverage_ratio")
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
+        reasons.append("coverage_ratio 必须是 0–1 的数字（收到 %r）" % (ratio,))
+    elif not (0.0 <= float(ratio) <= 1.0):
+        # 75 is the percentage, not the ratio. Printing "覆盖 7500%" is not a rounding
+        # problem, it is a unit error the caller can fix in one place.
+        reasons.append("coverage_ratio 是 0–1 的比例，不是百分数（收到 %r）" % (ratio,))
+
+    for key in _COVERAGE_INT_FIELDS:
+        got = value.get(key, 0)
+        if isinstance(got, bool) or not isinstance(got, int):
+            reasons.append("%s 必须是整数（收到 %r）" % (key, got))
+
+    missing = value.get("missing")
+    if missing is None:
+        missing = []
+    if not isinstance(missing, (list, tuple)):
+        reasons.append("missing 必须是数组（收到 %s）" % type(missing).__name__)
+        missing = []
+    else:
+        bad = [i for i, row in enumerate(missing) if not isinstance(row, dict)]
+        if bad:
+            reasons.append("missing 的第 %s 项不是对象"
+                           % "、".join(str(i) for i in bad[:3]))
+
+    if reasons:
+        return None, "rejected_invalid", reasons
+
+    clean = {
+        "planned": planned,
+        "matched_by_name": value.get("matched_by_name", 0),
+        "matched_by_value": value.get("matched_by_value", 0),
+        "coverage_ratio": float(ratio),
+        "missing": [dict(row) for row in missing],
+    }
+    return clean, "accepted", []
+
+
 def render_manifest(payload):
     """Markdown for a delivery manifest. PURE — takes a dict, returns a string.
 
@@ -109,7 +190,10 @@ def render_manifest(payload):
                                 if isinstance(v, (list, dict)) else v)
                                for k, v in facts.items()]) if facts else "")
 
-    cov = _as_dict(payload.get("dimension_coverage"))
+    # 0.8.347 (report 2026-11-16 v0.8.346 §4): validate, never trust. Every branch below
+    # is reachable from `tools/call`, where the client writes the dict by hand.
+    cov, cov_status, cov_reasons = normalise_dimension_coverage(
+        payload.get("dimension_coverage"))
     if cov:
         body = ["计划 %s 条，落到图上 %s 条（覆盖 %s%%）。" % (
             cov.get("planned"), (cov.get("matched_by_name") or 0)
@@ -122,6 +206,15 @@ def render_manifest(payload):
                                [((m.get("dimension") or ""), m.get("value_mm"),
                                  m.get("reason"), m.get("hint")) for m in missing]))
         _section("尺寸覆盖（计划）", "\n".join(body))
+    elif cov_status == "rejected_invalid":
+        # Showing numbers here is how a delivery page lies. Say the input was refused and
+        # list the reasons, so the caller can fix the object instead of trusting the page.
+        _section("尺寸覆盖（计划）",
+                 "无 —— 调用方传入的 `dimension_coverage` 结构不合法，已拒绝，"
+                 "本页不输出任何覆盖率数字。\n\n"
+                 + "\n".join("- %s" % r for r in cov_reasons)
+                 + "\n\n正确来源：`auto_dimension` 回执的 `dimension_coverage`，"
+                   "或 `produce_drawing` 的 `dimension_gap.coverage`。")
     else:
         # 0.8.345 (report §P1-1): this section used to vanish while the receipt's `sections`
         # claimed it. `delivery_check` has NO plan-level coverage — the number lives in
@@ -179,17 +272,22 @@ def render_manifest(payload):
     _status = payload.get("documents_close_status")
     _closed = payload.get("documents_closed") or []
     _left = payload.get("documents_left_open") or []
+    _unclosed = payload.get("documents_not_closed_newly_opened") or []
+
+    def _names(paths):
+        return "、".join(os.path.basename(str(p)) for p in paths) if paths else "无"
+
     lines.append(
-        "会话：读取模型与图纸时会**打开**这两个文档，返回前关闭本次打开的（%d 个）；"
-        "调用前就已打开的（%d 个）不动。%s"
-        % (len(_closed), len(_left),
+        "会话：读取模型与图纸时会**打开**这两个文档；返回前关闭本次打开的（%d 个：%s）；"
+        "调用前就已打开的（%d 个：%s）不动。%s"
+        % (len(_closed), _names(_closed), len(_left), _names(_left),
            {"not_enumerated": "本次无法枚举会话文档，因此没有关闭任何文档"
                               "（不拿「看不到」当「没有」）。",
             "disabled": "调用方要求保留打开状态（`close_opened=False`）。",
             "close_failed": "关闭时出错，见 `documents_close_status`。",
-            "skipped_caller_documents": "文档中有一个在调用前就已打开，"
-                                        "关闭本次打开的那个会把它一起带走"
-                                        "（实测 2026-11-16），因此本次不关闭任何文档。",
+            "skipped_caller_documents": "凡是有一个在调用前就已打开，本次就一个都不关 —— "
+                                        "关闭其中一个会把它一起带走（实测 2026-11-16）；"
+                                        "本次打开但未关闭的：%s。" % _names(_unclosed),
             "ok": "未保存、未修改任何文件。"}.get(_status, "")))
     lines.append("")
     if payload.get("note"):
@@ -207,7 +305,7 @@ def render_manifest(payload):
 
 def export_delivery_report(model_path, drawing_path, output_path=None,
                            include_faces=False, include_sheet_metal=False,
-                           dimension_coverage=None):
+                           dimension_coverage=None, close_opened=True):
     """Write the manifest and return its path plus the verdict it carries.
 
     **Nothing is saved or modified.** The model and the drawing ARE opened — that is how
@@ -224,13 +322,33 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
 
     drawing_abs = os.path.abspath(drawing_path)
     model_abs = os.path.abspath(model_path)
+
+    # Validate BEFORE the 30-90 s COM read: a malformed coverage object is a caller bug,
+    # and failing fast keeps the receipt structured (`call_status` included) instead of
+    # raising out of `render_manifest` after the drawing was already opened.
+    cov, cov_status, cov_reasons = normalise_dimension_coverage(dimension_coverage)
+
+    def _fail(code, message, hint=None, **extra):
+        return error(code, message, hint,
+                     documents_closed=[], documents_left_open=[],
+                     documents_close_status="not_started",
+                     dimension_coverage_status=cov_status, **extra)
+
+    if cov_status == "rejected_invalid":
+        return _fail("invalid_dimension_coverage",
+                     "dimension_coverage 结构不合法，未写出清单：%s" % "；".join(cov_reasons),
+                     "传 `auto_dimension` 回执里的 `dimension_coverage`，"
+                     "或 `produce_drawing` 的 `dimension_gap.coverage`；"
+                     "或干脆不传 —— 该段会写明「无」并指出数字在哪。")
+
     if not os.path.exists(drawing_abs):
-        return error("bad_input", "drawing not found: %s" % drawing_abs)
+        return _fail("bad_input", "drawing not found: %s" % drawing_abs)
     if not os.path.exists(model_abs):
-        return error("bad_input", "model not found: %s" % model_abs)
+        return _fail("bad_input", "model not found: %s" % model_abs)
 
     check = drawing_tools.delivery_check(model_abs, drawing_abs,
-                                         include_faces=bool(include_faces))
+                                         include_faces=bool(include_faces),
+                                         close_opened=bool(close_opened))
     if not check.get("ok") and check.get("error"):
         return error(check.get("error") or "delivery_check_failed",
                      check.get("message") or "delivery_check returned an error",
@@ -251,6 +369,9 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
         version = None
 
     payload = {
+        # 0.8.347 (report §4): the receipt says whether the numbers on the page came from a
+        # valid object, were refused, or were never supplied. No need to read the Markdown.
+        "dimension_coverage_status": cov_status,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "tool_version": version,
         "model": model_abs,
@@ -267,12 +388,17 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
         # Only when the caller has a plan-level number (it comes from `auto_dimension`, not
         # from `delivery_check`). Left out otherwise — the section then says so instead of
         # disappearing while the receipt claims it exists.
-        "dimension_coverage": dimension_coverage,
+        "dimension_coverage": cov,
         # 0.8.346 (report 2026-11-16 v0.8.345 §7): "read-only" was true about saving and
         # false about opening. These three come straight from `delivery_check`, which now
         # closes what it opened — the manifest only reports it, so the page can be audited.
         "documents_closed": check.get("documents_closed") or [],
+        "documents_closed_titles": check.get("documents_closed_titles") or [],
         "documents_left_open": check.get("documents_left_open") or [],
+        # 0.8.347 (report §5.4): on `skipped_caller_documents` these are the documents this
+        # call opened and did NOT close — the caller needs the list to clean up on its terms.
+        "documents_not_closed_newly_opened":
+            check.get("documents_not_closed_newly_opened") or [],
         "documents_close_status": check.get("documents_close_status"),
     }
     text = render_manifest(payload)
@@ -306,8 +432,11 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
         # 0.8.346: the caller must be able to verify the session side effect without
         # opening SolidWorks. Same three fields as `delivery_check`.
         documents_closed=payload["documents_closed"],
+        documents_closed_titles=payload["documents_closed_titles"],
         documents_left_open=payload["documents_left_open"],
+        documents_not_closed_newly_opened=payload["documents_not_closed_newly_opened"],
         documents_close_status=payload["documents_close_status"],
+        dimension_coverage_status=cov_status,
         note=("清单一页：结论与检查项来自 delivery_check，不新增判断；"
               "「尺寸覆盖（计划）」只在调用方传入 dimension_coverage 时有数字，"
               "否则明写「无」；「未检查」不等于通过。"

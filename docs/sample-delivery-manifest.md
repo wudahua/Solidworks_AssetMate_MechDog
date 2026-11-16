@@ -6,8 +6,8 @@
 |---|---|
 | 模型 | D:\WorkBuddy_space\Solidworks_AssetMate_MechDog\logs\sample_probe\sample.SLDPRT |
 | 图纸 | D:\WorkBuddy_space\Solidworks_AssetMate_MechDog\logs\sample_probe\sample.SLDDRW |
-| 生成时间 | 2026-11-16 10:06:20 |
-| 工具版本 | 0.8.346 |
+| 生成时间 | 2026-11-16 13:02:24 |
+| 工具版本 | 0.8.347 |
 | 回执 ok | true |
 
 ## 阻断项
@@ -84,7 +84,7 @@
 
 本清单只复述 `delivery_check`（以及可选 `sheet_metal_qc`）的结论，不新增判断。`未检查` 表示该评价没有做，**不等于通过**。「待设计审核」表示图纸对象正确但含需人确认的值。
 
-会话：读取模型与图纸时会**打开**这两个文档，返回前关闭本次打开的（1 个）；调用前就已打开的（0 个）不动。未保存、未修改任何文件。
+会话：读取模型与图纸时会**打开**这两个文档；返回前关闭本次打开的（2 个：sample.SLDDRW、sample.SLDPRT）；调用前就已打开的（0 个：无）不动。未保存、未修改任何文件。
 
 verdict 依据流程 §7；blockers 非空即不可宣称可制造，ai_supplied 非空则只能算待设计审核。无关联实体的尺寸计入 **pending**（不是 blockers）——它表示「图纸还不能交付审核」，与「不可制造」是两个等级。当前：blockers 0 项、pending 3 项、ai_supplied 0 项。
 
@@ -92,8 +92,9 @@ verdict 依据流程 §7；blockers 非空即不可宣称可制造，ai_supplied
 
 ```json
 {
- "generated_at": "2026-11-16 10:06:20",
- "tool_version": "0.8.346",
+ "dimension_coverage_status": "accepted",
+ "generated_at": "2026-11-16 13:02:24",
+ "tool_version": "0.8.347",
  "model": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\logs\\sample_probe\\sample.SLDPRT",
  "drawing": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\logs\\sample_probe\\sample.SLDDRW",
  "verdict": "待设计审核",
@@ -243,6 +244,7 @@ verdict 依据流程 §7；blockers 非空即不可宣称可制造，ai_supplied
   "planned": 16,
   "matched_by_name": 10,
   "matched_by_value": 2,
+  "coverage_ratio": 0.75,
   "missing": [
    {
     "dimension": "总长",
@@ -272,14 +274,17 @@ verdict 依据流程 §7；blockers 非空即不可宣称可制造，ai_supplied
     "reason": "not_inserted",
     "hint": "该驱动尺寸没有被导入（特征不在任何已激活视图里、被压缩，或属于孔向导草图）；补标用 add_drawing_dimension(view_name=...)"
    }
-  ],
-  "complete": false,
-  "coverage_ratio": 0.75
+  ]
  },
  "documents_closed": [
+  "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\logs\\sample_probe\\sample.SLDDRW",
+  "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\logs\\sample_probe\\sample.SLDPRT"
+ ],
+ "documents_closed_titles": [
   "sample - 图纸1"
  ],
  "documents_left_open": [],
+ "documents_not_closed_newly_opened": [],
  "documents_close_status": "ok"
 }
 ```

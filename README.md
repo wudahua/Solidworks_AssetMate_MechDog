@@ -107,11 +107,12 @@ SolidWorks 的位数一致。两者分开最省事。
 3. 装完自检（都不需要 SolidWorks，但都在同一个 venv 里跑）：
 
    ```bat
-   REM 语法 + 结构 + 333 条回归，约 3 分钟
+   REM 4 套件：语法 + 结构 + 334 条回归 + 真实 stdio MCP 契约，约 3 分钟
    .\.venv\Scripts\python.exe tests\check_all.py
-   REM 真实 stdio 进程的 MCP 契约（不需 SolidWorks）
-   .\.venv\Scripts\python.exe tests\stdio_contract.py
    ```
+
+   `stdio_contract.py` 已在 `check_all` 的第 4 步里跑，**不必再单独执行**（0.8.347 起；
+   单跑只在想只看契约输出时有用）。
 
 4. 接进 MCP 客户端（指向 venv，不依赖 PATH）：
 
@@ -510,7 +511,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 333 条历史回归
+python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 334 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -594,15 +595,43 @@ man  = json.loads(export_delivery_report(model, drawing,
 
 走 `produce_drawing` 的话，同一个对象在 `dimension_gap.coverage` 里。
 
+**传进来的对象会被校验（0.8.347 起）**：`dimension_coverage` 不再是「任意对象」。结构不对时直接拒，
+不会写清单、也不会在页面上印数字。
+
+两道关（区分清楚，看回执就知道走到哪）：
+
+| 关卡 | 触发 | 回执 |
+|---|---|---|
+| MCP schema | 参数根本不是对象（传了字符串/数字） | `isError`，报文说类型不对；工具未执行 |
+| 工具内校验 | 是对象但缺键 / 类型不对 / 比例不是 0–1 / `missing` 不是对象数组 | `ok:false` + `error:"invalid_dimension_coverage"` + `call_status:"failed"` + 拒绝原因逐条 |
+
+```json
+{"ok": false, "error": "invalid_dimension_coverage", "call_status": "failed",
+ "dimension_coverage_status": "rejected_invalid",
+ "message": "dimension_coverage 结构不合法，未写出清单：planned 必须是整数（收到 None）"}
+```
+
+| `dimension_coverage_status` | 含义 |
+|---|---|
+| `accepted` | 结构合法，页面出数字 |
+| `rejected_invalid` | 传了但不合法，页面写「无 + 原因」，回执带 `error` |
+| `absent` | 没传，页面写「无」并指出数字在哪 |
+
+必填：`planned`（整数）、`coverage_ratio`（**0–1 的比例**，不是百分数；75 会被拒并说明）。
+`missing` 必须是对象数组。校验在 COM 读取之前完成，所以传错只花毫秒。
+
 **会话行为（0.8.346 起）**：清单要读模型与图纸，所以**会打开**这两个文档，返回前关闭本次打开的那些，只关「不是在本次调用之前就已经打开的」。如果其中之一调用前就开着，**一个都不关** ——
 实测关闭图纸会把同时开着的零件一起带走，分不清是工具自己载入的还是用户正在编辑的，
 猜错的代价是丢掉未保存的修改。回执用三个字段讲清：
 
 | 字段 | 值 |
 |---|---|
-| `documents_closed` | 本次关闭的文档标题 |
-| `documents_left_open` | 调用前就已打开、本次不动的文档 |
-| `documents_close_status` | `ok` / `skipped_caller_documents` / `not_enumerated` / `disabled` / `close_failed` |
+| `documents_closed` | 本次关闭的文档**完整路径**（标题另在 `documents_closed_titles`） |
+| `documents_left_open` | 调用前就已打开、本次不动的文档（完整路径，可与上一行直接做集合运算） |
+| `documents_not_closed_newly_opened` | 本次打开、但因上面那条规则没有关闭的路径 —— 调用方要自己清理时用这个 |
+| `documents_close_status` | `ok` / `skipped_caller_documents` / `not_enumerated` / `disabled` / `close_failed` / `not_started` |
+
+`close_opened=false` 可显式要求「别关」。错误回执里这些字段是空列表 + `not_started`，不是 `null`。
 
 ### 两套件分开报
 

@@ -2430,7 +2430,10 @@ def assert_every_param_is_documented():
     src = _read("server.py")
     assert "from typing import Annotated" in src, (
         "Annotated is not imported — every annotation would fail to evaluate")
-    assert "from pydantic import Field" in src, "Field is not imported"
+    # 0.8.347: `BaseModel` joined the import so the nested `dimension_coverage` schema can
+    # declare its fields. Accept either spelling — the requirement is that Field is there.
+    assert ("from pydantic import Field" in src
+            or "from pydantic import BaseModel, Field" in src), "Field is not imported"
 
     problems = sc.check_param_descriptions(sc.SERVER)
     assert not problems, "parameters without a description: %s" % problems[:3]
@@ -11782,15 +11785,31 @@ def assert_mcp_manifest_exposes_and_forwards_dimension_coverage():
 
     manager = getattr(server.mcp, "_tool_manager", None)
     if manager is not None:
-        schema = {}
-        for tool in manager.list_tools():
-            if tool.name == "export_delivery_report":
-                schema = (tool.parameters or {}).get("properties", {})
-                break
-        assert "dimension_coverage" in schema, (
-            "the MCP input schema does not expose dimension_coverage: %r" % sorted(schema))
-        assert "anyOf" in (schema.get("dimension_coverage") or {}), (
-            "dimension_coverage must accept an object (and null), not a string")
+        tool = next((t for t in manager.list_tools()
+                     if t.name == "export_delivery_report"), None)
+        schema = (tool.parameters or {}) if tool is not None else {}
+        props = schema.get("properties") or {}
+        assert "dimension_coverage" in props, (
+            "the MCP input schema does not expose dimension_coverage: %r" % sorted(props))
+        # 0.8.347 (report 2026-11-16 v0.8.346 §4): `anyOf` alone was satisfied by
+        # `{"type": "object", "additionalProperties": true}` — an unconstrained blob. The
+        # property must resolve to a schema that NAMES its fields.
+        defs = schema.get("$defs") or schema.get("definitions") or {}
+        prop = props["dimension_coverage"]
+        resolved = {}
+        for branch in ("anyOf", "oneOf", "allOf"):
+            for sub in (prop.get(branch) or []):
+                if isinstance(sub, dict) and sub.get("$ref"):
+                    resolved = defs.get(sub["$ref"].rsplit("/", 1)[-1]) or {}
+                elif isinstance(sub, dict) and sub.get("type") == "object":
+                    resolved = resolved or sub
+        if not resolved and prop.get("$ref"):
+            resolved = defs.get(prop["$ref"].rsplit("/", 1)[-1]) or {}
+        assert {"planned", "coverage_ratio"} <= set(resolved.get("properties") or {}), (
+            "dimension_coverage is still an unconstrained object — a client typo becomes a "
+            "printed number: %r" % (resolved or prop,))
+        assert "close_opened" in props, (
+            "export_delivery_report cannot choose whether to close what it opened")
 
     captured = {}
 
@@ -11800,11 +11819,14 @@ def assert_mcp_manifest_exposes_and_forwards_dimension_coverage():
 
     with mock.patch.object(_m, "export_delivery_report", side_effect=_recorder):
         got = server.export_delivery_report("m.SLDPRT", "d.SLDDRW",
-                                           dimension_coverage={"planned": 16})
+                                           dimension_coverage={"planned": 16},
+                                           close_opened=False)
     assert captured.get("dimension_coverage") == {"planned": 16}, (
         "the wrapper accepted the argument and dropped it: %r" % (captured,))
+    assert captured.get("close_opened") is False, (
+        "close_opened is accepted by the wrapper and not forwarded: %r" % (captured,))
     assert got is not None
-    return "MCP schema + signature + forwarding all carry dimension_coverage"
+    return "MCP schema (typed) + signature + forwarding carry coverage and close_opened"
 
 
 def assert_delivery_check_closes_only_what_it_opened():
@@ -11828,24 +11850,28 @@ def assert_delivery_check_closes_only_what_it_opened():
     cands = ["C:/w/model.SLDPRT", "C:/w/draw.SLDDRW"]
 
     # clean session: the drawing we opened is the drawing we close
-    to_close, left_open, status = decide(set(), norm("C:/w/draw.SLDDRW"), cands)
+    to_close, left_open, newly, status = decide(set(), norm("C:/w/draw.SLDDRW"), cands)
     assert status == "ok", status
     assert [os.path.basename(p).lower() for p in to_close] == ["draw.slddrw"], (
         "the document this call opened is not the one being closed: %r" % (to_close,))
     assert left_open == []
+    assert newly == to_close
 
     # the caller already has the MODEL open: closing ours takes theirs with it (measured
-    # 2026-11-16), so nothing is closed and the reason is a named status
-    to_close, left_open, status = decide(norm("C:/w/model.SLDPRT"),
-                                        norm("C:/w/model.SLDPRT", "C:/w/draw.SLDDRW"),
-                                        cands)
+    # 2026-11-16), so nothing is closed — but the caller still learns what we left open
+    to_close, left_open, newly, status = decide(norm("C:/w/model.SLDPRT"),
+                                               norm("C:/w/model.SLDPRT",
+                                                    "C:/w/draw.SLDDRW"),
+                                               cands)
     assert status == "skipped_caller_documents", status
     assert to_close == [], "a document was scheduled for closing next to a caller-owned one"
     assert [os.path.basename(p).lower() for p in left_open] == ["model.sldprt"], left_open
+    assert [os.path.basename(p).lower() for p in newly] == ["draw.slddrw"], (
+        "the skipped call does not report what it opened and left behind: %r" % (newly,))
 
     # enumeration failure on either side -> close NOTHING
-    assert decide(None, norm("C:/w/draw.SLDDRW"), cands) == ([], [], "not_enumerated")
-    assert decide(set(), None, cands) == ([], [], "not_enumerated")
+    assert decide(None, norm("C:/w/draw.SLDDRW"), cands) == ([], [], [], "not_enumerated")
+    assert decide(set(), None, cands) == ([], [], [], "not_enumerated")
 
     # a document we never asked about is left alone
     assert decide(set(), norm("C:/w/other.SLDDRW"), cands)[0] == []
@@ -11856,14 +11882,85 @@ def assert_delivery_check_closes_only_what_it_opened():
     assert "_delivery_check_impl(" in wrapper, "the wrapper no longer calls the implementation"
     assert wrapper.count("open_document_paths()") == 2, (
         "the wrapper needs BOTH snapshots (before and after); one is missing")
-    for field in ("documents_closed", "documents_left_open", "documents_close_status"):
+    for field in ("documents_closed", "documents_left_open", "documents_close_status",
+                  "documents_not_closed_newly_opened"):
         assert field in wrapper, "the receipt does not report %s" % field
+    assert 'result["documents_closed"] = closed_paths' in wrapper, (
+        "documents_closed carries document titles again — the two lists must be "
+        "comparable path sets")
     assert "close_document(model_path)" not in wrapper, (
         "closing the given paths unconditionally is back — that discards the user's edits")
     return "only the newly opened documents are closed; caller-owned ones are reported"
 
 
+def assert_dimension_coverage_is_validated_before_it_reaches_the_page():
+    """0.8.347 (report 2026-11-16 v0.8.346 §4, P0) — a page that printed invented numbers.
+
+    `dimension_coverage` reached MCP with no structural check, so any object the client sent
+    went straight into the sentence template:
+
+        {"foo": 1}                 -> "计划 None 条，落到图上 0 条（覆盖 0%）。"  ok:true
+        {"missing": ["总长"]}       -> AttributeError, no receipt, no call_status
+        {"coverage_ratio": "75%"}  -> ValueError, same
+
+    Three properties, all asserted here:
+
+      * a VALID object still renders numbers (the feature still works);
+      * an INVALID object renders 「无」 + the reasons, never a number, and the receipt says
+        `dimension_coverage_status: "rejected_invalid"`;
+      * the rejection is an `error()` receipt (`call_status: "failed"`), not an exception —
+        and it happens BEFORE the 30–90 s COM read, so a typo costs nothing.
+
+    BEHAVIOURAL: calls the validator, the renderer and the export entry point.
+    """
+    from solidworks_assetmate_mechdog.tools import manifest as _m
+
+    valid = {"planned": 16, "matched_by_name": 10, "matched_by_value": 2,
+             "coverage_ratio": 0.75, "missing": [{"dimension": "总长", "value_mm": 55.0}]}
+    clean, status, reasons = _m.normalise_dimension_coverage(valid)
+    assert status == "accepted" and clean["planned"] == 16 and not reasons
+
+    # absent is not an error: nothing supplied is the documented default
+    for nothing in (None, {}):
+        assert _m.normalise_dimension_coverage(nothing)[1] == "absent"
+
+    # shapes that used to fabricate numbers or crash
+    for bad in ({"foo": 1}, {"planned": 3}, {"planned": 16, "coverage_ratio": 75},
+                {"planned": 16, "coverage_ratio": "75%"},
+                {"planned": 16, "coverage_ratio": 0.75, "missing": ["总长"]},
+                {"planned": 16, "coverage_ratio": 0.75, "missing": [None]},
+                {"planned": 16, "coverage_ratio": 0.75, "missing": {"a": 1}},
+                "oops", [1, 2, 3]):
+        clean, status, reasons = _m.normalise_dimension_coverage(bad)
+        assert status == "rejected_invalid", (bad, status)
+        assert clean is None and reasons, bad
+
+    # the page itself: numbers only from a valid object
+    md_bad = _m.render_manifest({"verdict": "x", "dimension_coverage": {"foo": 1}})
+    assert "计划 " not in md_bad, "an invalid object still printed a coverage sentence"
+    assert "结构不合法" in md_bad, "the page does not say the input was rejected"
+    md_good = _m.render_manifest({"verdict": "x", "dimension_coverage": valid})
+    assert "计划 16 条" in md_good and "覆盖 75%" in md_good
+    # a rejected object must not leave the receipt claiming a number either
+    assert _m.render_manifest({"verdict": "x",
+                               "dimension_coverage_status": "rejected_invalid"}
+                              ).count("## 尺寸覆盖（计划）") == 1
+
+    # rejection happens before COM: these paths do not exist, and that is the point
+    got = _m.export_delivery_report("C:/nope/m.SLDPRT", "C:/nope/d.SLDDRW",
+                                    dimension_coverage={"planned": "sixteen"})
+    assert got.get("ok") is False, got
+    assert got.get("error") == "invalid_dimension_coverage", got.get("error")
+    assert got.get("call_status") == "failed", got.get("call_status")
+    assert got.get("dimension_coverage_status") == "rejected_invalid"
+    assert got.get("documents_close_status") == "not_started", (
+        "the receipt has to say no document was touched, not leave the field null")
+    assert got.get("documents_closed") == []
+    return "coverage validated: valid renders, invalid refuses with a receipt (no COM, no crash)"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.347 coverage is validated", assert_dimension_coverage_is_validated_before_it_reaches_the_page),
     ("0.8.346 mcp exposes dimension_coverage", assert_mcp_manifest_exposes_and_forwards_dimension_coverage),
     ("0.8.346 close only what was opened", assert_delivery_check_closes_only_what_it_opened),
     ("0.8.345 manifest sections are real", assert_manifest_sections_match_the_file_it_wrote),
