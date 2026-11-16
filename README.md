@@ -107,7 +107,7 @@ SolidWorks 的位数一致。两者分开最省事。
 3. 装完自检（都不需要 SolidWorks，但都在同一个 venv 里跑）：
 
    ```bat
-   REM 语法 + 结构 + 330 条回归，约 3 分钟
+   REM 语法 + 结构 + 333 条回归，约 3 分钟
    .\.venv\Scripts\python.exe tests\check_all.py
    REM 真实 stdio 进程的 MCP 契约（不需 SolidWorks）
    .\.venv\Scripts\python.exe tests\stdio_contract.py
@@ -303,7 +303,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `reconcile_ledger` | **台账对账**：模型的 58 个尺寸，图纸上缺哪 7 个 |
 | `plan_dimension_gaps` | **缺口补偿规划**：把真缺的尺寸配成边对，唯一匹配才补 |
 | `delivery_check` | **这张图能不能交** |
-| `export_delivery_report` | **交付清单**（0.8.343 新增）：把 `delivery_check` 的结论落成一页 Markdown（阻断项/待确认/检查项/实测数据/逐页/可选钣金），末尾附原始 JSON 回执；**不新增判断**，只复述 |
+| `export_delivery_report` | **交付清单**：把 `delivery_check` 的结论落成一页 Markdown（阻断项/待确认/检查项/实测数据/**计划级尺寸覆盖**/逐页/可选钣金），末尾附原始 JSON 回执；**不新增判断**，只复述。`dimension_coverage` 传 `auto_dimension` 的那个对象就会有数字（0.8.346） |
 | `sheet_metal_qc` | 板厚/弯折数/止裂槽；做不到的检查标 `not_checked`，不给假通过 |
 | `flat_pattern_report` | 展开尺寸**谁算的**、工具没做什么、图上该写什么措辞 |
 | `survey_drawings` | 抽样真实图纸出统计基线 + HTML 画像报告 |
@@ -374,6 +374,11 @@ elif got["call_status"] == "failed":
 ```
 
 `error: "delivery_incomplete"` 属于 `incomplete` 这一类，不是失败。
+
+**`call_status` 的适用范围（0.8.346 明确）**：它是**所有工具**的通用字段，语义固定为「这次调用该怎么处理」——
+`ok` 可直接用、`incomplete` 有产物但没做完、`failed` 什么都没得到。目前只有 `produce_drawing` 会产出
+`incomplete`；其余工具要么 `ok`，要么 `failed`（任何 `error` 回执都在 `sw_session.error()` 里统一带上
+`execution_ok:false` + `call_status:"failed"`）。客户端按三值分支即可，不需要区分是哪个工具。
 
 ### 部分结果不等于成功
 
@@ -505,7 +510,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 330 条历史回归
+python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 333 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -575,6 +580,29 @@ tag_compare: no tag source (no CI env var, no _build_meta.json) and HEAD cannot 
 唯一允许的跳过：工作树里 HEAD 处在两个 tag 之间（正常的发布中途状态）。
 `git describe` 报 `not a git repository` 视为**无法判断**，不是「不在 tag 上」——
 这两种曾被混成一种，于是任何非仓库目录都能让门禁放行。
+
+### 交付清单怎么拿到「计划级尺寸覆盖」
+
+这个数字**不来自** `delivery_check`（它不知道出图计划），所以清单不会自己变出来 —— 要么传，要么明写「无」：
+
+```python
+plan = json.loads(plan_drawing(model, views=["front", "top", "right"]))
+ad   = json.loads(auto_dimension(drawing, dimension_filter=plan["keep_dimensions"]))
+man  = json.loads(export_delivery_report(model, drawing,
+                                        dimension_coverage=ad["dimension_coverage"]))
+```
+
+走 `produce_drawing` 的话，同一个对象在 `dimension_gap.coverage` 里。
+
+**会话行为（0.8.346 起）**：清单要读模型与图纸，所以**会打开**这两个文档，返回前关闭本次打开的那些，只关「不是在本次调用之前就已经打开的」。如果其中之一调用前就开着，**一个都不关** ——
+实测关闭图纸会把同时开着的零件一起带走，分不清是工具自己载入的还是用户正在编辑的，
+猜错的代价是丢掉未保存的修改。回执用三个字段讲清：
+
+| 字段 | 值 |
+|---|---|
+| `documents_closed` | 本次关闭的文档标题 |
+| `documents_left_open` | 调用前就已打开、本次不动的文档 |
+| `documents_close_status` | `ok` / `skipped_caller_documents` / `not_enumerated` / `disabled` / `close_failed` |
 
 ### 两套件分开报
 

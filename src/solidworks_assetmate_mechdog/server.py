@@ -1286,19 +1286,35 @@ def survey_drawings(
 @_reject_unknown_arguments
 def export_delivery_report(
     model_path: Annotated[str, Field(description="The part/assembly the drawing was made from; the ledger numbers come from it. Same argument order as `delivery_check`.")],
-    drawing_path: Annotated[str, Field(description="Existing .SLDDRW, absolute path. It is only READ — the manifest never opens or saves the drawing.")],
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW, absolute path. It is opened for reading and closed again before this call returns; nothing is saved or modified.")],
     output_path: Annotated[str, Field(description="Where to write the Markdown manifest. Defaults to the drawing's folder with a `.delivery.md` suffix.")] = None,
     include_faces: Annotated[bool, Field(description="Let delivery_check walk cylindrical faces (~10x slower) so the hole-coverage judgement is real instead of not_checked.")] = False,
     include_sheet_metal: Annotated[bool, Field(description="Also run sheet_metal_qc on the model (thickness, relief, hole-to-bend, min flange). Adds 150-300 s on a part with many faces.")] = False,
+    dimension_coverage: Annotated[dict | None, Field(description="Plan-level dimension coverage to print in the 「尺寸覆盖（计划）」 section. Pass the `dimension_coverage` object from `auto_dimension`, or `dimension_gap.coverage` from `produce_drawing`. Omit and the section says 「无」 plus where the number lives.")] = None,
 ) -> str:
     """Write a one-page delivery manifest (Markdown) from `delivery_check`.
 
     This tool adds NO new judgement: every line restates `delivery_check` — verdict,
     blockers, pending items, per-check results, measured facts, per-sheet numbers — plus an
-    optional sheet-metal section and the raw receipt as a JSON block at the end.
+    optional sheet-metal section, an optional plan-level dimension coverage table, and the
+    raw receipt as a JSON block at the end.
 
     Why a file: a receipt is fine for a program and useless in a document pack. The manifest
     is the page you file next to the drawing, and it survives after the session ends.
+
+    **Session behaviour**: the model and the drawing are OPENED to read them (that is what
+    `delivery_check` does), and closed again before returning — only if they were not
+    already open. Documents you had open stay open; the receipt reports both lists as
+    `documents_closed` / `documents_left_open`. Nothing is saved.
+
+    **Filling the dimension-coverage section** (the number does not come from
+    `delivery_check`):
+
+    ```python
+    plan = json.loads(plan_drawing(model, views=["front", "top", "right"]))
+    ad = json.loads(auto_dimension(drawing, dimension_filter=plan["keep_dimensions"]))
+    export_delivery_report(model, drawing, dimension_coverage=ad["dimension_coverage"])
+    ```
 
     Read as: 「未检查」 means the evaluation did not run — NOT that it passed. 「待设计审核」
     means the drawing objects are correct but carry values a human must confirm.
@@ -1307,7 +1323,8 @@ def export_delivery_report(
 
     return _json(manifest_tools.export_delivery_report(
         model_path, drawing_path, output_path=output_path,
-        include_faces=include_faces, include_sheet_metal=include_sheet_metal))
+        include_faces=include_faces, include_sheet_metal=include_sheet_metal,
+        dimension_coverage=dimension_coverage))
 
 
 @mcp.tool()
@@ -1319,17 +1336,22 @@ def delivery_check(
     require_gdt: Annotated[bool, Field(description="Treat a missing geometric tolerance as a pending item.")] = False,
     strict_attachments: Annotated[bool, Field(description="Count every detached dimension as pending, without the orphan-suspected excuse.")] = False,
     include_faces: Annotated[bool, Field(description="Also enumerate every model face (default False). Only the hole-candidate COUNT needs faces, and on a part with many faces that costs 10x: measured 209 s vs 19.7 s on a track link. Everything else in the verdict is available without them.")] = False,
+    close_opened: Annotated[bool, Field(description="Close the model/drawing again if THIS call opened them (default true). Documents you already had open are never closed — closing those could discard unsaved edits. The receipt reports documents_closed / documents_left_open / documents_close_status.")] = True,
 ) -> str:
     """Aggregate ledger + audit + annotations into a delivery verdict (process §7).
 
     Returns 可制造 / 待设计审核 / 仅供参考·未完成 plus the blockers and open items.
     ai_supplied lists values the caller supplied (material, tolerance, fit) — anything
     listed downgrades the verdict to 待设计审核.
+
+    The model and the drawing are OPENED to read them; with `close_opened=True` they are
+    closed again before returning, so a clean session stays clean. Nothing is saved.
     """
     return _json(drawing.delivery_check(
         model_path, drawing_path, ai_supplied=ai_supplied, require_gdt=require_gdt,
         strict_attachments=strict_attachments,
         include_faces=include_faces,
+        close_opened=close_opened,
     ))
 
 

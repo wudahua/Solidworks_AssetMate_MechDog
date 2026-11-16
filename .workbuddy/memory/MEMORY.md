@@ -9,6 +9,11 @@
 - **运行环境：只用仓库 `.venv`**（`py -3.11 -m venv .venv` + `pip install -e .`）。系统 3.11 的 `mcp` 可能已被升到 2.x（`mcp.server.fastmcp` 被删 → `server.py` ImportError）；PATH 上的 `python` 可能是 WorkBuddy 自带 3.13（无 pywin32）。全新 venv 装 `-e .` 前必须 `pip install setuptools wheel`，否则 `invalid command 'bdist_wheel'`。
 - 依赖：`mcp>=1.2,<2`（FastMCP）；Windows + pywin32；Python 包名小写。MCP 客户端读的是 **`server.py` 的 docstring**，改 `pipeline.py` 的注释对调用方不可见。
 - 工具规范：全部返回 JSON；写操作默认 dry-run、执行前快照原值；慢 COM 只取一次；COM 不可用不得编造结果。
+- **能力必须接到 server.py 才算对外**：包内函数多一个参数、MCP 包装没加/没转发，调用方就会被参数守卫拒；
+  `static_check` 只校验 server 已声明的参数，看不见「包内多了」。跨层能力要用跨层断言（签名差集 + mock 转发）。
+- **「只读」要说清哪种只读**：`delivery_check` 不保存但**会打开**模型与图纸。关闭判据 `_paths_to_close`：
+  before/after 快照 diff，`None` 一律不关；候选里有调用方已打开的就整体跳过（关图纸会连带关静默打开的零件）。
+- `check_all` 现含 4 套件（syntax / static / regressions / stdio_contract），约 3 分钟。
 - 发布流程：`python tools/bump_version.py --to X.Y.Z` → `check_all` → `git commit` + `git tag` + push + `gh release create`。推送偶发代理 502（`CONNECT tunnel failed`），**只重试、不 `--force`**；`api.github.com` 常通而 `github.com:443` 不通。
 - `用户反馈问题/`、`recolor-GitHub-交接/` 是本地资料，不发布、已 gitignore。
 

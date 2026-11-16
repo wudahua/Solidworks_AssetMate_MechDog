@@ -42,6 +42,10 @@ ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / "pyproject.toml"
 INIT = ROOT / "src" / "solidworks_assetmate_mechdog" / "__init__.py"
 META = ROOT / "src" / "solidworks_assetmate_mechdog" / "_build_meta.json"
+# The committed manifest sample is a real artifact with the version baked into two
+# places (table row + JSON appendix). Report 2026-11-16 §8 listed it as P2 because it
+# lagged one release; rewriting it here is cheaper than remembering to.
+SAMPLE_MANIFEST = ROOT / "docs" / "sample-delivery-manifest.md"
 
 
 def _read(path: Path, pattern: str) -> str:
@@ -74,6 +78,23 @@ def _rewrite(path: Path, pattern: str, new_version: str) -> None:
     if count != 1:
         raise SystemExit("refusing to write %s: pattern matched %d times" % (path, count))
     path.write_text(new_text, encoding="utf-8", newline="")
+
+
+def _rewrite_literal(path: Path, old: str, new: str, expected: int) -> int:
+    """Replace every standalone occurrence of a version literal, or refuse to write.
+
+    `expected` is the number of hits the caller saw. If the sample stops containing two
+    occurrences (a section was reworded, a generator changed), this fails instead of
+    silently leaving one stale number behind — the same failure mode `_rewrite` exists for.
+    """
+    text = path.read_text(encoding="utf-8")
+    pattern = re.compile(r"(?<![\d.])" + re.escape(old) + r"(?![\d.])")
+    new_text, count = pattern.subn(new, text)
+    if count != expected:
+        raise SystemExit("refusing to write %s: %d version literals, expected %d"
+                         % (path, count, expected))
+    path.write_text(new_text, encoding="utf-8", newline="")
+    return count
 
 
 def _git(*args: str) -> str | None:
@@ -177,8 +198,15 @@ def main() -> int:
         META.write_text(json.dumps({"tag": "v" + target, "version": target}, indent=2) + "\n",
                         encoding="utf-8", newline="")
 
-    print("%s -> %s  (pyproject + __init__%s)"
-          % (declared, target, "" if args.no_meta else " + _build_meta.json"))
+    sample_note = ""
+    if SAMPLE_MANIFEST.exists():
+        # 0.8.346 (report 2026-11-16 v0.8.345 §8): the sample's `工具版本` / `tool_version`
+        # lagged a release. Two literals, both rewritten, both counted.
+        hits = _rewrite_literal(SAMPLE_MANIFEST, declared, target, 2)
+        sample_note = " + sample manifest (%d literals)" % hits
+
+    print("%s -> %s  (pyproject + __init__%s%s)"
+          % (declared, target, "" if args.no_meta else " + _build_meta.json", sample_note))
     print("next: git add -A && git commit && git tag v%s && git push" % target)
     return 0
 

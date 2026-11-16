@@ -5997,3 +5997,100 @@ sections=[ln[3:].strip() for ln in text.splitlines() if ln.startswith("## ")]
 
 **回执描述的是「我以为写了什么」，产物才是「实际写了什么」。** 两者只要有一处可以手写，就会漂。
 把 `sections` 从常量换成解析产物，成本一行，收益是「文档级假阳性」这一类问题从此不可能再出现。
+
+---
+
+## 2026-11-16（v0.8.346）能力停在包内、只读却开了两个文档：两处「最后一公里」
+
+### P0：`dimension_coverage` 只有包内能传
+
+0.8.345 给 `manifest.export_delivery_report` 加了第 6 个参数 `dimension_coverage`，让「尺寸覆盖（计划）」段
+有数据时能出数字。但 `server.py` 的 MCP 包装保持 5 个参数、也没有转发：
+
+```text
+package export_delivery_report : 6 个参数（含 dimension_coverage）
+MCP     export_delivery_report : 5 个参数
+tools/call 传该键               : unknown argument(s): dimension_coverage
+```
+
+于是**文档承诺的调用方能力，MCP 调用方拿不到**，那一段在所有外部路径上永久是「无」。
+`static_check` 看不见这类问题：它只校验 server 层**已经声明**的参数有没有文档。
+
+改法：`server.py` 加参数并转发（`dict | None`），描述里写清「数字从哪来」：
+
+```python
+dimension_coverage: Annotated[dict | None, Field(
+    description="... 传 auto_dimension 的 dimension_coverage，或 produce_drawing 的 "
+                "dimension_gap.coverage；不传则该段写「无」")] = None,
+```
+
+新增**行为**断言 `assert_mcp_manifest_exposes_and_forwards_dimension_coverage`，一次钉三层：
+`tools/list` 的 schema 有该键（且接受对象）、两个签名参数集无差集、包装真的把 dict 传下去
+（`mock.patch.object` 记录 kwargs 后确认）。
+
+### P1：「只读」其实打开了 2 个文档，而且从不关
+
+`manifest` 的 docstring 写 `nothing is opened, saved or modified`，但 `delivery_check` 要打开模型与图纸
+才能读几何/尺寸，且没有关闭步骤。干净会话实测：
+
+```text
+0 个打开文档 -> export_delivery_report -> 2 个打开文档
+```
+
+上一轮没发现，是因为那台会话本来就开着这两个文件（`0 → 2` 被读成「前后一致」）。
+
+改法：`delivery_check` 拆成「包装 + 实现」：
+
+```text
+before = open_document_paths()      # 三态：set() / set(paths) / None
+result = _delivery_check_impl(...)
+after  = open_document_paths()
+close  = (after - before) ∩ {model, drawing}
+```
+
+判据抽成纯函数 `_paths_to_close(before, after, candidates)`，三种结局：
+
+| 输入 | 结果 | 为什么 |
+|---|---|---|
+| before/after 为 `None` | `([], [], "not_enumerated")` | 「看不到」不能当成「没有」，一个都不关 |
+| 候选里有**调用前就打开**的 | `([], left_open, "skipped_caller_documents")` | 见下 |
+| 其余 | `(newly_opened ∩ candidates, [], "ok")` | 只关自己开的 |
+
+**为什么不是「只关自己开的那些」**——实测这一条：
+
+```text
+调用方先打开零件 -> 清单打开图纸 -> 关闭图纸 -> 零件也没了
+```
+
+SolidWorks 在最后一个引用它的文档关闭时，会把**静默打开**的零件一起释放。diff 分不清这个零件是
+工具载入的还是用户正在编辑的，猜错的代价是丢掉未保存的修改（2026-11-05 已经踩过一次）。所以只要
+候选里有调用方文档，就整体不关，并把原因写成 `skipped_caller_documents`。
+
+清单页里对应一行「会话：…（N 个）…（M 个不动）」，回执三个字段
+`documents_closed` / `documents_left_open` / `documents_close_status`，无需打开 SolidWorks 即可核对。
+
+### 顺带三条
+
+| 项 | 改法 |
+|---|---|
+| `check_all` 只跑 3 个套件，`stdio_contract` 不在里面 | 加为第 4 个 STEPS，输出改成 `all offline checks passed (4 suites: …)`；本机 2m44s |
+| `call_status` 泛化到 333 处 `error()` 后语义含糊 | 明确为**所有工具**的通用三值判据（`ok` / `incomplete` / `failed`），只有 `produce_drawing` 会产出 `incomplete`，写进 README |
+| `docs/sample-delivery-manifest.md` 版本滞后一版、覆盖段为空 | 重新生成（带真实覆盖数字 + 会话行）；`bump_version.py` 每次升版重写样例里的两处版本字面量，断言 `0.8.346 sample manifest current` 钉住 |
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | **333/333**，4 套件，2m44s |
+| `stdio_contract.py` | 7/7（新增内容未破坏原有 7 条） |
+| 干净会话 | `0 → 0` 净增，`documents_closed=['sample - 图纸1']`、`status=ok` |
+| 调用方已开模型 | `status=skipped_caller_documents`，模型未被关闭 |
+| 真机 smoke | `delivery manifest is a real file` PASS 19.2s / `views, dimensions, title block` PASS 16.0s |
+
+### 教训
+
+**「包内有了」不等于「调用方有了」。** 参数、字段、能力，只要没接到 `server.py`，对外就不存在；
+而 `static_check` 只看得见 server 已经声明的东西，看不见它漏掉的。跨层的能力必须用**跨层的断言**钉住。
+
+**「只读」要说清是哪种只读。** 不写文件 ≠ 不打开文件。承诺一旦写成绝对句，就得让实现去对齐它，
+而不是让读者去猜边界。

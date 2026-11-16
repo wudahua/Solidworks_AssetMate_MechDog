@@ -30,6 +30,11 @@ STEPS = [
                 os.path.join(ROOT, "tests")]),
     ("structure", [sys.executable, os.path.join(HERE, "static_check.py")]),
     ("regressions", [sys.executable, os.path.join(HERE, "regressions.py")]),
+    # 0.8.346 (report 2026-11-16 v0.8.345 §8 P2): `stdio_contract.py` was a documented
+    # "step 4" that this file never ran, so 「all offline checks passed」 claimed coverage of
+    # assertions it did not execute — including the one that drove a real MCP failure. It
+    # needs no SolidWorks, only the `mcp` package, so it belongs here.
+    ("stdio_contract", [sys.executable, os.path.join(HERE, "stdio_contract.py")]),
 ]
 
 
@@ -94,7 +99,10 @@ def main():
     # problem C): every entry in `regressions.py` inspects source text; none of them drives
     # SolidWorks. Printing both counts side by side stops "all offline checks passed" from
     # implying the drawing itself was verified.
-    print("all offline checks passed")
+    # Name the suites: "all offline checks passed" used to be true of three of them while a
+    # fourth (the only one that speaks MCP) was listed in the README as optional.
+    print("all offline checks passed (%d suites: %s)"
+          % (len(STEPS), ", ".join(name for name, _ in STEPS)))
     # 0.8.328 (report 2026-11-14 v0.8.327 §P1-1): ONE source of these numbers. The suite
     # prints `counts: total=… behavioural=… text_ast=…` from `len()` of its two lists; this
     # file parses that line. Earlier versions recounted independently (list-split vs

@@ -176,6 +176,22 @@ def render_manifest(payload):
                  "不新增判断。`未检查` 表示该评价没有做，**不等于通过**。"
                  "「待设计审核」表示图纸对象正确但含需人确认的值。")
     lines.append("")
+    _status = payload.get("documents_close_status")
+    _closed = payload.get("documents_closed") or []
+    _left = payload.get("documents_left_open") or []
+    lines.append(
+        "会话：读取模型与图纸时会**打开**这两个文档，返回前关闭本次打开的（%d 个）；"
+        "调用前就已打开的（%d 个）不动。%s"
+        % (len(_closed), len(_left),
+           {"not_enumerated": "本次无法枚举会话文档，因此没有关闭任何文档"
+                              "（不拿「看不到」当「没有」）。",
+            "disabled": "调用方要求保留打开状态（`close_opened=False`）。",
+            "close_failed": "关闭时出错，见 `documents_close_status`。",
+            "skipped_caller_documents": "文档中有一个在调用前就已打开，"
+                                        "关闭本次打开的那个会把它一起带走"
+                                        "（实测 2026-11-16），因此本次不关闭任何文档。",
+            "ok": "未保存、未修改任何文件。"}.get(_status, "")))
+    lines.append("")
     if payload.get("note"):
         lines.append(str(payload["note"]))
         lines.append("")
@@ -194,8 +210,15 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
                            dimension_coverage=None):
     """Write the manifest and return its path plus the verdict it carries.
 
-    Read-only with respect to the drawing: nothing is opened, saved or modified — the
-    numbers come from `delivery_check`, which already reads both files.
+    **Nothing is saved or modified.** The model and the drawing ARE opened — that is how
+    `delivery_check` reads them — and closed again before returning, but only if they were
+    not already open:
+    `delivery_check` snapshots `open_document_paths()` before the read and closes the diff
+    afterwards, so documents the user had open are never touched (closing those would
+    discard unsaved edits, reported 2026-11-05).
+
+    Report 2026-11-16 (v0.8.345 §7): the previous wording said "nothing is opened", and a
+    clean session went from 0 to 2 open documents per manifest call.
     """
     from . import drawing as drawing_tools
 
@@ -245,6 +268,12 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
         # from `delivery_check`). Left out otherwise — the section then says so instead of
         # disappearing while the receipt claims it exists.
         "dimension_coverage": dimension_coverage,
+        # 0.8.346 (report 2026-11-16 v0.8.345 §7): "read-only" was true about saving and
+        # false about opening. These three come straight from `delivery_check`, which now
+        # closes what it opened — the manifest only reports it, so the page can be audited.
+        "documents_closed": check.get("documents_closed") or [],
+        "documents_left_open": check.get("documents_left_open") or [],
+        "documents_close_status": check.get("documents_close_status"),
     }
     text = render_manifest(payload)
 
@@ -274,7 +303,14 @@ def export_delivery_report(model_path, drawing_path, output_path=None,
         # we actually wrote — a receipt that describes a different file than it produced is
         # the same lie the rest of this project spent the day removing.
         sections=[ln[3:].strip() for ln in text.splitlines() if ln.startswith("## ")],
+        # 0.8.346: the caller must be able to verify the session side effect without
+        # opening SolidWorks. Same three fields as `delivery_check`.
+        documents_closed=payload["documents_closed"],
+        documents_left_open=payload["documents_left_open"],
+        documents_close_status=payload["documents_close_status"],
         note=("清单一页：结论与检查项来自 delivery_check，不新增判断；"
               "「尺寸覆盖（计划）」只在调用方传入 dimension_coverage 时有数字，"
-              "否则明写「无」；「未检查」不等于通过。"),
+              "否则明写「无」；「未检查」不等于通过。"
+              "本次打开模型与图纸后已关闭（见 documents_closed），"
+              "调用前就打开的文档不会被关闭。"),
     )

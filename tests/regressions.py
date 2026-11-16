@@ -42,6 +42,20 @@ def _tree(relpath):
     return ast.parse(_read(relpath), filename=relpath)
 
 
+def _delivery_node(tree):
+    """The function that actually HOLDS delivery_check's body.
+
+    0.8.346 (report 2026-11-16 v0.8.345 §7): `delivery_check` became a thin wrapper —
+    snapshot the open documents, call the implementation, close only what this call
+    opened. The body moved to `_delivery_check_impl`, so every source assertion written
+    over the years must follow the body, not the wrapper. Resolving here keeps those
+    assertions meaningful instead of silently matching a 15-line wrapper.
+    """
+    names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    return _function_node(tree, "_delivery_check_impl" if "_delivery_check_impl" in names
+                          else "delivery_check")
+
+
 def _function_node(tree, name):
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
@@ -973,7 +987,7 @@ def assert_dimension_display_text_reads_value_slot():
         "list_drawing_annotations reads GetText() with no slot — dimensions come back empty")
     assert "dimension_type" in body, "no dimension_type on dimension rows"
     assert "raw_text" in body, "no raw_text on dimension rows"
-    delivery = ast.get_source_segment(src, _function_node(tree, "delivery_check")) or ""
+    delivery = ast.get_source_segment(src, _delivery_node(tree)) or ""
     assert "dimension_type" in delivery, (
         "delivery_check still decides diameters from display text alone")
     assert "== 5" in delivery, "the diameter type code (5) is not used"
@@ -1007,7 +1021,7 @@ def assert_model_clean_is_not_a_blocker():
     blocker the caller cannot clear from inside it made 可制造 unreachable by construction.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src), "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     marker = 'record("model_clean"'
     assert marker in body, "the model_clean check is gone"
     segment = body[body.index(marker):body.index(marker) + 360]
@@ -1299,7 +1313,7 @@ def assert_delivery_check_formats_its_counts():
     """0.8.25 / N1 — a `%d` with no `%` operator printed literally to the caller."""
     src = _read("tools/drawing.py")
     tree = ast.parse(src)
-    node = _function_node(tree, "delivery_check")
+    node = _delivery_node(tree)
     assert node is not None, "delivery_check is gone"
     body = ast.get_source_segment(src, node) or ""
     assert "%d 个尺寸均已关联" in body, "the attachment message changed; re-check formatting"
@@ -1339,8 +1353,7 @@ def assert_add_note_reports_final_bbox():
 def assert_delivery_check_lists_missing():
     """0.8.26 / P1-3 — "coverage 0.947, missing 5" without saying WHICH five."""
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                      "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     assert "ledger_missing" in body, "no ledger_missing list in the receipt"
     assert "unmatched_ledger" in body, (
         "the list is not derived from reconcile_ledger's unmatched rows")
@@ -1973,7 +1986,7 @@ def assert_orphans_near_view_not_excused():
     assert "orphan_with_leader" not in verify_body, (
         "it still claims a leader it never verified")
     delivery_body = ast.get_source_segment(
-        src, _function_node(ast.parse(src), "delivery_check")) or ""
+        src, _delivery_node(ast.parse(src))) or ""
     assert "excused_count=0" in delivery_body, (
         "something is still being excused")
     assert "orphan_near_view" in delivery_body, (
@@ -2667,8 +2680,7 @@ def assert_cosmetic_threads_are_not_silent():
     tool should present as fact.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                      "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     assert 'record("cosmetic_threads"' in body, (
         "the thread check is gone — a threaded part will pass silently again")
     assert "other_1" in body or "螺纹" in body, (
@@ -4485,7 +4497,7 @@ def assert_derived_dimensions_are_reported_as_unfillable():
 
     draw = _read("tools/drawing.py")
     dtree = ast.parse(draw)
-    dc = _function_node(dtree, "delivery_check")
+    dc = _delivery_node(dtree)
     assert dc is not None
     dbody = ast.get_source_segment(draw, dc) or ""
     assert '"overall_dimension"' in dbody, (
@@ -6372,8 +6384,7 @@ def assert_delivery_checks_every_sheet():
     always passes it.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                      "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     assert "every_sheet_has_views" in body, (
         "delivery no longer blocks on an empty page — a blank sheet passes")
     assert "sheet_summary" in body, "the per-sheet summary is gone"
@@ -6901,8 +6912,7 @@ def assert_a_covered_hole_is_not_a_blocker():
     "Ø only" is `pending`.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     assert "blocking=(holes_in_drawing == 0 and diameter_dims == 0)" in body, (
         "a Ø-covered hole blocks delivery again")
     assert "covered_by_diameter_only" in body, (
@@ -7035,7 +7045,7 @@ def assert_record_blocking_is_keyword_only():
     """
     src = _read("tools/drawing.py")
     tree = ast.parse(src)
-    fn = _function_node(tree, "delivery_check")
+    fn = _delivery_node(tree)
     assert fn is not None, "delivery_check is gone"
 
     record_def = None
@@ -8464,8 +8474,7 @@ def assert_delivery_check_does_not_walk_every_face():
     one the same way; it would silently produce empty callouts.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     assert "include_faces=bool(include_faces)" in body, (
         "delivery_check walks every face again — 150 s for one number")
     assert "include_faces=False" in body, "the parameter is not defaulted to False"
@@ -10001,8 +10010,7 @@ def assert_zero_dimension_ledger_is_not_applicable():
     verdict at 待设计审核 forever — for something the caller cannot fix from this toolkit.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     assert "_ledger_dims == 0" in body, "the not-applicable branch is gone"
     assert 'status="not_applicable"' in body, (
         "0/0 is reported as a coverage failure again")
@@ -10280,8 +10288,7 @@ def assert_ledger_missing_excludes_present_values():
     report `near_view_orphans` / `far_from_view_orphans` and let the caller judge.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     assert 'for row in _missing_rows' in body, (
         "ledger_missing is built from `unmatched_ledger` again — that list mixes two facts")
     assert "_present_rows" in body and "ledger_unmatched_but_present" in body, (
@@ -10535,8 +10542,7 @@ def assert_gap_confidence_distinguishes_zero_from_one():
 def assert_hole_callout_check_is_never_silently_absent():
     """0.8.314 — report 2026-11-12 §4-4: the check vanished instead of saying not-run."""
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     assert 'status="not_checked"' in body, (
         "include_faces=False drops `hole_callouts` from `checks` entirely")
     assert "孔标注未核对" in body
@@ -10635,8 +10641,7 @@ def assert_delivery_check_default_path_cannot_hit_unbound_local():
     which calls `delivery_check` with default arguments.
     """
     src = _read("tools/drawing.py")
-    body = ast.get_source_segment(src, _function_node(ast.parse(src),
-                                                     "delivery_check")) or ""
+    body = ast.get_source_segment(src, _delivery_node(ast.parse(src))) or ""
     init = body.find("diameter_dims = 0")
     branch = body.find("if hole_candidates:")
     assert init > 0 and branch > 0, "the hole-callout block moved; re-check this assertion"
@@ -11298,7 +11303,43 @@ def assert_metal_note_agrees_with_the_numbers():
     return "the classification note is derived from the numbers, not from history"
 
 
+def assert_the_manifest_sample_is_the_current_version():
+    """0.8.346 (report 2026-11-16 v0.8.345 §8) — the committed sample lagged a release.
+
+    `docs/sample-delivery-manifest.md` is a real artifact, not prose: it carries the version
+    twice (table row + JSON appendix) and a `dimension_coverage` block. A sample that says
+    0.8.344 while the package is 0.8.345 is a small lie of the same family as the
+    hard-coded `sections` list, so `tools/bump_version.py` now rewrites those two literals
+    on every bump and this assertion fails if that hook stops matching.
+
+    Also requires a NON-NULL `dimension_coverage` in the appendix: showing the number is the
+    entire point of 0.8.346, and the sample is its documentation.
+    """
+    import re as _re
+
+    declared = None
+    for line in open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8").read().splitlines():
+        m = _re.match(r'^version\s*=\s*"([^"]+)"', line)
+        if m:
+            declared = m.group(1)
+            break
+    assert declared, "pyproject has no version line"
+
+    sample = open(os.path.join(ROOT, "docs", "sample-delivery-manifest.md"),
+                      encoding="utf-8").read()
+    assert "| 工具版本 | %s |" % declared in sample, (
+        "the sample manifest is not at %s — bump_version.py rewrites it, so this means the "
+        "rewrite stopped matching" % declared)
+    assert '"tool_version": "%s"' % declared in sample, (
+        "the JSON appendix of the sample still carries another version")
+    assert _re.search(r'"dimension_coverage":\s*\{', sample), (
+        "the sample shows dimension_coverage: null — it must demonstrate the real thing")
+    assert '"planned"' in sample and '"coverage_ratio"' in sample
+    return "sample manifest matches %s and carries real coverage numbers" % declared
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.346 sample manifest current", assert_the_manifest_sample_is_the_current_version),
     ("0.8.345 metal note agrees", assert_metal_note_agrees_with_the_numbers),
     ("0.8.342 min flange length measured", assert_min_flange_length_is_measured_and_called_approximate),
     ("0.8.341 hole-to-bend measured", assert_hole_to_bend_is_measured_with_a_named_rule),
@@ -11713,7 +11754,118 @@ def assert_every_failed_receipt_carries_call_status():
     return "every error receipt carries call_status=failed / execution_ok=false"
 
 
+def assert_mcp_manifest_exposes_and_forwards_dimension_coverage():
+    """0.8.346 (report 2026-11-16 v0.8.345 §6, P0) — the capability stopped at the package.
+
+    `manifest.export_delivery_report` grew a 6th parameter `dimension_coverage`, but the
+    MCP wrapper in `server.py` kept 5 and forwarded nothing, so `tools/call` with that key
+    was refused by `_reject_unknown_arguments` and the 「尺寸覆盖（计划）」 section was
+    permanently 「无」 on the only path a client can use. The documented behaviour and the
+    reachable behaviour disagreed; `static_check` cannot see it because it only validates
+    parameters the server already declares.
+
+    This pins all three layers: MCP schema, signature parity, and actual forwarding.
+
+    BEHAVIOURAL: imports both modules and drives the wrapper with the package function
+    replaced by a recorder (no COM).
+    """
+    import inspect
+    from unittest import mock
+
+    from solidworks_assetmate_mechdog import server
+    from solidworks_assetmate_mechdog.tools import manifest as _m
+
+    mcp_params = list(inspect.signature(server.export_delivery_report).parameters)
+    pkg_params = list(inspect.signature(_m.export_delivery_report).parameters)
+    gap = [name for name in pkg_params if name not in mcp_params]
+    assert not gap, "package parameters not reachable over MCP: %r" % (gap,)
+
+    manager = getattr(server.mcp, "_tool_manager", None)
+    if manager is not None:
+        schema = {}
+        for tool in manager.list_tools():
+            if tool.name == "export_delivery_report":
+                schema = (tool.parameters or {}).get("properties", {})
+                break
+        assert "dimension_coverage" in schema, (
+            "the MCP input schema does not expose dimension_coverage: %r" % sorted(schema))
+        assert "anyOf" in (schema.get("dimension_coverage") or {}), (
+            "dimension_coverage must accept an object (and null), not a string")
+
+    captured = {}
+
+    def _recorder(*args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "output_path": "x"}
+
+    with mock.patch.object(_m, "export_delivery_report", side_effect=_recorder):
+        got = server.export_delivery_report("m.SLDPRT", "d.SLDDRW",
+                                           dimension_coverage={"planned": 16})
+    assert captured.get("dimension_coverage") == {"planned": 16}, (
+        "the wrapper accepted the argument and dropped it: %r" % (captured,))
+    assert got is not None
+    return "MCP schema + signature + forwarding all carry dimension_coverage"
+
+
+def assert_delivery_check_closes_only_what_it_opened():
+    """0.8.346 (report 2026-11-16 v0.8.345 §7, P1) — "read-only" opened 2 documents.
+
+    `export_delivery_report` promised "nothing is opened", while `delivery_check` opened the
+    model and the drawing and closed neither: a clean session went 0 -> 2 documents per
+    call (the previous round missed it only because its session already had them open).
+
+    The close decision is a pure diff — `before`/`after` snapshots minus the candidates —
+    because "close the paths I was given" is exactly what discarded a user's unsaved edits
+    in 2026-11-05. The two "cannot tell" cases must NOT look like "nothing is open".
+
+    BEHAVIOURAL: calls `_paths_to_close` with real path shapes.
+    """
+    from solidworks_assetmate_mechdog.tools.drawing import _paths_to_close as decide
+
+    def norm(*paths):
+        return {os.path.normcase(os.path.normpath(os.path.abspath(p))) for p in paths}
+
+    cands = ["C:/w/model.SLDPRT", "C:/w/draw.SLDDRW"]
+
+    # clean session: the drawing we opened is the drawing we close
+    to_close, left_open, status = decide(set(), norm("C:/w/draw.SLDDRW"), cands)
+    assert status == "ok", status
+    assert [os.path.basename(p).lower() for p in to_close] == ["draw.slddrw"], (
+        "the document this call opened is not the one being closed: %r" % (to_close,))
+    assert left_open == []
+
+    # the caller already has the MODEL open: closing ours takes theirs with it (measured
+    # 2026-11-16), so nothing is closed and the reason is a named status
+    to_close, left_open, status = decide(norm("C:/w/model.SLDPRT"),
+                                        norm("C:/w/model.SLDPRT", "C:/w/draw.SLDDRW"),
+                                        cands)
+    assert status == "skipped_caller_documents", status
+    assert to_close == [], "a document was scheduled for closing next to a caller-owned one"
+    assert [os.path.basename(p).lower() for p in left_open] == ["model.sldprt"], left_open
+
+    # enumeration failure on either side -> close NOTHING
+    assert decide(None, norm("C:/w/draw.SLDDRW"), cands) == ([], [], "not_enumerated")
+    assert decide(set(), None, cands) == ([], [], "not_enumerated")
+
+    # a document we never asked about is left alone
+    assert decide(set(), norm("C:/w/other.SLDDRW"), cands)[0] == []
+
+    src = _read("tools/drawing.py")
+    wrapper = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                        "delivery_check")) or ""
+    assert "_delivery_check_impl(" in wrapper, "the wrapper no longer calls the implementation"
+    assert wrapper.count("open_document_paths()") == 2, (
+        "the wrapper needs BOTH snapshots (before and after); one is missing")
+    for field in ("documents_closed", "documents_left_open", "documents_close_status"):
+        assert field in wrapper, "the receipt does not report %s" % field
+    assert "close_document(model_path)" not in wrapper, (
+        "closing the given paths unconditionally is back — that discards the user's edits")
+    return "only the newly opened documents are closed; caller-owned ones are reported"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.346 mcp exposes dimension_coverage", assert_mcp_manifest_exposes_and_forwards_dimension_coverage),
+    ("0.8.346 close only what was opened", assert_delivery_check_closes_only_what_it_opened),
     ("0.8.345 manifest sections are real", assert_manifest_sections_match_the_file_it_wrote),
     ("0.8.345 every error has call_status", assert_every_failed_receipt_carries_call_status),
     ("0.8.343 delivery manifest", assert_delivery_manifest_restates_and_never_upgrades),

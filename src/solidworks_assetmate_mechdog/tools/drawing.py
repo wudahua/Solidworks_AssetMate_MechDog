@@ -9318,8 +9318,98 @@ def list_drawing_annotations(drawing_path, view_name=None):
 
 
 @perf_hooks.timed("delivery_check")
+def _paths_to_close(before, after, candidates):
+    """Which of `candidates` this call may close. PURE.
+
+    Report 2026-11-16 (v0.8.345 §7): `delivery_check` opens the model and the drawing and
+    never closes them, so every manifest left 2 documents in the user's SolidWorks session
+    — while the manifest's description promised "nothing is opened". A diff of two
+    snapshots is the only way to close OUR documents without closing the user's.
+
+    All three inputs are sets of normalised paths (`open_document_paths()` format), and
+    `before`/`after` may be `None`, meaning "the session could not be enumerated".
+
+    Returns `(to_close, left_open, status)`:
+
+      before or after is None   -> `([], [], "not_enumerated")` — close NOTHING. "I cannot
+                                   tell what is open" must never look like "nothing is open".
+      a candidate was ALREADY
+      open before this call     -> `([], left_open, "skipped_caller_documents")`
+      otherwise                 -> `(newly_opened ∩ candidates, [], "ok")`
+
+    Why skipping instead of "close only mine": measured 2026-11-16, closing the drawing
+    ALSO closed a part the session already held — SolidWorks releases a silently-opened
+    part when the last document referencing it closes. The diff cannot tell a part this
+    toolkit loaded from one the user has open with unsaved edits, and the failure mode of
+    guessing wrong is data loss, so the presence of any caller-owned candidate stops the
+    close entirely and says so.
+    """
+    if before is None or after is None:
+        return [], [], "not_enumerated"
+
+    def _norm(path):
+        return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
+
+    # Normalise BOTH sides. `open_document_paths()` already returns normcase/normpath
+    # strings, but a caller that assembled the snapshots by hand (or a test) may not, and
+    # a separator mismatch silently disabled every close — measured while testing this
+    # helper: "c:/a/x" never equalled "c:////a////x".
+    wanted = {_norm(c) for c in (candidates or ()) if c}
+    before = {_norm(p) for p in before}
+    after = {_norm(p) for p in after}
+    newly = {p for p in after if p not in before}
+    to_close = sorted(p for p in newly if p in wanted)
+    left_open = sorted(p for p in after if p in wanted and p in before)
+    if left_open:
+        # One of the documents we would close shares a session with a document the caller
+        # already had open. Closing ours can take theirs down with it (measured), so stop.
+        return [], left_open, "skipped_caller_documents"
+    return to_close, left_open, "ok"
+
+
 def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False,
-                   strict_attachments=False, include_faces=False):
+                   strict_attachments=False, include_faces=False, close_opened=True):
+    """`_delivery_check_impl`, plus closing the documents this call opened.
+
+    Report 2026-11-16 (v0.8.345 §7, P1): the check is read-only in the sense that it saves
+    nothing — but it DOES open the model and the drawing, and used to leave both open in
+    the user's session. Measured on a clean session: `0 -> 2` open documents after one
+    manifest call, and the tool description claimed nothing was opened.
+
+    `close_opened=True` (default) snapshots before, diffs after, and closes only what was
+    NOT already open. Documents that were open before the call stay open — closing those
+    would discard the user's unsaved edits (reported 2026-11-05). When the session cannot
+    be enumerated, nothing is closed and `documents_close_status` says so.
+    """
+    before = open_document_paths()
+    result = _delivery_check_impl(model_path, drawing_path, ai_supplied=ai_supplied,
+                                 require_gdt=require_gdt,
+                                 strict_attachments=strict_attachments,
+                                 include_faces=include_faces)
+    if not close_opened:
+        result["documents_closed"] = []
+        result["documents_left_open"] = []
+        result["documents_close_status"] = "disabled"
+        return result
+
+    after = open_document_paths()
+    to_close, left_open, status = _paths_to_close(before, after,
+                                                 (model_path, drawing_path))
+    closed = []
+    for path in to_close:
+        receipt = close_document(path)
+        if receipt.get("ok"):
+            closed.extend(receipt.get("closed") or [])
+        else:
+            status = "close_failed"
+    result["documents_closed"] = closed
+    result["documents_left_open"] = left_open
+    result["documents_close_status"] = status
+    return result
+
+
+def _delivery_check_impl(model_path, drawing_path, ai_supplied=None, require_gdt=False,
+                         strict_attachments=False, include_faces=False):
     """Aggregate model ledger + drawing audit + annotation inventory into a verdict.
 
     Process §7 asks for exactly three outcomes, and forbids calling a drawing
