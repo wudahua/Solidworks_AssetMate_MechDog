@@ -514,6 +514,11 @@ def main():
         except Exception:
             _declared = None
 
+        # Order matters: an annotated tag in the repository is EVIDENCE; the packaged copy
+        # is a number `bump_version.py` wrote from the same variable it wrote the version
+        # from (report 2026-11-09 core problem B, again 2026-11-16 v0.8.348 §5: three rounds
+        # of "tag_compare ... [source: packaged (SELF-DECLARED)]"). Ask git first, and when
+        # there is no work tree say UNVERIFIED instead of printing `==`.
         _ver = None
         _src = None
         for _env in ("GITHUB_REF_NAME", "CI_COMMIT_TAG", "GIT_TAG"):
@@ -521,68 +526,78 @@ def main():
             if _c:
                 _ver, _src = _c, "env:%s" % _env
                 break
-        if not _ver:
-            # ROOT-relative, like PYPROJECT two lines above. A relative path here made a
-            # perfectly good install fail when the script was invoked from another cwd —
-            # report 2026-11-09 (E4): "no tag source … version not verifiable", RC 1, on a
-            # package whose metadata was present and correct. Fail-closed is right; failing
-            # closed on the CALLER'S DIRECTORY is not.
+
+        _git_repo = False
+        _git_tag = None
+        _git_dirty = False
+        try:
+            import subprocess as _sp
+
+            _inside = _sp.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=ROOT,
+                              capture_output=True, text=True, timeout=10)
+            _git_repo = (_inside.returncode == 0
+                         and "true" in (_inside.stdout or "").lower())
+            if _git_repo:
+                _probe = _sp.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
+                                 cwd=ROOT, capture_output=True, text=True, timeout=10)
+                if _probe.returncode == 0:
+                    _git_tag = (_probe.stdout or "").strip()
+                # A tag describes the COMMITTED state. Comparing a dirty tree against it is
+                # the same "target == target" mistake one level up: measured during the
+                # 0.8.349 release, `bump_version` had changed pyproject while HEAD still sat
+                # on v0.8.348, and the gate reported MISMATCH on a perfectly normal
+                # mid-release tree. Tracked files only — build artefacts are not source.
+                _st = _sp.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                              cwd=ROOT, capture_output=True, text=True, timeout=10)
+                _git_dirty = bool((_st.stdout or "").strip())
+        except Exception:
+            _git_repo, _git_tag, _git_dirty = False, None, False
+
+        if _ver is None and _git_tag and not _git_dirty:
+            _ver, _src = _git_tag.lstrip("v"), "git:HEAD@%s" % _git_tag
+        elif _ver is None and _git_repo:
+            # Mid-release: either uncommitted work, or a commit between two tags.
+            print("tag_compare: SKIPPED (mid-release state: %s)"
+                  % ("working tree has uncommitted changes" if _git_dirty
+                     else "HEAD is not on a tag"))
+        elif _ver is None:
+            # No work tree (tarball / wheel install). The packaged tag is a COPY, so
+            # comparing it with pyproject would be `target == target`. Still worth one real
+            # check: two files inside the same install must not disagree with each other.
             _mp = os.path.join(ROOT, "src", "solidworks_assetmate_mechdog",
                                "_build_meta.json")
+            _meta_tag = _meta_ver = None
             try:
                 with open(_mp, encoding="utf-8") as _fh:
                     _m = _json.load(_fh)
-                _c = str(_m.get("tag") or "").strip().lstrip("v")
-                if _c:
-                    # Self-declared, not evidence. `bump_version.py` writes the tag and the
-                    # version from the same `target` variable, so on a tarball install this
-                    # compares `target == target`. Say so instead of implying verification.
-                    _ver, _src = _c, "packaged (SELF-DECLARED, not an external tag)"
+                _meta_tag = str(_m.get("tag") or "").strip().lstrip("v") or None
+                _meta_ver = str(_m.get("version") or "").strip() or None
             except Exception:
                 pass
-
-        if _ver is None:
-            # ── fail closed, not open (report 2026-11-09, round 2) ─────────────────────
-            # This branch used to print SKIPPED and fall through to "static check OK" with
-            # RC 0. Three separate probes on a real install showed that: no tag source,
-            # exit code 0, banner says everything is fine. A gate that cannot check must
-            # not report success — that is the same fail-open this project keeps finding
-            # in its own receipts.
-            #
-            # The one legitimate skip is a working tree whose HEAD is between tags (the
-            # normal mid-release state). That is detectable only with git; without git we
-            # cannot tell "mid-release" from "unverifiable install", so we fail.
-            _on_tag = None
-            try:
-                import subprocess as _sp
-                _probe = _sp.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
-                                 capture_output=True, text=True, timeout=10)
-                if _probe.returncode == 0:
-                    _on_tag = True
-                elif "not a git repository" in (_probe.stderr or "").lower():
-                    # No repository at all. Measured: a copy in /tmp with no .git made
-                    # `git describe` exit 128, which the first version read as "HEAD is not
-                    # on a tag" and skipped — the exact fail-open this branch exists to stop.
-                    _on_tag = None
-                else:
-                    _on_tag = False
-            except Exception:
-                _on_tag = None
-
-            if _on_tag is False:
-                print("tag_compare: SKIPPED (HEAD is not on a tag — mid-release state)")
-            else:
+            if _declared is None:
                 problems.append(
-                    "tag_compare: no tag source (no CI env var, no _build_meta.json) and "
-                    "HEAD cannot be shown to be between tags — version not verifiable")
-        elif _declared is None:
+                    "tag_compare: pyproject has no version line to compare against")
+            elif _meta_ver and _meta_ver != _declared:
+                problems.append(
+                    "tag_compare: packaged _build_meta.json says %s, pyproject says %s — "
+                    "the install disagrees with itself" % (_meta_ver, _declared))
+            elif _meta_tag and _meta_tag != _declared:
+                problems.append(
+                    "tag_compare: packaged tag v%s, pyproject says %s — the install "
+                    "disagrees with itself" % (_meta_tag, _declared))
+            else:
+                print("tag_compare: UNVERIFIED — no git work tree; packaged copy reports "
+                      "v%s [source: packaged (SELF-DECLARED, not an external tag)]"
+                      % (_meta_ver or _meta_tag or _declared or "?"))
+
+        if _ver is not None and _declared is None:
             problems.append("tag_compare: pyproject has no version line to compare against")
-        elif _ver != _declared:
+        elif _ver is not None and _ver != _declared:
             problems.append(
                 "tag_compare: tag v%s (from %s) != pyproject version %s"
                 % (_ver, _src, _declared))
             print("tag_compare: MISMATCH v%s (%s) vs %s" % (_ver, _src, _declared))
-        else:
+        elif _ver is not None:
             print("tag_compare: v%s == pyproject %s  [source: %s]" % (_ver, _declared, _src))
     except Exception as _exc:
         problems.append("tag_compare: crashed (%s)" % str(_exc)[:80])

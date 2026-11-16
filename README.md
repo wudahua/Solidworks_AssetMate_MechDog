@@ -511,7 +511,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 335 条历史回归
+python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 337 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```
@@ -531,6 +531,23 @@ python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测�
 | 版本 | 变更 | 影响 |
 |---|---|---|
 | 0.4.7 | `set_part_material` 的 `material` 参数改名 `material_name` | 旧调用会 schema 校验失败，需同步改参数名（改名是为了修参数遮蔽模块名的 bug） |
+
+### 版本与 tag 的核对口径
+
+`static_check` 的 `tag_compare` 现在**先问 git**，三种结局写清楚，不把「装的是压缩包」说成「比对通过」：
+
+| 环境 | 输出 |
+|---|---|
+| 工作区 HEAD 在 tag 上 | `tag_compare: v<当前版本> == pyproject <当前版本>  [source: git:HEAD@v<当前版本>]` |
+| 工作区有未提交改动 | `tag_compare: SKIPPED (mid-release state: working tree has uncommitted changes)` —— tag 描述的是**已提交**状态，拿脏树跟它比等于又一次 `target == target` |
+| 工作区在两次 tag 之间 | `tag_compare: SKIPPED (mid-release state: HEAD is not on a tag)` |
+| 不是 git 工作区（压缩包/轮子安装） | `tag_compare: UNVERIFIED — no git work tree; packaged copy reports v<当前版本> [source: packaged (SELF-DECLARED, not an external tag)]` |
+
+没有工作区时仍做一件真检查：`_build_meta.json` 与 `pyproject.toml` **互相矛盾**就判失败
+（「the install disagrees with itself」）——那是真缺陷，不是「无法验证」。
+
+`health_check` 与 `ping` 都带 `runtime`（`server_version` / `server_path` / `python_executable` / `pid`），
+`health_check.server_version` 也有独立键 —— 用来回答「MCP 现在跑的是哪一份包」。
 
 ## 开发与自检
 

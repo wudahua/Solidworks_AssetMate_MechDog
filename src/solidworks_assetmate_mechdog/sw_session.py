@@ -186,6 +186,12 @@ def health(deep=False):
     state = {"sw_version": None, "active_doc": None, "reconnected": False, "error": None,
              "package_path": _package_path,
              "package_version": _package_version,
+             # 0.8.349 (report 2026-11-16 v0.8.348 §5, P3): three acceptance reports read
+             # `health_check.server_version` and printed `None` — the key simply did not
+             # exist. Same value as `package_version`, spelled the way callers look for it.
+             # `runtime` is the same block `ping` already returns (which copy, which python).
+             "server_version": _package_version,
+             "runtime": runtime_info(),
              "python_executable": _sys.executable}
     try:
         app = get_sw()

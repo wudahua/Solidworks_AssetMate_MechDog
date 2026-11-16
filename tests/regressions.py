@@ -8948,9 +8948,16 @@ def assert_static_check_fails_when_it_cannot_check():
     assert i > 0 and j > i, "the tag check is after the early return again"
     block = sc[i:j]
     assert "problems.append" in block, "no tag source still cannot fail the gate"
-    assert "not a git repository" in block, (
+    # 0.8.349: the probe now asks `git rev-parse --is-inside-work-tree` instead of matching
+    # the English string "not a git repository" on stderr — that string is LOCALISED, so on
+    # a Chinese SolidWorks box the old probe reported "not a tag" and skipped a real error.
+    assert ("not a git repository" in block
+            or "--is-inside-work-tree" in block), (
         "a non-repo directory is read as 'HEAD is not on a tag' and skipped")
-    assert "_on_tag is False" in block, (
+    # 0.8.349: the skip is now gated on `_git_repo` (a real work tree) rather than the
+    # tri-state `_on_tag`. Same rule, one fewer way to read failure as "mid-release".
+    assert ("_on_tag is False" in block
+            or ("_git_repo" in block and "SKIPPED" in block)), (
         "the mid-release skip is not restricted to a real git tree")
 
     with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as fh:
@@ -9435,7 +9442,9 @@ def assert_partial_survives_the_pipeline_and_the_gate_reads_absolute_paths():
     assert 'os.path.join(ROOT, "src", "solidworks_assetmate_mechdog"' in sc, (
         "the packaged tag source is read through a relative path again; any cwd but the "
         "package root fails")
-    assert '"not a git repository"' in sc, "a non-repo is read as mid-release again"
+    # 0.8.349: locale-independent probe (see the 0.8.280 assertion).
+    assert ('"not a git repository"' in sc or "--is-inside-work-tree" in sc), (
+        "a non-repo is read as mid-release again")
     return "partial reaches the pipeline receipt, and the gate reads ROOT-relative paths"
 
 def assert_readme_documents_the_release_mechanics():
@@ -11341,7 +11350,47 @@ def assert_the_manifest_sample_is_the_current_version():
     return "sample manifest matches %s and carries real coverage numbers" % declared
 
 
+def assert_tag_compare_asks_git_before_the_packaged_copy():
+    """0.8.349 (report 2026-11-16 v0.8.348 §5, P3) — three rounds of "SELF-DECLARED".
+
+    The old block asked CI env vars, then fell back to `_build_meta.json` — which
+    `bump_version.py` writes from the same variable as the version, so on a tarball install
+    it compared `target == target` while printing `v0.8.348 == pyproject 0.8.348`.
+    A truthful gate has three outcomes, not two:
+
+      * a tag in the work tree (`git describe --exact-match`) — evidence, compare it;
+      * a work tree that is mid-release — SKIPPED, and say so;
+      * no work tree at all — UNVERIFIED, never `==`.
+
+    The packaged copy still earns its keep by checking that the install agrees with ITSELF
+    (`_build_meta.json` vs pyproject): that mismatch is a real defect and fails the gate.
+
+    Measured after the change: this repo prints `[source: git:HEAD@v0.8.348]`; a copy in a
+    scratch directory prints `UNVERIFIED … [source: packaged (SELF-DECLARED …)]`; the same
+    copy with `_build_meta.json` set to 0.8.999 fails with "disagrees with itself".
+    """
+    with open(os.path.join(ROOT, "tests", "static_check.py"), encoding="utf-8") as fh:
+        sc = fh.read()
+    i = sc.find("tag must AGREE")
+    j = sc.find("if problems:", i)
+    assert i > 0 and j > i
+    block = sc[i:j]
+
+    for token in ("rev-parse", "--is-inside-work-tree", "describe", "--exact-match"):
+        assert token in block, "tag_compare no longer asks git (%s)" % token
+    assert "UNVERIFIED" in block, (
+        "a run without a work tree prints `==` again, which is not evidence")
+    assert "SELF-DECLARED" in block and "disagrees with itself" in block, (
+        "the packaged fallback stopped saying what it is, or stopped checking it agrees")
+    # Compare the CODE positions, not the names: the comment above explains what the
+    # packaged copy is and mentions the file first.
+    assert block.index("--exact-match") < block.index("_mp = os.path.join"), (
+        "the packaged copy is consulted BEFORE git, so evidence never gets a chance")
+    return "tag_compare: git first, mid-release skipped, no-work-tree UNVERIFIED"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.349 tag_compare asks git first", assert_tag_compare_asks_git_before_the_packaged_copy),
     ("0.8.346 sample manifest current", assert_the_manifest_sample_is_the_current_version),
     ("0.8.345 metal note agrees", assert_metal_note_agrees_with_the_numbers),
     ("0.8.342 min flange length measured", assert_min_flange_length_is_measured_and_called_approximate),
@@ -12029,7 +12078,37 @@ def assert_the_delivery_check_timer_is_on_the_real_function():
     return "the perf timer sits on delivery_check; helpers are untimed"
 
 
+def assert_health_reports_which_copy_is_running():
+    """0.8.349 (report 2026-11-16 v0.8.348 §5, P3) — `server_version` was simply absent.
+
+    Three acceptance rounds printed `health_check.server_version = None`. The key never
+    existed: `health()` reported `package_version` and nothing else, so a reader asking the
+    obvious question got a null that looked like "unset" rather than "not reported".
+    `runtime_info()` already answers it properly (`server_version` + `server_path`), so
+    `health()` now carries both the alias and that whole block.
+
+    BEHAVIOURAL: calls `runtime_info()` and inspects the live module.
+    """
+    import solidworks_assetmate_mechdog as _pkg
+    from solidworks_assetmate_mechdog import sw_session
+
+    info = sw_session.runtime_info()
+    assert info.get("server_version") == getattr(_pkg, "__version__"), info
+    assert info.get("server_path") and os.path.isdir(info["server_path"]), (
+        "the running copy's directory is not resolvable: %r" % (info.get("server_path"),))
+    assert info.get("python_executable") and info.get("pid")
+
+    with open(os.path.join(ROOT, "src", "solidworks_assetmate_mechdog", "sw_session.py"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    health = src[src.find("def health("):src.find("def ping(")]
+    for key in ('"server_version"', '"runtime"', '"package_version"'):
+        assert key in health, "health() no longer reports %s" % key
+    return "health() names the running copy: version, path, interpreter"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.349 health names the running copy", assert_health_reports_which_copy_is_running),
     ("0.8.348 perf timer on the real function", assert_the_delivery_check_timer_is_on_the_real_function),
     ("0.8.347 coverage is validated", assert_dimension_coverage_is_validated_before_it_reaches_the_page),
     ("0.8.346 mcp exposes dimension_coverage", assert_mcp_manifest_exposes_and_forwards_dimension_coverage),

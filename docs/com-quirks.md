@@ -6271,3 +6271,72 @@ timings: annotations 7081 | audit 1601 | delivery_check 22364 |
 
 **形状检查不等于值检查。** 性能回执的 schema 一直是对的，错的是数字。凡是有「回执里的数」的地方，
 至少要有一条断言证明这个数与产生它的东西**量级一致**（这里是它内部四项之和）。
+
+---
+
+## 2026-11-16（v0.8.349）两条历史 P3 收口：`server_version` 键不存在、`tag_compare` 是自证
+
+### 一、`health_check.server_version = None`
+
+连续三轮验收都打印这一行。真相不是「取不到」，而是**这个键根本不存在**：`health()` 只报了
+`package_version`，读者 `.get("server_version")` 得到 `None` —— 「未设置」和「未提供」看起来一样。
+
+`runtime_info()` 早就能答（`server_version` + `server_path` + 解释器 + pid），`ping` 也一直在返回它。
+现在 `health()` 里补上：
+
+```python
+"package_version": _package_version,
+"server_version": _package_version,   # 同一个值的显式拼法
+"runtime": runtime_info(),            # 与 ping 同一份「跑的是哪份包」
+```
+
+### 二、`tag_compare` 一直是包内自证
+
+旧逻辑：先看 CI 环境变量，没有就用 `_build_meta.json` —— 那是 `bump_version.py` 从**同一个
+`target` 变量**写出来的，压缩包安装时等于 `target == target`，却打印
+`v0.8.348 == pyproject 0.8.348`。
+
+现在**先问 git**，四种结局各自说清楚：
+
+| 环境 | 输出 | 判据 |
+|---|---|---|
+| HEAD 在 tag 上且工作区干净 | `v0.8.349 == pyproject 0.8.349  [source: git:HEAD@v0.8.349]` | 真证据 |
+| 工作区有未提交改动 | `SKIPPED (mid-release state: working tree has uncommitted changes)` | tag 描述的是**已提交**状态 |
+| 干净但 HEAD 不在 tag 上 | `SKIPPED (mid-release state: HEAD is not on a tag)` | 两次 tag 之间 |
+| 不是 git 工作区 | `UNVERIFIED — no git work tree; packaged copy reports v<当前版本> [source: packaged (SELF-DECLARED, not an external tag)]` | 不打印 `==` |
+
+没有工作区时仍做一件**真**检查：`_build_meta.json` 与 `pyproject.toml` 互相矛盾就判失败
+（`the install disagrees with itself`）—— 那是真缺陷，不是「无法验证」。
+
+两处顺带修正：
+
+- 探测方式从「匹配 stderr 里的英文 `not a git repository`」改成
+  `git rev-parse --is-inside-work-tree`。**英文错误串是本地化的**：中文系统的 git 会输出别的语言，
+  旧判据会把「不是仓库」读成「不在 tag 上」然后跳过 —— 正是这条判据原本要防的 fail-open。
+- 脏树也算 mid-release：`bump_version` 改了 `pyproject` 而 HEAD 仍停在上一版 tag 时，
+  旧逻辑会报 `MISMATCH`，把正常的发布中间态判成错误（本轮实测踩到）。
+
+### 两条旧断言被同步放宽
+
+`0.8.280 the gate fails closed` 与 `0.8.285 partial survives the pipeline` 原本钉的是
+`"not a git repository"` 与 `_on_tag is False` —— 它们锁住了旧实现。改为接受新标记
+（`--is-inside-work-tree` / `_git_repo`），判据本身（「非仓库不能被读成 mid-release」）不变。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | **337/337**，4 套件 |
+| 本仓（HEAD 在 tag、工作区干净） | `[source: git:HEAD@v0.8.349]` |
+| 临时目录（无 .git） | `UNVERIFIED … packaged copy reports v0.8.349`，RC 0 |
+| 同目录把 `_build_meta.json` 改成 0.8.999 | `static check FAILED … disagrees with itself` |
+| 发布中间态（改了 pyproject 未提交） | `SKIPPED (working tree has uncommitted changes)` |
+| 真机 smoke | `health()` PASS、`delivery manifest is a real file` PASS 38.7s |
+
+### 教训
+
+**「键不存在」会在 `.get()` 之后伪装成「值为空」。** 回执里的字段只要被外部读过一次，就该有这一项；
+没有就明说没有，而不是让 `None` 去承担两种含义。
+
+**自证不能叫验证。** 同一个变量写进两个文件再比一次，永远是 `==`。能拿到外部参照（git tag、CI 变量）
+时先取它；拿不到就说 `UNVERIFIED`，不要用 `==` 的排版去暗示已经核对过。
