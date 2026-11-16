@@ -6340,3 +6340,53 @@ timings: annotations 7081 | audit 1601 | delivery_check 22364 |
 
 **自证不能叫验证。** 同一个变量写进两个文件再比一次，永远是 `==`。能拿到外部参照（git tag、CI 变量）
 时先取它；拿不到就说 `UNVERIFIED`，不要用 `==` 的排版去暗示已经核对过。
+
+---
+
+## 2026-11-16（v0.8.350）公差用例不再靠夹具：默认 SKIP 变成真跑
+
+### 问题
+
+`a tolerance render never passes on a bare number` 依赖「图上有至少一个尺寸」。默认夹具
+`P05_karetku.SLDPRT` 是**导入实体、没有驱动尺寸**，`auto_dimension` 插不进任何东西，于是这条用例
+在每一次标准全量里都是 `SKIP (fixture missing)` —— 一个守着「裸数字不得判通过」的用例，
+在默认配置下从未执行过。
+
+`测试用例/` 不入库（`git ls-files` 为 0），所以换成本地的 `接槽.SLDPRT` 只是把 SKIP 挪给别的机器。
+
+### 改法：缺尺寸就自己造一个
+
+公差渲染只关心「有一个尺寸」，不关心它从哪来。所以 `auto_dimension` 没插出尺寸时，用几何补一条：
+
+```python
+manual = drawing.add_drawing_dimension(drw, edge_index=0, value=None,
+                                       view_name=view, offset_x=0.0, offset_y=-0.012)
+```
+
+真机（默认夹具 P05）：
+
+```text
+a tolerance render never passes on a bare number   PASS 60.7s
+  matches=None evidence='numeric_magnitude' (dim from add_drawing_dimension(edge 0) -> ok)
+```
+
+仍然失败时不再静默：`FixtureMissing` 的文案会带上 `auto_dimension 找到 0 个 + 手工补标为什么失败`，
+SKIP 变成「说清楚哪一步断了」而不是「这个夹具没有尺寸」。
+
+### 为什么不是改夹具默认值
+
+`--part` 是全局夹具，改默认值会影响另外 68 条用例（它们对夹具的假设不同：有的要草图、有的要圆柱面）。
+只在**需要尺寸**的这一条里补一步，影响面最小，也让「默认夹具是导入实体」这个事实继续成立。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 单跑（默认夹具 P05） | **PASS 60.7s**，`evidence='numeric_magnitude'` |
+| `check_all.py` | 337/337，4 套件 |
+| 全量 smoke | **69 passed / 69 run，0 skipped，0 failed**（首次 SKIP 归零；本条用例 170.7s） |
+
+### 教训
+
+**「夹具不够」和「功能没做」在回执里长得很像。** 一条永远 SKIP 的用例，看起来像「环境不全」，
+实际是「这条守护从未生效」。能自己补的前置条件（这里是一条尺寸）就不要挂在夹具上。

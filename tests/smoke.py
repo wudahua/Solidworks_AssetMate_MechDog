@@ -1956,17 +1956,35 @@ def main():
         part = os.path.join(workdir, "smoke_tol.SLDPRT")
         drw = os.path.join(workdir, "smoke_tol.SLDDRW")
         shutil.copy2(src, part)
-        require(drawing.create_drawing(part, drw, paper="A3", views=["front"]))
+        built = require(drawing.create_drawing(part, drw, paper="A3", views=["front"]))
         drawing.auto_dimension(drw, all_views=True)
-        listing = drawing.list_drawing_annotations(drw)
-        values = sorted({round(float(a["value_mm"]), 3)
-                         for a in (listing.get("annotations") or [])
-                         if a.get("kind") == "dimension" and a.get("value_mm")})
+
+        def _values():
+            listing = drawing.list_drawing_annotations(drw)
+            return sorted({round(float(a["value_mm"]), 3)
+                           for a in (listing.get("annotations") or [])
+                           if a.get("kind") == "dimension" and a.get("value_mm")})
+
+        values = _values()
+        added_by = "auto_dimension"
         if not values:
-            # An imported body has no driving dimensions, so `auto_dimension` inserts none
-            # and there is nothing to tolerance. SKIP (not PASS) — a green line here would
-            # claim coverage this fixture cannot provide.
-            raise FixtureMissing("a part whose drawing gets at least one dimension")
+            # 0.8.350 (report 2026-11-16 v0.8.349 §4 note): the default fixture is an
+            # IMPORTED body — it has no driving dimensions, so `auto_dimension` inserts none
+            # and this check was SKIPped on every standard install. The tolerance renderer
+            # does not care where the dimension came from, only that one exists, so add ONE
+            # from geometry (the edge's own projected length) and run the real thing.
+            view = (built.get("views") or [{}])[0].get("name") or "工程图视图1"
+            manual = drawing.add_drawing_dimension(drw, edge_index=0, value=None,
+                                                  view_name=view, offset_x=0.0,
+                                                  offset_y=-0.012)
+            values = _values()
+            added_by = "add_drawing_dimension(edge 0) -> %s" % (
+                manual.get("error") or "ok")
+            if not values:
+                # Still nothing: report WHY, never a green line for a path that never ran.
+                raise FixtureMissing(
+                    "a part whose drawing gets at least one dimension "
+                    "(auto_dimension found none and %s)" % added_by)
         got = drawing.add_dimension_tolerance(drw, values[0], tolerance_type="bilateral",
                                               upper=0.05, lower=0.05, verify_render=True)
         require(got)
@@ -1978,8 +1996,8 @@ def main():
                     "a bare magnitude produced a PASS: %r" % (probe,))
             assert evidence in ("sign_text", "numeric_magnitude", "uncertain",
                                 "no_deviation_found", "ambiguous"), probe
-        return "matches=%r evidence=%r" % (got.get("pdf_render_matches"),
-                                           probe.get("evidence"))
+        return "matches=%r evidence=%r (dim from %s)" % (
+            got.get("pdf_render_matches"), probe.get("evidence"), added_by)
 
     r.check("a tolerance render never passes on a bare number",
             _a_tolerance_render_never_passes_on_a_bare_number)
