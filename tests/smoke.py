@@ -2000,6 +2000,45 @@ def main():
 
     r.check("a native hole table is a real table", _a_native_hole_table_is_a_real_table)
 
+    def _sheet_sketch_lines_can_be_listed_and_deleted():
+        """0.8.355 (report 2026-11-22 A3): leftover sheet-sketch lines were undeletable.
+
+        Measured 2026-11-23: selecting a segment and calling `EditDelete` does nothing
+        (2 -> 2); entering sketch edit first works (2 -> 1). This drives the real tool:
+        draw two lines, list them, dry-run, delete ONE, and prove exactly one remains.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_sketch.SLDPRT")
+        drw = os.path.join(workdir, "smoke_sketch.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        for y in (0.030, 0.045):
+            require(layout.add_sheet_line(drw, 0.05, y, 0.18, y, verify_render=False))
+        inventory = require(layout.list_sheet_sketch(drw))
+        count = inventory.get("segment_count")
+        assert count == 2, "expected the two lines just drawn, got %r" % (count,)
+        first = (inventory.get("segments") or [{}])[0]
+        assert first.get("length_mm") == 130.0, (
+            "the segment geometry is not readable: %r" % (first,))
+        planned = require(layout.delete_sheet_sketch(drw, indices=[0], dry_run=True))
+        assert planned.get("would_delete") == [0]
+        assert planned.get("segment_count") == 2, "dry_run deleted something"
+        done = require(layout.delete_sheet_sketch(drw, indices=[0], dry_run=False))
+        assert done.get("deleted") == [0], done
+        assert done.get("segment_count_after") == 1, (
+            "the segment was not removed: %r" % (done.get("segment_count_after"),))
+        assert require(layout.list_sheet_sketch(drw)).get("segment_count") == 1
+        try:
+            drawing.close_document(drw)
+        except Exception:
+            pass
+        return "2 -> 1 segment, dry_run changed nothing"
+
+    r.check("sheet sketch lines can be listed and deleted",
+            _sheet_sketch_lines_can_be_listed_and_deleted)
+
     def _a_tolerance_render_never_passes_on_a_bare_number():
         """Report 2026-11-14 v0.8.325 §P1-2: no smoke case ever touched a tolerance.
 

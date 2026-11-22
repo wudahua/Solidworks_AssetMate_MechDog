@@ -204,6 +204,7 @@ _TOOL_PROFILES = {
         "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
+        "list_sheet_sketch", "delete_sheet_sketch",
         "add_hole_table",
         "add_bom_table", "layout_dimensions", "set_dimension_position",
         "move_annotation", "delete_annotation", "delete_dimensions",
@@ -803,6 +804,46 @@ def set_dimension_position(drawing_path: Annotated[str, Field(description="Exist
     """
     return _json(layout.set_dimension_position(drawing_path, name, x_m, y_m,
                                              save=save, position_m=position_m))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def list_sheet_sketch(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW, absolute path; only READ.")],
+    view_name: Annotated[str | None, Field(description="Inspect that view's sketch instead of the sheet sketch. null = the sheet.")] = None,
+) -> str:
+    """Inventory the segments of the sheet sketch (or one view's sketch).
+
+    Report 2026-11-22 A3: leftover leader lines could not be removed and `GetSketch` was
+    reported as broken. Measured 2026-11-23: `sheet.GetSketch` and `view.GetSketch` (after
+    activating the view) both work — use this to read `index` values, then
+    `delete_sheet_sketch(indices=[...], dry_run=False)`.
+    """
+    return _json(layout.list_sheet_sketch(drawing_path, view_name=view_name))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def delete_sheet_sketch(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW, absolute path; saved in place unless save=False.")],
+    view_name: Annotated[str | None, Field(description="Delete from that view's sketch instead of the sheet sketch.")] = None,
+    indices: Annotated[list[int] | None, Field(description="Segment indices from list_sheet_sketch. Required unless all_segments=true.")] = None,
+    all_segments: Annotated[bool, Field(description="Delete EVERY segment of that sketch. Refused by default because that removes real drawing lines too.")] = False,
+    dry_run: Annotated[bool, Field(description="Default true: report what WOULD be deleted and change nothing. Pass false to delete.")] = True,
+    save: Annotated[bool, Field(description="Save the drawing after deleting.")] = True,
+) -> str:
+    """Delete sketch segments from the sheet sketch (or a view's sketch).
+
+    The step that made this look impossible: selecting a segment and calling `EditDelete`
+    does nothing unless the sketch is in EDIT mode. Measured 2026-11-23:
+    `select + EditDelete` -> 2 segments stay 2; `EditSketch() + select + EditDelete +
+    InsertSketch(True)` -> 2 becomes 1. This tool does the second one.
+
+    `dry_run` defaults to true — a wrong index silently removes a real drawing line.
+    """
+    return _json(layout.delete_sheet_sketch(
+        drawing_path, view_name=view_name, indices=indices,
+        all_segments=all_segments, dry_run=dry_run, save=save))
 
 
 @mcp.tool()

@@ -551,6 +551,24 @@ CAPABILITIES = [
                      "落在目标像素 (1701,549)，窗口 changed=265"),
     },
     {
+        "id": "sheet_sketch_delete",
+        "status": "verified",
+        "summary": ("读 / 删图纸草图段（`list_sheet_sketch` + `delete_sheet_sketch`，0.8.355 新增）"
+                    "· 删文字注记后留下的引线可以按索引删掉"),
+        "why": ("2026-11-22 的报告说 `GetSketch` / `GetDrawingSketch` 在 SW2020 全部映射失败，"
+                "残留引线删不掉。2026-11-23 在本 build（SW 32.4）实测："
+                "`sheet.GetSketch` 与「激活视图后的 `view.GetSketch`」都可用（与 2026-11-08 的"
+                "记录一致）；真正缺的一步是**进草图编辑态** —— "
+                "「选中段 + `EditDelete`」两段不变（2→2），"
+                "「`EditSketch()` + 选中 + `EditDelete` + `InsertSketch(True)`」才生效（2→1）。"),
+        "workaround": ("先用 `list_sheet_sketch` 拿索引（含长度与起点/方向），确认后用 "
+                       "`delete_sheet_sketch(indices=[...], dry_run=False)`；`dry_run` 默认 true，"
+                       "因为索引错了会静默删掉真实图线"),
+        "evidence": ("2026-11-23 door.SLDPRT：画两条 130 mm 线 → list 2 段（长度/起点/方向可读）→ "
+                     "dry_run 不改动 → 删 index 0 → 2→1；smoke "
+                     "`sheet sketch lines can be listed and deleted` PASS 20.3s"),
+    },
+    {
         "id": "hole_table",
         "status": "partial",
         "summary": ("原生孔表（`add_hole_table`，0.8.354 新增）· 能建表，但只列"

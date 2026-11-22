@@ -6650,3 +6650,45 @@ add_hole_table(drawing_path, view_name=None, x_m=None, y_m=None, anchor=1,
 **「探针失败」不等于「API 不存在」。** 三次 `None` 的根因是参数封送和一次静默的前提，而不是能力缺失。
 以后再判「做不了」，至少要把「参数组合」和「前置选择状态」两类都试过，并把每次的
 `argerr` 记下来 —— 早期那条 `类型不匹配 (argerr=1)` 就是唯一的线索。
+
+---
+
+## 2026-11-23（v0.8.355）残留引线能删：缺的不是 API，是「进草图编辑态」
+
+### 报告 A3
+
+「删文字注记后其 sheet sketch 引线删不掉；COM 后期绑定 `GetSketch` / `GetDrawingSketch` /
+`GetStart` 在 SW2020 全部接口映射失败。」
+
+### 实测（SW 32.4）
+
+| 步骤 | 结果 |
+|---|---|
+| `sheet.GetSketch` | ✅ 可用（画两条线后读到 2 段） |
+| `view.GetSketch`（先 `ActivateView`） | ✅ 可用，与 2026-11-08 的记录一致 |
+| 选中段 + `doc.EditDelete()` | ❌ **什么都没删**（2 段还是 2 段），也不报错 |
+| `doc.EditSketch()` → 选中 → `EditDelete()` → `InsertSketch(True)` | ✅ **2 → 1** |
+
+所以 `GetSketch` 在他们的环境失败可能是 SW2020 的版本差异；但真正让这件事看起来「做不了」的，
+是第三种：**选中后直接删是静默无效的** —— 和孔表的「静默返回 null」是同一类坑。
+
+### 两个新工具
+
+| 工具 | 用途 |
+|---|---|
+| `list_sheet_sketch(drawing_path, view_name=None)` | 读草图段：`index` / `kind` / `length_mm` / `start_m` / `direction`（默认 sheet 草图，给 `view_name` 就读该视图草图） |
+| `delete_sheet_sketch(drawing_path, view_name=None, indices=[...], all_segments=False, dry_run=True, save=True)` | 按索引删；**`dry_run` 默认 true**，因为索引错了会静默删掉真实图线 |
+
+回执：`segment_count_before` / `segment_count_after` / `deleted` / `failed` / `remaining`，
+并且真的重新数一遍（不是「调用了就算删了」）。
+
+真机 smoke `sheet sketch lines can be listed and deleted`：画两条 130 mm → list 2 段 →
+dry-run 不变 → 删 index 0 → **2 → 1**，PASS 20.3s。
+
+能力表新增 `sheet_sketch_delete`（`verified`，11/33）。
+
+### 教训
+
+**「调用没报错」和「东西变了」是两件事**，这条已经反复出现（`ok` vs `effective`、孔表 null、
+现在是静默无效的 `EditDelete`）。凡是写操作，回执里必须有一个**重新读回来的计数**；
+没有它，调用方只能靠肉眼。

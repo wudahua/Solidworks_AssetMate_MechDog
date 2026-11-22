@@ -2342,6 +2342,219 @@ def _line_style_warning(requested, applied):
     return None
 
 
+def list_sheet_sketch(drawing_path, view_name=None):
+    """Inventory the segments of the SHEET sketch (or one view's sketch). READ-ONLY.
+
+    Report 2026-11-22 A3: after deleting an annotation its leader/leftover lines could not
+    be removed — `GetSketch`/`GetDrawingSketch` were reported as failing. Measured
+    2026-11-23 on this build: `sheet.GetSketch` works (2 segments after drawing 2 lines),
+    and so does `view.GetSketch` once the view is activated (the 2026-11-08 note). What did
+    NOT work is deleting a segment without entering sketch edit — see
+    `delete_sheet_sketch`.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        sketch, owner, err = _sheet_sketch_of(doc, view_name, win)
+        if sketch is None:
+            return error("sketch_unreadable", err or "no sketch on this sheet",
+                         "Sheet sketch appears once something has been drawn on the sheet.",
+                         view=view_name)
+        rows = _segment_rows(sketch, win)
+        doc = None
+        return drawing_ok(owner=owner, view=view_name, segment_count=len(rows),
+                          segments=rows,
+                          note=("`index` 是删除时用的编号；端点读得到就给出，读不到只给长度。"
+                                "删除走 `delete_sheet_sketch(indices=[...], dry_run=False)`。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("sketch_list_failed", str(exc))
+
+
+def _sheet_sketch_of(doc, view_name, win):
+    """(sketch, owner_label, error). Activates the right thing first — this is the trap."""
+    try:
+        sheet = doc.GetFirstView
+    except Exception as exc:
+        return None, None, "no first view: %s" % str(exc)[:60]
+    if view_name:
+        target = None
+        for candidate in _sheet_model_views(doc):
+            try:
+                if str(candidate.Name) == str(view_name):
+                    target = candidate
+                    break
+            except Exception:
+                continue
+        if target is None:
+            return None, None, "no model view named %r" % (view_name,)
+        try:
+            doc.ActivateView(target.Name)
+        except Exception:
+            pass
+        try:
+            return win.Dispatch(target.GetSketch), "view:%s" % view_name, None
+        except Exception as exc:
+            return None, None, "view.GetSketch failed: %s" % str(exc)[:60]
+    try:
+        doc.ActivateView(sheet.Name)
+    except Exception:
+        pass
+    try:
+        return win.Dispatch(sheet.GetSketch), "sheet", None
+    except Exception as exc:
+        return None, None, "sheet.GetSketch failed: %s" % str(exc)[:60]
+
+
+def _segment_rows(sketch, win, limit=200):
+    """Readable inventory of sketch segments: index, kind, length, and endpoints if any."""
+    rows = []
+    try:
+        raw = sketch.GetSketchSegments
+        segments = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+    except Exception:
+        return rows
+    for index, item in enumerate(segments[:limit]):
+        if item is None:
+            continue
+        seg = win.Dispatch(item)
+        row = {"index": index}
+        # `GetType` is a METHOD on ISketchSegment but several members of this binding expose
+        # the same name as a property; try both before giving up (measured 2026-11-23:
+        # calling it raised, reading it as a property works).
+        kind = None
+        for how in ("GetType", "Type"):
+            try:
+                raw_kind = getattr(seg, how)
+                kind = int(raw_kind() if callable(raw_kind) else raw_kind)
+                break
+            except Exception:
+                continue
+        row["kind"] = ({0: "line", 1: "arc"}.get(kind, str(kind))
+                       if kind is not None else None)
+        try:
+            row["length_mm"] = round(float(seg.GetLength) * 1000.0, 3)
+        except Exception:
+            row["length_mm"] = None
+        try:
+            curve = win.Dispatch(seg.GetCurve)
+            params = [float(v) for v in curve.LineParams]
+            row["start_m"] = [round(v, 5) for v in params[:3]]
+            row["direction"] = [round(v, 4) for v in params[3:6]]
+        except Exception:
+            row["start_m"] = None
+            row["direction"] = None
+        rows.append(row)
+    return rows
+
+
+def delete_sheet_sketch(drawing_path, view_name=None, indices=None, all_segments=False,
+                        dry_run=True, save=True):
+    """Delete sketch segments from the sheet sketch (or a view's sketch).
+
+    Report 2026-11-22 A3: "删文字注记后其 sheet sketch 引线删不掉". Measured 2026-11-23 on
+    this build the missing step was **entering sketch edit**:
+
+        select a segment, doc.EditDelete()            -> nothing happens (2 -> 2)
+        doc.EditSketch(); select; doc.EditDelete(); InsertSketch(True)
+                                                      -> deleted (2 -> 1)
+
+    So the sequence is: activate the owner -> `doc.EditSketch()` -> select each requested
+    segment -> `doc.EditDelete()` -> `doc.SketchManager.InsertSketch(True)` -> save.
+
+    `dry_run=True` (default) deletes NOTHING and returns the same inventory as
+    `list_sheet_sketch`, because a wrong index silently removes a real drawing line.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        sketch, owner, err = _sheet_sketch_of(doc, view_name, win)
+        if sketch is None:
+            return error("sketch_unreadable", err or "no sketch on this sheet", None,
+                         view=view_name)
+        before = _segment_rows(sketch, win)
+        wanted = [int(i) for i in (indices or [])]
+        if all_segments:
+            wanted = [row["index"] for row in before]
+        if not wanted:
+            return error("nothing_selected",
+                         "没有指定要删的段（indices 为空且 all_segments=False）",
+                         "先用 list_sheet_sketch 看索引，再传 indices=[...]。",
+                         owner=owner, segment_count=len(before), segments=before)
+        valid = {row["index"] for row in before}
+        missing = [i for i in wanted if i not in valid]
+        if missing:
+            return error("index_not_found",
+                         "这些索引不在该草图里：%r（共 %d 段）" % (missing, len(before)),
+                         None, owner=owner, segment_count=len(before))
+        if dry_run:
+            return drawing_ok(owner=owner, dry_run=True, would_delete=wanted,
+                              segment_count=len(before), segments=before,
+                              note="dry_run=true：什么都没删。要真删传 dry_run=False。")
+
+        try:
+            doc.EditSketch()
+        except Exception as exc:
+            return error("sketch_edit_failed", str(exc)[:120],
+                         "进不了草图编辑态，SolidWorks 不允许在没有激活的草图里删段。",
+                         owner=owner)
+        active = None
+        try:
+            active = doc.SketchManager.ActiveSketch
+        except Exception:
+            active = None
+        if active is None:
+            return error("sketch_not_active",
+                         "调用 EditSketch 后 ActiveSketch 仍为 None",
+                         "先 ActivateView 再 EditSketch；若图纸被别的对话框占用，先关掉。",
+                         owner=owner)
+        live = _segment_rows(win.Dispatch(active), win)
+        deleted, failed = [], []
+        for index in wanted:
+            segment = None
+            try:
+                raw = win.Dispatch(active).GetSketchSegments
+                segments = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+                segment = segments[index] if index < len(segments) else None
+            except Exception:
+                segment = None
+            if segment is None:
+                failed.append({"index": index, "error": "segment_gone"})
+                continue
+            try:
+                if not win.Dispatch(segment).Select2(False, 0):
+                    failed.append({"index": index, "error": "select_failed"})
+                    continue
+                doc.EditDelete()
+                deleted.append(index)
+            except Exception as exc:
+                failed.append({"index": index, "error": str(exc)[:80]})
+        try:
+            doc.SketchManager.InsertSketch(True)
+        except Exception:
+            pass
+        after = _segment_rows(win.Dispatch(sketch), win) if sketch is not None else []
+        if save:
+            _save_drawing(doc)
+        receipt = dict(
+            owner=owner, view=view_name, dry_run=False,
+            requested=wanted, deleted=deleted, failed=failed,
+            segment_count_before=len(before), segment_count_after=len(after),
+            remaining=after[:50],
+            saved=bool(save),
+        )
+        if not deleted:
+            return error("delete_failed", "选中的段一段也没删掉", None, **receipt)
+        return drawing_ok(**receipt, effective=True)
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("delete_sketch_failed", str(exc))
+
+
 def add_sheet_line(drawing_path, x1_m, y1_m, x2_m, y2_m, save=True,
                    verify_render=True, line_style="solid", view_name=None):
     """Draw a line in TRUE sheet space.

@@ -222,7 +222,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | 装配与零件 | `get_assembly_tree`、`export_bom`、`recolor_assembly`、`build_feature_ledger` |
 | 导出 | `export_drawing`（PDF/DWG/DXF）、`render_drawing`（PNG 目视）、`batch_export`（STEP） |
 
-全部 75 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
+全部 77 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
 
 ## 三个能力域
 
@@ -245,7 +245,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 | `export_sketch_geometry` | **草图逐点几何**（0.8.309 新增）：每段线/弧的长度、直线端点由 `LineParams`+`GetLength` 精确算出、圆弧给圆心/轴/半径/包角并从点集反解端点；`plane_frame` 恒 null（本 binding 读不到基准面），坐标是**草图局部坐标** |
 
-### 二、工程图（45）
+### 二、工程图（47）
 
 | 工具 | 作用 |
 |---|---|
@@ -288,6 +288,8 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `activate_sheet` | ✅ 切页（按 `name` 或 `index`）。`add_sheet` 之后新页是活动的且**没有视图**，标注前先切回有视图的那一页。 |
 | `add_view_to_sheet` | ✅ 在**指定页**建模型视图（先切页再 `CreateDrawViewFromModelView3`）。这是多页出图的另一半：`add_sheet` 建页，它往页上放东西。 |
 | `measure_layout` | 量**现有**图纸：每个视图的包围盒、视图组占位、`views_fill_ratio`（远低于 1 说明视图散在包围盒里）、四周余量与 `min_margin_m`（还没被占用的版面预算）。只读，全部用 `precise_outline`。 |
+| `list_sheet_sketch` | **读图纸草图段**（0.8.355 新增）：sheet 或某个视图的草图里有哪些线段、长度、起点/方向；给出 `delete_sheet_sketch` 用的索引 |
+| `delete_sheet_sketch` | **删图纸草图段**（0.8.355 新增）：按索引删（`dry_run` 默认 true）。关键是**先进草图编辑态**再删 —— 只选中段调 `EditDelete` 什么都删不掉 |
 | `add_sheet_line` | ✅ **能渲染，前提是 `AddToDB=True`**（2026-11-06 实测 572 像素；之前 0 像素是因为缺这个开关）。默认 `verify_render=True`，看 `visibility`：`changed_pixels>0` 画上了，`0` 返回 `line_not_rendered`，`checked:false` 表示渲染器不可用（**不等于没画**）。实测范围仅 SW2024 SP4 + 飞达动力轴 A3。 |
 | `set_title_block` | 标题栏：文字匹配 + 位置兜底两级策略 |
 | `list_drawing_edges` | 视图可见边（索引 + 模型坐标 + **图纸坐标** `sheet_start/end`；失败时 `sheet_projected:false` 带原因） |
@@ -312,7 +314,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
 | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案；回显**运行中的版本 + 源码路径 + 解释器** |
 | `ping` | **最轻的存活探针**（约 18 ms，不碰 ActiveDoc）：SW 版本、往返延迟、上一个工具、自愈计数 |
-| `list_tool_profiles` | 75 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
+| `list_tool_profiles` | 77 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
 | `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
 | `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
 
@@ -698,7 +700,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 75 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 77 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash
