@@ -27,6 +27,7 @@ from ..sw_session import (
     SW_DOC_PART,
     call_method,
     error,
+    no_effect,
     ok,
     open_document,
     variant,
@@ -3664,9 +3665,27 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
                 "returned false for every view",
                 "The views have no hole/slot geometry this build can mark. If you expected "
                 "marks, check the view actually shows holes.",
+                effective=False,
+                **{k: v for k, v in _receipt.items() if k != "drawing"})
+        if _verdict == "unverified":
+            # 0.8.352 (report 2026-11-22 §4.1): `ok:true` + `views_marked: 0` +
+            # "AutoInsertCenterMarks2 said yes". Measured by the reporter: pixel diff 0,
+            # `GetCenterMarkCount` 0 even when marks exist. "Cannot prove anything
+            # happened" is not success, so the top-level bit stops claiming it.
+            return no_effect(
+                "center_marks_unverified",
+                "AutoInsertCenterMarks2 报告成功，但中心标记注解数量没有变化"
+                "（views_marked=0）。本次调用无法证明图面产生了任何标注。",
+                "该 binding 的 `GetCenterMarkCount` 即使有标记也读 0（实测），所以「0 个」"
+                "可能是「本来就有」，也可能是「什么都没做」。请对照 PDF/截图确认；"
+                "需要可证的路径时用 `dedupe_existing` 或直接目视。",
+                # `effective=None` on purpose: unlike "0 created / 8 rejected" (a proved
+                # failure), this one is "cannot observe", so the call STATUS is
+                # `incomplete` rather than `failed` and the field says "unknown", not "no".
+                effective=None, call_status="incomplete",
                 **{k: v for k, v in _receipt.items() if k != "drawing"})
         return ok(
-            **(_receipt | {"note": (
+            **(_receipt | {"effective": True, "note": (
                 "`views_marked` is the change in centre-mark ANNOTATIONS, not "
                 "`GetCenterMarkCount` (which reads 0 on this binding even when marks "
                 "exist). `verdict: 'unverified'` means nothing new was added but "
@@ -11127,7 +11146,11 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # countable in a real receipt instead of inferable from source comments.
             coaxial_chamfer_protected=_coaxial_chamfer_protected,
             # Partial work is not success. See the verdict comment above.
-            ok=(not _ambiguous),
+            # 0.8.352 (report 2026-11-22 §4.1): `ok=(not _ambiguous)` also let "0 created /
+            # 8 rejected" through as success — the verdict said `no_native_callout` while
+            # the top-level bit said fine. Now `ok` follows whether anything was CREATED.
+            ok=bool(created) and not _ambiguous,
+            effective=bool(created),
             # Report 2026-11-10 (S-3): `ok:false` here means "the drawing is INCOMPLETE",
             # not "the call failed" — the tool did run, created callouts and saved them.
             # A pipeline reading ok:false as a transport error will retry or roll back a

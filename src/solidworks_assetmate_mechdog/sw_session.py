@@ -706,6 +706,26 @@ def ok(**payload):
     return payload
 
 
+def no_effect(code, message, hint=None, *, effective=False,
+              call_status="failed", **extra):
+    """A call that RAN but provably changed nothing on the sheet. `ok:false`, `effective:false`.
+
+    Report 2026-11-22 §4.1: `ok()` returns true for "the call did not raise", so a tool could
+    report `ok:true` next to `views_marked: 0`, `written: []` or `created: 0 / 8 failed`. A
+    client keyed on `ok` shipped the sheet. `execution_ok` stays true (the bridge worked);
+    `effective` says whether anything happened, and top-level `ok` follows `effective`.
+
+    Use it instead of `ok(**)` whenever the receipt can PROVE nothing changed. When the
+    truth is unknowable (this binding's `GetCenterMarkCount` reads 0 even with marks), say
+    `effective: null` and name the uncertainty — never claim success.
+    """
+    payload = dict(extra,
+                   effective=effective,
+                   execution_ok=True,
+                   call_status=call_status)
+    return error(code, message, hint, **payload)
+
+
 def error(code, message, hint=None, **extra):
     """A failed call. Always carries `execution_ok` and `call_status`.
 

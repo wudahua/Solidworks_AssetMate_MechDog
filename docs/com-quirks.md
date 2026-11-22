@@ -6462,3 +6462,79 @@ missing  ok=False status=rejected_invalid  coverage_ratio 缺失或为空（必�
 **同一个词（optional）在三层可以有三个意思。** schema 的 optional 指「可以不给」；`model_dump` 把它
 变成「给了个 null」；校验器又把 null 读成「类型错」。三层都「没错」，合起来是「合法输入被拒」。
 **凡是跨层传递的数据结构，必须有一条走真实入口的行为断言** —— 直接调包内函数永远看不见序列化这一层。
+
+---
+
+## 2026-11-22（v0.8.352）`ok:true` 但图面什么都没变：拆出 `effective`
+
+### 报告
+
+2026-11-22 的能力审计：31 项里 10 项 `verified`、14 项 `partial`、2 项 `pilot`、5 项 `unsupported`；
+更要紧的是「工具返回 `ok:true` 但实际什么都没做」反复出现，客户端只能靠 PDF 像素差分兜底。
+三个被点名的回执：`add_center_marks` 的 `views_marked:0`、`add_hole_callouts` 的 `created:0/failed:8`、
+`set_title_block` 的 `written:[]`。
+
+### 改法：一个布尔回答不了两个问题
+
+| 字段 | `true` | `false` | `null` |
+|---|---|---|---|
+| `ok` | 调用成功且无已知缺陷 | 有缺陷，或**什么都没做成** | — |
+| `effective` | 有可验证的变化 | 证明没有变化 | **无法证明**（该 binding 读不到结果） |
+| `call_status` | — | `failed` | `incomplete` |
+
+新增共享构造点 `sw_session.no_effect(code, message, hint, *, effective=False, call_status="failed")`：
+`execution_ok` 保持 true（桥是好用的），`ok` 跟 `effective` 走。
+
+三处落地：
+
+| 工具 | 之前 | 现在 |
+|---|---|---|
+| `add_hole_callouts` | `ok=(not _ambiguous)` —— 「0 创建 / 8 被拒」算成功 | `ok=bool(created) and not _ambiguous`，`effective=bool(created)` |
+| `add_center_marks` | `unverified` 也 `ok:true` | `no_effect(..., effective=None, call_status="incomplete")`：**无法证明**，不是失败也不是成功 |
+| `set_title_block` | 0.8.319 已改成 `title_block_not_written` | 保持，断言补上 |
+
+**`effective:null` 与 `false` 必须分开**：0.8.253 因为 `GetCenterMarkCount` 恒 0 把 `unverified` 判成
+失败，制造了假失败；11-22 报告测到像素差 0，说明 `ok:true` 又在谎报。两个布尔都不对，所以答案是
+第三个值。`no_effect` 的 `effective` 参数就是为这条分歧留的。
+
+`pipeline._step_state` 同步：`effective is None` 的步骤记 `warning`（图纸存在、可能本来就对），
+并在 `_failed_critical_steps` 里单独放行 —— 判据是 `"effective" in payload`，不能只看 `.get()`：
+第一版漏了这个判断，把所有 `partial` 步骤都变成了 warning。
+
+### 能力表：把 21 项说出来
+
+`check_capabilities` 之前只列 `blocked` 与 `partial`，`status_label` 也没有 `verified`/`pilot` 的标签。
+现在：
+
+```text
+counts = {verified: 10, partial: 14, pilot: 2, unsupported: 5}
+needs_attention = 21 项（一切非 verified）
+advice = "共 31 项，其中 10 项端到端验证过；…`status:partial` 不等于「全部可做」…"
+```
+
+并加了断言：`counts` 之和 == `checked`、`needs_attention` == `checked - verified`、每一项都带
+`workaround`、每个 `status` 都有中文标签。
+
+### 真机
+
+| 用例 | 结果 |
+|---|---|
+| `drawing chain (create/pdf/render/audit)` | **PASS 47.1s** —— `0/2 views marked`，`unverified` 被接受为「无法证明」 |
+| `partial reaches produce_drawing` | PASS 84.8s |
+| `views, dimensions, title block` | PASS 33.3s |
+| `assembly drawing not an empty shell` | **PASS 197.2s**（3 视图 28 尺寸）—— `center_marks` 步骤变 warning，未把出图判成失败 |
+| `check_all.py` | **339/339**，4 套件 |
+
+### 没做的（报告 P0 的另一半）
+
+「真·局部放大图 / 原生孔表 / 删除图纸草图线」三个入口这轮没动。`add_detail_view` **是存在的**
+（`CreateDetailViewAt4` 12 参，`circle_segments=32`），报告里的失败形态（放大整视图、越框、
+`position` 锁定）更像是 `center`/`radius_m` 这两个**源视图 sheet 米**参数对不上他们的场景，
+需要一次单独的 COM 探查才能判断是参数契约问题还是能力真缺；孔表与 sheet sketch 删除同理。
+把这三项塞进本轮只会得到「改了但没验证」，所以留在下一轮，本轮只做能给出真机证据的那部分。
+
+### 教训
+
+**一个布尔量被两种问题共用时，第三个值不是奢侈。** `ok` 既被用来问「调用成不成功」，又被用来问
+「东西做出来没有」；`effective` 把第二个问题接过去，`null` 专门表示「看不到结果」——
+这比把两种失败混成 `false` 更省客户端的判断。

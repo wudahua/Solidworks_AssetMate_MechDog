@@ -376,6 +376,18 @@ elif got["call_status"] == "failed":
 
 `error: "delivery_incomplete"` 属于 `incomplete` 这一类，不是失败。
 
+**`ok` 与 `effective` 是两件事（0.8.352 起）**：`ok` 只回答「调用有没有失败」，`effective` 回答
+「图面有没有真的发生变化」——
+
+| 字段 | `true` | `false` | `null` |
+|---|---|---|---|
+| `ok` | 调用成功且无已知缺陷 | 有缺陷或**什么都没做成** | 不存在 |
+| `effective` | 有可验证的变化（新建了标注、写入了字段） | 证明了没有变化（0 条创建 / 8 条被拒） | **无法证明**：该 binding 读不到结果（如 `GetCenterMarkCount` 恒 0） |
+
+`effective:false` 时 `ok` 也是 `false`，`call_status:"failed"`，回执带 `error` 说明原因；
+`effective:null` 时 `ok:false` 但 `call_status:"incomplete"` —— 「无法证明」不等于「失败」，
+`produce_drawing` 会把它记成 `warning` 步骤，而不是失败步骤。
+
 **`call_status` 的适用范围（0.8.346 明确）**：它是**所有工具**的通用字段，语义固定为「这次调用该怎么处理」——
 `ok` 可直接用、`incomplete` 有产物但没做完、`failed` 什么都没得到。目前只有 `produce_drawing` 会产出
 `incomplete`；其余工具要么 `ok`，要么 `failed`（任何 `error` 回执都在 `sw_session.error()` 里统一带上
@@ -511,7 +523,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 337 条历史回归
+python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 339 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```

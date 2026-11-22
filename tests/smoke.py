@@ -161,6 +161,25 @@ def partial_is_acceptable(payload, allow_partial=False):
     return bool(payload.get("partial_steps"))
 
 
+def _require_annotation_effect(payload, what):
+    """`require`, but a tool that CANNOT observe its own effect is allowed to say so.
+
+    0.8.352 (report 2026-11-22 §4.1): `add_center_marks` answers `ok:false`,
+    `effective:null`, `call_status:"incomplete"` when `AutoInsertCenterMarks2` reports
+    success and no annotation count moves — this binding's `GetCenterMarkCount` reads 0 even
+    with marks. Treating that as a failure (the old `require`) makes the suite red on a
+    correct sheet; treating it as success is what the report calls a lie. So the check is on
+    the SHAPE of the answer, not on a boolean.
+    """
+    if isinstance(payload, dict) and payload.get("verdict") == "unverified":
+        assert payload.get("ok") is False, payload
+        assert payload.get("effective") is None, (
+            "an unverifiable result claims to know whether it worked: %r" % (payload,))
+        assert payload.get("call_status") == "incomplete", payload
+        return payload
+    return require(payload)
+
+
 def require(payload, key=None, value=None, allow_partial=False):
     """Assert a tool call succeeded.
 
@@ -454,7 +473,8 @@ def main():
             rendered = require(drawing.render_drawing(pdf, workdir))
             assert rendered["page_count"] >= 1, rendered
             dimensioned = require(drawing.auto_dimension(drw))
-            marked = require(drawing.add_center_marks(drw))
+            marked = _require_annotation_effect(drawing.add_center_marks(drw),
+                                                "centre marks")
             # 0.8.297 (report 2026-11-10 P2-4): the dedupe pass must actually run and be
             # countable. `center_marks_removed: 0` with `dedupe_existing: true` means
             # "nothing to clean", never "did not try" — the count is the distinction.
@@ -511,7 +531,8 @@ def main():
                 created = require(drawing.create_drawing(part, drw, views=["front", "right"]))
                 assert created["views"], "no views created"
                 dimensioned = require(drawing.auto_dimension(drw, all_views=True))
-                marked = require(drawing.add_center_marks(drw))
+                marked = _require_annotation_effect(drawing.add_center_marks(drw),
+                                                    "centre marks")
                 audited = require(drawing.drawing_audit(drw))
                 bad = [w for w in (audited.get("warnings") or [])
                        if w.get("issue") in ("views_overlap", "view_outside_sheet")]

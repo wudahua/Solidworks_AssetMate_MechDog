@@ -7957,8 +7957,17 @@ def assert_center_marks_count_annotations_not_the_view_counter():
         "the receipt no longer reports how many marks were actually added")
     assert "already_marked" in body, (
         "a view that already had marks reports failure again")
-    assert "unverified" in body, (
-        "an inconclusive result is reported as failure again")
+    # 0.8.352 (report 2026-11-22 §4.1, reversing 0.8.253 for this ONE verdict): 0.8.253
+    # made `unverified` ok:true because `GetCenterMarkCount` reads 0 even when marks exist,
+    # so ok:false produced false failures. The 11-22 report measured the other side: pixel
+    # diff 0 on a view that had no marks, so ok:true was claiming work that did not happen.
+    # Neither bit can be right when the binding cannot observe the marks, so `unverified`
+    # now answers `effective: null` + `ok: false` + `call_status: "incomplete"` — "cannot
+    # prove", not "failed" and not "done".
+    assert "center_marks_unverified" in body, (
+        "an inconclusive result is reported as a plain success again")
+    assert "effective=None" in body and 'call_status="incomplete"' in body, (
+        "the unverified branch claims either success or failure instead of `null`")
     # AST, not substrings: the comment that explains why this counter is useless mentions
     # it by name, so a text test fails on its own documentation.
     _uses_counter = [n.lineno for n in ast.walk(_function_node(ast.parse(src),
@@ -9002,7 +9011,11 @@ def assert_partial_work_is_not_reported_as_success():
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                      "add_hole_callouts")) or ""
-    assert "ok=(not _ambiguous)" in body, "excluded diameters do not affect ok"
+    # 0.8.352 (report 2026-11-22 §4.1): `ok` now also requires that something was CREATED —
+    # "0 created / 8 rejected" used to report success. Excluded chamfer pairs still force
+    # ok:false, which is the part this assertion exists for.
+    assert ("ok=bool(created) and not _ambiguous" in body
+            or "ok=(not _ambiguous)" in body), "excluded diameters do not affect ok"
     assert "partial_reason" in body, "a partial run does not say what it skipped"
     return "a run with excluded diameters reports ok=false and names them"
 
@@ -12128,7 +12141,87 @@ def assert_health_reports_which_copy_is_running():
     return "health() names the running copy: version, path, interpreter"
 
 
+def assert_a_call_that_changed_nothing_is_not_ok():
+    """0.8.352 (report 2026-11-22 §4.1, P0) — `ok:true` meant "did not raise".
+
+    Three receipts were named in the report, and all three read as success with nothing on
+    the sheet:
+
+        add_center_marks   ok:true  views_marked:0   (API said yes, pixel diff 0)
+        add_hole_callouts  ok:true  created:0 failed:8, verdict no_native_callout
+        set_title_block    ok:true  written:[]      (fixed in 0.8.319, kept as a guard)
+
+    `no_effect()` now answers that shape once: `ok:false`, `effective:false`,
+    `execution_ok:true` (the bridge worked) and `call_status:"failed"`. When the binding
+    cannot even observe the result — `GetCenterMarkCount` reads 0 even with marks — the
+    answer is `effective:null` + `call_status:"incomplete"`: "cannot prove", not "failed"
+    and not "done".
+
+    BEHAVIOURAL: calls the constructor and inspects the three tools' receipts.
+    """
+    from solidworks_assetmate_mechdog import sw_session
+
+    proved = sw_session.no_effect("nothing_created", "zero of eight", created=0)
+    assert proved["ok"] is False and proved["effective"] is False
+    assert proved["execution_ok"] is True, (
+        "a proved no-op is reported as a transport failure")
+    assert proved["call_status"] == "failed"
+
+    unknown = sw_session.no_effect("unverifiable", "cannot tell", effective=None,
+                                   call_status="incomplete")
+    assert unknown["ok"] is False and unknown["effective"] is None
+    assert unknown["call_status"] == "incomplete", (
+        "\"cannot prove\" is being reported as a failure again")
+
+    src = _read("tools/drawing.py")
+    tree = ast.parse(src)
+    holes = ast.get_source_segment(src, _function_node(tree, "add_hole_callouts")) or ""
+    assert "ok=bool(created) and not _ambiguous" in holes, (
+        "a run that created nothing reports success again")
+    assert "effective=bool(created)" in holes, "the receipt does not say whether it worked"
+    marks = ast.get_source_segment(src, _function_node(tree, "add_center_marks")) or ""
+    assert "center_marks_unverified" in marks and "effective=None" in marks
+    title = ast.get_source_segment(src, _function_node(tree, "set_title_block")) or ""
+    assert '"title_block_not_written"' in title, (
+        "applied=True with an empty `written` returns success again")
+    return "no-op and unverifiable calls are no longer reported as success"
+
+
+def assert_capability_summary_counts_what_it_lists():
+    """0.8.352 (report 2026-11-22 §1/§4.3) — 31 entries, 21 of them not usable as declared.
+
+    The receipt listed only `blocked` and `partial`, and `status_label` had no entry for
+    `verified` / `pilot`, so a client rendering the label saw the raw enum. Now the counts
+    are derived from the same list the details come from, `needs_attention` names every
+    entry that is not `verified`, and every one of them has to carry a workaround — that is
+    the field a caller reads before starting a job.
+
+    BEHAVIOURAL: calls `check_capabilities()`.
+    """
+    from solidworks_assetmate_mechdog.tools import capabilities as caps
+
+    got = caps.check_capabilities()
+    counts = got["counts"]
+    assert sum(counts.values()) == got["checked"] == len(got["capabilities"]), (
+        "the summary counts do not add up to the entries they describe: %r" % (counts,))
+    assert len(got["needs_attention"]) == got["checked"] - counts["verified"], (
+        "needs_attention is not 'everything not verified'")
+    assert len(got["pilot"]) == counts["pilot"]
+    by_id = {c["id"]: c for c in got["capabilities"]}
+    for name in got["needs_attention"]:
+        assert by_id[name].get("workaround"), (
+            "%s is in needs_attention but carries no workaround" % name)
+    for row in got["capabilities"]:
+        assert row["status_label"] != row["status"], (
+            "%s has no human label (%r)" % (row["id"], row["status"]))
+    assert str(counts["verified"]) in got["advice"] and str(got["checked"]) in got["advice"]
+    return "%d entries, %d need attention, each names a workaround" % (
+        got["checked"], len(got["needs_attention"]))
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.352 no effect is not ok", assert_a_call_that_changed_nothing_is_not_ok),
+    ("0.8.352 capability counts add up", assert_capability_summary_counts_what_it_lists),
     ("0.8.349 health names the running copy", assert_health_reports_which_copy_is_running),
     ("0.8.348 perf timer on the real function", assert_the_delivery_check_timer_is_on_the_real_function),
     ("0.8.347 coverage is validated", assert_dimension_coverage_is_validated_before_it_reaches_the_page),

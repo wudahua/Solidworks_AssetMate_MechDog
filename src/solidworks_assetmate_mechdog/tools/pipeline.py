@@ -201,7 +201,18 @@ def _step_state(payload):
         verdict = payload.get("verdict") if isinstance(payload, dict) else None
         non_blocking = bool(isinstance(payload, dict)
                             and payload.get("blocking") is False and not ok)
-        status = ("warning" if non_blocking
+        # 0.8.352 (report 2026-11-22 §4.1): a tool that answers `effective: null` is saying
+        # "I ran, but I cannot prove anything happened" — `add_center_marks` on a binding
+        # whose `GetCenterMarkCount` always reads 0. That is a WARNING: the sheet exists and
+        # may even be correct. Recording it as a failed step would turn an observation gap
+        # into a delivery defect.
+        # `"effective" in payload` matters: a receipt that never heard of the field must
+        # not be read as "effective: null" (that turned every `partial` step into a warning
+        # the first time this was written).
+        unverifiable = bool(isinstance(payload, dict)
+                            and "effective" in payload
+                            and payload["effective"] is None and not ok)
+        status = ("warning" if (non_blocking or unverifiable)
                   else "ok" if ok
                   else ("partial" if verdict == "partial" else "failed"))
         return ok, status, non_blocking
@@ -225,6 +236,9 @@ def _failed_critical_steps(steps, critical):
             # title-block ratio that could not be written, where the sheet itself exists.
             # A `blocking:false` on `save` (disk full) or `dimensions` must still block;
             # honouring the flag blindly would let a fatal failure through.
+            if st.get("unverifiable"):
+                # "cannot prove it happened" is not "did not happen" — see `_step_state`.
+                continue
             if (st.get("non_blocking")
                     and st.get("step") == "create_drawing"
                     and st.get("error") == "title_scale_not_synced"):
@@ -471,6 +485,11 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
             _step["error"] = str(payload.get("error"))
         if _non_blocking:
             _step["non_blocking"] = True
+        if (isinstance(payload, dict) and "effective" in payload
+                and payload["effective"] is None):
+            # Named separately from `non_blocking`: the critical gate below may only excuse
+            # THIS combination (an observation gap), not any step that claims to be benign.
+            _step["unverifiable"] = True
         steps.append(_step)
         return payload if isinstance(payload, dict) else {}
 

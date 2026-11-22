@@ -667,7 +667,12 @@ CAPABILITIES = [
     },
 ]
 
-STATUS_LABEL = {"supported": "可做", "partial": "有限支持", "unsupported": "做不了"}
+# 0.8.352 (report 2026-11-22 §4.3): the table shipped `verified` / `pilot` statuses with no
+# label, so a client rendering `status_label` saw the raw enum — and the summary counted only
+# `partial` + `unsupported` while 2 pilot entries were equally unusable in a real job.
+STATUS_LABEL = {"supported": "可做", "verified": "已验证",
+                "partial": "有限支持", "pilot": "试点（真机未充分验证）",
+                "unsupported": "做不了"}
 
 
 def check_capabilities(operation=None):
@@ -690,6 +695,12 @@ def check_capabilities(operation=None):
 
     blocked = [c for c in entries if c["status"] == "unsupported"]
     partial = [c for c in entries if c["status"] == "partial"]
+    pilot = [c for c in entries if c["status"] == "pilot"]
+    verified = [c for c in entries if c["status"] == "verified"]
+    # Anything not measured as working end-to-end. Report 2026-11-22 §1: 21 of 31 entries
+    # were in this bucket while the receipt only listed `blocked` and `partial`, so a reader
+    # could mistake "31 capabilities" for "31 usable ones".
+    needs_attention = [c for c in entries if c["status"] != "verified"]
     payload = []
     for item in entries:
         row = dict(item)
@@ -716,17 +727,23 @@ def check_capabilities(operation=None):
         platform=__import__("platform").platform(),
         operation=operation,
         checked=len(entries),
+        counts={"verified": len(verified), "partial": len(partial),
+                "pilot": len(pilot), "unsupported": len(blocked)},
+        verified=[c["id"] for c in verified],
         blocked=[c["id"] for c in blocked],
         partial=[c["id"] for c in partial],
+        pilot=[c["id"] for c in pilot],
+        needs_attention=[c["id"] for c in needs_attention],
+        usable_as_declared=[c["id"] for c in verified],
         capabilities=payload,
         # Report 2026-11-10 (S-4): `status:"partial"` + `status_label:"有限支持"` used to
         # ship next to `advice:"全部可做。"` — two rounds of feedback called it out. A
         # partial capability is not an unqualified yes; name the caveats.
-        advice=(("有 %d 项做不了。调用前请先看 workaround，不要跑完流程才发现。"
-                 % len(blocked)) if blocked else
-                ("有 %d 项有限支持（%s）。`status:partial` 不等于「全部可做」："
-                 "先看这些条目的 workaround，尤其是 `section_view` 的偏心拦截、"
-                 "`add_sheet_line` 的线型映射，以及 `hole_callout` 的贯通/深度限制。"
-                 % (len(partial), ", ".join(c["id"] for c in partial[:6])))
-                if partial else "全部可做。"),
+        advice=(("共 %d 项，其中 %d 项端到端验证过；%d 项做不了、%d 项有限支持、"
+                 "%d 项试点。**`status:partial` 不等于「全部可做」**："
+                 "`needs_attention` 里的每一条都要先读 `workaround`，不要跑完流程才发现。"
+                 % (len(entries), len(verified), len(blocked), len(partial), len(pilot)))
+                if needs_attention else "全部可做。"),
+        advice_detail=(("已知要绕道的：%s" % "、".join(c["id"] for c in needs_attention[:8]))
+                       if needs_attention else None),
     )
