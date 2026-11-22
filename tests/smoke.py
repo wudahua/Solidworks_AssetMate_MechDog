@@ -1964,6 +1964,42 @@ def main():
 
     r.check("delivery manifest is a real file", _delivery_manifest_is_a_real_file)
 
+    def _a_native_hole_table_is_a_real_table():
+        """0.8.354: `IView.InsertHoleTable2` needs a component AND a selected datum.
+
+        Report 2026-11-22 A2 said there is no entry; measured 2026-11-23 it works, but only
+        with those two preconditions, and the table lists only holes SolidWorks recognises
+        (Hole Wizard). Both outcomes are asserted so a regression cannot hide behind the
+        other: a table object MUST come back, and if no hole was listed the receipt must say
+        so (`hole_table_empty`) instead of reporting success.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_ht.SLDPRT")
+        drw = os.path.join(workdir, "smoke_ht.SLDDRW")
+        shutil.copy2(src, part)
+        built = require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        view = (built.get("views") or [{}])[0].get("name")
+        got = drawing.add_hole_table(drw, view_name=view, save=False)
+        rows = got.get("rows")
+        assert rows is not None, "no table object came back: %r" % (got.get("error"),)
+        assert int(rows) >= 1, "a hole table with %s rows is not a table" % rows
+        if got.get("ok"):
+            assert int(got.get("holes_listed") or 0) >= 1, got
+            assert got.get("effective") is True, got
+        else:
+            assert got.get("error") == "hole_table_empty", (
+                "a table that listed nothing reports %r" % (got.get("error"),))
+            assert got.get("holes_listed") == 0 and got.get("effective") is False, got
+        try:
+            drawing.close_document(drw)
+        except Exception:
+            pass
+        return "rows=%s holes=%s" % (rows, got.get("holes_listed"))
+
+    r.check("a native hole table is a real table", _a_native_hole_table_is_a_real_table)
+
     def _a_tolerance_render_never_passes_on_a_bare_number():
         """Report 2026-11-14 v0.8.325 §P1-2: no smoke case ever touched a tolerance.
 

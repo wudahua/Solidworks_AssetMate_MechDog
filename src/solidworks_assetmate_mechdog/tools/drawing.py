@@ -4896,6 +4896,173 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         return error("title_block_failed", str(exc))
 
 
+def add_hole_table(drawing_path, view_name=None, x_m=None, y_m=None, anchor=1,
+                   start_value="A", template=None, datum_index=0, save=True):
+    """Insert a NATIVE hole table for one view, using a visible vertex as its datum. 0.8.354.
+
+    Report 2026-11-22 A2 said there is "no entry" and the team hand-wrote a table with
+    `CreateText2` (15 rows on DC-01-02). Measured 2026-11-23 on this build: the API has been
+    there all along — `IView.InsertHoleTable2(UseAnchorPoint, X, Y, AnchorType, StartValue,
+    TableTemplate)` — but it returns **None** unless BOTH of these are true:
+
+      1. the FIRST argument of `GetVisibleEntities2` is a real component
+         (`None`/`Empty`/`0` raise `类型不匹配`, argerr=1) — that is why an earlier probe
+         concluded "no hole table here";
+      2. a vertex is SELECTED before the call; without a datum the insertion silently
+         returns None instead of raising.
+
+    With those two, `door.SLDPRT` and `接槽.SLDPRT` both return a table object
+    (`rows=1, columns=4`, i.e. header only). That header-only result is the other half of
+    the story: a native hole table lists **hole features SolidWorks recognises** (Hole
+    Wizard / hole series). Plain extruded cuts — which is what both fixtures use — are not
+    tabulated, so `holes_listed` is 0 and this returns `hole_table_empty` rather than a
+    green `ok` for a blank table on the sheet.
+
+    `anchor` is `swBOMConfigurationAnchorType_e` (1 top-left … 4 bottom-right);
+    `template` is a `.sldholtbt` path — pass one from the install (`lang/<locale>/standard
+    hole table--letters.sldholtbt`) or leave None to use the document default.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        target = None
+        sheet_w = sheet_h = None
+        for candidate in _iter_views(doc):
+            try:
+                if getattr(candidate, "Type", None) == 1:
+                    _o = [float(v) for v in candidate.GetOutline]
+                    if _o[2] > _o[0] and _o[3] > _o[1]:
+                        sheet_w, sheet_h = _o[2] - _o[0], _o[3] - _o[1]
+                    continue
+            except Exception:
+                continue
+            if view_name is None or str(candidate.Name) == str(view_name):
+                target = candidate
+                break
+        if target is None:
+            return error("view_not_found", "No view named %r" % view_name,
+                         "Use drawing_audit to list view names.")
+
+        components = []
+        try:
+            components = [c for c in (target.GetVisibleComponents or ()) if c is not None]
+        except Exception:
+            components = []
+        if not components:
+            return error("no_component",
+                         "该视图没有可见组件，无法给孔表指定基准",
+                         "孔表需要一个可选中的基准顶点；先激活视图再试。",
+                         view=str(target.Name))
+        component = components[0]
+
+        vertices = []
+        try:
+            raw = target.GetVisibleEntities2(component, 2)   # swSelVERTICES
+            vertices = [v for v in (list(raw) if isinstance(raw, (tuple, list))
+                                    else ([raw] if raw is not None else [])) if v is not None]
+        except Exception as exc:
+            return error("datum_unreadable", str(exc)[:120],
+                         "网格顶点读不出来；该视图可能没有可作基准的端点。",
+                         view=str(target.Name))
+        if not vertices:
+            return error("no_datum", "视图里没有可见顶点可用作孔表基准",
+                         "孔表基准必须是一个顶点（端点/圆心）；换视图或先在图上标一个。",
+                         view=str(target.Name))
+        if not (0 <= int(datum_index) < len(vertices)):
+            return error("datum_not_found",
+                         "datum_index=%s 超出范围（0–%d）"
+                         % (datum_index, len(vertices) - 1), None,
+                         vertex_count=len(vertices))
+
+        outline = [float(v) for v in target.GetOutline]
+        place_x = float(x_m) if x_m is not None else outline[2] + 0.02
+        place_y = float(y_m) if y_m is not None else outline[1]
+        if sheet_w and sheet_h:
+            place_x = min(max(place_x, 0.005), max(sheet_w - 0.10, 0.005))
+            place_y = min(max(place_y, 0.005), max(sheet_h - 0.06, 0.005))
+
+        datum = win.Dispatch(vertices[int(datum_index)])
+        try:
+            datum.Select2(False, 0)
+        except Exception as exc:
+            return error("datum_not_selectable", str(exc)[:120], None,
+                         datum_index=int(datum_index))
+        table = None
+        insert_error = None
+        try:
+            table = target.InsertHoleTable2(False, place_x, place_y, int(anchor),
+                                            str(start_value), str(template or ""))
+        except Exception as exc:
+            insert_error = str(exc)[:160]
+        if table is None:
+            try:
+                datum.Select2(False, 0)
+            except Exception:
+                pass
+            return error(
+                "hole_table_not_created",
+                "InsertHoleTable2 返回 null（基准顶点已选中，位置 %.3f,%.3f）"
+                % (place_x, place_y),
+                "两个前提缺一不可：① 第一个参数传真实组件（传 None 会 argerr=1）；"
+                "② 调用前选中一个顶点作为基准。再不行就换 datum_index 或传 `.sldholtbt` 模板。",
+                insert_error=insert_error,
+                datum_index=int(datum_index),
+                vertex_count=len(vertices),
+                anchor=int(anchor),
+                template=template,
+            )
+
+        annotation = win.Dispatch(table)
+        rows = columns = None
+        for attr in ("RowCount", "ColumnCount"):
+            try:
+                value = getattr(annotation, attr)
+                value = value() if callable(value) else value
+                if attr == "RowCount":
+                    rows = int(value)
+                else:
+                    columns = int(value)
+            except Exception:
+                pass
+        try:
+            datum.Select2(False, 0)
+        except Exception:
+            pass
+        if save:
+            _save_drawing(doc)
+        holes_listed = max(int(rows or 0) - 1, 0)      # row 0 is the header
+        receipt = dict(
+            drawing=doc.GetTitle,
+            view=str(target.Name),
+            table=("rows=%s columns=%s" % (rows, columns)),
+            rows=rows,
+            columns=columns,
+            holes_listed=holes_listed,
+            datum_index=int(datum_index),
+            vertex_count=len(vertices),
+            anchor=int(anchor),
+            start_value=str(start_value),
+            template=template,
+            table_position_m=[round(place_x, 4), round(place_y, 4)],
+            saved=bool(save),
+        )
+        if holes_listed == 0:
+            return no_effect(
+                "hole_table_empty",
+                "孔表已建，但只列了表头、没有列出任何孔（rows=%s）。" % rows,
+                "原生孔表只列 SolidWorks 认识的**孔特征**（孔向导/孔系列）；"
+                "普通拉伸切除的孔不会进表。要表里有行，用孔向导建孔，或用 "
+                "`add_hole_callout` / `add_drawing_dimension` 逐孔标注。",
+                **receipt)
+        return drawing_ok(**receipt, effective=True,
+                          note="原生孔表；`holes_listed` = 行数 − 1（第 0 行是表头）。")
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("hole_table_failed", str(exc))
+
+
 def _projection_axes(view, edges):
     """Which two model axes the view projects (xy=front, xz=top, zy=right).
 

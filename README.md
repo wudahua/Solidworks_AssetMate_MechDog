@@ -222,7 +222,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | 装配与零件 | `get_assembly_tree`、`export_bom`、`recolor_assembly`、`build_feature_ledger` |
 | 导出 | `export_drawing`（PDF/DWG/DXF）、`render_drawing`（PNG 目视）、`batch_export`（STEP） |
 
-全部 74 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
+全部 75 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
 
 ## 三个能力域
 
@@ -245,7 +245,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 | `export_sketch_geometry` | **草图逐点几何**（0.8.309 新增）：每段线/弧的长度、直线端点由 `LineParams`+`GetLength` 精确算出、圆弧给圆心/轴/半径/包角并从点集反解端点；`plane_frame` 恒 null（本 binding 读不到基准面），坐标是**草图局部坐标** |
 
-### 二、工程图（44）
+### 二、工程图（45）
 
 | 工具 | 作用 |
 |---|---|
@@ -281,6 +281,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `delete_annotation` | **删除标注**（按 name，回读计数确认） |
 | `move_annotation` | **移动标注**到图纸坐标（米） |
 | `set_dimension_position` | **移动单个尺寸**到图纸坐标（米），校验目标是尺寸并回读数值与位置 |
+| `add_hole_table` | **原生孔表**（0.8.354 新增）：以视图顶点为基准插入 `.sldholtbt` 表；`holes_listed` = 行数−1，只列**孔向导/孔系列**孔，普通拉伸切除的孔不进表 → 那时返回 `ok:false` + `hole_table_empty`，不留空表当成功 |
 | `add_bom_table` | **原生 BOM 明细栏**（Indented→TopLevelOnly 两步，10 行 4 列含数量） |
 | `add_sheet` | ✅ **可用**（0.8.196）：一个 `.SLDDRW` 内建多页。从 0.8.180 到 0.8.195 我一直写「`NewSheet4` 调不通」——**是我猜错了参数顺序**，`TemplateIn` 是第三个且必须是 int。实测 `('图纸1',)` → `['图纸1','图纸2']`。 |
 | `list_sheets` | ✅ 列出每一页：名称、尺寸、视图、哪个是活动页。只有活动页会被其它工具修改。 |
@@ -311,7 +312,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
 | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案；回显**运行中的版本 + 源码路径 + 解释器** |
 | `ping` | **最轻的存活探针**（约 18 ms，不碰 ActiveDoc）：SW 版本、往返延迟、上一个工具、自愈计数 |
-| `list_tool_profiles` | 74 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
+| `list_tool_profiles` | 75 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
 | `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
 | `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
 
@@ -697,7 +698,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 74 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 75 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash

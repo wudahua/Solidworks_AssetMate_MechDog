@@ -204,6 +204,7 @@ _TOOL_PROFILES = {
         "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
+        "add_hole_table",
         "add_bom_table", "layout_dimensions", "set_dimension_position",
         "move_annotation", "delete_annotation", "delete_dimensions",
         "prune_orphan_dimensions", "verify_dimension_attachments",
@@ -802,6 +803,35 @@ def set_dimension_position(drawing_path: Annotated[str, Field(description="Exist
     """
     return _json(layout.set_dimension_position(drawing_path, name, x_m, y_m,
                                              save=save, position_m=position_m))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def add_hole_table(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW, absolute path; saved in place unless save=False.")],
+    view_name: Annotated[str | None, Field(description="Model view that carries the holes. null = the first model view.")] = None,
+    x_m: Annotated[float | None, Field(description="Sheet metres for the table origin. null = just right of the view.")] = None,
+    y_m: Annotated[float | None, Field(description="Sheet metres for the table origin. null = aligned with the view's bottom edge.")] = None,
+    anchor: Annotated[int, Field(description="swBOMConfigurationAnchorType_e: 1 top-left … 4 bottom-right.")] = 1,
+    start_value: Annotated[str, Field(description="First tag in the table ('A', or '1').")] = "A",
+    template: Annotated[str | None, Field(description="Absolute path to a .sldholtbt template (e.g. <SW install>\\lang\\chinese-simplified\\standard hole table--letters.sldholtbt). null uses the document default.")] = None,
+    datum_index: Annotated[int, Field(description="Which visible vertex to use as the table datum (0-based). A hole table cannot be created without a selected datum; try another index if it returns null.")] = 0,
+    save: Annotated[bool, Field(description="Save the drawing after inserting. False leaves it unsaved for a dry run.")] = True,
+) -> str:
+    """Insert a NATIVE hole table (not text rows) for one view.
+
+    Measured 2026-11-23: `IView.InsertHoleTable2` works on this build, but ONLY when a real
+    component is passed to `GetVisibleEntities2` AND a vertex is selected as the datum —
+    without either it returns null instead of failing. Both are handled here.
+
+    `holes_listed` is rows − 1 (row 0 is the header). A native hole table lists the holes
+    SolidWorks recognises (Hole Wizard / hole series); plain extruded cuts are NOT
+    tabulated, and then this returns `ok:false` + `error:"hole_table_empty"` rather than
+    leaving a blank table on the sheet and calling it success.
+    """
+    return _json(drawing.add_hole_table(
+        drawing_path, view_name=view_name, x_m=x_m, y_m=y_m, anchor=anchor,
+        start_value=start_value, template=template, datum_index=datum_index, save=save))
 
 
 @mcp.tool()

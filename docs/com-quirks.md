@@ -6601,3 +6601,52 @@ COM 探查，不能和这轮混在一起。
 
 **「它做错了」和「我传错了单位」在回执里长得一样。** 一个只有图纸坐标的参数，回执里必须同时给出
 模型坐标的等价值；否则调用方只能靠看图发现，而这正是「靠 workaround 兜底」的来源。
+
+---
+
+## 2026-11-23（v0.8.354）原生孔表一直存在：两个隐藏前提让三次探针都判成「没有」
+
+### 报告说「没有入口」
+
+2026-11-22 A2：孔数 >15 时孔表只能靠 `CreateText2` 逐行手写（DC-01-02 写了 15 行）。
+
+### 实测：API 在，但有两个前提
+
+类型库里确实有 `IView.InsertHoleTable2(UseAnchorPoint, X, Y, AnchorType, StartValue,
+TableTemplate)`（还有 `InsertHoleTable` / `InsertHoleTable3`）。第一次探针按常规传参，三次全是
+`None`，看上去就像「这个 build 没有孔表」。换一种问法才看见前提：
+
+| 前提 | 不满足时 | 满足时 |
+|---|---|---|
+| `GetVisibleEntities2` 的第一个参数必须是**真实组件** | 传 `None`/`Empty`/`0` 一律 `类型不匹配`（argerr=1），顶点枚举为空 | `cdoor` 44 个、`接槽` 20 个顶点 |
+| 调用前必须**选中一个顶点**作基准 | 静默返回 `null`（不抛异常，最难查） | 返回表对象 |
+| 模板 | 传空串也能建 | `lang/chinese-simplified/standard hole table--letters.sldholtbt` 正常 |
+
+### 但表里只有表头
+
+`rows=1, columns=4` —— 原生孔表只统计 **SolidWorks 认识的孔特征**（孔向导 / 孔系列）；
+两个夹具的孔都是拉伸切除，所以一行数据都没有。工具因此返回
+`no_effect("hole_table_empty", ...)` + `holes_listed=0`，**不把空表当成功**（0.8.352 的口径）。
+
+### 新工具 `add_hole_table`（第 75 个）
+
+```text
+add_hole_table(drawing_path, view_name=None, x_m=None, y_m=None, anchor=1,
+               start_value="A", template=None, datum_index=0, save=True)
+```
+
+- 自动取组件 → 枚举顶点 → 选 `datum_index` → 插表；位置默认视图右侧，按真实图幅夹住。
+- 回执：`rows` / `columns` / `holes_listed`（行数−1）/ `datum_index` / `vertex_count` /
+  `template` / `table_position_m`。
+- 失败分四种名字：`no_component`、`no_datum`、`datum_not_found`、`hole_table_not_created`
+  （后者带 `insert_error`，不让人反复试参数）。
+
+真机 `smoke a native hole table is a real table`：**PASS 16.5s，rows=1 holes=0**。
+
+能力表新增 `hole_table`（`partial`），并写清「能建表，但只列孔向导孔」。
+
+### 教训
+
+**「探针失败」不等于「API 不存在」。** 三次 `None` 的根因是参数封送和一次静默的前提，而不是能力缺失。
+以后再判「做不了」，至少要把「参数组合」和「前置选择状态」两类都试过，并把每次的
+`argerr` 记下来 —— 早期那条 `类型不匹配 (argerr=1)` 就是唯一的线索。

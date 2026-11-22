@@ -551,6 +551,27 @@ CAPABILITIES = [
                      "落在目标像素 (1701,549)，窗口 changed=265"),
     },
     {
+        "id": "hole_table",
+        "status": "partial",
+        "summary": ("原生孔表（`add_hole_table`，0.8.354 新增）· 能建表，但只列"
+                    "**孔向导/孔系列**孔；普通拉伸切除的孔不进表"),
+        "why": ("2026-11-22 的报告说「MCP 没有原生孔表入口，只能 CreateText2 逐行手写」。"
+                "2026-11-23 实测：`IView.InsertHoleTable2` 一直存在，但有两个隐藏前提 —— "
+                "① `GetVisibleEntities2(component, 2)` 的第一个参数必须是真实组件"
+                "（传 None/Empty/0 都是 argerr=1，早期探针因此判成「没有这个 API」）；"
+                "② 调用前必须选中一个顶点作基准，否则静默返回 null。两者都满足后 "
+                "door/接槽 都能拿到表对象。\n\n"
+                "但表里只有表头（rows=1, columns=4）：原生孔表只统计 SolidWorks 认识的"
+                "孔特征，两个夹具的孔都是拉伸切除，所以 `holes_listed=0`，工具返回 "
+                "`hole_table_empty`，不把空表当成功。"),
+        "workaround": ("孔由孔向导建时直接用 `add_hole_table`；否则用 "
+                       "`add_hole_callout(s)` 逐孔标注，或按 0.8.344 的 "
+                       "`dimension_coverage` 思路自己列表格（但要知道那是文字不是表）"),
+        "evidence": ("2026-11-23 door.SLDPRT / 接槽.SLDPRT：组件 + 选中 datum 顶点 + "
+                     "`standard hole table--letters.sldholtbt` → 返回表对象 rows=1 columns=4；"
+                     "smoke `a native hole table is a real table` PASS 16.5s（rows=1 holes=0）"),
+    },
+    {
         "id": "detail_view_scale",
         "status": "partial",
         "summary": "局部放大视图：空视图与比例锁定诊断",
