@@ -11402,7 +11402,44 @@ def assert_tag_compare_asks_git_before_the_packaged_copy():
     return "tag_compare: git first, mid-release skipped, no-work-tree UNVERIFIED"
 
 
+def assert_a_detail_view_says_what_it_actually_enlarged():
+    """0.8.353 (report 2026-11-22 A1) — "放大整视图而非局部" was a units story.
+
+    `radius_m` is SHEET metres, so on a 1:2 parent an 8 mm request enlarges 16 mm of MODEL.
+    Measured on door.SLDPRT (0.8.353): model radius 16.0 mm, window 13.4% of the parent,
+    detail box 88.7 mm against the parent's 93.4 mm on paper — the view was correct, the
+    number the caller passed was not what they thought. Nothing in the receipt said the
+    model-space size, so the only way to find out was to look at the sheet.
+
+    Two things are asserted:
+      * the receipt answers in MODEL space (`boundary_radius_model_mm`,
+        `window_covers_parent_ratio`, `window_is_local`);
+      * `inside_sheet` is measured against the REAL sheet. It used to compare with the
+        literal A3 numbers 0.421 / 0.298, so on A4 it reported "inside" for a view hanging
+        off the paper.
+
+    STILL SOURCE-LEVEL for the geometry (the numbers above came from a live run); the
+    `0.421` check is the part that would have caught the bug mechanically.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "add_detail_view")) or ""
+    for token in ("boundary_radius_model_mm", "window_covers_parent_ratio",
+                  "window_is_local", "boundary_radius_units"):
+        assert token in body, "the receipt no longer reports %s" % token
+    # AST, not substring: the comment above quotes the old numbers while explaining them.
+    node = _function_node(ast.parse(src), "add_detail_view")
+    literals = {round(n.value, 3) for n in ast.walk(node)
+                if isinstance(n, ast.Constant) and isinstance(n.value, float)}
+    assert not (literals & {0.421, 0.298}), (
+        "inside_sheet is back to the hard-coded A3 bounds %r; A4/A2 drawings get a wrong "
+        "verdict" % sorted(literals & {0.421, 0.298}))
+    assert "sheet_size" in body and "sheet_size_m" in body, (
+        "the sheet size is not read from the drawing")
+    return "a detail view reports its model-space window and measures against the real sheet"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.353 detail view reports model space", assert_a_detail_view_says_what_it_actually_enlarged),
     ("0.8.349 tag_compare asks git first", assert_tag_compare_asks_git_before_the_packaged_copy),
     ("0.8.346 sample manifest current", assert_the_manifest_sample_is_the_current_version),
     ("0.8.345 metal note agrees", assert_metal_note_agrees_with_the_numbers),

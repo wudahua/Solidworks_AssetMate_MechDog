@@ -559,9 +559,18 @@ CAPABILITIES = [
                 "仍被锁则返回 `detail_scale_locked` error 而非静默；`edge_count==0` "
                 "返回 `detail_empty`（边界圈落在源视图几何之外，视图是空的）。"),
         "workaround": ("`center` 必须落在源视图 outline 内的真实几何上；返回 detail_scale_locked "
-                       "时保存重开后在 UI 设比例，或让 scale 等于父视图比例"),
+                       "时保存重开后在 UI 设比例，或让 scale 等于父视图比例。"
+                       "**`radius_m` 是图纸米，不是模型毫米**：模型半径 = radius_m ÷ 父视图比例，"
+                       "1:2 的父视图上 r=8 mm 实际放大 16 mm；读 `boundary_radius_model_mm` "
+                       "与 `window_covers_parent_ratio` 判断窗是不是真的「局部」"),
         "evidence": ("2026-10-31 实测 door.SLDPRT：边界在内 edges=1、在外 edges=0；"
-                     "`_apply_detail_scale(2.0)` 生效，视图名变为 2 : 1"),
+                     "`_apply_detail_scale(2.0)` 生效，视图名变为 2 : 1。"
+                     "2026-11-22 复测（0.8.353，同一零件、父视图 1:2、r=8 mm 图纸米）："
+                     "模型半径 16.0 mm、窗占父视图 13.4%、`position=[0.30,0.15]` 落地"
+                     "实测 [0.2997,0.1499]、scale 2.0 生效、`edge_count=1`（该处本来就没几何）、"
+                     "局部视图图面尺寸 88.7 mm vs 源视图 93.4 mm —— 所以「看起来像整视图」"
+                     "是 2:1 与 1:2 的 4× 差，不是视图建错了；父视图草图在创建后为 0 段"
+                     "（边界圈不残留，本 build 上删除后同样为 0）"),
     },
     {
         "id": "section_view",

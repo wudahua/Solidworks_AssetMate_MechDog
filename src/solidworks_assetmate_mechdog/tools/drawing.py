@@ -7755,7 +7755,18 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         # parent view's scale — that old bug made a 2:1 request silently come out 1:2.
         requested_scale = float(scale)
         doc = _open_drawing(drawing_path)
-        views = [v for v in _iter_views(doc) if getattr(v, "Type", None) != 1]
+        sheet_size = None
+        views = []
+        for candidate in _iter_views(doc):
+            try:
+                if getattr(candidate, "Type", None) == 1:
+                    _o = [float(x) for x in candidate.GetOutline]
+                    if _o[2] > _o[0] and _o[3] > _o[1]:
+                        sheet_size = (_o[2] - _o[0], _o[3] - _o[1])
+                    continue
+            except Exception:
+                continue
+            views.append(candidate)
         if not views:
             return error("no_views", "The drawing has no model view to enlarge")
         target = None
@@ -7894,9 +7905,19 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         try:
             if precise and len(precise) >= 4:
                 placement["measured"] = [round(v, 4) for v in precise]
-                inside = (precise[0] >= -0.001 and precise[1] >= -0.001
-                          and precise[2] <= 0.421 and precise[3] <= 0.298)
-                placement["inside_sheet"] = bool(inside)
+                # 0.8.353 (report 2026-11-22 A1): these were the literal A3 numbers
+                # (0.421 / 0.298), so on A4 the receipt said "inside" for a view hanging off
+                # the paper, and on A2 it said "outside" for one comfortably inside.
+                if sheet_size:
+                    placement["sheet_size_m"] = [round(sheet_size[0], 4),
+                                                 round(sheet_size[1], 4)]
+                    inside = (precise[0] >= -0.001 and precise[1] >= -0.001
+                              and precise[2] <= sheet_size[0] + 0.001
+                              and precise[3] <= sheet_size[1] + 0.001)
+                    placement["inside_sheet"] = bool(inside)
+                else:
+                    placement["inside_sheet"] = None
+                    placement["inside_sheet_reason"] = "sheet size unreadable"
         except Exception:
             pass
 
@@ -7904,11 +7925,27 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         # `GetVisibleComponents` is None in that case, so _view_edge_count is 0 (measured
         # on door.SLDPRT: boundary inside the parent outline -> 1 edge, outside -> 0).
         edge_count = _view_edge_count(detail)
+        # 0.8.353 (report 2026-11-22 A1 "放大整视图而非局部"): `radius_m` is SHEET metres,
+        # so at 1:2 an 8 mm request enlarges 16 mm of MODEL — a detail as big as its parent,
+        # which reads as "it zoomed the whole view". The number that decides that is the
+        # MODEL-space radius, so the receipt now states it, plus how much of the parent the
+        # window covers. Measured on door.SLDPRT (parent 1:2, r=8 mm sheet): model radius
+        # 16 mm, detail box 88.7 mm against a 93.4 mm parent — 94% of the parent.
+        radius_model_mm = (float(radius_m) / max(parent_scale, 1e-6)) * 1000.0
+        parent_w_model = (float(outline[2]) - float(outline[0])) / max(parent_scale, 1e-6)
+        parent_h_model = (float(outline[3]) - float(outline[1])) / max(parent_scale, 1e-6)
+        window_ratio = ((2.0 * radius_model_mm / 1000.0)
+                        / max(max(parent_w_model, parent_h_model), 1e-9))
+        window_is_local = bool(window_ratio <= 0.5)
         diag = {
             "detail": detail.Name,
             "source_view": target.Name,
             "boundary_center_m": [round(sheet_x, 4), round(sheet_y, 4)],
             "boundary_radius_m": float(radius_m),
+            "boundary_radius_units": "sheet metres (model radius = radius_m / parent_scale)",
+            "boundary_radius_model_mm": round(radius_model_mm, 2),
+            "window_covers_parent_ratio": round(window_ratio, 3),
+            "window_is_local": window_is_local,
             "source_outline_m": [round(v, 4) for v in outline],
             "edge_count": edge_count,
             "scale": final_scale,
@@ -7941,6 +7978,30 @@ def add_detail_view(drawing_path, view_name=None, center=None, radius_m=0.02,
         if thin_warning:
             diag["detail_thin"] = True
             diag["warning"] = thin_warning
+        # Sheet-space comparison is the one a reader actually sees: a LOCAL 13% window at
+        # 2:1 inside a 1:2 parent comes out at 95% of the parent's own box on the paper, and
+        # that is what reads as "it enlarged the whole view".
+        try:
+            if precise and len(precise) >= 4:
+                parent_sheet_w = float(outline[2]) - float(outline[0])
+                diag["detail_vs_parent_on_sheet"] = round(
+                    (float(precise[2]) - float(precise[0]))
+                    / max(parent_sheet_w, 1e-9), 3)
+        except Exception:
+            pass
+        if (diag.get("detail_vs_parent_on_sheet") or 0) >= 1.0:
+            diag["warning"] = ((diag.get("warning") + " ") if diag.get("warning") else "") + (
+                "这个局部视图在图面上和源视图一样大（%.0f%%）—— 因为源视图是 %g:%g、"
+                "而局部是 %g:1，放大了 %g 倍。要「小窗大图」就减小 radius_m 或降低 scale。"
+                % ((diag["detail_vs_parent_on_sheet"] * 100), 1, 1 / max(parent_scale, 1e-9),
+                   float(final_scale), float(final_scale) / max(parent_scale, 1e-9)))
+        if not window_is_local:
+            diag["warning"] = ((diag.get("warning") + " ") if diag.get("warning") else "") + (
+                "边界圈覆盖了源视图的 %.0f%%（模型半径 %.1f mm，源视图 %.1f×%.1f mm）——"
+                "这不是「局部」。`radius_m` 是图纸米，模型半径 = radius_m ÷ 父视图比例；"
+                "要放大小特征，传更小的 radius_m。"
+                % (window_ratio * 100, radius_model_mm,
+                   parent_w_model * 1000, parent_h_model * 1000))
         if edge_count == 0:
             return error(
                 "detail_empty",
