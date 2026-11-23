@@ -6953,3 +6953,54 @@ position_honoured    = False
 
 **「坐标没生效」有时是「这个标注的定位规则里没有这个轴」。** 与其在 `SetPosition` 上反复尝试，
 不如把规则写进回执：调用方需要的是知道该改哪个参数（`edge_index`），不是再猜一次坐标。
+
+---
+
+## 2026-11-23（v0.8.362）钣金阵列：只有「源特征」读不到，阵列本身是可测的
+
+### 报告 B7
+
+「阵列内的面（`LPattern`/`Mirror`/`FormToolInstance`）源特征读不到：`GetSpecificFeature2`
+返回 None、`GetDefinition` 报找不到成员；只能低置信度给 `pattern_hints`。」
+
+### 用 door.SLDPRT 复现（它本身就带 3 个 LPattern）
+
+| 调用 | 结果 |
+|---|---|
+| `f.GetSpecificFeature2` | **None** ← 与报告一致 |
+| `f.GetDefinition` | ✅ `ILocalLinearPatternFeatureData`（本 build 可用，报告那边报「找不到成员」） |
+| `f.GetDefinition.GetPatternFeatureCount` | **3**（door LPattern1） |
+| `f.GetFaces` | **6 / 1 / 1** 个面；panel box 的 5 个阵列为 **70 / 84 / 6 / 3 / 122** |
+| `f.GetFirstSubFeature` | None |
+
+所以「读不到」只对**源特征（seed）**成立；阵列自己的**实例数**与**面数**都能读到。
+
+### 改法：实测值打 medium，猜测打 low
+
+`cylinder_classification.pattern_features[]` 新增：
+
+```json
+{"feature": "LPattern1", "feature_type": "LPattern",
+ "instance_count": 3, "instance_count_source": "GetDefinition.GetPatternFeatureCount",
+ "face_count": 6, "confidence": "medium"}
+```
+
+原来的 `pattern_hints`（同半径 + 轴平行的候选源）保留，仍是 `low` —— 两个问题分开回答：
+「这个阵列有几份、盖了多少面」（可测）与「它的源是哪个特征」（仍需人认）。
+
+坑一记：`IFeature.GetFaces` 的句柄在 `geometry.extract_cylinders` 里叫 `_face`（私有键，不进回执），
+第一版写成 `c.get("face")` 于是全部 `None`，看上去像「API 又不支持」。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 真机 door | `patterns=3 measured=3 first=LPattern1 instances=3 faces=6` |
+| 真机 panel box | 5 个阵列全部 medium，面数 70/84/6/3/122 |
+| smoke `pattern faces are counted, not guessed` | **PASS 10.9s** |
+| `check_all` | **344/344**，4 套件 |
+
+### 教训
+
+**「源读不到」不等于「阵列读不到」。** 把一个问题拆成「可测的部分」与「必须人认的部分」，
+比整条打上 `low confidence` 有用得多 —— 后者会让调用方连实例数都不敢用。

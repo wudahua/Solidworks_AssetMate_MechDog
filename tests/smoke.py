@@ -3047,6 +3047,33 @@ def main():
 
     r.check("views, dimensions, title block", _views_and_dims)
 
+    def _pattern_faces_are_counted_not_guessed():
+        """0.8.362 (report 2026-11-22 B7): "阵列内的面读不到" — half true, and fixable.
+
+        Measured 2026-11-23 on door.SLDPRT: `GetSpecificFeature2` returns None (as reported),
+        but `GetDefinition` answers `GetPatternFeatureCount` and `IFeature.GetFaces` returns
+        the pattern's own faces (6 / 1 / 1 on this part). So the instance count and face
+        count are MEASURED, and only the seed stays a low-confidence guess.
+        """
+        src = _require_fixture(os.path.join(_model_dir(), "door.SLDPRT"), "door.SLDPRT")
+        got = sheet_metal.sheet_metal_qc(src, include_cylinders=True)
+        require(got)
+        cls = got.get("cylinder_classification") or {}
+        rows = cls.get("pattern_features") or []
+        if not rows:
+            raise FixtureMissing("a sheet-metal part that carries a pattern feature")
+        measured = [r for r in rows
+                    if r.get("instance_count") is not None or r.get("face_count") is not None]
+        assert measured, "no pattern reported a measurable count: %r" % (rows[:3],)
+        assert all(r.get("confidence") == "medium" for r in measured), (
+            "a measured pattern is still labelled low confidence: %r" % (measured[:2],))
+        best = measured[0]
+        return "patterns=%d measured=%d first=%s instances=%s faces=%s" % (
+            len(rows), len(measured), best.get("feature"),
+            best.get("instance_count"), best.get("face_count"))
+
+    r.check("pattern faces are counted, not guessed", _pattern_faces_are_counted_not_guessed)
+
     def _assembly_drawing():
         """0.8.116: produce_drawing had NEVER run on an assembly.
 

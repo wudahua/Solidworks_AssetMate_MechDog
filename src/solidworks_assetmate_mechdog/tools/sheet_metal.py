@@ -202,6 +202,53 @@ def sheet_metal_qc(model_path, include_cylinders=False):
                    "候选按「同半径 + 轴平行」列出，需人确认",
         })
 
+    # 0.8.362 (report 2026-11-22 B7): "阵列内的面读不到" was half true. Measured
+    # 2026-11-23 on door.SLDPRT / panel box.SLDPRT:
+    #
+    #   f.GetSpecificFeature2  -> None            (as reported)
+    #   f.GetDefinition        -> ILocalLinearPatternFeatureData  (works HERE, unlike the
+    #                             reporter's build where it says "member not found")
+    #   f.GetFaces             -> 6 / 1 / 1 faces on door; 70 / 84 / 6 / 3 / 122 on panel box
+    #
+    # So the SEED is still a guess, but the pattern itself is measurable: instance count
+    # from the definition and face count from `GetFaces`. Those two are reported with
+    # confidence "medium" (API values), while the seed candidates stay "low" — the honest
+    # split instead of one blanket "cannot read patterns".
+    pattern_features = []
+    _seen_patterns = set()
+    for c in face_kinds.get("pattern", []):
+        name = c.get("owner_name")
+        if not name or name in _seen_patterns:
+            continue
+        _seen_patterns.add(name)
+        row = {"feature": name, "feature_type": c.get("owner_type")}
+        try:
+            # `_face` is the private COM handle `geometry.extract_cylinders` keeps for
+            # exactly this kind of follow-up walk (it is never serialised).
+            feat = (win.Dispatch(_call(c.get("_face"), "GetFeature"))
+                    if c.get("_face") is not None else None)
+        except Exception:
+            feat = None
+        row["instance_count"] = None
+        row["instance_count_source"] = None
+        row["face_count"] = None
+        if feat is not None:
+            try:
+                definition = win.Dispatch(_call(feat, "GetDefinition"))
+                count = definition.GetPatternFeatureCount
+                row["instance_count"] = int(count() if callable(count) else count)
+                row["instance_count_source"] = "GetDefinition.GetPatternFeatureCount"
+            except Exception as exc:
+                row["instance_count_error"] = str(exc)[:60]
+            try:
+                faces = feat.GetFaces
+                row["face_count"] = len(list(faces)) if faces is not None else 0
+            except Exception as exc:
+                row["face_count_error"] = str(exc)[:60]
+        row["confidence"] = ("medium" if row["instance_count"] is not None
+                             or row["face_count"] is not None else "low")
+        pattern_features.append(row)
+
     classification = {
         "basis": "IFace2.GetFeature → IFeature.GetTypeName2（不依赖半径）",
         "checked": bool(include_cylinders) and not cylinder_error,
@@ -211,6 +258,10 @@ def sheet_metal_qc(model_path, include_cylinders=False):
         "fillets": _summ(face_kinds["fillet"]),
         "unresolved": _summ(face_kinds["pattern"] + face_kinds["other"]),
         "pattern_hints": pattern_hints,
+        # Measured numbers first, guesses second: `pattern_features` carries what the API
+        # did answer (instances, face count) so a caller does not have to treat every
+        # pattern as unknown.
+        "pattern_features": pattern_features,
     } if include_cylinders else None
 
     # ── 0.8.341 (v0.9 step 2a): hole-to-bend clearance ──────────────────────────────────

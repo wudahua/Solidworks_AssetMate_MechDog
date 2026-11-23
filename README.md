@@ -526,7 +526,7 @@ A3 / 1:2、带标注的情况下实测：
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)——核心一条：**改完必须跑一次真实调用**。
 
 ```bash
-python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 343 条历史回归
+python tests/check_all.py       # 约 3 分钟：语法 + 结构 + 344 条历史回归
 python tests/stdio_contract.py  # 不需 SolidWorks：真实 stdio 进程的工具契约
 python tests/smoke.py           # 需 SolidWorks：行为层（仓库不含测试模型，见下）
 ```

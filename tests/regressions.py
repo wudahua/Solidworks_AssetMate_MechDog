@@ -11470,7 +11470,34 @@ def assert_a_fullwidth_scale_ratio_is_recognised():
     return "scale ratio matches ASCII and fullwidth colons, not labelled notes"
 
 
+def assert_pattern_features_report_measured_counts():
+    """0.8.362 (report 2026-11-22 B7) — "阵列内的面读不到" was half true.
+
+    The entry said `GetSpecificFeature2` is None and `GetDefinition` "找不到成员", so every
+    pattern face became a low-confidence hint. Measured 2026-11-23 on door.SLDPRT: the
+    definition DOES answer here (`GetPatternFeatureCount` = 3) and `IFeature.GetFaces`
+    returns 6 faces; panel box reports 70 / 84 / 6 / 3 / 122 across five patterns.
+
+    So the split is now explicit: instance count and face count are measured ("medium"),
+    the seed stays a guess ("low"). This guards that split — if the counts silently go back
+    to null, the hints return to being the only output and nobody notices.
+
+    STILL SOURCE-LEVEL for COM; the numbers above came from the live run and from the
+    smoke case `pattern faces are counted, not guessed`.
+    """
+    src = _read("tools/sheet_metal.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "sheet_metal_qc")) or ""
+    for token in ("pattern_features", "GetPatternFeatureCount", "GetFaces",
+                  '"_face"', 'confidence'):
+        assert token in body, "sheet_metal_qc no longer reports %s" % token
+    assert 'row["confidence"] = ("medium"' in body, (
+        "measured pattern rows lost their medium confidence label")
+    return "pattern rows carry measured instance/face counts next to the seed guess"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.362 pattern counts measured", assert_pattern_features_report_measured_counts),
     ("0.8.358 fullwidth scale ratio", assert_a_fullwidth_scale_ratio_is_recognised),
     ("0.8.353 detail view reports model space", assert_a_detail_view_says_what_it_actually_enlarged),
     ("0.8.349 tag_compare asks git first", assert_tag_compare_asks_git_before_the_packaged_copy),

@@ -242,8 +242,13 @@ CAPABILITIES = [
                 "`borderline` 而不是 `too_short`，结论一律 `warn` 不 `fail`。"
                 "**阵列内的面**（`LPattern`/`Mirror`/`FormToolInstance`）源特征在本 binding "
                 "读不到：`GetParents` 给的是拓扑父级（折弯/法兰/拉伸），`GetSpecificFeature2` "
-                "返回 None、`GetDefinition` 报「找不到成员」。这类面单列为 `pattern`，"
-                "并在能匹配到同半径+轴平行的基础特征时给 `pattern_hints`（低置信度）。"),
+                "返回 None。这类面单列为 `pattern`，并在能匹配到同半径+轴平行的基础特征时给 "
+                "`pattern_hints`（低置信度）。\n\n"
+                "**2026-11-23 复测（0.8.362）**：只有「源特征」读不到，阵列本身是可测的 —— "
+                "`GetSpecificFeature2` 确实返回 None，但 `GetDefinition.GetPatternFeatureCount` "
+                "在本 build 正常（door LPattern1 = 3），`IFeature.GetFaces` 直接给阵列自己的面"
+                "（door 6/1/1；panel box 70/84/6/3/122）。回执新增 `pattern_features[]`："
+                "`instance_count` / `face_count`（置信度 medium）+ 原来的 seed 猜测（low）。"),
         "workaround": "not_checked 的项按 not_checked 处理，不要当作通过",
         "evidence": ("2026-10-28 实测箱体 3 道弯折无止裂槽 → blocker；"
                      "2026-11-15 实测 door.SLDPRT：折弯 8 面（EdgeBend1-4，Ø5.08/Ø7.08，"
