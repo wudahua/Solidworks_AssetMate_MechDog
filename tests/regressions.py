@@ -4434,8 +4434,8 @@ def assert_docs_numbers_match_the_code():
                     registered += 1
     # 71 since v0.8.284 (`list_tool_profiles`). Bump this line IN THE SAME COMMIT that adds
     # a tool — the check exists so a new tool cannot slip in without anyone noticing.
-    assert registered == 78, (
-        "expected 78 registered tools, AST found %d — update this expectation "
+    assert registered == 79, (
+        "expected 79 registered tools, AST found %d — update this expectation "
         "deliberately when a tool is added" % registered)
 
     # Whitespace-tolerant because README wraps the sentence; `assert m` because not
@@ -12462,7 +12462,29 @@ def assert_nothing_to_mark_is_not_a_delivery_defect():
     return "no holes -> warning; a real centre-mark failure still blocks"
 
 
+def assert_weld_symbols_are_not_labelled_as_datum_tags():
+    """0.8.365 (report 2026-11-22 B9) — one label covered two annotation types.
+
+    `ANNOTATION_KINDS` mapped BOTH 2 and 8 to "datum_tag". Measured 2026-11-23 by creating
+    one of each on the same drawing: the datum tag is 2, the native weld symbol is 8. So
+    every weld symbol in `list_drawing_annotations` read as a datum — which is also why the
+    capability table could say "no native weld symbol" without anyone contradicting it.
+
+    BEHAVIOURAL: imports the mapping and the type-name resolver.
+    """
+    from solidworks_assetmate_mechdog.tools import drawing as _d
+
+    assert _d.ANNOTATION_KINDS.get(8) == "weld_symbol", (
+        "type 8 is not a weld symbol again: %r" % (_d.ANNOTATION_KINDS.get(8),))
+    assert _d.ANNOTATION_KINDS.get(2) == "datum_tag", (
+        "type 2 (the datum tag) was renamed: %r" % (_d.ANNOTATION_KINDS.get(2),))
+    assert _d.ANNOTATION_KINDS.get(2) != _d.ANNOTATION_KINDS.get(8), (
+        "two different annotation types share one label again")
+    return "2 = datum tag, 8 = weld symbol"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.365 weld symbols are type 8", assert_weld_symbols_are_not_labelled_as_datum_tags),
     ("0.8.363 nothing-to-mark is a warning", assert_nothing_to_mark_is_not_a_delivery_defect),
     ("0.8.359 hole callouts fast-fail", assert_hole_callouts_give_up_when_nothing_works),
     ("0.8.356 wrappers expose package params", assert_every_wrapper_exposes_its_package_parameters),

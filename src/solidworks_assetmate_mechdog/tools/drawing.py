@@ -5102,6 +5102,115 @@ def add_balloon(drawing_path, view_name=None, edge_index=0, item=None,
         return error("balloon_error", str(exc))
 
 
+def add_native_weld_symbol(drawing_path, view_name=None, edge_index=0, save=True):
+    """Insert a NATIVE weld symbol on one drawing edge. 0.8.365.
+
+    Report 2026-11-22 B9: `IWeldSymbol` "only stores the name, never instantiates geometry",
+    so the toolkit drew the symbol as sketch lines and said `is_native_weld_symbol: false`.
+
+    Measured 2026-11-23 (`door.SLDPRT`, SW 32.4): `IModelDoc.InsertWeldSymbol3()` — no
+    arguments, acts on the selection — returns an annotation object and the drawing gains
+    one annotation of type **8**. That type was mapped to `datum_tag` in the inventory, so
+    a native weld symbol looked like a datum tag and the capability entry stayed
+    `unsupported`. (Type 2 is the datum tag; both used to share one label.)
+
+    What this does NOT do yet: set the symbol kind, size or tail text. Those need the
+    `IWeldSymbol` interface behind the returned annotation, which is a separate probe.
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        target = None
+        for candidate in _iter_views(doc):
+            try:
+                if getattr(candidate, "Type", None) == 1:
+                    continue
+            except Exception:
+                continue
+            if view_name is None or str(candidate.Name) == str(view_name):
+                target = candidate
+                break
+        if target is None:
+            return error("view_not_found", "No view named %r" % view_name, None)
+        try:
+            doc.ActivateView(target.Name)
+        except Exception:
+            pass
+        components = []
+        try:
+            components = [c for c in (target.GetVisibleComponents or ()) if c is not None]
+        except Exception:
+            components = []
+        edges = []
+        for component in components:
+            try:
+                edges.extend(list(target.GetVisibleEntities2(component, 1) or ()))
+            except Exception:
+                continue
+        edges = [e for e in edges if e is not None]
+        if not edges:
+            return error("no_edge", "该视图没有可见边可挂焊接符号", None, view=str(target.Name))
+        if not (0 <= int(edge_index) < len(edges)):
+            return error("bad_edge_index",
+                         "edge_index=%s 超出范围（0–%d）" % (edge_index, len(edges) - 1),
+                         None, edge_count=len(edges))
+        before = _count_weld_symbols(doc)
+        doc.ClearSelection2(True)
+        if not win.Dispatch(edges[int(edge_index)]).Select2(False, 0):
+            return error("weld_attach_failed",
+                         "could not select edge %d of %r" % (edge_index, target.Name), None)
+        typed = _imodel_doc(doc)
+        returned = None
+        try:
+            returned = typed.InsertWeldSymbol3()
+        except Exception as exc:
+            return error("weld_symbol_failed", str(exc)[:140],
+                         "InsertWeldSymbol3 需要先在视图里选中一条边。")
+        after = _count_weld_symbols(doc)
+        added = (after - before) if isinstance(after, int) and isinstance(before, int) else None
+        if save:
+            _save_drawing(doc)
+        receipt = dict(
+            drawing=doc.GetTitle, view=str(target.Name), edge_index=int(edge_index),
+            returned_object=(returned is not None),
+            weld_symbols_before=before, weld_symbols_after=after,
+            annotations_added=added, representation="native_weld_symbol",
+            saved=bool(save),
+        )
+        if not added:
+            return no_effect("weld_symbol_not_added",
+                             "调用没有报错，但焊接符号注记数没有增加", None, **receipt)
+        return drawing_ok(**receipt, effective=True,
+                          note=("原生焊接符号（注解类型 8）。符号种类/尺寸/尾部文字暂未设置 —— "
+                                "那是 IWeldSymbol 的另一个探查。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("weld_symbol_error", str(exc))
+
+
+def _count_weld_symbols(doc):
+    """How many type-8 (weld symbol) annotations the drawing holds. 0 is a real answer."""
+    try:
+        import win32com.client as win
+    except Exception:
+        return None
+    total = 0
+    for view in _iter_views(doc):
+        try:
+            items = list(view.GetAnnotations or ())
+        except Exception:
+            continue
+        for raw in items:
+            try:
+                if int(win.Dispatch(raw).GetType) == 8:
+                    total += 1
+            except Exception:
+                continue
+    return total
+
+
 def add_hole_table(drawing_path, view_name=None, x_m=None, y_m=None, anchor=1,
                    start_value="A", template=None, datum_index=0, save=True):
     """Insert a NATIVE hole table for one view, using a visible vertex as its datum. 0.8.354.
@@ -9188,7 +9297,12 @@ ANNOTATION_KINDS = {
     # must be certain has to look at the sheet; a caller that counted "centre lines" was
     # counting datum symbols.
     2: "datum_tag", 4: "dimension", 5: "geometric_tolerance", 6: "note",
-    7: "surface_finish", 8: "datum_tag", 9: "datum_target", 11: "balloon",
+    7: "surface_finish",
+    # 0.8.365 (report 2026-11-22 B9): 8 is a WELD SYMBOL. Measured 2026-11-23 by creating
+    # one of each on the same drawing: the weld came back as 8, the datum tag as 2. Both
+    # were mapped to "datum_tag", so every native weld symbol was reported as a datum —
+    # which is also why nobody noticed that `InsertWeldSymbol3` works.
+    8: "weld_symbol", 9: "datum_target", 11: "balloon",
     12: "weld_symbol", 13: "center_mark", 14: "hole_callout",
 }
 

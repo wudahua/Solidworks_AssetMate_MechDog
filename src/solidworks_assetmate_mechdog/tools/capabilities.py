@@ -405,7 +405,13 @@ CAPABILITIES = [
                 "把「直线画不出来」的结论外推到了焊缝。\n\n"
                 "现在的判据是 **lines-only 差分**：写完线、**在写 note 之前**渲染一次，差值只可能"
                 "来自草图几何。实测 2134 像素（整页 2230，差 96 = note 文字），三角形、参考线、"
-                "引线都在。`triangle_verified` 因此是真测量值，不再是常量 False。"),
+                "引线都在。`triangle_verified` 因此是真测量值，不再是常量 False。\n\n"
+                "**2026-11-23 复测（0.8.365）**：原生焊接符号一直能建 —— "
+                "`IModelDoc.InsertWeldSymbol3()`（无参、作用于当前选择）会新增一个**注解类型 8**。"
+                "此前 `list_drawing_annotations` 把类型 8 和类型 2 都标成 `datum_tag`，"
+                "于是原生焊接符号在清单里长得像基准符号，谁也没发现它可用。"
+                "现已拆开（2=datum_tag，8=weld_symbol），并加了 `add_native_weld_symbol`。"
+                "**仍未做**：符号种类 / 尺寸 / 尾部文字的设置，需要 `IWeldSymbol` 那一层再探。"),
         "workaround": ("调用后看 `triangle_verified` 与 `lines_only_visibility`：`checked:true` 且"
                        "`changed_pixels>0` 表示几何确实渲染了；`checked:false` 表示渲染器不可用、"
                        "两种情况都没验证，不代表画不出来。"

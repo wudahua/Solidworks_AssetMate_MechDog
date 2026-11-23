@@ -204,7 +204,7 @@ _TOOL_PROFILES = {
         "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
-        "add_balloon",
+        "add_balloon", "add_native_weld_symbol",
         "list_sheet_sketch", "delete_sheet_sketch",
         "add_hole_table",
         "add_bom_table", "layout_dimensions", "set_dimension_position",
@@ -845,6 +845,27 @@ def delete_sheet_sketch(
     return _json(layout.delete_sheet_sketch(
         drawing_path, view_name=view_name, indices=indices,
         all_segments=all_segments, dry_run=dry_run, save=save))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def add_native_weld_symbol(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW; saved in place unless save=False.")],
+    view_name: Annotated[str | None, Field(description="Model view that shows the joint. null = the first one.")] = None,
+    edge_index: Annotated[int, Field(description="Which visible edge to attach to (0-based).")] = 0,
+    save: Annotated[bool, Field(description="Save the drawing after inserting.")] = True,
+) -> str:
+    """Insert a NATIVE weld symbol (annotation type 8) on one drawing edge.
+
+    Report 2026-11-22 B9 concluded `IWeldSymbol` never instantiates geometry, so the toolkit
+    drew the symbol as sketch lines. Measured 2026-11-23: `IModelDoc.InsertWeldSymbol3()`
+    (no arguments, acts on the selection) creates a real annotation — and the inventory had
+    been labelling type 8 as `datum_tag`, which is why nobody saw it.
+
+    Sets nothing else yet: symbol kind / size / tail text still need a separate probe.
+    """
+    return _json(drawing.add_native_weld_symbol(
+        drawing_path, view_name=view_name, edge_index=edge_index, save=save))
 
 
 @mcp.tool()

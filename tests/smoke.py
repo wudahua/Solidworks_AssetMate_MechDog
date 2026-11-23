@@ -3153,6 +3153,40 @@ def main():
 
     r.check("a balloon is a native annotation", _a_balloon_is_a_native_annotation)
 
+    def _a_native_weld_symbol_is_type_8():
+        """0.8.365 (report 2026-11-22 B9): the symbol was always native; the INVENTORY lied.
+
+        `list_drawing_annotations` mapped annotation type 8 to `datum_tag`, and type 2 is the
+        real datum tag. Measured 2026-11-23: `InsertWeldSymbol3()` on a selected edge adds one
+        type-8 annotation — visible in the inventory only after the label was corrected.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_weld.SLDPRT")
+        drw = os.path.join(workdir, "smoke_weld.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front"], paper="A3"))
+        got = drawing.add_native_weld_symbol(drw, edge_index=0, save=False)
+        assert got.get("ok") is True, "a native weld symbol was refused: %r" % (
+            got.get("error"), got.get("message"))
+        assert got.get("annotations_added") == 1, got
+        assert got.get("weld_symbols_after") == 1, got
+        listing = drawing.list_drawing_annotations(drw)
+        kinds = {}
+        for row in (listing.get("annotations") or []):
+            kinds[row.get("kind")] = kinds.get(row.get("kind"), 0) + 1
+        assert kinds.get("weld_symbol") == 1, (
+            "type 8 is not reported as a weld symbol: %r" % (kinds,))
+        assert not kinds.get("datum_tag"), "a weld symbol is still labelled as a datum tag"
+        try:
+            drawing.close_document(drw)
+        except Exception:
+            pass
+        return "1 native weld symbol, inventory kinds=%s" % (kinds,)
+
+    r.check("a native weld symbol is type 8", _a_native_weld_symbol_is_type_8)
+
     def _section_and_detail():
         """0.8.117: section and detail views had never run AFTER produce_drawing.
 

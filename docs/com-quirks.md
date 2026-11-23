@@ -7117,3 +7117,59 @@ add_balloon(drawing_path, view_name=None, edge_index=0, item=None,
 **同一个错误「找不到成员」可以来自三个不同的层**：接口绑定、参数个数、选择状态。
 这次三层全中，于是三次都说「做不了」。判「没有这个 API」之前，先把这三层各试一遍 ——
 孔表、件号、中心标记都是同一课。
+
+---
+
+## 2026-11-23（v0.8.365）焊接符号：原生对象一直都在，是清单把类型 8 叫成了「基准符号」
+
+### 报告 B9
+
+「`IWeldSymbol` 只存符号名不实例化几何，靠图纸草图线画，不是原生对象：不随焊件特征更新、
+无法按焊接注解查询。」
+
+### 实测（door.SLDPRT，SW 32.4）
+
+| 尝试 | 结果 |
+|---|---|
+| `InsertWeldSymbol(a, b, ...)` 10 参 | **AttributeError**（`IModelDoc` 上没有这个方法） |
+| `InsertWeldSymbol2(a, b, ...)` 10 参 | 无异常，注记 84 → 85（+1） |
+| `InsertWeldSymbol3()` 无参 | 返回对象，注记 85 → 86，**类型 8** |
+
+关键在那张类型映射表：
+
+```text
+2: "datum_tag", 4: dimension, 5: gtol, 6: note, 7: surface_finish,
+8: "datum_tag",  9: datum_target, 11: balloon     ← 2 和 8 共用了一个名字
+```
+
+在同一张图上各建一个，实测：**基准符号 = 2，原生焊接符号 = 8**。
+于是原生焊接符号在 `list_drawing_annotations` 里长得像基准符号 —— 谁也没发现它能建。
+
+### 改法
+
+1. 映射表拆开：`8: "weld_symbol"`（2 仍是 `datum_tag`）。
+2. 新工具 `add_native_weld_symbol(drawing_path, view_name=None, edge_index=0, save=True)`
+   （第 79 个）：选中边 → `InsertWeldSymbol3()` → 用**类型 8 的注记数**差分验证。
+3. 原有 `add_weld_symbol`（草图线版）保留不动 —— 它证明过能渲染（lines-only 差分 2134 像素），
+   在原生符号还设不了种类/尺寸时仍是可用的降级路径。
+
+真机：
+
+```text
+add_native_weld_symbol -> ok=true, returned_object=true,
+                          weld_symbols_before=0 after=1, annotations_added=1
+list_drawing_annotations -> kinds['weld_symbol'] = 1   （此前会是 'datum_tag'）
+```
+
+smoke `a native weld symbol is type 8`：**PASS 28.0s**。
+
+### 仍未做
+
+符号种类（角焊/坡口）、尺寸数字、尾部文字、其它侧符号 —— 那些要穿过返回对象去拿
+`IWeldSymbol`，是下一步的探查，不在本轮。
+
+### 教训
+
+**标签错一次，会连带把「能力不存在」写进文档。** `ANNOTATION_KINDS[8] = "datum_tag"` 这一行
+让三个版本都相信「焊接符号不是原生的」，而实际缺的只是 `InsertWeldSymbol3` 这一次调用。
+凡是「清单里看不到某类对象」，先确认清单的类型表本身对不队。
