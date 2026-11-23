@@ -6692,3 +6692,41 @@ dry-run 不变 → 删 index 0 → **2 → 1**，PASS 20.3s。
 **「调用没报错」和「东西变了」是两件事**，这条已经反复出现（`ok` vs `effective`、孔表 null、
 现在是静默无效的 `EditDelete`）。凡是写操作，回执里必须有一个**重新读回来的计数**；
 没有它，调用方只能靠肉眼。
+
+---
+
+## 2026-11-23（v0.8.356）B11：包内有的参数，MCP 没声明
+
+### 事实
+
+报告 §B11：「`add_drawing_dimension` 的 MCP schema 无 `save` 参数，传入触发 `additionalProperties`
+校验错」。实测确认：包内函数接受 `save`，`server.py` 的包装没声明它 —— 和 v0.8.346 的
+`dimension_coverage` 是同一类（能力在，包装没提）。
+
+顺手扫了全部包装，一共 4 处 + 1 处：
+
+| 工具 | 缺的参数 |
+|---|---|
+| `add_drawing_dimension` | `save`、`known_values` |
+| `create_drawing` | `save` |
+| `auto_dimension` | `save` |
+| `add_center_marks` | `save` |
+
+（`edge_index` 本来就有 —— 那条报告里的两个观察只有一半成立，逐条核对后只改了真的缺的。）
+
+### 改法 + 新守护
+
+补齐参数并转发。新增**行为**断言 `assert_every_wrapper_exposes_its_package_parameters`：
+遍历 74+ 个注册工具，用 `inspect.getsource` 找到它委托的那一次包内调用，比对签名 ——
+包装多出的参数允许，包内有而包装没有的不允许。写这条时的实测是「68 个包装里 5 处缺口」，
+补完后 = 0。
+
+这类断言正是前两轮缺的：`dimension_coverage` 与 `save` 都不是逻辑错，而是**跨层缺口**，
+语法检查、单元断言、schema 检查都看不见。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `check_all.py` | **341/341**，4 套件 |
+| 包装参数齐备 | 68 个包装，缺口 0 |

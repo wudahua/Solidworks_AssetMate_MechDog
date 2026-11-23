@@ -1635,6 +1635,7 @@ def create_drawing(
     view_positions: Annotated[list | None, Field(description="Per-view sheet positions [x, y] in metres, keyed by view name.")] = None,
     projection: Annotated[str, Field(description="Projection convention: 'first' (GB/T 14692, default) or 'third' (ISO/US). Chooses where the top view and the side view are placed.")] = "first",
     annotation_band_m: Annotated[float, Field(description="Sheet metres reserved around every view for dimensions and leaders (default 0.018). The template safe area says where drawing is allowed, not where a dimension fits: packing views flush to it left the isometric view 4.5 mm from the frame with nowhere to put a leader. Set 0 to pack tight again.")] = 0.018,
+    save: Annotated[bool, Field(description="Save the drawing after the change. False leaves it unsaved (dry run).")] = True,
 ) -> str:
     """Create a native .SLDDRW from a part/assembly, add model views, optionally save.
 
@@ -1650,7 +1651,7 @@ def create_drawing(
         view_scales=view_scales, paper=paper, view_positions=view_positions,
         projection=projection,
         annotation_band_m=annotation_band_m,
-    ))
+        save=save))
 
 
 @mcp.tool()
@@ -1818,6 +1819,7 @@ def auto_dimension(
     detect_same_value: Annotated[bool, Field(description="Group dimensions by (value, type) to flag same-value duplicates. OFF by default: it reads every annotation on every view and measured 18.4 s of auto_dimension's 27.0 s (68%) on 旋转轴. It only reports — it never deletes. Turn on when a sheet shows two identical values and you need the candidates.")] = False,
     sheet: Annotated[str | int | None, Field(description="Target sheet: name (e.g. '图纸2') or 1-based index. Omit to use whatever page is active. Every write edits the ACTIVE page, so pass this rather than relying on a previous activate_sheet call.")] = None,
     max_clamp_travel_m: Annotated[float, Field(description="How far the safe-area clamp may move an annotation, in sheet metres (default 0.030). Beyond this the clamp refuses and the entry carries `error: travel_exceeds_limit` with `travel_mm`. A dimension dragged across the sheet no longer points at what it measures — a leader you cannot follow at least shows where the number belongs. If many entries report this, the VIEWS are outside the safe area: fix their position instead of raising this limit.")] = 0.030,
+    save: Annotated[bool, Field(description="Save the drawing after the change. False leaves it unsaved (dry run).")] = True,
 ) -> str:
     """Insert the model's driving dimensions into the drawing (Insert Model Items).
 
@@ -1837,7 +1839,7 @@ def auto_dimension(
         eliminate_duplicates=eliminate_duplicates, dimension_filter=dimension_filter,
         place_outside=place_outside, outside_gap_m=outside_gap_m,
         outside_step_m=outside_step_m, audit=audit,
-        detect_same_value=detect_same_value, prefer_view=prefer_view, sheet=sheet, max_clamp_travel_m=max_clamp_travel_m))
+        detect_same_value=detect_same_value, prefer_view=prefer_view, sheet=sheet, max_clamp_travel_m=max_clamp_travel_m, save=save))
 
 
 @mcp.tool()
@@ -1938,8 +1940,9 @@ def add_distance_dimension(drawing_path: Annotated[str, Field(description="Exist
 @_reject_unknown_arguments
 def add_drawing_dimension(
     drawing_path: Annotated[str, Field(description="Existing .SLDDRW to modify. Absolute path; the file is opened and saved in place unless save=False.")],
-    x: Annotated[float, Field(description="Sheet X in metres.")],
-    y: Annotated[float, Field(description="Sheet Y in metres.")],
+    x: Annotated[float | None, Field(description="Sheet X in metres. Required unless edge_index is given (an edge needs no point).")] = None,
+    y: Annotated[float | None, Field(description="Sheet Y in metres. Required unless edge_index is given.")] = None,
+    save: Annotated[bool, Field(description="Save the drawing. False leaves it unsaved. (2026-11-23: this parameter existed on the package function but was never exposed over MCP, so a caller passing it got a schema violation instead.)")] = True,
     value: Annotated[float | None, Field(description="Explicit dimension value in metres. Omit to keep the measured value (safer: a value here drives the model).")] = None,
     offset_x: Annotated[float, Field(description="Offset applied to the dimension text, in metres (positive = right).")] = 0.0,
     offset_y: Annotated[float, Field(description="Offset applied to the dimension text, in metres (negative = below the line).")] = -0.015,
@@ -1947,6 +1950,7 @@ def add_drawing_dimension(
     tolerance: Annotated[float, Field(description="Tolerance value. For add_drawing_dimension it is a length in metres; for add_geometric_tolerance it is the frame value as text.")] = 0.01,
     edge_index: Annotated[int | None, Field(description="Index into list_drawing_edges for this view; lets you attach to an edge without sheet coordinates.")] = None,
     skip_duplicates: Annotated[bool, Field(description="Refuse to add a dimension that duplicates an existing one on the sheet (same value, same view). Default True — a second identical dimension reads as a drafting error.")] = True,
+    known_values: Annotated[list[float] | None, Field(description="Values already on the sheet, in metres. Only consulted when skip_duplicates=True; the tool cannot infer them (the same edge projects differently per view).")] = None,
     style: Annotated[str, Field(description="Callout form for an arc or circle: 'radius' (R), 'diameter' (Ø), 'linear' (plain), or 'auto' to let SolidWorks decide. A semicircular groove projects as an ARC and 'auto' measures it as a DIAMETER, which is a meaningless callout on a turned part — pass 'radius' for R. The receipt's `style_used` says which one was actually created; if SolidWorks refuses the radial call it falls back to linear and says so.")] = "auto",
     prefix: Annotated[str, Field(description="Prefix for the dimension text: 'Ø', 'R', '□', or '' for none. A groove mouth measured between two arcs comes out as a plain length, so a turned part needs 'Ø' here to read correctly on the sheet. Read `prefix_applied` back — SetText can fail on some builds and the dimension then prints without it.")] = "",
 ) -> str:
@@ -1958,8 +1962,9 @@ def add_drawing_dimension(
     """
     return _json(drawing.add_drawing_dimension(
         drawing_path, x, y, value=value, offset_x=offset_x, offset_y=offset_y,
+        save=save,
         view_name=view_name, tolerance=tolerance, edge_index=edge_index,
-        skip_duplicates=skip_duplicates, style=style,
+        skip_duplicates=skip_duplicates, known_values=known_values, style=style,
     ))
 
 
@@ -1998,13 +2003,14 @@ def add_center_marks(
     extended_lines: Annotated[bool, Field(description="Draw the centre-mark cross lines beyond the hole edge.")] = True,
     view_name: Annotated[str | None, Field(description="Model view to target. null means the first model view (the sheet itself is skipped).")] = None,
     dedupe_existing: Annotated[bool, Field(description="FIRST delete centre marks that sit on the SAME point (within 0.1 mm), then mark. Off by default because it deletes annotations. Without it, a sheet left with three coincident marks by an older non-idempotent version keeps them forever: the idempotency guard only refuses to ADD more (report 2026-11-10 P2-4). Read `center_marks_removed` and `dedupe` back — 0 removals with this true means there was nothing to clean, which is a different fact from 'not attempted'.")] = False,
+    save: Annotated[bool, Field(description="Save the drawing after the change. False leaves it unsaved (dry run).")] = True,
 ) -> str:
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 
     Returns views_marked (reliable) rather than a mark count, which under-reports
     on this binding.
     """
-    return _json(drawing.add_center_marks(drawing_path, include_slots=include_slots, extended_lines=extended_lines, view_name=view_name, dedupe_existing=dedupe_existing))
+    return _json(drawing.add_center_marks(drawing_path, include_slots=include_slots, extended_lines=extended_lines, view_name=view_name, dedupe_existing=dedupe_existing, save=save))
 
 
 @mcp.tool()

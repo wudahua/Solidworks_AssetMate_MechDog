@@ -12256,7 +12256,69 @@ def assert_capability_summary_counts_what_it_lists():
         got["checked"], len(got["needs_attention"]))
 
 
+def assert_every_wrapper_exposes_its_package_parameters():
+    """0.8.356 (report 2026-11-22 §B11) — a package parameter that MCP never declares.
+
+    `add_drawing_dimension` accepted `save` in the package but the MCP wrapper did not
+    declare it, so a caller who passed `save=False` got an `additionalProperties` violation
+    instead of a dry run. Same family as `dimension_coverage` (v0.8.346) — the capability
+    works, the wrapper just never mentions it.
+
+    The check is mechanical: for every registered tool, find the single package call it
+    delegates to (`drawing.foo(...)`) and compare signatures. Wrapper-only extras are fine;
+    a package parameter that is missing is not. Measured when written: 68 wrappers
+    inspected, 4 gaps found (`save` on add_drawing_dimension / create_drawing /
+    auto_dimension / add_center_marks, plus `known_values`), all fixed in the same release.
+
+    BEHAVIOURAL: imports the server and every tool module, then introspects them.
+    """
+    import inspect
+    import re as _re
+
+    from solidworks_assetmate_mechdog import server
+    from solidworks_assetmate_mechdog.tools import (assembly, bodies, bom, capabilities,
+                                                   drawing, export, layout, ledger, manifest,
+                                                   material, pipeline, planner, recolor,
+                                                   rename, sheet_metal, survey)
+
+    modules = {m.__name__.split(".")[-1]: m
+               for m in (assembly, bodies, bom, capabilities, drawing, export, layout, ledger,
+                         manifest, material, pipeline, planner, recolor, rename, sheet_metal,
+                         survey)}
+
+    gaps, checked = [], 0
+    for tool in server.mcp._tool_manager.list_tools():
+        fn_obj = getattr(server, tool.name, None)
+        if fn_obj is None:
+            continue
+        try:
+            src = inspect.getsource(fn_obj)
+        except Exception:
+            continue
+        body = src[src.rfind('"""') + 3:] if '"""' in src else src
+        call = _re.search(r"\b([a-z_]+)\.([a-z_]+)\((.*?)\)\s*\)", body, _re.S)
+        if not call:
+            continue
+        target = getattr(modules.get(call.group(1)), call.group(2), None)
+        if target is None:
+            continue
+        try:
+            want = set(inspect.signature(target).parameters)
+            have = set(inspect.signature(fn_obj).parameters)
+        except Exception:
+            continue
+        checked += 1
+        missing = sorted(want - have)
+        if missing:
+            gaps.append((tool.name, "%s.%s" % (call.group(1), call.group(2)), missing))
+
+    assert checked >= 60, "only %d wrappers were inspected — the detector stopped working" % checked
+    assert not gaps, "package parameters unreachable over MCP: %r" % (gaps,)
+    return "%d wrappers expose every package parameter" % checked
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.356 wrappers expose package params", assert_every_wrapper_exposes_its_package_parameters),
     ("0.8.352 no effect is not ok", assert_a_call_that_changed_nothing_is_not_ok),
     ("0.8.352 capability counts add up", assert_capability_summary_counts_what_it_lists),
     ("0.8.349 health names the running copy", assert_health_reports_which_copy_is_running),

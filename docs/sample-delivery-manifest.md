@@ -7,7 +7,7 @@
 | 模型 | D:\WorkBuddy_space\Solidworks_AssetMate_MechDog\logs\sample_probe\sample.SLDPRT |
 | 图纸 | D:\WorkBuddy_space\Solidworks_AssetMate_MechDog\logs\sample_probe\sample.SLDDRW |
 | 生成时间 | 2026-11-16 16:39:20 |
-| 工具版本 | 0.8.355 |
+| 工具版本 | 0.8.356 |
 | 回执 ok | true |
 
 ## 阻断项
@@ -94,7 +94,7 @@ verdict 依据流程 §7；blockers 非空即不可宣称可制造，ai_supplied
 {
  "dimension_coverage_status": "accepted",
  "generated_at": "2026-11-16 16:39:20",
- "tool_version": "0.8.355",
+ "tool_version": "0.8.356",
  "model": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\logs\\sample_probe\\sample.SLDPRT",
  "drawing": "D:\\WorkBuddy_space\\Solidworks_AssetMate_MechDog\\logs\\sample_probe\\sample.SLDDRW",
  "verdict": "待设计审核",
