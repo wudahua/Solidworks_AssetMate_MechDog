@@ -4434,8 +4434,8 @@ def assert_docs_numbers_match_the_code():
                     registered += 1
     # 71 since v0.8.284 (`list_tool_profiles`). Bump this line IN THE SAME COMMIT that adds
     # a tool — the check exists so a new tool cannot slip in without anyone noticing.
-    assert registered == 77, (
-        "expected 77 registered tools, AST found %d — update this expectation "
+    assert registered == 78, (
+        "expected 78 registered tools, AST found %d — update this expectation "
         "deliberately when a tool is added" % registered)
 
     # Whitespace-tolerant because README wraps the sentence; `assert m` because not
@@ -11496,7 +11496,32 @@ def assert_pattern_features_report_measured_counts():
     return "pattern rows carry measured instance/face counts next to the seed guess"
 
 
+def assert_balloon_binds_imodeldoc_not_idrawingdoc():
+    """0.8.364 (report 2026-11-22 A4) — "no balloon API" was the wrong binding.
+
+    Three separate reports concluded balloons were impossible. The method exists on
+    `IModelDoc`; the typed `IDrawingDoc` object does not expose it, and that AttributeError
+    reads exactly like a missing API. Measured 2026-11-23: 6 arguments, a SELECTED EDGE, and
+    `GetText` = '?' without a BOM, '3' when `item='3'` is passed.
+
+    Guards the two facts that made it work, so a future refactor cannot quietly go back to
+    the drawing-doc binding or to a component selection.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "add_balloon")) or ""
+    helper = ast.get_source_segment(src, _function_node(ast.parse(src), "_imodel_doc")) or ""
+    assert "IModelDoc(doc._oleobj_)" in helper, (
+        "the balloon binding went back to the drawing-doc interface")
+    for token in ("InsertBOMBalloon2", "GetVisibleEntities2", "Select2",
+                  "GetText", "edge_index"):
+        assert token in body, "add_balloon no longer uses %s" % token
+    assert "GetVisibleComponents" in body, (
+        "the edge enumeration lost its component argument (argerr on this binding)")
+    return "balloons bind IModelDoc, need an edge, and report the text they got"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.364 balloon binds IModelDoc", assert_balloon_binds_imodeldoc_not_idrawingdoc),
     ("0.8.362 pattern counts measured", assert_pattern_features_report_measured_counts),
     ("0.8.358 fullwidth scale ratio", assert_a_fullwidth_scale_ratio_is_recognised),
     ("0.8.353 detail view reports model space", assert_a_detail_view_says_what_it_actually_enlarged),

@@ -73,25 +73,23 @@ CAPABILITIES = [
     },
     {
         "id": "balloon",
-        "status": "unsupported",
-        "summary": "件号圆圈（BOM balloon）",
-        "why": ("`add_balloon` 的两条路径都不成立。在 SW2024 SP4 实测："
-                "`InsertBOMBalloon2` 全部参数都是必需的（DISP_E_PARAMNOTOPTIONAL，"
-                "传 3/4/5 参都不够，完整签名需要 9 参含 Style/Size/上标/下标/引线样式）；"
-                "`InsertBOMBalloon` 参数数目无效；`InsertBalloon` **名字解析不到**"
-                "（DISP_E_UNKNOWNNAME，GetIDsOfNames 直接 False）。"
-                "用户反馈在 SW2026 上 `InsertBalloon` 同样是 UNKNOWNNAME，与本地一致。"),
-        # Report 2026-11-07 (C7): this said "do not pair it with add_sheet_line, that tool
-        # renders 0 pixels" — while `sheet_sketch_space` in the SAME table says `verified`
-        # with 571 changed pixels. The capability table must not contradict itself; the
-        # leader can be drawn, only the balloon object itself is unavailable.
-        "workaround": ("件号用 add_note 写数字 + `add_sheet_line` 画引线"
-                       "（`AddToDB` 已修，实测 571 像素可见）；"
-                       "或界面手工插（明细栏行号本身已经正确）"),
-        "evidence": ("2026-10-29 实测 SW2024 SP4：InsertBOMBalloon2 → 非选择性的参数；"
-                     "InsertBOMBalloon → 无效的参数数目；InsertBalloon → 未知名称。"
-                     "用户反馈 SW2026 同款失败。"),
-    },
+        "status": "verified",
+        "summary": ("件号圆圈（BOM balloon）· 0.8.364 起可用：`InsertBOMBalloon2` 在 "
+                    "`IModelDoc` 上、需先选一条边、6 个参数"),
+        "why": ("2026-11-22 的报告判「无入口」，2026-10-29 的旧结论也一样。**两处都错在查错对象。**\n\n"
+                "实测 2026-11-23（assembly panel box，SW 32.4）：\n"
+                "1. `InsertBOMBalloon2` 挂在 **`IModelDoc`** 上；在 typed `IDrawingDoc` 上调用会抛 "
+                "AttributeError —— 看上去像「没有这个 API」；\n"
+                "2. 签名是 **6 个参数**（Style, Size, UpperTextStyle, UpperText, LowerTextStyle, "
+                "LowerText），不是 9 个；\n"
+                "3. 选择状态必须是**一条边**：选组件本身 `Select2` 返回 False；\n"
+                "4. 没有 BOM 表时 `GetText` 读 `?`；传 `item`（UpperText）即写入自己的件号，"
+                "实测 `text='3'`。"),
+        "workaround": ("无 BOM 表时传 `item='3'` 直接写件号（文字不再跟 BOM 联动）；"
+                       "要让 SolidWorks 自动编号，先 `add_bom_table` 再插件号"),
+        "evidence": ("2026-11-23 assembly panel box.SLDASM：`IModelDoc(doc._oleobj_)"
+                     ".InsertBOMBalloon2(1,3,0,'',0,'')` → 细节项目254 text='?'；传 item='3' → text='3'；"
+                     "smoke `a balloon is a native annotation` PASS 24.5s"),    },
     {
         "id": "delete_annotation",
         "status": "verified",

@@ -4967,6 +4967,141 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         return error("title_block_failed", str(exc))
 
 
+def _imodel_doc(doc):
+    """Bind the SAME document as `IModelDoc`, not `IDrawingDoc`. 0.8.364.
+
+    Report 2026-11-22 A4 said every balloon entry refused: `InsertBOMBalloon2` with 3/4/5
+    arguments failed, `InsertBOMBalloon` "wrong number of arguments", `InsertBalloon`
+    unknown name. Measured 2026-11-23: the method exists on **IModelDoc** only — calling it
+    on the typed `IDrawingDoc` raises AttributeError, which reads exactly like "no such API".
+    Binding the same COM object as `IModelDoc` makes it work:
+
+        mod.IModelDoc(doc._oleobj_).InsertBOMBalloon2(1, 3, 0, "", 0, "")
+        -> 细节项目254, text '?'
+    """
+    import importlib
+    import sys
+
+    cache = os.path.join(os.environ.get("TEMP", ""), "gen_py", "3.11")
+    if cache and cache not in sys.path:
+        sys.path.insert(0, cache)
+    module = importlib.import_module("83A33D31-27C5-11CE-BFD4-00400513BB57x0x32x0")
+    return module.IModelDoc(doc._oleobj_)
+
+
+def add_balloon(drawing_path, view_name=None, edge_index=0, item=None,
+                upper_text="", lower_text="", style=1, size=3, save=True):
+    """Insert a NATIVE BOM balloon (件号圆圈) on one component edge. 0.8.364.
+
+    Report 2026-11-22 A4: "no entry" — the team wrote a note with the number and drew a
+    leader by hand, which does not track the BOM and does not move with the view.
+
+    Measured 2026-11-23 on `assembly panel box.SLDASM`:
+
+        * the method lives on `IModelDoc`; the typed `IDrawingDoc` binding does not expose it
+          (that AttributeError is what looked like a missing API);
+        * the selection must be an EDGE — selecting the component itself returns False;
+        * `InsertBOMBalloon2(1, 3, 0, "", 0, "")` returns `细节项目254`, whose `GetText`
+          reads `?` when the drawing has no BOM table. Pass `item` to put your own number in
+          the balloon, and read `text` back to see what it actually says.
+
+    `style` is `swBalloonStyle_e` (1 circular, 4 box…), `size` is `swBalloonFit_e`
+    (2/3/4 characters wide).
+    """
+    try:
+        import win32com.client as win
+
+        doc = _open_drawing(drawing_path)
+        target = None
+        for candidate in _iter_views(doc):
+            try:
+                if getattr(candidate, "Type", None) == 1:
+                    continue
+            except Exception:
+                continue
+            if view_name is None or str(candidate.Name) == str(view_name):
+                target = candidate
+                break
+        if target is None:
+            return error("view_not_found", "No view named %r" % view_name,
+                         "Use drawing_audit to list view names.")
+        try:
+            doc.ActivateView(target.Name)
+        except Exception:
+            pass
+
+        components = []
+        try:
+            components = [c for c in (target.GetVisibleComponents or ()) if c is not None]
+        except Exception:
+            components = []
+        if not components:
+            return error("no_component", "该视图没有可见组件（装配图才有件号）",
+                         "件号只对装配体视图有意义；零件图没有件号。",
+                         view=str(target.Name))
+        edges = []
+        for component in components:
+            try:
+                edges.extend(list(target.GetVisibleEntities2(component, 1) or ()))
+            except Exception:
+                continue
+        edges = [e for e in edges if e is not None]
+        if not edges:
+            return error("no_edge", "该视图没有可见边可挂件号", None, view=str(target.Name))
+        if not (0 <= int(edge_index) < len(edges)):
+            return error("bad_edge_index",
+                         "edge_index=%s 超出范围（0–%d）" % (edge_index, len(edges) - 1), None,
+                         edge_count=len(edges))
+
+        doc.ClearSelection2(True)
+        if not win.Dispatch(edges[int(edge_index)]).Select2(False, 0):
+            return error("balloon_attach_failed",
+                         "could not select edge %d of %r" % (edge_index, target.Name),
+                         "Balloons attach to an edge, not to the component.",)
+        typed = _imodel_doc(doc)
+        try:
+            raw = typed.InsertBOMBalloon2(int(style), int(size), 0,
+                                          str(item if item is not None else upper_text),
+                                          0, str(lower_text or ""))
+        except Exception as exc:
+            return error("balloon_failed", str(exc)[:140],
+                         "InsertBOMBalloon2 需要 6 个参数且必须先在视图里选中一条边。")
+        if raw is None:
+            return error("balloon_not_created",
+                         "InsertBOMBalloon2 返回 null（边已选中）",
+                         "换一条边试；装配图之外的视图没有件号可挂。",
+                         edge_index=int(edge_index), edge_count=len(edges))
+        annotation = win.Dispatch(raw)
+        text = name = None
+        try:
+            text = str(annotation.GetText)
+        except Exception:
+            text = None
+        try:
+            name = str(annotation.GetName)
+        except Exception:
+            pass
+        if save:
+            _save_drawing(doc)
+        # No annotation-delta check here: `view.GetAnnotations` does not list balloons on
+        # this build (measured for datum tags too), so the object we hold IS the evidence.
+        receipt = dict(
+            drawing=doc.GetTitle, view=str(target.Name), edge_index=int(edge_index),
+            style=int(style), size=int(size), item=None if item is None else str(item),
+            annotation=name, text=text,
+            verified_by="InsertBOMBalloon2 returned an object (no annotation-count check: "
+                        "view.GetAnnotations does not list balloons on this build)",
+            saved=bool(save),
+        )
+        return drawing_ok(**receipt, effective=True,
+                          note=("件号文字读到 `?` 说明这张图没有 BOM 表：传 `item` 可写入自己的件号，"
+                                "或先插 BOM 表让 SolidWorks 自动编号。"))
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("balloon_error", str(exc))
+
+
 def add_hole_table(drawing_path, view_name=None, x_m=None, y_m=None, anchor=1,
                    start_value="A", template=None, datum_index=0, save=True):
     """Insert a NATIVE hole table for one view, using a visible vertex as its datum. 0.8.354.

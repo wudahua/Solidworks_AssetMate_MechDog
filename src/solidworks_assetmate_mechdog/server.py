@@ -204,6 +204,7 @@ _TOOL_PROFILES = {
         "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
+        "add_balloon",
         "list_sheet_sketch", "delete_sheet_sketch",
         "add_hole_table",
         "add_bom_table", "layout_dimensions", "set_dimension_position",
@@ -844,6 +845,31 @@ def delete_sheet_sketch(
     return _json(layout.delete_sheet_sketch(
         drawing_path, view_name=view_name, indices=indices,
         all_segments=all_segments, dry_run=dry_run, save=save))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def add_balloon(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW of an ASSEMBLY; saved in place unless save=False.")],
+    view_name: Annotated[str | None, Field(description="Model view that shows the component. null = the first one.")] = None,
+    edge_index: Annotated[int, Field(description="Which visible edge to attach to (0-based). A balloon needs an EDGE: selecting the component itself does not work.")] = 0,
+    item: Annotated[str | None, Field(description="Your own item number (e.g. '3'). null leaves SolidWorks' variable, which reads '?' when the drawing has no BOM table.")] = None,
+    upper_text: Annotated[str, Field(description="Upper text when `item` is null.")] = "",
+    lower_text: Annotated[str, Field(description="Lower text under the number.")] = "",
+    style: Annotated[int, Field(description="swBalloonStyle_e: 1 circular (default), 4 box, 2 triangle, 3 hexagon.")] = 1,
+    size: Annotated[int, Field(description="swBalloonFit_e: 2 / 3 / 4 characters wide.")] = 3,
+    save: Annotated[bool, Field(description="Save the drawing after inserting.")] = True,
+) -> str:
+    """Insert a NATIVE BOM balloon (件号圆圈) on one component edge.
+
+    Report 2026-11-22 A4 concluded there was no entry. Measured 2026-11-23: `InsertBOMBalloon2`
+    exists on `IModelDoc` (the typed `IDrawingDoc` binding does not expose it — that
+    AttributeError looked like a missing API), takes 6 arguments, and requires a SELECTED EDGE.
+    Text reads `?` with no BOM table; pass `item` to write your own number.
+    """
+    return _json(drawing.add_balloon(
+        drawing_path, view_name=view_name, edge_index=edge_index, item=item,
+        upper_text=upper_text, lower_text=lower_text, style=style, size=size, save=save))
 
 
 @mcp.tool()

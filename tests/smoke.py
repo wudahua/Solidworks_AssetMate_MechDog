@@ -3123,6 +3123,36 @@ def main():
 
     r.check("assembly drawing not an empty shell", _assembly_drawing)
 
+    def _a_balloon_is_a_native_annotation():
+        """0.8.364 (report 2026-11-22 A4): `InsertBOMBalloon2` lives on IModelDoc.
+
+        The report concluded "no balloon entry" after 3/4/5-argument calls failed. Measured
+        2026-11-23: the method is on `IModelDoc` (the typed `IDrawingDoc` binding raises
+        AttributeError, which reads like a missing API), it needs a SELECTED EDGE, and it
+        takes 6 arguments. With no BOM table the text reads `?`; passing `item` puts the
+        number in.
+        """
+        asm_src = args.assembly
+        if not asm_src or not os.path.exists(asm_src):
+            raise FixtureMissing("--assembly (an assembly with at least one component)")
+        drw = os.path.join(workdir, "smoke_balloon.SLDDRW")
+        built = drawing.create_drawing(asm_src, drw, views=["isometric"], paper="A3")
+        if not built.get("ok"):
+            raise FixtureMissing("an assembly that can produce a drawing")
+        got = drawing.add_balloon(drw, edge_index=0, item="3", save=False)
+        assert got.get("ok") is True, "a native balloon was refused: %r" % (
+            got.get("error"), got.get("message"))
+        assert got.get("text") == "3", (
+            "the balloon does not carry the requested item number: %r" % (got.get("text"),))
+        assert got.get("annotation"), "no annotation name was returned"
+        try:
+            drawing.close_document(drw)
+        except Exception:
+            pass
+        return "balloon text=%r on %s" % (got.get("text"), got.get("annotation"))
+
+    r.check("a balloon is a native annotation", _a_balloon_is_a_native_annotation)
+
     def _section_and_detail():
         """0.8.117: section and detail views had never run AFTER produce_drawing.
 

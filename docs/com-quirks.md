@@ -7062,3 +7062,58 @@ delivery_check crash is counted once      PASS  33.1s
 **诚实回执会让下游判据暴露出来。** v0.8.360 说的是真话；是 `_step_state` 把「没做成」一律当
 「出问题」。全量 smoke 的价值就在这里 —— 单条用例各自都是绿的，只有整条链路跑起来才看得见
 「一个正确的新回执把整条交付判死」。
+
+---
+
+## 2026-11-23（v0.8.364）件号圆圈：API 一直在，只是挂在上层接口上
+
+### 三次错误结论
+
+| 日期 | 结论 | 实际 |
+|---|---|---|
+| 2026-10-29 | `InsertBOMBalloon2` 参数全必填，「完整签名需 9 参」 | 签名是 **6 参** |
+| 2026-11-22 | 「MCP 没有件号入口，只能 note + 画线」 | 有入口 |
+| 两处共同 | 用 typed `IDrawingDoc` 调用 → AttributeError | 方法在 **`IModelDoc`** 上 |
+
+### 实测（assembly panel box.SLDASM，SW 32.4）
+
+```python
+mod = IModelDoc(doc._oleobj_)          # 同一个 COM 对象，换接口绑定
+win.Dispatch(edges[0]).Select2(False, 0)   # 必须选一条【边】，选组件本身返回 False
+mod.InsertBOMBalloon2(1, 3, 0, "", 0, "")
+    -> 细节项目254, GetText() = '?'
+mod.InsertBOMBalloon2(1, 3, 0, "3", 0, "")
+    -> 细节项目255, GetText() = '3'
+```
+
+| 事实 | 值 |
+|---|---|
+| 所在接口 | `IModelDoc`（`IDrawingDoc` 上调用 → AttributeError，看起来像没有 API） |
+| 参数 | **6**：Style, Size, UpperTextStyle, UpperText, LowerTextStyle, LowerText |
+| 选择状态 | **一条边**；`组件.Select2` = False |
+| 无 BOM 表 | `GetText` = `?` |
+| 传 `item` | `GetText` = `3`（写死，不跟 BOM 联动） |
+
+### 新工具 `add_balloon`（第 78 个）
+
+```text
+add_balloon(drawing_path, view_name=None, edge_index=0, item=None,
+            upper_text="", lower_text="", style=1, size=3, save=True)
+```
+
+能力表里 `balloon` 从 `unsupported` 改成 **`verified`**（13 verified / 34 项）。
+
+真机 smoke `a balloon is a native annotation`：**PASS 24.5s**，`balloon text='3'`。
+
+### 不验「注记数增加」的原因
+
+`view.GetAnnotations` 在本 build 上不列件号（基准符号同样不列），所以没有可靠的计数差分。
+证据是 **API 返回的对象本身** + `GetText` 回读，回执里写明
+`verified_by: "InsertBOMBalloon2 returned an object (no annotation-count check)"`。
+宁可说清证据等级，也不编一个「+1 个注记」。
+
+### 教训
+
+**同一个错误「找不到成员」可以来自三个不同的层**：接口绑定、参数个数、选择状态。
+这次三层全中，于是三次都说「做不了」。判「没有这个 API」之前，先把这三层各试一遍 ——
+孔表、件号、中心标记都是同一课。
