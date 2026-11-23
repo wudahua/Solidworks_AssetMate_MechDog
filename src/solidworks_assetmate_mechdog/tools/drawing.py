@@ -5102,6 +5102,85 @@ def add_balloon(drawing_path, view_name=None, edge_index=0, item=None,
         return error("balloon_error", str(exc))
 
 
+def add_model_dimensions(drawing_path, option=0, types=65535, all_views=True,
+                        duplicate_dims=True, hidden_feature_dims=False,
+                        use_placement_in_sketch=False, save=True):
+    """Bring the MODEL's dimensions onto the drawing, in EVERY view that shows them. 0.8.366.
+
+    Report 2026-11-22 A6: "`InsertModelAnnotations3` 是文档级幂等 —— 同一模型尺寸插入过之后，
+    第二个视图恒 0 条；`all_views` / `duplicateDims` / 激活目标视图 三组组合全试过"，结论是
+    "API 层面做不到"。
+
+    Measured 2026-11-23 on 接槽.SLDPRT (front + top, both empty beforehand):
+
+        InsertModelAnnotations4(0, 0,     True, True, ...)  -> 0 / 0   ← what the report did
+        InsertModelAnnotations4(0, 32,    True, True, ...)  -> 0 / 0
+        InsertModelAnnotations4(0, 65535, True, True, ...)  -> 6 / 16  ← both views
+
+    So the blocker was `Types`: 0 (and every narrow mask) filters out everything, which reads
+    as "the second view cannot be filled" when in fact NOTHING was inserted anywhere. `65535`
+    means "all annotation types". The two views got different counts (6 and 16) because each
+    view only receives the dimensions it can actually show — which is exactly what a cross-
+    view copy should mean.
+
+    Also note the binding: `InsertModelAnnotations4` is on **IDrawingDoc**, while
+    `InsertBOMBalloon2` is on **IModelDoc**. Calling either on the wrong interface raises
+    AttributeError, which looks like "no such API".
+    """
+    try:
+        from .layout import _typed_drawing_doc
+
+        doc = _open_drawing(drawing_path)
+        typed = _typed_drawing_doc(doc)
+        before = _display_dimension_counts(doc)
+        try:
+            typed.InsertModelAnnotations4(int(option), int(types), bool(all_views),
+                                          bool(duplicate_dims), bool(hidden_feature_dims),
+                                          bool(use_placement_in_sketch), True, False)
+        except Exception as exc:
+            return error("model_dimensions_failed", str(exc)[:140],
+                         "InsertModelAnnotations4 在 IDrawingDoc 上；types=65535 表示全部类型。")
+        after = _display_dimension_counts(doc)
+        added = {name: after.get(name, 0) - before.get(name, 0) for name in after}
+        total = sum(v for v in added.values() if isinstance(v, int))
+        if save and total:
+            _save_drawing(doc)
+        receipt = dict(
+            drawing=doc.GetTitle, option=int(option), types=int(types),
+            all_views=bool(all_views), duplicate_dims=bool(duplicate_dims),
+            before=before, after=after, added=added, added_total=total,
+            saved=bool(save and total),
+        )
+        if not total:
+            return no_effect(
+                "model_dimensions_nothing_added",
+                "调用成功但没有任何视图新增尺寸（before == after）。",
+                "`types=0` 会过滤掉所有类型，看起来就像「第二个视图插不进去」；"
+                "本工具默认 65535（全部类型）。模型若没有标注为「用于工程图」的尺寸，也会是 0。",
+                **receipt)
+        return drawing_ok(**receipt, effective=True,
+                          note="每个视图只收它能显示的模型尺寸，所以两个视图的数字可以不同。")
+    except (FileNotFoundError, ValueError) as exc:
+        return error("bad_input", str(exc))
+    except Exception as exc:
+        return error("model_dimensions_error", str(exc))
+
+
+def _display_dimension_counts(doc):
+    """Per-view count of display dimensions. A real measurement, used for the delta."""
+    out = {}
+    for view in _iter_views(doc):
+        try:
+            if getattr(view, "Type", None) == 1:
+                continue
+            raw = view.GetDisplayDimensions
+            rows = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+            out[str(view.Name)] = len([r for r in rows if r is not None])
+        except Exception:
+            out[str(view.Name)] = None
+    return out
+
+
 def add_native_weld_symbol(drawing_path, view_name=None, edge_index=0, save=True):
     """Insert a NATIVE weld symbol on one drawing edge. 0.8.365.
 

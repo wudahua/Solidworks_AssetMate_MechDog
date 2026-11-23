@@ -7173,3 +7173,57 @@ smoke `a native weld symbol is type 8`：**PASS 28.0s**。
 **标签错一次，会连带把「能力不存在」写进文档。** `ANNOTATION_KINDS[8] = "datum_tag"` 这一行
 让三个版本都相信「焊接符号不是原生的」，而实际缺的只是 `InsertWeldSymbol3` 这一次调用。
 凡是「清单里看不到某类对象」，先确认清单的类型表本身对不队。
+
+---
+
+## 2026-11-23（v0.8.366）跨视图补尺寸：掩码为 0，所以「两个视图都没插」
+
+### 报告 A6
+
+「`InsertModelAnnotations3` 是文档级幂等：同一模型尺寸一旦插入过，第二视图恒 0 条。
+`all_views` / `duplicateDims` / 激活目标视图 三组组合全试过，结论是 API 层面做不到。」
+
+### 实测（接槽.SLDPRT，front + top，初始 0 / 0）
+
+| 调用 | 视图1 | 视图2 |
+|---|---|---|
+| `InsertModelAnnotations4(0, **0**, True, True, …)` | 0 | 0 |
+| `InsertModelAnnotations4(0, 32, True, True, …)` | 0 | 0 |
+| `InsertModelAnnotations4(0, **65535**, True, True, …)` | **6** | **16** |
+
+`Types` 是注解类型掩码：**0（以及任何窄掩码）会过滤掉所有类型**，于是哪个视图都没有插 ——
+看起来正好像「第二个视图插不进去」。65535 = 全部类型。
+
+两个视图数字不同（6 / 16）不是 bug：每个视图只收它能显示的模型尺寸，这正是跨视图补标该有的语义。
+
+### 另一个坑：接口绑定
+
+| 方法 | 所在接口 |
+|---|---|
+| `InsertModelAnnotations4` | **IDrawingDoc** |
+| `InsertBOMBalloon2` | **IModelDoc** |
+
+绑错接口一律 AttributeError —— 与「没有这个 API」在回执里长得一模一样。这已经是本周第三次踩它。
+
+### 新工具 `add_model_dimensions`（第 80 个）
+
+```text
+add_model_dimensions(drawing_path, option=0, types=65535, all_views=True,
+                     duplicate_dims=True, hidden_feature_dims=False,
+                     use_placement_in_sketch=False, save=True)
+```
+
+回执给每个视图的 `before` / `after` / `added` 与 `added_total`；一条没加时返回
+`model_dimensions_nothing_added` + 明确提示「types=0 会全部过滤」。
+
+真机：0/0 → 6/16，`added_total=22`；`types=0` 时如实报空。
+smoke `model dimensions reach every view`：**PASS 7.4s**。
+
+能力表 `duplicate_dimension_to_view`：`unsupported` → **verified**（14 verified / 34 项）。
+旧的断言 `0.8.30 … declared unsupported` 同步反转 —— 它现在守的是「不许再改回 unsupported」。
+
+### 教训
+
+**一个「过滤参数」写错，会被读成「能力不存在」，并写进文档、写进断言，锁死三个版本。**
+`Types=0` 与 `Types=65535` 的区别，和孔表的组件参数、件号的接口绑定是同一类错误：
+**参数层 vs 能力层**。判断前先把参数取值扫一遍，比读 API 文档更快。

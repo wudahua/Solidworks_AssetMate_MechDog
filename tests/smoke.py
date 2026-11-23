@@ -3187,6 +3187,38 @@ def main():
 
     r.check("a native weld symbol is type 8", _a_native_weld_symbol_is_type_8)
 
+    def _model_dimensions_reach_every_view():
+        """0.8.366 (report 2026-11-22 A6): cross-view copy was a mask, not an API limit.
+
+        Report: "document-level idempotent, the second view always gets 0". Measured
+        2026-11-23 on 接槽.SLDPRT: `types=65535` fills BOTH views (6 and 16) from an empty
+        sheet; `types=0` fills neither. The old conclusion came from the mask.
+        """
+        src = _require_fixture(os.path.join(ROOT, "测试用例", "接槽.SLDPRT"),
+                               "接槽.SLDPRT")
+        part = os.path.join(workdir, "smoke_moddims.SLDPRT")
+        drw = os.path.join(workdir, "smoke_moddims.SLDDRW")
+        shutil.copy2(src, part)
+        require(drawing.create_drawing(part, drw, views=["front", "top"], paper="A3"))
+        got = drawing.add_model_dimensions(drw, save=False)
+        assert got.get("ok") is True, "model dimensions were refused: %r" % (
+            got.get("error"), got.get("message"))
+        added = got.get("added") or {}
+        filled = [name for name, count in added.items() if isinstance(count, int) and count > 0]
+        assert len(filled) >= 2, "only %r views received dimensions: %r" % (len(filled), added)
+        assert got.get("added_total", 0) > 0
+        zero = drawing.add_model_dimensions(drw, types=0, save=False)
+        assert zero.get("error") == "model_dimensions_nothing_added", (
+            "types=0 no longer reports the empty result: %r" % (zero.get("error"),))
+        try:
+            drawing.close_document(drw)
+        except Exception:
+            pass
+        return "added %s across %d views; types=0 inserts nothing" % (
+            got.get("added"), len(filled))
+
+    r.check("model dimensions reach every view", _model_dimensions_reach_every_view)
+
     def _section_and_detail():
         """0.8.117: section and detail views had never run AFTER produce_drawing.
 

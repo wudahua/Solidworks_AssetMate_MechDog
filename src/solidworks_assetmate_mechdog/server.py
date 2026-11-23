@@ -204,7 +204,7 @@ _TOOL_PROFILES = {
         "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
-        "add_balloon", "add_native_weld_symbol",
+        "add_balloon", "add_native_weld_symbol", "add_model_dimensions",
         "list_sheet_sketch", "delete_sheet_sketch",
         "add_hole_table",
         "add_bom_table", "layout_dimensions", "set_dimension_position",
@@ -845,6 +845,34 @@ def delete_sheet_sketch(
     return _json(layout.delete_sheet_sketch(
         drawing_path, view_name=view_name, indices=indices,
         all_segments=all_segments, dry_run=dry_run, save=save))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def add_model_dimensions(
+    drawing_path: Annotated[str, Field(description="Existing .SLDDRW; saved in place when something was added.")],
+    option: Annotated[int, Field(description="swInsertAnnotationOption_e. 0 works when types is 65535.")] = 0,
+    types: Annotated[int, Field(description="Annotation-type mask. KEEP 65535 (all): with 0 or a narrow mask NOTHING is inserted anywhere, which reads as 'the second view cannot be filled'.")] = 65535,
+    all_views: Annotated[bool, Field(description="Insert into every view that can show the dimension.")] = True,
+    duplicate_dims: Annotated[bool, Field(description="Allow the same model dimension to appear in more than one view.")] = True,
+    hidden_feature_dims: Annotated[bool, Field(description="Include dimensions of hidden features.")] = False,
+    use_placement_in_sketch: Annotated[bool, Field(description="Reuse the placement recorded in the sketch.")] = False,
+    save: Annotated[bool, Field(description="Save when at least one dimension was added.")] = True,
+) -> str:
+    """Bring the MODEL's dimensions onto the drawing, in every view that shows them.
+
+    Report 2026-11-22 A6 said cross-view copying was impossible ("document-level idempotent,
+    second view always 0"). Measured 2026-11-23 on 接槽.SLDPRT: with `types=65535` both views
+    fill (6 and 16) from an empty sheet; with `types=0` or a narrow mask NOTHING is inserted
+    anywhere. The old conclusion came from the mask, not from the API.
+
+    Binding note: `InsertModelAnnotations4` is on `IDrawingDoc` (`InsertBOMBalloon2` is on
+    `IModelDoc`) — calling either on the wrong interface raises AttributeError.
+    """
+    return _json(drawing.add_model_dimensions(
+        drawing_path, option=option, types=types, all_views=all_views,
+        duplicate_dims=duplicate_dims, hidden_feature_dims=hidden_feature_dims,
+        use_placement_in_sketch=use_placement_in_sketch, save=save))
 
 
 @mcp.tool()

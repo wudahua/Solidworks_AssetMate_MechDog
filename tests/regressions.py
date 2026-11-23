@@ -1544,8 +1544,14 @@ def assert_duplicate_dimension_declared_unsupported():
     assert '"duplicate_dimension_to_view"' in caps, (
         "the limitation is not declared, so callers will burn a round discovering it")
     index = caps.index('"duplicate_dimension_to_view"')
-    segment = caps[index:index + 1600]
-    assert '"unsupported"' in segment, "it is not marked unsupported"
+    segment = caps[index:index + 2000]
+    # 0.8.366 (report 2026-11-22 A6) REVERSES this: the 2026-11-01 measurement used
+    # `Types=0`, which filters out every annotation type — so NOTHING was inserted into
+    # either view, and "the second view stayed at 0" looked like document-level idempotency.
+    # With `Types=65535` both views fill (6 / 16 on 接槽). What this assertion must hold now
+    # is the opposite: the entry may NOT go back to "unsupported" without new evidence.
+    assert '"unsupported"' not in segment, (
+        "cross-view dimensions are declared impossible again, but types=65535 works")
     assert "add_drawing_dimension" in segment, (
         "no workaround points at the tool that can actually annotate the second view")
     assert "InsertModelAnnotations3" in segment, (
@@ -4434,8 +4440,8 @@ def assert_docs_numbers_match_the_code():
                     registered += 1
     # 71 since v0.8.284 (`list_tool_profiles`). Bump this line IN THE SAME COMMIT that adds
     # a tool — the check exists so a new tool cannot slip in without anyone noticing.
-    assert registered == 79, (
-        "expected 79 registered tools, AST found %d — update this expectation "
+    assert registered == 80, (
+        "expected 80 registered tools, AST found %d — update this expectation "
         "deliberately when a tool is added" % registered)
 
     # Whitespace-tolerant because README wraps the sentence; `assert m` because not

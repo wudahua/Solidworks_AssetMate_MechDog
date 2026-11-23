@@ -522,20 +522,22 @@ CAPABILITIES = [
     },
     {
         "id": "duplicate_dimension_to_view",
-        "status": "unsupported",
-        "summary": "把同一条驱动尺寸补插到第二个视图（局部放大）",
-        "why": ("**API 层面做不到**（2026-11-01 实测）。`InsertModelAnnotations3` 是文档级幂等："
-                "同一模型尺寸一旦插入过，再次调用一律返回 None——`all_views=True/False`、"
-                "`duplicateDims=True/False`、激活目标视图，全部组合都试过，第二个视图始终 0 条。"
-                "具体实测：pass1 `all_views=True` 插 12 条（全在视图1）；"
-                "pass2 激活视图2 + `all_views=False` + `duplicateDims=True` → 返回 None；"
-                "pass3 `all_views=True` + `duplicateDims=True` → 也返回 None。"),
-        "workaround": ("在目标视图**重新标注**，不要想复制：先 `list_drawing_edges(view_name=...)` "
-                       "拿到该视图的边，再用 `add_drawing_dimension(view_name=..., edge_index=...)` "
-                       "建一条新尺寸。它引用的是同一个模型几何，数值必然一致，只是多一条标注"),
-        "evidence": ("2026-11-01 履带轮 P05：两视图实验，三组参数组合，第二视图尺寸数恒为 0；"
-                     "`InsertModelAnnotations3` 返回值恒为 None"),
-    },
+        "status": "verified",
+        "summary": ("模型尺寸带入每个能显示它的视图（`add_model_dimensions`，0.8.366）· "
+                    "此前判「做不到」是 `types` 掩码为 0"),
+        "why": ("2026-11-01 的结论是「`InsertModelAnnotations3` 文档级幂等，第二个视图恒 0」。"
+                "**2026-11-23 复测发现那是 `Types=0` 造成的**：0（以及任何窄掩码）会过滤掉所有类型，"
+                "于是**两个视图都没插**，看起来像「第二视图插不进去」。\n\n"
+                "实测 接槽.SLDPRT（front + top，初始 0/0）：\n"
+                "`InsertModelAnnotations4(0, 0, True, True, …)` → 0 / 0\n"
+                "`InsertModelAnnotations4(0, 65535, True, True, …)` → **6 / 16**。\n\n"
+                "两个视图数字不同是正常的：每个视图只收它能显示的尺寸 —— 这正是「跨视图补标」"
+                "应有的语义。另注：该方法在 **IDrawingDoc** 上（`InsertBOMBalloon2` 在 IModelDoc），"
+                "绑错接口会抛 AttributeError，看起来像「没有这个 API」。"),
+        "workaround": ("直接用 `add_model_dimensions`（默认 types=65535）；若要逐条补，仍可用 "
+                       "`add_drawing_dimension` 在目标视图重标"),
+        "evidence": ("2026-11-23 接槽.SLDPRT：0/0 → 6/16，`added_total=22`；`types=0` 时回执 "
+                     "`model_dimensions_nothing_added`；smoke `model dimensions reach every view` PASS 7.4s"),    },
     {
         "id": "hole_callout_batch",
         "status": "pilot",
