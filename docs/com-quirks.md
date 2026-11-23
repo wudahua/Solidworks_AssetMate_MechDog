@@ -6908,3 +6908,48 @@ verdict='marked'  views_marked=1  center_marks_added=3  effective=true
 **类型不对的实参不会报错，只会让结果恒为 0。** `_count_center_marks(view)` 传错对象，
 `_iter_views` 安静地返回空 —— 于是"没有变化"看起来像"API 无效"，一路骗过三轮报告。
 凡是"计数没变"的判据，先确认计数器本身在这次调用里读到过东西。
+
+---
+
+## 2026-11-23（v0.8.361）B5 基准符号的 x：不是没实现，是这一轴本来就不归坐标管
+
+### 实测
+
+`add_datum_feature(edge_index=0, x_m=0.30, y_m=0.20)`（door.SLDPRT）：
+
+```text
+position_requested_m = [0.30, 0.20]
+position_actual_m    = [0.1966, 0.20]      ← y 采纳，x 被换成附着边的锚点
+position_delta_m     = [0.1034, 0.0]
+position_honoured    = False
+```
+
+再对基准注记本身试 `SetPosition(0.30/0.35/0.20, ...)`，位置**一次都没动**；
+`annotation.Position = (...)` 直接报 “can not be set”。
+另外 `view.GetAnnotations` 里根本找不到基准注记（只列出 note 与 2 个模板中心标记），
+所以事后也拿不到它的句柄再调整。
+
+### 改法：把「哪一轴被忽略」说清楚
+
+回执补两枚字段，客户端不用自己解析 delta：
+
+| 字段 | 含义 |
+|---|---|
+| `x_ignored` | x 被附着边覆盖（本次 `true`） |
+| `y_ignored` | y 未被采纳（本次 `false`） |
+| `axes_rule` | 「基准符号的 x 由所附着的边决定，`SetPosition` 只对 y 生效；要换 x 就换 `edge_index`」 |
+
+这比原来的 `warning` 更适合程序判断 —— 报告里作者自己也是靠 `position_honoured` 兜底的。
+
+### B6 的部分证据（剖切线）
+
+顺带测了**成功**的剖视图：父视图草图段数 `0 → 0`，剖切线不留在可枚举的草图里。
+报告说的残留发生在**失败的剖视**（`section_line_remains: true`）——
+要复现得先造一个剖不开的几何，本轮没有可靠夹具，因此没往下改。已确认的是：
+`list_sheet_sketch` / `delete_sheet_sketch`（v0.8.355）这条路在父视图草图上是可用的，
+一旦拿到失败用例，清理有可能直接复用它们。
+
+### 教训
+
+**「坐标没生效」有时是「这个标注的定位规则里没有这个轴」。** 与其在 `SetPosition` 上反复尝试，
+不如把规则写进回执：调用方需要的是知道该改哪个参数（`edge_index`），不是再猜一次坐标。

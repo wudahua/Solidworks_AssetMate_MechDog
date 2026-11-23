@@ -13213,11 +13213,21 @@ def add_datum_feature(drawing_path, view_name=None, edge_index=None, label="A",
             warning = ("请求的落点 %r 未被采纳，实际落在 %r。基准符号由所选边推导锚点，"
                        "坐标只是建议值；换一条边重试，或按实际落点调整其它标注。"
                        % (position_requested, position_actual))
+        # 0.8.361 (report 2026-11-22 B5): say WHICH axis was ignored, not just "not
+        # honoured". Measured 2026-11-23 on door.SLDPRT: requesting (0.30, 0.20) landed at
+        # (0.1966, 0.20) — y taken, x replaced by the attachment edge's own anchor. A caller
+        # can branch on `x_ignored` instead of parsing a delta pair.
+        x_ignored = None if position_delta is None else bool(position_delta[0] > 0.001)
+        y_ignored = None if position_delta is None else bool(position_delta[1] > 0.001)
         return drawing_ok(drawing=doc.GetTitle, attached_to="%s[%d]" % (target.Name, edge_index),
                           position_requested_m=position_requested,
                           position_actual_m=position_actual,
                           position_delta_m=position_delta,
                           position_honoured=position_honoured,
+                          x_ignored=x_ignored,
+                          y_ignored=y_ignored,
+                          axes_rule=("基准符号的 x 由所附着的边决定，`SetPosition` 只对 y 生效"
+                                     "（0.8.361 实测）；要换 x 就换 edge_index"),
                           warning=warning,
                           readback=readback)
     except (FileNotFoundError, ValueError) as exc:
