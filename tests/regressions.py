@@ -12350,7 +12350,37 @@ def assert_every_wrapper_exposes_its_package_parameters():
     return "%d wrappers expose every package parameter" % checked
 
 
+def assert_hole_callouts_give_up_when_nothing_works():
+    """0.8.359 (report 2026-11-22 B1-④) — 8 nulls took 98 s, and the breaker needed 10.
+
+    The old loop stopped only after TEN consecutive nulls, so a view whose circles are not
+    native callout holes paid a full select+insert round trip per circle to find that out.
+    The rule is now asymmetric — `_fast_fail_reached(created, nulls, after)`:
+
+        nothing created + N straight nulls -> stop   (more attempts cannot change the answer)
+        something created                  -> keep going (10-null breaker still applies)
+
+    BEHAVIOURAL: calls the pure decision function; checks the receipt carries the flag.
+    """
+    from solidworks_assetmate_mechdog.tools import drawing as _d
+
+    f = _d._fast_fail_reached
+    assert f(0, 3) is True and f(0, 2) is False, "the default threshold is not 3"
+    assert f(1, 50) is False, (
+        "a partial run is being abandoned; the 10-null breaker must decide there")
+    assert f(0, 3, 1) is True and f(0, 1, 5) is False, "fast_fail_after is ignored"
+    assert f(0, 0) is False
+
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    assert "_fast_fail_reached(len(created), consecutive_nulls, fast_fail_after)" in body
+    assert "fast_fail=bool(fast_fail)" in body, "the receipt does not say it gave up early"
+    return "hole callouts stop after 3 straight nulls when nothing was created"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.359 hole callouts fast-fail", assert_hole_callouts_give_up_when_nothing_works),
     ("0.8.356 wrappers expose package params", assert_every_wrapper_exposes_its_package_parameters),
     ("0.8.352 no effect is not ok", assert_a_call_that_changed_nothing_is_not_ok),
     ("0.8.352 capability counts add up", assert_capability_summary_counts_what_it_lists),

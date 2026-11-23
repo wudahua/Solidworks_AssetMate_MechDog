@@ -6795,3 +6795,58 @@ smoke `add_sheet (blocked or created)`：**PASS 47.8s**，
 整段重写会把标签弄丢。
 
 这条正是报告里那台机器 `planned: []` 的一种可能成因（82 个注记、GB 模板，与我们同源）。
+
+---
+
+## 2026-11-23（v0.8.359）孔标注「空转 98 秒」：熔断器的计数器从来没累加过
+
+### 现场
+
+报告 B1-④：8 个孔全部失败、耗时 98 s。代码里明明有一个「连续 10 次 null 就停」的熔断器：
+
+```python
+consecutive_nulls = 0
+for key, members in grouped.items():
+    if consecutive_nulls >= 10:   # 从来没有为真过
+        ...
+```
+
+`consecutive_nulls` 只在**成功**分支被清零，失败分支全是 `continue` —— 一次都没加过。
+于是熔断器是死代码，每个不可能标注的孔都要付一次「选择 + AddHoleCallout2」的往返。
+
+真机复现（接槽，2 个孔都失败）：`fast_fail_after=1` 也不触发 → 证实计数器恒 0。
+
+### 改法
+
+1. 7 个失败分支前统一加 `consecutive_nulls += 1`（脚本按缩进插入，逐个 `continue` 前置一行）。
+2. 新判据 `_fast_fail_reached(created, nulls, after)`（PURE）—— 故意不对称：
+
+```text
+一条都没建成 + 连续 N 次 null   -> 停（再试也改变不了这个视图）
+已经建成过                     -> 继续（10 次熔断器仍然有效，部分成功值得跑完）
+```
+
+3. 参数与回执：`fast_fail_after`（默认 3，MCP 已暴露）、`fast_fail`、`fast_fail_after`；
+   停下时追加一条 `stopped early: N straight nulls ... ; M group(s) not attempted`。
+
+真机：
+
+```text
+jiecao ff=1  12.1s fast_fail=True   created=0 failed=2   ← 1 次失败即停
+jiecao ff=3  11.2s fast_fail=False  created=0 failed=2   ← 只有 2 个孔，不到阈值
+door   ff=3  22.3s fast_fail=False  created=1 failed=2   ← 已成功，不提前收工
+```
+
+（耗时大头是建图与视图/边枚举；熔断省的是**每个孔**的往返，孔多时才明显。）
+
+### 顺便确认：贯穿孔本来就能标对
+
+door 上成功的那条回执是 `text_lines = ['<MOD-DIAM>', '贯穿']` —— SolidWorks 自己写的「贯穿」。
+含深度符号（`↧` / `HOLE-DEPTH`）的回执仍被 `unsupported_through_bore` 拒绝并撤销，这条 0.8.291 的
+规则没变。也就是说：**报告里「Ø16 ↧ 68」那类错标已经被拒绝，而不是被猜对**；真正的修法
+（自动判定贯通）仍缺，且从图纸上判不出来。
+
+### 教训
+
+**「有熔断器」和「熔断器会响」是两件事。** 计数器只在成功分支清零、失败分支 `continue`，
+是这类死守卫的典型写法；一条「运行 N 次全失败，断言 `fast_fail` 为真」的用例本来就能发现它。

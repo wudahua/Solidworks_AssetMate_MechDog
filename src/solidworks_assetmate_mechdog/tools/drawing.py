@@ -3903,6 +3903,23 @@ def _read_native_callout_text(readers):
     }
 
 
+def _fast_fail_reached(created_count, consecutive_nulls, fast_fail_after=3):
+    """Stop trying callouts on this view? PURE.
+
+    0.8.359 (report 2026-11-22 B1-④): a valve body produced 8 nulls in 98 s, and the
+    breaker only fired at TEN consecutive nulls — so a part whose circles simply are not
+    holes paid ~12 s per hole to prove it, eight times. The rule is asymmetric on purpose:
+
+        nothing created yet + `fast_fail_after` straight nulls -> stop (this view has no
+            native-callout holes at all; more attempts cannot change that)
+        something created                                      -> keep going; the 10-null
+            breaker still applies, because a partial run may still cover the rest
+    """
+    if int(created_count or 0) > 0:
+        return False
+    return int(consecutive_nulls or 0) >= max(int(fast_fail_after or 1), 1)
+
+
 def _hole_callout_verification(text, model_match_ok=None):
     """May a freshly created hole callout stay on the sheet? PURE — no COM (0.8.291).
 
@@ -10697,7 +10714,7 @@ def _callout_diameter_matches(text, expected_mm, tol=0.08):
 @perf_hooks.timed("hole_callouts")
 def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                       max_callouts=40, budget_s=25.0, leader_x_m=None,
-                      leader_y_m=None, save=True):
+                      leader_y_m=None, fast_fail_after=3, save=True):
     """Native hole callouts on the holes VISIBLE in a view, one callout per hole.
 
     Verified on SW2026 (2026-10-28):
@@ -10738,6 +10755,7 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             return error("no_views", "no model views to annotate")
 
         created, failed = [], []
+        fast_fail = False
         started = time.time()
         budget_exceeded = False
         floor_m = max(float(min_diameter_mm) * 0.0005, 1e-6)
@@ -11027,6 +11045,15 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             for key, members in grouped.items():
                 if len(created) + len(failed) >= int(max_callouts):
                     break
+                if _fast_fail_reached(len(created), consecutive_nulls, fast_fail_after):
+                    fast_fail = True
+                    skipped = len(grouped) - (len(created) + len(failed))
+                    failed.append({"view": view.Name, "radius_mm": None,
+                                   "reason": "stopped early: %d straight nulls with nothing "
+                                             "created (this view's circles are not native "
+                                             "hole callouts); %d group(s) not attempted"
+                                             % (consecutive_nulls, max(skipped, 0))})
+                    break
                 if consecutive_nulls >= 10:
                     failed.append({"view": view.Name, "radius_mm": None,
                                    "reason": "stopped: 10 consecutive callouts returned null "
@@ -11049,6 +11076,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     failed.append({"view": view.Name,
                                    "diameter_mm": round(chosen["radius_m"] * 2000, 2),
                                    "reason": "select: %s" % str(exc)[:50], "z": chosen["z"]})
+                    # 0.8.359: this counter was never incremented, so the 10-null breaker never fired
+                    consecutive_nulls += 1
                     continue
 
                 slot = len(created) + len(failed)
@@ -11058,12 +11087,16 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     failed.append({"view": view.Name,
                                    "diameter_mm": round(chosen["radius_m"] * 2000, 2),
                                    "reason": "callout: %s" % str(exc)[:50], "z": chosen["z"]})
+                    # 0.8.359: this counter was never incremented, so the 10-null breaker never fired
+                    consecutive_nulls += 1
                     continue
                 if display is None:
                     failed.append({"view": view.Name,
                                    "diameter_mm": round(chosen["radius_m"] * 2000, 2),
                                    "reason": "returned None (edge not annotatable from this view)",
                                    "z": chosen["z"], "hidden_side": chosen["z"] != 0.0})
+                    # 0.8.359: this counter was never incremented, so the 10-null breaker never fired
+                    consecutive_nulls += 1
                     continue
                 dim = win.Dispatch(display)
                 try:
@@ -11074,6 +11107,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     failed.append({"view": view.Name,
                                    "diameter_mm": round(chosen["radius_m"] * 2000, 2),
                                    "reason": "not a hole callout", "z": chosen["z"]})
+                    # 0.8.359: this counter was never incremented, so the 10-null breaker never fired
+                    consecutive_nulls += 1
                     continue
                 text = None
                 for index in (0, 1, 2):
@@ -11119,6 +11154,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                                    "reason": "not a hole callout (text=%r, likely an outer arc)"
                                              % (text,),
                                    "z": chosen["z"], "radius_only": True})
+                    # 0.8.359: this counter was never incremented, so the 10-null breaker never fired
+                    consecutive_nulls += 1
                     continue
                 if not has_diameter and not text_unreadable:
                     _discard(dim)
@@ -11127,6 +11164,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                                    "reason": "callout text carries no diameter (text=%r)"
                                              % (text,),
                                    "z": chosen["z"]})
+                    # 0.8.359: this counter was never incremented, so the 10-null breaker never fired
+                    consecutive_nulls += 1
                     continue
                 # P1-1: the printed number must agree with the measured edge.
                 expected_d = round(chosen["radius_m"] * 2000, 2)
@@ -11137,6 +11176,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                                    "reason": ("text_value_mismatch: callout says %r but the "
                                               "edge measures Ø%.2f" % (str(text)[:40], expected_d)),
                                    "z": chosen["z"]})
+                    # 0.8.359: this counter was never incremented, so the 10-null breaker never fired
+                    consecutive_nulls += 1
                     continue
                 callout_point = [anchor_x, anchor_y - slot * 0.012]
                 # `GetAnnotation` must be invoked as a METHOD under late binding (see
@@ -11436,6 +11477,9 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # candidates were all rejected never entered the insert loop, so it reported
             # budget_exceeded=False while taking 55 s of a 45 s budget.
             budget_exceeded=bool(budget_exceeded or (time.time() - started) > float(budget_s)),
+            # 0.8.359 (report 2026-11-22 B1-④): "8 nulls in 98 s" is why this exists.
+            fast_fail=bool(fast_fail),
+            fast_fail_after=int(fast_fail_after),
             elapsed_s=round(time.time() - started, 2),
             saved=bool(save),
             note=("孔标注用 IsHoleCallout 判定；同一孔的上下两条圆边只标一条（优先完整圆、"
