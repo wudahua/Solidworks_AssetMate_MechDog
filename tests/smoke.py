@@ -793,7 +793,21 @@ def main():
         if made.get("ok"):
             assert made.get("sheets_after", 0) > made.get("sheets_before", 0), (
                 "add_sheet reported success without adding a sheet: %r" % (made,))
-            return "created: %s" % (made.get("sheets"),)
+            # 0.8.357 (report 2026-11-22 B3): the receipt now MEASURES the format instead
+            # of returning null with a warning. Assert the measurement exists, not its
+            # value — the answer depends on which formats the machine has installed.
+            assert isinstance(made.get("template_applied"), bool), (
+                "template_applied is not a measured boolean: %r" % (made.get("template_applied"),))
+            assert made.get("template_loaded_basename"), (
+                "the loaded format is not named: %r" % (made.get("template_readback"),))
+            assert isinstance(made.get("sheet_note_count"), int), made.get("sheet_note_count")
+            assert isinstance(made.get("frame_and_titleblock_verified"), bool), (
+                "the frame verdict is not measured: %r"
+                % (made.get("frame_and_titleblock_verified"),))
+            return ("created: %s | requested %s -> loaded %s | notes %s | frame %s"
+                    % (made.get("sheets"), made.get("template_requested_basename"),
+                       made.get("template_loaded_basename"), made.get("sheet_note_count"),
+                       made.get("frame_and_titleblock_verified")))
         assert made.get("error") == "sheet_creation_blocked", (
             "unexpected failure from add_sheet: %r" % (made,))
         # The workaround may live in `message` or `reason` depending on which error helper

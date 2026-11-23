@@ -191,8 +191,17 @@ CAPABILITIES = [
         "evidence": ("SW2024 SP4 实测：2026-11-07 建页成功（`('图纸1',)` → `['图纸1','图纸2']`）；"
                      "2026-11-12 两页 A2 复核：第 1 页图框+标题栏齐全，第 2 页只有分区字母。"
                      "`NewSheet4` 的 `TemplateName` 传 `.drwdot` / `.slddrt`、以及 "
-                     "`SetTemplateName + ReloadTemplate(True)` 三种方式均无效；"
-                     "`GetTemplateName()` 回显请求值而非实际值，不能自证。"),
+                     "`SetTemplateName + ReloadTemplate(True)` 三种方式均无效。"
+                     "**2026-11-23 复测更正**：`GetTemplateName()` 并不回显请求值 —— "
+                     "`doc.GetCurrentSheet.GetTemplateName` 返回页面真实持有的格式"
+                     "（第 1 页 `v:////updated cs\\a3 - gb.slddrt`）。所以现在能如实判断："
+                     "新页请求 `a2 - gb.slddrt`，实际加载 `a2 - landscape.slddrt` → "
+                     "`template_applied=False`；但新页**有**图框与标题栏（76 个注记、"
+                     "594×420 mm），`frame_and_titleblock_verified=True`。"
+                     "结论修正为：「图框会来，但不是你要的 GB 格式」。"
+                     "另测：`SetTemplateName(path)` 返回 None（无作用），"
+                     "`ReloadTemplate(True)` 返回 0 且**把图纸格式注记复制一份**"
+                     "（76 → 148）—— 绝不要拿它当兜底。"),
     },
     {
         "id": "sheet_sketch_space",

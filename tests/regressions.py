@@ -10600,14 +10600,22 @@ def assert_add_sheet_does_not_claim_a_frame_it_lacks():
     """
     src = _read("tools/layout.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src), "add_sheet")) or ""
-    assert "template_applied=None" in body, (
-        "`add_sheet` claims the template was applied again")
-    assert "sheet_format_applied=None" in body
-    assert "图框与标题栏未验证" in body, (
-        "the receipt does not warn that the frame may be missing")
+    # 0.8.357 (report 2026-11-22 B3): `template_applied=None` was right for its time — the
+    # 2026-11-12 note said `GetTemplateName()` echoes the request. Measured 2026-11-23 that
+    # is FALSE: `doc.GetCurrentSheet.GetTemplateName` returns what the page holds
+    # (`v://updated cs\a3 - gb.slddrt` for page 1). So the receipt compares basenames and
+    # counts the notes the format brought — the check the old comment called impossible.
+    assert "template_applied=None" not in body, (
+        "add_sheet stopped measuring the template it actually got")
+    for token in ("template_loaded_basename", "template_applied=template_applied",
+                  "sheet_note_count=_note_count",
+                  "frame_and_titleblock_verified=frame_verified"):
+        assert token in body, "add_sheet no longer reports %s" % token
+    assert "GetTemplateName" in body, (
+        "the format readback is gone; template_applied would be unfounded again")
     assert "_find_sheet_format" in body, (
         "the .slddrt lookup is gone; a future attempt will pass a .drwdot again")
-    return "add_sheet reports null + a hard warning instead of claiming a frame"
+    return "add_sheet measures the format it loaded and the frame that arrived"
 
 
 def assert_angles_are_not_pushed_outside():

@@ -6730,3 +6730,59 @@ dry-run 不变 → 删 index 0 → **2 → 1**，PASS 20.3s。
 |---|---|
 | `check_all.py` | **341/341**，4 套件 |
 | 包装参数齐备 | 68 个包装，缺口 0 |
+
+---
+
+## 2026-11-23（v0.8.357）多图纸页：图框其实来了，只是不是你要的那份
+
+### 旧结论是错的
+
+0.8.315 起的记录写：`NewSheet4` 不套图纸格式，新页「只有分区字母」，
+且 `GetTemplateName()` 回显请求值、不能自证 —— 于是 `template_applied` 一
+直是 `null`。
+
+2026-11-23 实测（本机 SW 32.4，`gb_a3.drwdot` 建图后加页）：
+
+| 观察 | 值 |
+|---|---|
+| 第 1 页格式 | `v:/updated cs\a3 - gb.slddrt`（82 个注记） |
+| 新页请求 | `a2 - gb.slddrt` |
+| 新页实际加载 | `a2 - landscape.slddrt`（**76 个注记**，594×420 mm） |
+| `doc.GetCurrentSheet.GetTemplateName` | 返回**实际**值，不是请求值 |
+
+所以：**图框和标题栏是有的**（76 个注记就是图框+标题栏），只是 SolidWorks 换成了它的
+默认 landscape 格式。三个参数形式都试过（全路径 / 仅文件名 / 大小写修正），一律被忽略。
+
+### 兜底路径更危险
+
+| 调用 | 结果 |
+|---|---|
+| `ISheet.SetTemplateName(path)` | 返回 `None`，格式不变 |
+| `ISheet.ReloadTemplate(True)` | 返回 `0`（失败），格式不变，**注记从 76 变成 148**（把图纸格式注记又复制了一份） |
+
+所以代码里加了一条硬注释：**不要拿 ReloadTemplate 当兜底** —— 格式错了是交付问题，
+标题栏翻倍是图纸损坏。
+
+### 回执从「null + 警告」改成「实测」
+
+```text
+template_requested_basename = "a4 - gb.slddrt"
+template_loaded_basename    = "a4 - landscape.slddrt"
+template_applied            = False          # 名字对不上
+sheet_note_count            = 56
+frame_and_titleblock_verified = True         # 图框确实来了
+```
+
+判定：`template_applied` = 读回的格式文件存在 且 文件名与请求一致；
+`frame_and_titleblock_verified` = 新页注记数 ≥ 10（实测 A3 82 / A2 76 / A4 56，空白页 0）。
+两个字段分开，是因为「格式对不对」和「图框有没有」是两个问题 —— 现在这台机器上，
+答案恰好是「图框有、格式错」。
+
+smoke `add_sheet (blocked or created)`：**PASS 47.8s**，
+`requested a4 - gb.slddrt -> loaded a4 - landscape.slddrt | notes 56 | frame True`。
+
+### 教训
+
+**「无法验证」经常只是「查错了对象」。** `GetTemplateName` 挂在 `ISheet` 上（`doc.GetCurrentSheet`），
+我们却在图纸视图（`doc.GetFirstView`）上调用，于是得到异常并写下「回显请求值」这个错误结论，
+一挂就是三个月。先问对对象，再判「做不到」。

@@ -15,7 +15,8 @@ from .. import perf_hooks
 
 from ..sw_session import byref_dispatch_null, error, get_sw
 from .bom_native import default_template, populate_top_level_bom
-from .drawing import _open_drawing, _iter_views, drawing_ok, _save_drawing  # noqa: F401
+from .drawing import (_open_drawing, _iter_views, drawing_ok, _save_drawing,  # noqa: F401
+                      _sheet_notes)
 
 
 def _prop_put(obj, name, value):
@@ -1700,6 +1701,10 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
         _tpl_flag = 1 if _tpl_name else 0
 
         try:
+            _prev_active = str(doc.GetCurrentSheet.GetName or "")
+        except Exception:
+            _prev_active = None
+        try:
             # ARGUMENT ORDER, measured 2026-11-07: the SECOND argument is the template
             # flag and the THIRD is the paper size — the reverse of what the names suggest
             # when read as `NewSheet4(Name, PaperSize, TemplateIn, ...)`. Passing the size
@@ -1752,6 +1757,38 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
         except Exception:
             _format_applied = False
 
+        # ── 0.8.357 (report 2026-11-22 B3): the premise was wrong, so the receipt can answer ──
+        # The old note said "`GetTemplateName()` echoes the request". Measured 2026-11-23:
+        # `doc.GetCurrentSheet.GetTemplateName` returns what the page ACTUALLY holds
+        # (`v://updated cs\a3 - gb.slddrt` for page 1). So `template_applied` can be a real
+        # comparison, and "did the frame arrive" can be answered by counting the notes the
+        # format brings (page 1: 82 notes; a fresh A2 page: 76).
+        _requested_base = _osx.path.basename(_tpl_name).lower() if _tpl_name else ""
+        _loaded_base = (_osx.path.basename(_template_readback).lower()
+                        if _template_readback else "")
+        if not _template_readback:
+            template_applied = None
+        else:
+            template_applied = bool(_format_applied) and (
+                not _requested_base or _loaded_base == _requested_base)
+        # NEVER call `ISheet.SetTemplateName` + `ReloadTemplate(True)` as a fallback:
+        # measured 2026-11-23, it returns 0 (failure), leaves the format unchanged, and
+        # **duplicates the sheet-format notes** (76 -> 148). A wrong format is a delivery
+        # problem; a doubled title block is a corrupted sheet.
+        _note_count = None
+        try:
+            doc.ActivateSheet(target_name)
+            _note_count = len(_sheet_notes(doc.GetFirstView))
+        except Exception:
+            _note_count = None
+        finally:
+            if _prev_active:
+                try:
+                    doc.ActivateSheet(_prev_active)
+                except Exception:
+                    pass
+        frame_verified = None if _note_count is None else bool(_note_count >= 10)
+
         expected = {"A0": [1.189, 0.841], "A1": [0.841, 0.594], "A2": [0.594, 0.42],
                     "A3": [0.420, 0.297], "A4": [0.297, 0.210]}
         want = expected.get(str(paper or "A3").upper())
@@ -1775,19 +1812,27 @@ def add_sheet(drawing_path, name=None, paper=None, scale=1.0, save=True,
             template=_tpl_name or None,
             template_kind=_tpl_kind,
             template_readback=_template_readback,
-            sheet_format_applied=None,
-            template_applied=None,
-            frame_and_titleblock_verified=None,
+            template_requested_basename=_requested_base or None,
+            template_loaded_basename=_loaded_base or None,
+            sheet_format_applied=_format_applied,
+            template_applied=template_applied,
+            # A GB frame brings dozens of notes (measured: 82 on A3, 76 on A2); a blank
+            # page brings none. This is the check the old receipt said was impossible.
+            sheet_note_count=_note_count,
+            frame_and_titleblock_verified=frame_verified,
             sheet_size_m_actual=size_actual,
             sheet_size_matches_request=size_ok,
             note=("新图纸页已建立：%s（%d 页，%s）"
                   % (target_name, len(after),
                      "%.1f×%.1f mm" % (size_actual[0] * 1000, size_actual[1] * 1000)
                      if size_actual else "尺寸未读到"))
-            + " **图框与标题栏未验证，且本 build 上大概率没有**：`NewSheet4` 不会套上图纸"
-              "格式（`.drwdot` / `.slddrt` / `SetTemplateName+ReloadTemplate` 三种方式实测"
-              "均无效，`GetTemplateName` 回显的是请求值而非实际值）。这页可以写视图和尺寸，"
-              "但**不能作为正式交付页** —— 交付前必须导出 PDF 目视，或继续用"
+            + (" **图框已套上**（`%s`，本页 %s 个注记）。"
+               % (_loaded_base, _note_count) if frame_verified else
+               (" **图框没套上/被替换**：请求 `%s`，实际 `%s`（%s 个注记）。"
+                % (_requested_base or "?", _loaded_base or "无", _note_count)
+                if _template_readback else
+                " **图框未验证**：读不到本页的图纸格式。"))
+            + " 这页可以写视图和尺寸；正式交付前仍建议导出 PDF 目视，或继续用"
               "「多个 .SLDDRW + 外部合并」。")
     except (FileNotFoundError, ValueError) as exc:
         return error("bad_input", str(exc))
