@@ -4617,7 +4617,11 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         if scale is not None:
             import re as _re
 
-            scale_pattern = _re.compile(r"^\s*\d+(?:\.\d+)?\s*:\s*\d+(?:\.\d+)?\s*$")
+            # 0.8.358 (report 2026-11-22 B2): a GB template may print the ratio with a
+            # FULLWIDTH colon — `1：1` — and the ASCII-only pattern then reports "no scale
+            # value in the title block" while the cell plainly says it. Accept both.
+            scale_pattern = _re.compile(
+                r"^\s*\d+(?:\.\d+)?\s*[:\uff1a]\s*\d+(?:\.\d+)?\s*$")
             try:
                 sheet_box = list(_sheet_obj.GetOutline or [])
                 sheet_h = (sheet_box[3] - sheet_box[1]) if len(sheet_box) >= 4 else 0.297
@@ -4631,7 +4635,11 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                 # `scale: 1:1` sat at [0.3591, 0.0304] — inside the band, matching the
                 # pattern — and the receipt still said "no scale value in the bottom band".
                 text = _note_text(note)
-                if not isinstance(text, str) or not scale_pattern.match(text):
+                if not isinstance(text, str):
+                    continue
+                # Normalise the fullwidth colon before matching, and keep the ORIGINAL text
+                # for the receipt so the caller sees what the sheet actually holds.
+                if not scale_pattern.match(text.replace("\uff1a", ":")):
                     continue
                 try:
                     position = [round(v, 4) for v in ann_position(note)]

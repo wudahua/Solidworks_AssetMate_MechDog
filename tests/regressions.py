@@ -11446,7 +11446,32 @@ def assert_a_detail_view_says_what_it_actually_enlarged():
     return "a detail view reports its model-space window and measures against the real sheet"
 
 
+def assert_a_fullwidth_scale_ratio_is_recognised():
+    """0.8.358 (report 2026-11-22 B2) — `1：1` is a scale you cannot match with `:`.
+
+    The scale cell is matched by pattern (it carries a bare ratio, no label). Chinese
+    templates may print the separator as a fullwidth colon, and an ASCII-only pattern then
+    reports "no scale value in the title block" while the cell plainly says `1：1` — the
+    same shape as the reporter's `planned: []` on an 82-note GB template.
+
+    `比例 1:1` must still NOT match: rewriting that note would delete its label.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "set_title_block")) or ""
+    assert "uff1a" in body, "the scale pattern is ASCII-colon only again"
+    assert r'text.replace("\uff1a", ":")' in body, (
+        "the note text is not normalised before matching")
+    import re as _re
+    pat = _re.compile(r"^\s*\d+(?:\.\d+)?\s*[:\uff1a]\s*\d+(?:\.\d+)?\s*$")
+    assert pat.match("1：1".replace("\uff1a", ":"))
+    assert not pat.match("比例 1:1"), (
+        "a labelled note would be overwritten with a bare ratio")
+    return "scale ratio matches ASCII and fullwidth colons, not labelled notes"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.358 fullwidth scale ratio", assert_a_fullwidth_scale_ratio_is_recognised),
     ("0.8.353 detail view reports model space", assert_a_detail_view_says_what_it_actually_enlarged),
     ("0.8.349 tag_compare asks git first", assert_tag_compare_asks_git_before_the_packaged_copy),
     ("0.8.346 sample manifest current", assert_the_manifest_sample_is_the_current_version),
