@@ -12406,7 +12406,39 @@ def assert_hole_callouts_give_up_when_nothing_works():
     return "hole callouts stop after 3 straight nulls when nothing was created"
 
 
+def assert_nothing_to_mark_is_not_a_delivery_defect():
+    """0.8.363 — the full smoke run found this, not a report.
+
+    v0.8.360 made `add_center_marks` answer `center_marks_not_created` (a PROVED no-op) on a
+    part with no holes. Honest — and it turned five `produce_drawing` cases red, because a
+    failed step is a delivery blocker: `delivery_incomplete`, "步骤失败：center_marks" on
+    every plain part.
+
+    A drawing with no holes needs no centre marks, so those codes are WARNINGS. What must
+    NOT change: a different error on the same step still fails the run.
+
+    BEHAVIOURAL: calls the pure step judge and the critical gate.
+    """
+    from solidworks_assetmate_mechdog.tools import pipeline as _p
+
+    benign = {"ok": False, "effective": False, "error": "center_marks_not_created"}
+    ok, status, _nb = _p._step_state(benign)
+    assert ok is False and status == "warning", (ok, status)
+    assert _p._failed_critical_steps(
+        [{"step": "center_marks", "ok": False, "error": "center_marks_not_created"}],
+        ("center_marks",)) == [], "a no-hole part still blocks delivery"
+
+    other = {"ok": False, "effective": False, "error": "center_marks_broken"}
+    _ok, other_status, _ = _p._step_state(other)
+    assert other_status == "failed", "an unrelated failure was excused too"
+    assert _p._failed_critical_steps(
+        [{"step": "center_marks", "ok": False, "error": "center_marks_broken"}],
+        ("center_marks",)) == ["center_marks"]
+    return "no holes -> warning; a real centre-mark failure still blocks"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.363 nothing-to-mark is a warning", assert_nothing_to_mark_is_not_a_delivery_defect),
     ("0.8.359 hole callouts fast-fail", assert_hole_callouts_give_up_when_nothing_works),
     ("0.8.356 wrappers expose package params", assert_every_wrapper_exposes_its_package_parameters),
     ("0.8.352 no effect is not ok", assert_a_call_that_changed_nothing_is_not_ok),

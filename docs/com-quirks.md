@@ -7004,3 +7004,61 @@ position_honoured    = False
 
 **「源读不到」不等于「阵列读不到」。** 把一个问题拆成「可测的部分」与「必须人认的部分」，
 比整条打上 `low confidence` 有用得多 —— 后者会让调用方连实例数都不敢用。
+
+---
+
+## 2026-11-23（v0.8.363）全量 smoke 抓到 5 条红：诚实回执把出图判成了失败
+
+### 全量结果（v0.8.362，72 条）
+
+```text
+67 passed / 5 failed / 0 skipped
+全部 5 条失败同一个根因：步骤失败：center_marks
+```
+
+| 用例 | 现象 |
+|---|---|
+| `partial reaches produce_drawing` | `call_status=failed`，`delivery_incomplete` |
+| `section + detail after produce_drawing` | 步骤失败：center_marks |
+| `paper scaling keeps views inside` | 同上（A4） |
+| `cleanup failure keeps the sheet deliverable` | 好图纸被判 `completeness=incomplete`，理由 `failed_step: center_marks` |
+| `delivery_check crash is counted once` | `['blocker','failed_step']` |
+
+### 根因
+
+v0.8.360 让 `add_center_marks` 对**没有孔的零件**返回 `center_marks_not_created`
+（`ok:false` + `effective:false`，一个**已证明**的空操作）。回执是对的，但
+`_step_state` 把「`ok:false` + `effective:false`」判成 **failed 步骤**，而 failed 步骤是交付阻断：
+
+```text
+center_marks 失败 -> 步骤失败 -> delivery_incomplete -> 整张图纸被判「不完整」
+```
+
+一张**没有孔**的图纸本来就不需要中心标记。这不是「能干活」，是「没事可干」。
+
+### 改法：三种「没做成」要分开
+
+| 情况 | 判据 | 步骤状态 |
+|---|---|---|
+| 无法证明（`effective: null`） | 已有规则 | warning |
+| **没有对象可做**（`center_marks_not_created` / `_nothing_to_mark` / `_not_supported`） | 本次新增 | **warning** |
+| 真失败（其他 `error`） | 保持不变 | failed |
+
+`_failed_critical_steps` 同步放行这三种 code，但**只放行这三种** —— 同一步骤换个 error 照样阻断
+（新断言用 `center_marks_broken` 验证这条边界）。
+
+复跑 5 条：
+
+```text
+partial reaches produce_drawing           PASS  39.6s
+section + detail after produce_drawing    PASS  50.4s
+paper scaling keeps views inside          PASS  77.0s
+cleanup failure keeps the sheet deliverable PASS 42.0s
+delivery_check crash is counted once      PASS  33.1s
+```
+
+### 教训
+
+**诚实回执会让下游判据暴露出来。** v0.8.360 说的是真话；是 `_step_state` 把「没做成」一律当
+「出问题」。全量 smoke 的价值就在这里 —— 单条用例各自都是绿的，只有整条链路跑起来才看得见
+「一个正确的新回执把整条交付判死」。

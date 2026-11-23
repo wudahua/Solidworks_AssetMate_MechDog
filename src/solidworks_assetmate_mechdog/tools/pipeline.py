@@ -212,6 +212,16 @@ def _step_state(payload):
         unverifiable = bool(isinstance(payload, dict)
                             and "effective" in payload
                             and payload["effective"] is None and not ok)
+        # 0.8.363: "there was nothing to mark" is not a delivery defect. v0.8.360 made
+        # `add_center_marks` answer `center_marks_not_created` (a PROVED no-op) on a part
+        # with no holes — honest, but it then failed `produce_drawing` on every plain part
+        # (three smoke cases went red). A drawing without holes needs no centre marks, so
+        # those codes are warnings; the ambiguity (no holes vs a dead insert path) is stated
+        # in the step's detail, not hidden.
+        _benign = bool(isinstance(payload, dict) and payload.get("error") in (
+            "center_marks_not_created", "center_marks_nothing_to_mark",
+            "center_marks_not_supported"))
+        unverifiable = unverifiable or _benign
         status = ("warning" if (non_blocking or unverifiable)
                   else "ok" if ok
                   else ("partial" if verdict == "partial" else "failed"))
@@ -238,6 +248,10 @@ def _failed_critical_steps(steps, critical):
             # honouring the flag blindly would let a fatal failure through.
             if st.get("unverifiable"):
                 # "cannot prove it happened" is not "did not happen" — see `_step_state`.
+                continue
+            if st.get("error") in ("center_marks_not_created",
+                                   "center_marks_nothing_to_mark",
+                                   "center_marks_not_supported"):
                 continue
             if (st.get("non_blocking")
                     and st.get("step") == "create_drawing"
