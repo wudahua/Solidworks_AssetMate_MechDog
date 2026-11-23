@@ -331,8 +331,15 @@ CAPABILITIES = [
                 "所以「566 s/件」不是某一步写错了，而是**十几个都要几秒到十几秒的步骤叠加**，"
                 "外加冷会话里视图异步加载。想显著变快只能逐项抠（每次都要 A/B 复测，"
                 "本轮 A/B 就否掉了一个看起来理所当然的优化：复用台账 25.6 s vs 26.2 s，"
-                "因为冷建的 9.8 s 主要花在打开模型上）。"),
+                "因为冷建的 9.8 s 主要花在打开模型上）。\n\n"
+                "**隔离测试推翻了「孔标注很慢」这个猜测**：单独调用 `add_hole_callouts` 同一张图连续三次，"
+                "分别是 **2.9 / 2.1 / 2.3 s**；再往下拆到单次调用，`ClearSelection2` 0.01 s、"
+                "`Select2` 0.01–0.03 s、`AddHoleCallout2` **0.00–0.05 s**、26 条边的"
+                "圆分析（Dispatch+GetCurve+IsCircle+CircleParams）合计 **1.21 s**。"
+                "也就是说流水线里那 13–17 s 里的大头**不在我们的循环里**，是 SolidWorks 侧的"
+                "视图/重生成延迟被记到了「第一个碰它的步骤」头上。"),
         "workaround": ("批量时串行复用同一个 SolidWorks 实例（不要每件重启）；"
+                       "每件出图前先把图纸开一次并激活各视图（冷→热，实测 13–17 s 会回落到 2–3 s 量级）；"
                        "`delivery_check(include_faces=True)` 单独计时（实测 P05 上 209 s vs 19.7 s）；"
                        "先用 `perf_hooks.start()/stop()` 拿 `timings_ms` 再决定改哪一项"),
         "evidence": ("2026-11-23 接槽.SLDPRT：wall 86.0 s，`timings_ms` 12 项见上；"
