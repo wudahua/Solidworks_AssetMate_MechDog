@@ -7348,3 +7348,67 @@ MCP 描述里直接写「实测无收益，只在你手上已有台账时才传�
 
 **性能预算必须贴着真正花钱的地方检查。** 把计时器放在「我认为会慢」的循环里，
 和把温度计放在冰箱门上是一个道理：读数很好看，房间该多热还多热。
+
+---
+
+## 2026-11-23（v0.8.370）判定环节把台账与对账算了两遍：41.6 s → 28.9 s
+
+### 报告 B13 提的「一次遍历供三个消费者」，实测确实存在
+
+`produce_drawing` 的步骤：
+
+```text
+1  ledger      8  audit      10  reconcile      12  delivery_check
+```
+
+而 `_delivery_check_impl` **内部又跑了一遍** `build_feature_ledger` / `drawing_audit` /
+`reconcile_ledger` / `list_drawing_annotations` —— 同一张图、同一个模型，做了两次。
+
+### 隔离 A/B（接槽，同一张图）
+
+| 调用 | 耗时 |
+|---|---|
+| `delivery_check()` | **41.8 s** |
+| `delivery_check(ledger_data=…, reconcile_data=…, audit_data=…)` | **29.6 s** |
+| `delivery_check()`（第二次） | 41.4 s |
+| 带三份回执（第二次） | 28.2 s |
+
+**每次省 ~13 s（−30%）**，`delivery_check` 从 41.6 s 降到 28.9 s。
+
+### 第一个 A/B 为什么「毫无收益」
+
+第一版守卫写的是 `receipt["drawing"] == basename(drawing_path)`，
+而 `IModelDoc2.GetTitle` 返回的是 **`jiecao - 图纸1`**（标题 + 当前图纸页名），永远不相等。
+守卫静默失败 → 什么都没复用 → A/B 显示 23.4 s 不变。
+
+改成按 `" - "` 切出文档名再比（也接受带扩展名的完整文件名），并在回执断言里把这个坑钉住：
+
+```python
+assert _reuse_receipt({"ok": True, "drawing": "jiecao - 图纸1"}, "/tmp/jiecao.SLDDRW")
+```
+
+### 现在的结构
+
+| 参数 | 含义 |
+|---|---|
+| `ledger_data` | 步骤 1 的台账 |
+| `reconcile_data` | 步骤 10 的对账回执 |
+| `audit_data` | 步骤 8 的审核回执 |
+| `annotations_data` | 需要时传入 |
+
+四个都有守卫：`ok` 为真、且 `drawing` 字段指向同一文件才复用，否则自己算。
+`produce_drawing` 现在把前三份直接传进去。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 隔离 A/B | 41.8 / 41.4 s → 29.6 / 28.2 s |
+| 流水线 | `delivery_check` 23.4 s → 11.6 s（panel box / 接槽） |
+| `check_all` | 349/349 |
+
+### 教训
+
+**「复用」的守卫如果用错字段，会静默变成「没复用」，而 A/B 会显示「优化无效」——
+于是你会得出「这个方向没用」的错误结论。** 第一次 A/B 就是这么骗我的；
+先验证守卫本身（`_reuse_receipt` 返回什么），再信 A/B 的数字。

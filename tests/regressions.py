@@ -12515,7 +12515,41 @@ def assert_weld_symbols_are_not_labelled_as_datum_tags():
     return "2 = datum tag, 8 = weld symbol"
 
 
+def assert_the_verdict_reuses_receipts_it_is_handed():
+    """0.8.370 (report 2026-11-22 B13) — the verdict paid for ledger + reconcile twice.
+
+    `produce_drawing` builds a ledger (step 1), audits (step 8) and reconciles (step 10);
+    `delivery_check` then ran all three again internally. Measured 2026-11-23 on 接槽:
+
+        delivery_check()                          41.8 / 41.4 s
+        delivery_check(ledger_data=..., reconcile_data=..., audit_data=...)   29.6 / 28.2 s
+
+    The first attempt at this reuse guarded on `drawing == basename`, which never matched:
+    `IModelDoc2.GetTitle` returns ``jiecao - 图纸1`` (title + active sheet), so the guard
+    failed silently and the A/B showed no gain at all. That is why the guard now splits on
+    " - " and why this assertion exists.
+
+    BEHAVIOURAL: exercises the guard with the real title shape.
+    """
+    from solidworks_assetmate_mechdog.tools import drawing as _d
+
+    good = {"ok": True, "drawing": "jiecao - 图纸1"}
+    assert _d._reuse_receipt(good, "/tmp/jiecao.SLDDRW") is True, (
+        "a receipt that names the same drawing is not reused (GetTitle carries the sheet name)")
+    assert _d._reuse_receipt({"ok": True, "drawing": "other - 图纸1"},
+                             "/tmp/jiecao.SLDDRW") is False, "a foreign receipt was trusted"
+    assert _d._reuse_receipt({"ok": False, "drawing": "jiecao"}, "/tmp/jiecao.SLDDRW") is False
+    assert _d._reuse_receipt(None, "/tmp/jiecao.SLDDRW") is False
+
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "_delivery_check_impl")) or ""
+    for token in ("reconcile_data", "audit_data", "annotations_data", "_reuse_receipt"):
+        assert token in body, "delivery_check no longer reuses %s" % token
+    return "the verdict reuses ledger/reconcile/audit/annotations when they describe the same file"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.370 verdict reuses receipts", assert_the_verdict_reuses_receipts_it_is_handed),
     ("0.8.365 weld symbols are type 8", assert_weld_symbols_are_not_labelled_as_datum_tags),
     ("0.8.363 nothing-to-mark is a warning", assert_nothing_to_mark_is_not_a_delivery_defect),
     ("0.8.359 hole callouts fast-fail", assert_hole_callouts_give_up_when_nothing_works),

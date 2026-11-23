@@ -1544,6 +1544,9 @@ def delivery_check(
     strict_attachments: Annotated[bool, Field(description="Count every detached dimension as pending, without the orphan-suspected excuse.")] = False,
     include_faces: Annotated[bool, Field(description="Also enumerate every model face (default False). Only the hole-candidate COUNT needs faces, and on a part with many faces that costs 10x: measured 209 s vs 19.7 s on a track link. Everything else in the verdict is available without them.")] = False,
     ledger_data: Annotated[dict | None, Field(description="Advanced: the object returned by build_feature_ledger for the SAME model, reused instead of building a second one. Measured 2026-11-23 on 接槽: no gain when the drawing is already open (25.6 s vs 26.2 s) — the cold 9.8 s build is mostly opening the model — so pass it only if you already have it.")] = None,
+    reconcile_data: Annotated[dict | None, Field(description="Advanced: a reconcile_ledger receipt for the SAME drawing, reused instead of recomputing. Together with the two below this cuts the check from 41.6 s to 28.9 s (measured 2026-11-23, 接槽): it was paying for ledger + reconcile a second time.")] = None,
+    audit_data: Annotated[dict | None, Field(description="Advanced: a drawing_audit receipt for the SAME drawing.")] = None,
+    annotations_data: Annotated[dict | None, Field(description="Advanced: a list_drawing_annotations receipt for the SAME drawing.")] = None,
     close_opened: Annotated[bool, Field(description="Close the model/drawing again if THIS call opened them (default true). Documents you already had open are never closed — closing those could discard unsaved edits. The receipt reports documents_closed / documents_left_open / documents_close_status.")] = True,
 ) -> str:
     """Aggregate ledger + audit + annotations into a delivery verdict (process §7).
@@ -1556,7 +1559,9 @@ def delivery_check(
     closed again before returning, so a clean session stays clean. Nothing is saved.
     """
     return _json(drawing.delivery_check(
-        model_path, drawing_path, ledger_data=ledger_data, ai_supplied=ai_supplied, require_gdt=require_gdt,
+        model_path, drawing_path, ledger_data=ledger_data,
+        reconcile_data=reconcile_data, audit_data=audit_data,
+        annotations_data=annotations_data, ai_supplied=ai_supplied, require_gdt=require_gdt,
         strict_attachments=strict_attachments,
         include_faces=include_faces,
         close_opened=close_opened,

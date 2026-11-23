@@ -10029,7 +10029,8 @@ def _paths_to_close(before, after, candidates):
 @perf_hooks.timed("delivery_check")
 def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False,
                    strict_attachments=False, include_faces=False, close_opened=True,
-                   ledger_data=None):
+                   ledger_data=None, reconcile_data=None, audit_data=None,
+                   annotations_data=None):
     """`_delivery_check_impl`, plus closing the documents this call opened.
 
     Report 2026-11-16 (v0.8.345 §7, P1): the check is read-only in the sense that it saves
@@ -10045,6 +10046,9 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
     before = open_document_paths()
     result = _delivery_check_impl(model_path, drawing_path, ai_supplied=ai_supplied,
                                   ledger_data=ledger_data,
+                                  reconcile_data=reconcile_data,
+                                  audit_data=audit_data,
+                                  annotations_data=annotations_data,
                                  require_gdt=require_gdt,
                                  strict_attachments=strict_attachments,
                                  include_faces=include_faces)
@@ -10088,8 +10092,35 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
     return result
 
 
+def _reuse_receipt(candidate, drawing_path):
+    """May this pre-computed receipt stand in for a fresh call? 0.8.370.
+
+    Report 2026-11-22 B13 asked for one traversal feeding reconcile / audit / annotations.
+    Measured 2026-11-23 (panel box): `produce_drawing` ran `reconcile_ledger` at step 11 and
+    `delivery_check` ran it AGAIN internally — same drawing, same model, ~19 s paid twice.
+    `drawing_audit` had the same shape.
+
+    The guard is deliberately narrow: a dict, `ok` true, and the drawing title it reports
+    must name the same file. A stale or foreign receipt is ignored rather than trusted.
+    """
+    if not isinstance(candidate, dict) or not candidate.get("ok"):
+        return False
+    # `IModelDoc2.GetTitle` is NOT the file name: measured 2026-11-23 it returns
+    # "panelbox - 图纸1" — document title plus the active sheet. Comparing it to the file
+    # name made every reuse guard fail silently, which is exactly what the first A/B showed
+    # (delivery_check stayed at 23.4 s because nothing was reused).
+    title = str(candidate.get("drawing") or "").strip().lower()
+    if not title:
+        return False
+    title = title.split(" - ")[0].strip()
+    full = os.path.basename(str(drawing_path)).lower()
+    stem = os.path.splitext(full)[0]
+    return title in (full, stem)
+
+
 def _delivery_check_impl(model_path, drawing_path, ai_supplied=None, require_gdt=False,
-                         strict_attachments=False, include_faces=False, ledger_data=None):
+                         strict_attachments=False, include_faces=False, ledger_data=None,
+                         reconcile_data=None, audit_data=None, annotations_data=None):
     """Aggregate model ledger + drawing audit + annotation inventory into a verdict.
 
     Process §7 asks for exactly three outcomes, and forbids calling a drawing
@@ -10174,7 +10205,8 @@ def _delivery_check_impl(model_path, drawing_path, ai_supplied=None, require_gdt
                blocking=False)
 
         # ---- drawing side -----------------------------------------------------
-        audit = drawing_audit(drawing_path)
+        audit = (audit_data if _reuse_receipt(audit_data, drawing_path)
+                 else drawing_audit(drawing_path))
         if not audit.get("ok"):
             return error("drawing_unreadable",
                          audit.get("message") or "audit failed",
@@ -10222,7 +10254,8 @@ def _delivery_check_impl(model_path, drawing_path, ai_supplied=None, require_gdt
                           for sh in sheet_summary])
 
         # ---- annotations -----------------------------------------------------
-        anns = list_drawing_annotations(drawing_path)
+        anns = (annotations_data if _reuse_receipt(annotations_data, drawing_path)
+                else list_drawing_annotations(drawing_path))
         if not anns.get("ok"):
             return error("annotations_unreadable", anns.get("message") or "failed")
         totals = anns.get("totals") or {}
@@ -10465,7 +10498,8 @@ def _delivery_check_impl(model_path, drawing_path, ai_supplied=None, require_gdt
             }
 
         # ---- ledger reconciliation (§6.1: 逐条比对, not just count) ----------
-        rec = reconcile_ledger(model_path, drawing_path)
+        rec = (reconcile_data if _reuse_receipt(reconcile_data, drawing_path)
+               else reconcile_ledger(model_path, drawing_path))
         if rec.get("ok"):
             coverage = rec.get("coverage")
             unmatched = rec.get("unmatched_count") or 0
