@@ -1300,6 +1300,7 @@ def add_hole_callouts(
     leader_x_m: Annotated[float | None, Field(description="Sheet X of the leader tip, in metres.")] = None,
     leader_y_m: Annotated[float | None, Field(description="Sheet Y of the leader tip, in metres.")] = None,
     fast_fail_after: Annotated[int, Field(description="Give up on this view after this many straight nulls WITHOUT having created anything (default 3). A partial run keeps the old 10-null breaker. Measured 2026-11-23: a valve body spent 98 s proving 8 circles were not holes.")] = 3,
+    slow_call_s: Annotated[float, Field(description="Stop the view when ONE AddHoleCallout2 takes longer than this (default 10 s). Measured 2026-11-23 on panel box: the edge scan, not the insert, was burning the budget — the scan now checks too, cutting that call from 110 s to 51 s against a 45 s budget.")] = 10.0,
     save: Annotated[bool, Field(description="Save the document after the change (default True). False leaves it in memory for inspection.")] = True,
 ) -> str:
     """Native hole callouts on a view's visible circular edges, verified by IsHoleCallout.
@@ -1312,7 +1313,7 @@ def add_hole_callouts(
         drawing_path, view_name=view_name, min_diameter_mm=min_diameter_mm,
         max_callouts=max_callouts, budget_s=budget_s,
         leader_x_m=leader_x_m, leader_y_m=leader_y_m,
-        fast_fail_after=fast_fail_after, save=save))
+        fast_fail_after=fast_fail_after, slow_call_s=slow_call_s, save=save))
 
 
 @mcp.tool()

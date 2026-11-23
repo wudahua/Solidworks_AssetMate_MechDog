@@ -11102,7 +11102,7 @@ def _callout_diameter_matches(text, expected_mm, tol=0.08):
 @perf_hooks.timed("hole_callouts")
 def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                       max_callouts=40, budget_s=25.0, leader_x_m=None,
-                      leader_y_m=None, fast_fail_after=3, save=True):
+                      leader_y_m=None, fast_fail_after=3, slow_call_s=10.0, save=True):
     """Native hole callouts on the holes VISIBLE in a view, one callout per hole.
 
     Verified on SW2026 (2026-10-28):
@@ -11144,6 +11144,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
 
         created, failed = [], []
         fast_fail = False
+        slow_calls = 0
+        budget_reason = None
         started = time.time()
         budget_exceeded = False
         floor_m = max(float(min_diameter_mm) * 0.0005, 1e-6)
@@ -11153,6 +11155,8 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
         groups_total = 0
 
         for view in targets:
+            if budget_exceeded:
+                break
             try:
                 doc.ActivateView(view.Name)
             except Exception:
@@ -11175,7 +11179,18 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     edges = list(view.GetVisibleEntities2(component, 1) or ())
                 except Exception:
                     continue
-                for raw in edges:
+                for _edge_index, raw in enumerate(edges):
+                    # 0.8.369: the budget was only checked between INSERT groups, and the
+                    # expensive part is not the insert — it is this scan (Dispatch + GetCurve
+                    # + IsCircle on every visible edge, measured ~45 ms each). Panel box has
+                    # hundreds of edges per view across three views: 110 s against a 45 s
+                    # budget, with only 8 insert attempts. Check here, cheaply.
+                    if (_edge_index % 25 == 0
+                            and time.time() - started > float(budget_s)):
+                        budget_exceeded = True
+                        budget_reason = ("budget_s reached during edge scan (view %r, edge %d)"
+                                         % (view.Name, _edge_index))
+                        break
                     try:
                         edge = win.Dispatch(raw)
                         curve = win.Dispatch(edge.GetCurve)
@@ -11449,6 +11464,7 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     break
                 if time.time() - started > float(budget_s):
                     budget_exceeded = True
+                    budget_reason = "budget_s reached between groups"
                     break
                 # Prefer a complete circle (the near face usually reads as one), then the
                 # edge nearest the viewer along z.
@@ -11469,6 +11485,7 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     continue
 
                 slot = len(created) + len(failed)
+                _insert_started = time.time()
                 try:
                     display = doc.AddHoleCallout2(anchor_x, anchor_y - slot * 0.012, 0.0)
                 except Exception as exc:
@@ -11478,6 +11495,22 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
                     # 0.8.359: this counter was never incremented, so the 10-null breaker never fired
                     consecutive_nulls += 1
                     continue
+                # 0.8.369 (report 2026-11-22 B13): the budget was only checked BETWEEN
+                # groups, so one pathological part overshot it badly — measured 2026-11-23,
+                # panel box: `hole_callouts` 106.2 s against a 45 s budget in ONE view.
+                # A single insert that costs more than `slow_call_s` means this part's callout
+                # path is not going to finish at any useful speed, so stop paying for it.
+                _insert_cost = time.time() - _insert_started
+                if _insert_cost > float(slow_call_s):
+                    slow_calls += 1
+                    budget_exceeded = True
+                    budget_reason = ("one AddHoleCallout2 took %.1f s (> slow_call_s=%.1f)"
+                                     % (_insert_cost, float(slow_call_s)))
+                    failed.append({"view": view.Name,
+                                   "diameter_mm": round(chosen["radius_m"] * 2000, 2),
+                                   "reason": "stopped: this insert alone took %.1f s"
+                                             % _insert_cost, "z": chosen["z"]})
+                    break
                 if display is None:
                     failed.append({"view": view.Name,
                                    "diameter_mm": round(chosen["radius_m"] * 2000, 2),
@@ -11868,6 +11901,9 @@ def add_hole_callouts(drawing_path, view_name=None, min_diameter_mm=0.0,
             # 0.8.359 (report 2026-11-22 B1-④): "8 nulls in 98 s" is why this exists.
             fast_fail=bool(fast_fail),
             fast_fail_after=int(fast_fail_after),
+            slow_calls=int(slow_calls),
+            slow_call_s=float(slow_call_s),
+            budget_reason=budget_reason,
             elapsed_s=round(time.time() - started, 2),
             saved=bool(save),
             note=("孔标注用 IsHoleCallout 判定；同一孔的上下两条圆边只标一条（优先完整圆、"

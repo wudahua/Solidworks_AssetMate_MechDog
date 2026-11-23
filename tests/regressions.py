@@ -11526,7 +11526,33 @@ def assert_balloon_binds_imodeldoc_not_idrawingdoc():
     return "balloons bind IModelDoc, need an edge, and report the text they got"
 
 
+def assert_the_hole_scan_checks_its_own_budget():
+    """0.8.369 (report 2026-11-22 B13) — the budget was checked where the cost was not.
+
+    `add_hole_callouts` checked `budget_s` only BETWEEN insert groups. The expensive part is
+    the EDGE SCAN before them (`Dispatch` + `GetCurve` + `IsCircle`, ~45 ms per edge).
+    Measured 2026-11-23 on panel box (3 views, hundreds of edges): **110.4 s against a 45 s
+    budget**, with only 8 insert attempts — the check simply never ran during the scan.
+    After adding the check inside the scan: **51.5 s**, and the receipt names where it
+    stopped (`budget_reason`).
+
+    Guards the location of the check, not its value: a future refactor that moves it back
+    into the insert loop reintroduces the 2x overshoot.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_hole_callouts")) or ""
+    assert "_edge_index % 25 == 0" in body, (
+        "the budget is no longer checked during the edge scan")
+    assert "budget_s reached during edge scan" in body, (
+        "the receipt no longer says the scan was the thing that ran out of budget")
+    assert "budget_reason=budget_reason" in body, "the receipt lost budget_reason"
+    assert "slow_call_s" in body, "the per-insert watchdog is gone"
+    return "the edge scan and the insert both check the budget, and say which one stopped"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.369 hole scan checks its budget", assert_the_hole_scan_checks_its_own_budget),
     ("0.8.364 balloon binds IModelDoc", assert_balloon_binds_imodeldoc_not_idrawingdoc),
     ("0.8.362 pattern counts measured", assert_pattern_features_report_measured_counts),
     ("0.8.358 fullwidth scale ratio", assert_a_fullwidth_scale_ratio_is_recognised),

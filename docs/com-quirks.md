@@ -7305,3 +7305,46 @@ MCP 描述里直接写「实测无收益，只在你手上已有台账时才传�
 
 这一版没有功能性改动，只有测量与能力表更正 —— 一条错误的热点定位如果留着，会让后面每一轮
 都往错的方向改。
+
+---
+
+## 2026-11-23（v0.8.369）预算检查放在「不花钱的地方」：panel box 110 s → 51 s
+
+### 上一版说「不在我们的循环里」，只对了一半
+
+- 接槽 26 条边：分析 1.21 s、插入 0.05 s —— 确实不在循环里。
+- **panel box（3 视图、数百条边）：`hole_callouts` 110.4 s**，而 45 s 预算没生效。
+
+### 根因
+
+`budget_s` 的检查写在**插入组之间**，可钱花在插入**之前**的边扫描：
+每条边 `Dispatch` + `GetCurve` + `IsCircle` ≈ 45 ms，一个视图几百条边，三个视图叠加就几十秒。
+那 110 s 里只尝试了 8 次插入 —— 预算检查一次都没跑到。
+
+```text
+改前：default 110.4 s  failed=8  reason="budget_s reached between groups"
+改后：default  51.5 s  failed=8  reason="budget_s reached during edge scan (视图3, edge 0)"
+```
+
+### 改了两处
+
+1. **扫描里每 25 条边查一次预算**（`_edge_index % 25 == 0`），命中就停并写下
+   `budget_reason="budget_s reached during edge scan (view …, edge …)"`；
+2. **单次插入看门狗 `slow_call_s`（默认 10 s）**：某一次 `AddHoleCallout2` 超过阈值就停，
+   `budget_reason` 写明「单次插入耗时」。两条路径都进回执（`slow_calls` / `slow_call_s`）。
+
+外层视图循环也补了 `if budget_exceeded: break` —— 之前一个视图超预算后，下一个视图还会继续。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| panel box `add_hole_callouts(budget_s=45)` | **110.4 → 51.5 s** |
+| smoke `drawing chain` | PASS 45.5s |
+| smoke `partial reaches produce_drawing` | PASS 109.8s |
+| `check_all` | 348/348 |
+
+### 教训
+
+**性能预算必须贴着真正花钱的地方检查。** 把计时器放在「我认为会慢」的循环里，
+和把温度计放在冰箱门上是一个道理：读数很好看，房间该多热还多热。
