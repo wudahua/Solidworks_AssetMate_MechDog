@@ -3341,7 +3341,7 @@ def close_document(drawing_path):
 
 
 @perf_hooks.timed("center_marks")
-def _count_center_marks(doc):
+def _count_center_marks(doc, view_name=None):
     """How many centre-mark annotations the drawing actually holds.
 
     Report 2026-11-08 (P2-1): `IView.GetCenterMarkCount` reads 0 on this binding even when
@@ -3357,8 +3357,26 @@ def _count_center_marks(doc):
         import win32com.client as win
     except Exception:
         return None
+    # 0.8.360 (report 2026-11-22 B4): two defects lived here.
+    #
+    #   1. Callers inside the loop passed a VIEW (`_count_center_marks(view)`), and
+    #      `_iter_views(view)` yields nothing — so "before" and "after" were always 0, no
+    #      insert could ever be observed, and every run reported `views_marked: 0`.
+    #   2. The SHEET view (Type 1) carries the template's own centre marks — a fresh GB
+    #      drawing already counts 2 — so a doc-wide count made a virgin view look
+    #      "already marked" and skipped the insert entirely.
+    #
+    # Now: always a doc, optional per-view scope, and the sheet's template annotations are
+    # never counted as a model view's marks.
     total = 0
     for view in _iter_views(doc):
+        try:
+            if getattr(view, "Type", None) == 1:
+                continue
+            if view_name is not None and str(view.Name) != str(view_name):
+                continue
+        except Exception:
+            continue
         try:
             items = list(view.GetAnnotations or ())
         except Exception:
@@ -3445,7 +3463,7 @@ def _dedupe_view_center_marks(doc, view):
 
 
 def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view_name=None,
-                     save=True, dedupe_existing=False):
+                     save=True, dedupe_existing=False, force=False):
     """Auto-insert center marks and centerlines on every hole/slot in every view.
 
     Requires activating each view first — drawing annotation ops act on the active
@@ -3540,9 +3558,16 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
                         continue
             except Exception:
                 _view_marks = 0
-            if _view_marks > 0:
+            # 0.8.360 (report 2026-11-22 B4): a fresh GB drawing already reports 2 centre
+            # marks, and they arrive on the MODEL view (the sheet view is excluded now), so
+            # "already_marked" fired on drawings nobody had touched and the insert was never
+            # attempted — which is why every run said `views_marked: 0`. `force=True` lets a
+            # caller say "I know there are marks; try anyway", and the receipt always names
+            # the count it decided from.
+            if _view_marks > 0 and not force:
                 results.append({"view": view.Name, "ok": True,
                                 "skipped": "already_marked",
+                                "existing_marks": _view_marks,
                                 "center_mark_count": _view_marks,
                                 "center_mark_source": "annotations",
                                 "note": "This view already carries %d centre mark(s); "
@@ -3643,7 +3668,10 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             layout=layout,
             views_processed=processed,
             # The annotation delta is the number a caller can trust.
-            views_marked=(_cm_added if _marked_by_annotations else 0),
+            # 0.8.360 (report 2026-11-22 B4): this held the MARK count (`_cm_added`) under a
+            # VIEW name — "3 views marked" for one view with three marks. `marked` is the
+            # per-view counter; the mark count stays in `center_marks_added`.
+            views_marked=(marked if _marked_by_annotations else 0),
             views_marked_by_count=marked,
             center_marks_before=_cm_before,
             center_marks_after=_cm_after,
@@ -3672,16 +3700,34 @@ def add_center_marks(drawing_path, include_slots=True, extended_lines=True, view
             # "AutoInsertCenterMarks2 said yes". Measured by the reporter: pixel diff 0,
             # `GetCenterMarkCount` 0 even when marks exist. "Cannot prove anything
             # happened" is not success, so the top-level bit stops claiming it.
+            # 0.8.360 (report 2026-11-22 B4): "0 marks + API said yes" used to be
+            # `effective: null` because this binding's `GetCenterMarkCount` reads 0 either
+            # way. Measured 2026-11-23: the ANNOTATION delta is a real observation (16
+            # insert_type/insert_option combinations, all `True`, delta 0), and the per-edge
+            # path (`IDrawingDoc.InsertCenterMark2` / `InsertCenterMark` on a selected
+            # circular edge) also returns None and creates nothing. When BOTH paths are
+            # silent, the answer is not "unknown" — it is "not available on this build".
+            # 0.8.360 (report 2026-11-22 B4): do NOT overclaim here. The per-edge path
+            # (`InsertCenterMark2`) is dead on this build for EVERY part, so "per-edge
+            # produced nothing" cannot distinguish "this view has no holes" from "the build
+            # cannot mark". What is provable is narrower and still useful: the insert was
+            # attempted, `AutoInsertCenterMarks2` said yes, and no annotation appeared.
+            return no_effect(
+                "center_marks_not_created",
+                "AutoInsertCenterMarks2 报告成功，但两个视图的注解数都没有变化"
+                "（views_marked=0）。",
+                "两种可能，回执不替你选：① 该视图没有可标的孔/槽（导入实体常见）；"
+                "② 本 build 的插入是空操作。逐边 `InsertCenterMark2` 在本机对所有零件都"
+                "返回 null，所以它不能用来区分这两者。要确认请对照 PDF，"
+                "或在有孔向导孔的零件上重试；`force=True` 可跳过 already_marked 预判。",
+                auto_insert_returned_true=bool(_api_said_yes),
+                **{k: v for k, v in _receipt.items() if k != "drawing"})
             return no_effect(
                 "center_marks_unverified",
                 "AutoInsertCenterMarks2 报告成功，但中心标记注解数量没有变化"
                 "（views_marked=0）。本次调用无法证明图面产生了任何标注。",
                 "该 binding 的 `GetCenterMarkCount` 即使有标记也读 0（实测），所以「0 个」"
-                "可能是「本来就有」，也可能是「什么都没做」。请对照 PDF/截图确认；"
-                "需要可证的路径时用 `dedupe_existing` 或直接目视。",
-                # `effective=None` on purpose: unlike "0 created / 8 rejected" (a proved
-                # failure), this one is "cannot observe", so the call STATUS is
-                # `incomplete` rather than `failed` and the field says "unknown", not "no".
+                "可能是「本来就有」，也可能是「什么都没做」。请对照 PDF/截图确认。",
                 effective=None, call_status="incomplete",
                 **{k: v for k, v in _receipt.items() if k != "drawing"})
         return ok(

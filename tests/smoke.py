@@ -171,6 +171,15 @@ def _require_annotation_effect(payload, what):
     correct sheet; treating it as success is what the report calls a lie. So the check is on
     the SHAPE of the answer, not on a boolean.
     """
+    # 0.8.360: order matters. A "nothing appeared" receipt carries verdict 'unverified'
+    # AND an explicit error code; the code is the specific fact, so read it first.
+    if isinstance(payload, dict) and payload.get("error") in (
+            "center_marks_nothing_to_mark", "center_marks_not_created",
+            "center_marks_not_supported"):
+        assert payload.get("ok") is False, payload
+        assert payload.get("effective") is False, (
+            "a call that proved nothing appeared claims to have worked: %r" % (payload,))
+        return payload
     if isinstance(payload, dict) and payload.get("verdict") == "unverified":
         assert payload.get("ok") is False, payload
         assert payload.get("effective") is None, (

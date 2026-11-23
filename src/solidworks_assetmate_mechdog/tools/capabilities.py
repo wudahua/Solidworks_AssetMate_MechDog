@@ -315,6 +315,29 @@ CAPABILITIES = [
                        "只要求「设计确认后手写」。"),
     },
     {
+        "id": "center_marks",
+        "status": "verified",
+        "summary": ("中心标记 / 中心线（`add_center_marks`）· 0.8.360 起真正可证："
+                    "插入会生效，计数已修正"),
+        "why": ("2026-11-22 的 B4 报「`GetCenterMarkCount` 恒 0、`add_center_marks` 前后"
+                "像素差 0」。2026-11-23 实测根因在**我们自己的计数**上，不在 API：\n\n"
+                "1. 循环里把 VIEW 传给了 `_count_center_marks(doc)`，`_iter_views(view)` 什么"
+                "都不返回 —— before/after 恒 0，任何插入都看不见，所以永远 `views_marked: 0`；\n"
+                "2. 计数把**图纸视图**（Type 1）的模板注记也算进来：新 GB 图纸本来就有 2 个"
+                "中心标记，于是每张新图都被判 `already_marked`，插入根本没执行。\n\n"
+                "修好后同一零件：`verdict='marked'`、`views_marked=1`、`effective=true`。"
+                "另外 `views_marked` 曾经装的是**标记数**（3 个标记报成 3 个视图），已改回视图数，"
+                "标记数留在 `center_marks_added`。"),
+        "workaround": ("`already_marked` 时若确实想重标，传 `force=True`；"
+                       "`GetCenterMarkCount` 不要用（本 build 恒 0），看 "
+                       "`center_marks_added` / `views_marked` 与 `effective`"),
+        "evidence": ("2026-11-23 door.SLDPRT：修前恒 0（计数把 view 当 doc 传）；修后 "
+                     "`force=True` → `verdict=marked`、`views_marked=1`、新增 3 个标记。"
+                     "新 GB 图纸自带 2 个中心标记（落在模型视图上），所以默认会走 "
+                     "`already_marked`，要重标传 `force=True`。导入实体（P05，无孔）返回 "
+                     "`center_marks_not_created`，回执列两种可能而不越权断言 build 限制"),
+    },
+    {
         "id": "centerline",
         "status": "partial",
         "summary": "轴线中心线 · 前提已推翻（草图能渲染），本身未重测",

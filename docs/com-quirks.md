@@ -6850,3 +6850,61 @@ door 上成功的那条回执是 `text_lines = ['<MOD-DIAM>', '贯穿']` —— 
 
 **「有熔断器」和「熔断器会响」是两件事。** 计数器只在成功分支清零、失败分支 `continue`，
 是这类死守卫的典型写法；一条「运行 N 次全失败，断言 `fast_fail` 为真」的用例本来就能发现它。
+
+---
+
+## 2026-11-23（v0.8.360）中心标记「像素差 0」：计数把 view 当 doc 传，模板标记又被算进视图
+
+### 报告 B4
+
+`GetCenterMarkCount` 恒 0、`add_center_marks` 前后像素差 0、`skipped: already_marked` 永不触发。
+
+### 实测的两个自家 bug
+
+| # | 现象 | 根因 |
+|---|---|---|
+| 1 | 每次都是 `views_marked: 0`，任何插入都看不见 | 循环里写的是 `_count_center_marks(view)`，而函数签名是 `(doc)` —— `_iter_views(view)` 什么都不返回，**before/after 恒 0** |
+| 2 | 新建的 GB 图纸被判 `already_marked`，插入从未执行 | 计数遍历了**图纸视图**（Type 1），把模板自带的 2 个中心标记算成"这个视图已有标记" |
+
+修法：`_count_center_marks(doc, view_name=None)`，跳过 Type 1，支持按视图名过滤；循环里改成
+`_count_center_marks(doc, view_name=view.Name)`。
+
+### 结果（door.SLDPRT，强制插入）
+
+```text
+verdict='marked'  views_marked=1  center_marks_added=3  effective=true
+```
+
+也就是说 **API 一直能标**，是计数让一切看起来"没做"。先前我做过 16 组
+`insert_type × insert_option` 的组合探测，结论是「全部返回 True 但 0 标记」—— 那 0 也是这个 bug
+造出来的假象，现已作废。
+
+另外 `views_marked` 曾经装的是**标记数**（1 个视图 3 个标记报成 `views_marked: 3`），
+已改回视图数，标记数留在 `center_marks_added`。
+
+### 新增 `force`
+
+新 GB 图纸自带 2 个中心标记（落在模型视图上），所以默认仍会走 `already_marked`。
+要重标传 `force=True`；回执同时给 `existing_marks`。
+
+### 「没有可标的孔」不再越权断言
+
+导入实体（P05，两个视图、没有孔）返回 `center_marks_not_created` + `effective:false`，
+并列出两种可能：① 视图没有孔/槽；② 本 build 插入是空操作。**不写「build 不支持」** ——
+逐边 `InsertCenterMark2` 在本机对所有零件都返回 null，它无法区分这两者，拿它当证据就是又一次
+「用不可靠的信号下确定结论」。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 真机 door（force=True） | `marked` / 1 视图 / 新增 3 标记 |
+| 真机 P05（导入实体） | `center_marks_not_created`，`effective:false` |
+| smoke `drawing chain` | **PASS 19.2s** |
+| `check_all` | 343/343，4 套件 |
+
+### 教训
+
+**类型不对的实参不会报错，只会让结果恒为 0。** `_count_center_marks(view)` 传错对象，
+`_iter_views` 安静地返回空 —— 于是"没有变化"看起来像"API 无效"，一路骗过三轮报告。
+凡是"计数没变"的判据，先确认计数器本身在这次调用里读到过东西。
