@@ -7429,3 +7429,47 @@ v0.8.367 写的「台账复用无收益」是对的 —— 它只是**没说清�
 
 （守卫的 `GetTitle` 坑依然是真的：不修它，三份全传也是 0 收益。两个问题各自成立，
 不要合成一个结论。）
+
+---
+
+## 2026-11-23（v0.8.372）剖切线「残留」是断言，不是观测：本 build 实测 0 → 0
+
+### 报告 B6
+
+「删除失败的剖视图后，父视图草图里的剖切线删不掉；`EnumSectionLines` 抛错。」
+回执里因此写着 `section_line_remains: True` —— **常量**。
+
+### 实测（door.SLDPRT）
+
+故意造失败剖视（越界 offset，剖出来没有任何剖面线），三个 offset 全试：
+
+```text
+offset 5.0 / 0.5 / -5.0 -> error=hatch_missing
+父视图草图段数：0 -> 0        （create_drawing 后、每次失败后都是 0）
+list_sheet_sketch(view_name=父视图) -> segment_count 0
+```
+
+**没有残留。** 旧回执里那个 `True` 在这条路径上是错的，而且调用方无法区分「观测到残留」和
+「作者相信会残留」。
+
+### 改法：把常量换成前后两次计数
+
+| 字段 | 含义 |
+|---|---|
+| `parent_segments_before` | 进入 `add_section_view` 时父视图草图的段数 |
+| `parent_segments_now` | 创建之后（失败路径）再数一次 |
+| `section_line_remains` | `now > before`；读不到草图时为 `null` |
+
+删除视图的清理路径同样给 before/after，并在 note 里直接指路：
+`list_sheet_sketch` 看段 → `delete_sheet_sketch(indices=[...], dry_run=False)` 删掉
+（这条路 v0.8.355 已验过）。
+
+能力表新增 `section_line_residue`（verified），写清「本机不残留、旧结论是断言」。
+
+真机复测：三次失败剖视全部 `section_line_remains: false`，与 `list_sheet_sketch` 的 0 段一致。
+
+### 教训
+
+**一个字段如果永远返回同一个值，它就不是数据，是作者的信念。**
+`section_line_remains: True` 挂了三个版本，没人质疑，因为它「看起来像一条已知限制」。
+凡是常量形式的「已知问题」，都该被换成一次尽可能便宜的实测 —— 这里的一次计数几乎免费。

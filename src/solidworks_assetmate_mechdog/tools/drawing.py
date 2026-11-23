@@ -7547,6 +7547,27 @@ def _section_off_axis_from_sanity(sanity, eccentricity_mm=None):
     return None
 
 
+def _sketch_segment_count(doc, view):
+    """Segments in a view's sketch, or None when the sketch cannot be read. 0.8.372.
+
+    Report 2026-11-22 B6 said a failed section leaves its cutting line in the parent view and
+    that `EnumSectionLines` throws, so the receipt hard-coded `section_line_remains: True`.
+    Measured 2026-11-23 on door.SLDPRT: an out-of-range section (no hatch at all) left the
+    parent sketch at **0 segments** before and after. So the field was a belief, not an
+    observation. This counts the sketch itself — the same path `list_sheet_sketch` uses.
+    """
+    try:
+        import win32com.client as win
+
+        doc.ActivateView(view.Name)
+        sketch = win.Dispatch(view.GetSketch)
+        raw = sketch.GetSketchSegments
+        rows = list(raw) if isinstance(raw, (tuple, list)) else ([raw] if raw else [])
+        return len([r for r in rows if r is not None])
+    except Exception:
+        return None
+
+
 def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                      offset_m=0.0, position=None, label="A", flip=False, depth=0.0,
                      cut_plane_normal=None, cut_plane_origin=None, verify_cut=True,
@@ -7625,6 +7646,9 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                          "Use drawing_audit to list view names.")
 
         doc.ActivateView(target.Name)
+        # Baseline for the section-line question (0.8.372): measured BEFORE the cut so every
+        # exit path can say whether the parent gained sketch segments, instead of asserting.
+        _parent_segments_start = _sketch_segment_count(doc, target)
         pos = list(target.Position)
         scale = float(target.ScaleDecimal)
         outline = list(target.GetOutline)
@@ -8019,6 +8043,11 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 return {"view_removed": False,
                         "view_kept": bool(_new_view_name),
                         "kept_because": ("keep_on_failure=%r" % (_keep,))}
+            # 0.8.372 (report 2026-11-22 B6): count the parent sketch instead of asserting
+            # that a line remains. Measured 2026-11-23 on door.SLDPRT: a section with no
+            # hatch left the parent at 0 segments — the old constant was wrong there, and a
+            # caller had no way to tell. `None` means the sketch could not be read.
+            _seg_before = _sketch_segment_count(doc, target)
             try:
                 from .layout import delete_view as _dv
                 # `add_section_view` has no `save` switch — it always persists, so the
@@ -8027,20 +8056,34 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                 _ok_del = bool(_r.get("ok"))
             except Exception as _exc:                               # noqa: BLE001
                 return {"view_removed": False, "view_kept": True,
-                        "delete_error": str(_exc)[:80]}
+                        "delete_error": str(_exc)[:80],
+                        "parent_segments_before": _seg_before}
+            _seg_after = _sketch_segment_count(doc, target)
+            _remains = (None if _seg_before is None or _seg_after is None
+                        else bool(_seg_after > _seg_before))
             return {"view_removed": _ok_del,
                     "view_kept": not _ok_del,
-                    # Even a successful delete leaves the parent's section line behind.
-                    "section_line_remains": True,
-                    "note": ("视图已删除，但父视图草图里的剖切线删不掉 —— "
-                             "`EnumSectionLines` 在这个 binding 上会抛错。"
-                             "残留约 1.8k 像素（实测：删前 11127，删后 1829）。"
+                    "parent_segments_before": _seg_before,
+                    "parent_segments_after": _seg_after,
+                    "section_line_remains": _remains,
+                    "note": ("视图已删除；父视图草图段数 %s → %s，"
+                             "剖切线%s。要清掉残留段用 "
+                             "`delete_sheet_sketch(view_name=%r, indices=[...], dry_run=False)`。"
+                             % (_seg_before, _seg_after,
+                                "仍在" if _remains else "未留下可枚举的段", target.Name)
                              if _ok_del else
                              "delete_view 没能删掉这个空剖视图，需要手工处理。")}
 
 
+        _parent_segments_now = _sketch_segment_count(doc, target)
         diag = {
             "drawing": doc.GetTitle, "section": section.Name, "source_view": target.Name,
+            # 0.8.372 (report 2026-11-22 B6): a real observation, not a constant.
+            "parent_segments_before": _parent_segments_start,
+            "parent_segments_now": _parent_segments_now,
+            "section_line_remains": (
+                None if _parent_segments_start is None or _parent_segments_now is None
+                else bool(_parent_segments_now > _parent_segments_start)),
             "label": str(label), "orientation": str(orientation), "flip": bool(flip),
             "offset_m": round(float(offset_m), 6), "outline": box,
             "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),

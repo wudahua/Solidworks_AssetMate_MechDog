@@ -318,6 +318,25 @@ CAPABILITIES = [
                        "只要求「设计确认后手写」。"),
     },
     {
+        "id": "section_line_residue",
+        "status": "verified",
+        "summary": ("剖视失败/删除后的剖切线残留：**本 build 实测不残留**"
+                    "（父视图草图 0 → 0 段），旧回执里恒为 `true` 是断言不是观测"),
+        "why": ("2026-11-22 的报告说：删除失败的剖视图后，父视图草图里的剖切线删不掉，"
+                "`EnumSectionLines` 抛错。回执里因此硬编码 `section_line_remains: True`。\n\n"
+                "2026-11-23 实测（door.SLDPRT，故意用越界 offset 造出无剖面线的失败剖视，"
+                "三个 offset 全试）：父视图草图段数 **0 → 0**，`list_sheet_sketch` 也读到 0。"
+                "也就是说这个字段在本次失败路径上**是错的**，而调用方看不出它是猜的。\n\n"
+                "现在改成实测：进入前记一次 `parent_segments_before`，创建后再记一次 "
+                "`parent_segments_now`，`section_line_remains = now > before`；"
+                "删视图的清理路径同样给 before/after 两个数。"),
+        "workaround": ("若某台机器上确实残留：用 `list_sheet_sketch(view_name=父视图)` 看段，"
+                       "再 `delete_sheet_sketch(view_name=…, indices=[…], dry_run=False)` 删掉 —— "
+                       "这条路 v0.8.355 已验过"),
+        "evidence": ("2026-11-23 door.SLDPRT：offset 5.0 / 0.5 / -5.0 三次失败剖视，"
+                     "`hatch_missing`，父视图草图 0 → 0，`section_line_remains: false`"),
+    },
+    {
         "id": "batch_throughput",
         "status": "partial",
         "summary": ("单件出图 ~86 s（接槽），**没有单一热点**：12 个计时段分布在 1–17 s，"

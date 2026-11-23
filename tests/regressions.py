@@ -11551,7 +11551,31 @@ def assert_the_hole_scan_checks_its_own_budget():
     return "the edge scan and the insert both check the budget, and say which one stopped"
 
 
+def assert_section_line_residue_is_measured_not_asserted():
+    """0.8.372 (report 2026-11-22 B6) — a hard-coded `section_line_remains: True`.
+
+    The old cleanup path stated that a deleted section always leaves its cutting line in the
+    parent sketch, citing `EnumSectionLines` throwing. Measured 2026-11-23 on door.SLDPRT:
+    a section with no hatch left the parent sketch at 0 segments before AND after — the
+    receipt was reporting a belief. It now counts the sketch (`_sketch_segment_count`) and
+    reports `parent_segments_before` / `parent_segments_now` next to the verdict.
+    """
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "add_section_view")) or ""
+    assert "_sketch_segment_count" in body, "the parent-sketch count is gone"
+    assert '"section_line_remains": True' not in body, (
+        "the residue is hard-coded again instead of measured")
+    assert "parent_segments_before" in body and "parent_segments_now" in body, (
+        "the receipt no longer shows the counts the verdict came from")
+    helper = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                       "_sketch_segment_count")) or ""
+    assert "GetSketchSegments" in helper, "the counter does not read the sketch"
+    return "section residue is a measured comparison, with the counts in the receipt"
+
+
 STATIC_REGRESSIONS = [
+    ("0.8.372 section residue measured", assert_section_line_residue_is_measured_not_asserted),
     ("0.8.369 hole scan checks its budget", assert_the_hole_scan_checks_its_own_budget),
     ("0.8.364 balloon binds IModelDoc", assert_balloon_binds_imodeldoc_not_idrawingdoc),
     ("0.8.362 pattern counts measured", assert_pattern_features_report_measured_counts),
