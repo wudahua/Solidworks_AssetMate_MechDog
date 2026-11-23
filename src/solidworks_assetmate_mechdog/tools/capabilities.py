@@ -318,6 +318,27 @@ CAPABILITIES = [
                        "只要求「设计确认后手写」。"),
     },
     {
+        "id": "batch_throughput",
+        "status": "partial",
+        "summary": ("单件出图 ~86 s（接槽），**没有单一热点**：12 个计时段分布在 1–17 s，"
+                    "批量 15 件约 20 分钟量级"),
+        "why": ("2026-11-23 用 `perf_hooks` 实测一次 `produce_drawing`（接槽.SLDPRT，A3）：\n\n"
+                "```\nwall 86 s\n"
+                "hole_callouts   13.4 s   delivery_check  14.2 s   reconcile  13.3 s\n"
+                "annotations     11.6 s   ledger         10.9 s   dim_attachments 6.6 s\n"
+                "dim_filter       6.4 s   dim_dedupe      4.3 s   dim_outside 2.7 s\n"
+                "center_marks     2.0 s   dimension_total 1.9 s   save 1.2 s\n```\n\n"
+                "所以「566 s/件」不是某一步写错了，而是**十几个都要几秒到十几秒的步骤叠加**，"
+                "外加冷会话里视图异步加载。想显著变快只能逐项抠（每次都要 A/B 复测，"
+                "本轮 A/B 就否掉了一个看起来理所当然的优化：复用台账 25.6 s vs 26.2 s，"
+                "因为冷建的 9.8 s 主要花在打开模型上）。"),
+        "workaround": ("批量时串行复用同一个 SolidWorks 实例（不要每件重启）；"
+                       "`delivery_check(include_faces=True)` 单独计时（实测 P05 上 209 s vs 19.7 s）；"
+                       "先用 `perf_hooks.start()/stop()` 拿 `timings_ms` 再决定改哪一项"),
+        "evidence": ("2026-11-23 接槽.SLDPRT：wall 86.0 s，`timings_ms` 12 项见上；"
+                     "A/B 台账复用无收益（25.6 / 26.3 vs 28.1 / 26.2 s，落在噪声内）"),
+    },
+    {
         "id": "center_marks",
         "status": "verified",
         "summary": ("中心标记 / 中心线（`add_center_marks`）· 0.8.360 起真正可证："

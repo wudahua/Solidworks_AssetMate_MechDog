@@ -10028,7 +10028,8 @@ def _paths_to_close(before, after, candidates):
 
 @perf_hooks.timed("delivery_check")
 def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False,
-                   strict_attachments=False, include_faces=False, close_opened=True):
+                   strict_attachments=False, include_faces=False, close_opened=True,
+                   ledger_data=None):
     """`_delivery_check_impl`, plus closing the documents this call opened.
 
     Report 2026-11-16 (v0.8.345 §7, P1): the check is read-only in the sense that it saves
@@ -10043,6 +10044,7 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
     """
     before = open_document_paths()
     result = _delivery_check_impl(model_path, drawing_path, ai_supplied=ai_supplied,
+                                  ledger_data=ledger_data,
                                  require_gdt=require_gdt,
                                  strict_attachments=strict_attachments,
                                  include_faces=include_faces)
@@ -10087,7 +10089,7 @@ def delivery_check(model_path, drawing_path, ai_supplied=None, require_gdt=False
 
 
 def _delivery_check_impl(model_path, drawing_path, ai_supplied=None, require_gdt=False,
-                         strict_attachments=False, include_faces=False):
+                         strict_attachments=False, include_faces=False, ledger_data=None):
     """Aggregate model ledger + drawing audit + annotation inventory into a verdict.
 
     Process §7 asks for exactly three outcomes, and forbids calling a drawing
@@ -10143,7 +10145,19 @@ def _delivery_check_impl(model_path, drawing_path, ai_supplied=None, require_gdt
         # list is the only thing here that needs faces, and this function uses it for a
         # truthiness test plus one number in a message. Default False; pass True to pay
         # for the hole count.
-        led = _ledger.build_feature_ledger(model_path, include_faces=bool(include_faces))
+        # 0.8.367 (report 2026-11-22 B13): `produce_drawing` already built this ledger in its
+        # FIRST step, and `delivery_check` built it again — measured 10.9 s of a 86 s run on
+        # 接槽, i.e. the same face walk paid twice for the same answer. Reuse the caller's
+        # ledger when it describes the same model and the same face setting; otherwise build.
+        led = None
+        if isinstance(ledger_data, dict) and ledger_data.get("ok"):
+            same_model = str(ledger_data.get("model") or "") == str(model_path)
+            same_faces = bool(ledger_data.get("include_faces")) == bool(include_faces)
+            if same_model and (same_faces or not include_faces):
+                led = ledger_data
+                record("ledger_reused", True, "复用了调用方已构建的特征台账")
+        if led is None:
+            led = _ledger.build_feature_ledger(model_path, include_faces=bool(include_faces))
         if not led.get("ok"):
             return error("model_unreadable", led.get("message") or "ledger failed",
                          "Check the model opens and rebuilds before delivering a drawing.")

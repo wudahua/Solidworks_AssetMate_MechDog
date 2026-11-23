@@ -722,9 +722,14 @@ def produce_drawing(model_path, output_path=None, paper="A3", views=None,
         recon = record("reconcile", recon_raw, "coverage=%s" % recon_raw.get("coverage"))
 
     # 10) verdict
+    # 0.8.367 (report 2026-11-22 B13): hand over the ledger step 1 already built — the same
+    # face walk cost 10.9 s of an 86 s run (接槽), and it was paid twice. `led` is None when
+    # the ledger step failed, and `delivery_check` falls back to building its own.
     verdict = record("delivery_check",
                      drawing_tools.delivery_check(path, target,
-                                                  include_faces=include_faces), "")
+                                                  include_faces=include_faces,
+                                                  ledger_data=(led if isinstance(led, dict)
+                                                               else None)), "")
     drawing_tools.annotations_cache_disable()
 
     # Spec section 13: do NOT return ok:true when the final file was not actually updated,
