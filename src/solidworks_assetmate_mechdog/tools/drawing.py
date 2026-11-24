@@ -4517,6 +4517,12 @@ TITLE_SLOTS = {
     "name": (0.391, 0.036),
     "code": (0.391, 0.022),
     "material": (0.344, 0.055),
+    # 0.8.373 (report 2026-11-24 §1.2): `scale` had NO slot, so on a GB template whose
+    # ratio lives in a table/block (not an INote) the branch could only report `unmatched`.
+    # `name/code/material` all fall back to `InsertNote` at their slot; scale now does too.
+    # Coordinate: the position measured on this machine's gb_a3 for the existing ratio note
+    # (`[0.3591, 0.0304]`, 2026-11-06).
+    "scale": (0.3591, 0.0304),
 }
 
 
@@ -4662,6 +4668,8 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
         # marker loop below never ran once — which is why `scale` was reported as
         # "title block has no scale value in the bottom band" while `1:1` sat at
         # [0.3591, 0.0304]. `_note_at` was fixed in 0.8.215; this call was not.
+        import win32com.client as win
+
         notes = _sheet_notes(_sheet_obj)
         planned, unmatched, skipped_reversed, skipped_extra = [], [], [], []
 
@@ -4690,6 +4698,19 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                 sheet_h = (sheet_box[3] - sheet_box[1]) if len(sheet_box) >= 4 else 0.297
             except Exception:
                 sheet_h = 0.297
+            # The text depends only on `scale`, so build it once — the `via:"created"`
+            # fallback below needs it even when the scan finds nothing.
+            _ratio_value = scale
+            if isinstance(_ratio_value, str) and ":" in _ratio_value:
+                _lhs, _rhs = _ratio_value.split(":", 1)
+                _ratio_value = float(_lhs) / float(_rhs)
+            else:
+                _ratio_value = float(_ratio_value)
+            if _ratio_value <= 0:
+                return error("bad_input", "scale must be positive, got %r" % (scale,))
+            _scale_text = (("1:%g" % round(1.0 / _ratio_value, 4))
+                           if _ratio_value < 1
+                           else ("%g:1" % round(_ratio_value, 4)))
             for note in notes:
                 # SECOND occurrence of the same defect (report 2026-11-07, P0-2). The
                 # main marker loop was fixed to use `_note_text`; this one still did
@@ -4719,25 +4740,44 @@ def set_title_block(drawing_path, name=None, code=None, material=None, apply=Fal
                 # `except (FileNotFoundError, ValueError)` turned into `bad_input`. So the
                 # same feature failed from the pipeline and succeeded by hand, and the
                 # receipt blamed the input rather than this line.
-                _ratio_value = scale
-                if isinstance(_ratio_value, str) and ":" in _ratio_value:
-                    _lhs, _rhs = _ratio_value.split(":", 1)
-                    _ratio_value = float(_lhs) / float(_rhs)
-                else:
-                    _ratio_value = float(_ratio_value)
-                if _ratio_value <= 0:
-                    return error("bad_input",
-                                 "scale must be positive, got %r" % (scale,))
-                _scale_text = (("1:%g" % round(1.0 / _ratio_value, 4))
-                               if _ratio_value < 1
-                               else ("%g:1" % round(_ratio_value, 4)))
                 planned.append({
                     "field": "scale", "before": text, "after": _scale_text, "note": note,
                     "angle_deg": 0.0, "position": position,
                 })
             if not any(p["field"] == "scale" for p in planned):
-                unmatched.append({"field": "scale", "marker": "n:m",
-                                  "reason": "title block has no scale value in the bottom band"})
+                # 0.8.373 (report 2026-11-24 §1.2, the actual ask): create the cell instead
+                # of giving up. Same path `name`/`code`/`material` already had. A template
+                # whose ratio lives in a table or block has no INote to rewrite, so a wider
+                # regex can never fix it — the cell has to be written.
+                _scale_slot = TITLE_SLOTS.get("scale")
+                _created = None
+                if _scale_slot is not None:
+                    try:
+                        _created = doc.InsertNote(str(_scale_text))
+                    except Exception:
+                        _created = None
+                if _created is not None:
+                    try:
+                        _created_ann = win.Dispatch(_call_method(_created, "GetAnnotation"))
+                        _call_method(_created_ann, "SetPosition2",
+                                     float(_scale_slot[0]), float(_scale_slot[1]), 0.0)
+                    except Exception:
+                        pass
+                    try:
+                        _created.SetHeight(0.0025)
+                    except Exception:
+                        pass
+                    planned.append({
+                        "field": "scale", "before": None, "after": _scale_text,
+                        "note": _created, "via": "created",
+                        "angle_deg": 0.0, "position": [round(float(_scale_slot[0]), 4),
+                                                       round(float(_scale_slot[1]), 4)],
+                    })
+                else:
+                    unmatched.append({
+                        "field": "scale", "marker": "n:m",
+                        "reason": "title block has no scale value in the bottom band AND "
+                                  "InsertNote failed, so the ratio was not written"})
 
         for field, marker, new_value in wants:
             candidates = []
@@ -7646,9 +7686,11 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                          "Use drawing_audit to list view names.")
 
         doc.ActivateView(target.Name)
-        # Baseline for the section-line question (0.8.372): measured BEFORE the cut so every
-        # exit path can say whether the parent gained sketch segments, instead of asserting.
-        _parent_segments_start = _sketch_segment_count(doc, target)
+        # 0.8.373 REGRESSION FIX: do NOT read the parent sketch here. Measured 2026-11-24:
+        # `_sketch_segment_count` (which calls `view.GetSketch`) BEFORE the cut changed the
+        # parent view enough that the forced-uncut section reported `verdict: None` — the
+        # exact "the section did not cut and nobody knows" failure the 2026-11-07 report was
+        # about. The residue question is answered where it belongs: around `delete_view`.
         pos = list(target.Position)
         scale = float(target.ScaleDecimal)
         outline = list(target.GetOutline)
@@ -8075,15 +8117,13 @@ def add_section_view(drawing_path, view_name=None, orientation="horizontal",
                              "delete_view 没能删掉这个空剖视图，需要手工处理。")}
 
 
-        _parent_segments_now = _sketch_segment_count(doc, target)
         diag = {
             "drawing": doc.GetTitle, "section": section.Name, "source_view": target.Name,
-            # 0.8.372 (report 2026-11-22 B6): a real observation, not a constant.
-            "parent_segments_before": _parent_segments_start,
-            "parent_segments_now": _parent_segments_now,
-            "section_line_remains": (
-                None if _parent_segments_start is None or _parent_segments_now is None
-                else bool(_parent_segments_now > _parent_segments_start)),
+            # 0.8.373: the residue is measured ONLY around the delete (see the cleanup branch);
+            # reading the parent sketch before the cut perturbs it (measured above).
+            "section_line_remains": None,
+            "section_line_remains_reason": ("只在删除剖视图的清理路径上测量；"
+                                            "在切之前读父视图草图会干扰剖视"),
             "label": str(label), "orientation": str(orientation), "flip": bool(flip),
             "offset_m": round(float(offset_m), 6), "outline": box,
             "precise_outline_m": ([round(v, 5) for v in precise] if precise else None),

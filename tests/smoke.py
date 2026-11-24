@@ -210,6 +210,14 @@ def require(payload, key=None, value=None, allow_partial=False):
     stays strict, so the other checks are unaffected.
     """
     assert isinstance(payload, dict), "expected dict, got %r" % type(payload)
+    # 0.8.373 (report 2026-11-24 §1.3): `blocking:false` is this toolkit's way of saying
+    # "the call finished; a HUMAN must fix one label". `pipeline._step_state` already reads
+    # it as a warning, but this helper only looked at `ok`, so a non-blocking title-block
+    # mismatch aborted 27 smoke cases. Read the same flag the pipeline reads.
+    if payload.get("blocking") is False and not payload.get("ok"):
+        assert payload.get("call_status") in (None, "incomplete"), (
+            "blocking:false but call_status=%r" % (payload.get("call_status"),))
+        return payload
     # `verify` lives in the sub-dicts (`callouts.verdict`), not at the top level — the
     # top-level `verdict` is the delivery judgement ("待设计审核"). What marks a run as
     # partial at this level is `partial_steps`, added in v0.8.285.
@@ -1543,10 +1551,19 @@ def main():
         import tempfile as _tempfile
 
         script = os.path.join(ROOT, "tools", "bump_version.py")
-        normal = _subprocess.run([sys.executable, script, "--check"], cwd=ROOT,
-                                 capture_output=True, text=True)
-        assert normal.returncode == 0 and "safe to tag" in normal.stdout, (
-            normal.stdout, normal.stderr)
+        # 0.8.373 (report 2026-11-24 §3): the workspace may be a zipball with no `.git`.
+        # `--check` correctly fails closed there ("not a git work tree"), so asserting
+        # "safe to tag" turned an ENVIRONMENT property into a test failure. Run the git
+        # half only when there is a work tree, and say so when we cannot.
+        _has_git = os.path.isdir(os.path.join(ROOT, ".git"))
+        _git_note = ""
+        if _has_git:
+            normal = _subprocess.run([sys.executable, script, "--check"], cwd=ROOT,
+                                     capture_output=True, text=True)
+            assert normal.returncode == 0 and "safe to tag" in normal.stdout, (
+                normal.stdout, normal.stderr)
+        else:
+            _git_note = " | git half NOT RUN (no .git in this copy)"
 
         tmp = _pathlib.Path(_tempfile.mkdtemp(prefix="assetmate_bump_nogit_"))
         try:
@@ -1572,7 +1589,8 @@ def main():
             assert mismatch.returncode == 1 and "MISMATCH" in mismatch.stdout, mismatch.stdout
         finally:
             _shutil.rmtree(str(tmp), ignore_errors=True)
-        return "git work tree RC=0; no-.git RC=1 UNVERIFIABLE; mismatch RC=1"
+        return ("git work tree RC=0; no-.git RC=1 UNVERIFIABLE; mismatch RC=1"
+                + _git_note)
 
     r.check("bump_version --check fails without git", _bump_version_fails_closed)
 

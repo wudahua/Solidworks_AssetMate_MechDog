@@ -7473,3 +7473,66 @@ list_sheet_sketch(view_name=父视图) -> segment_count 0
 **一个字段如果永远返回同一个值，它就不是数据，是作者的信念。**
 `section_line_remains: True` 挂了三个版本，没人质疑，因为它「看起来像一条已知限制」。
 凡是常量形式的「已知问题」，都该被换成一次尽可能便宜的实测 —— 这里的一次计数几乎免费。
+
+---
+
+## 2026-11-24（v0.8.373）比例写不进 GB 表格模板：因为它连「格子」都没有
+
+### 报告 §1.2 的核心事实
+
+`TITLE_SLOTS` 只有三个键：
+
+```python
+TITLE_SLOTS = {"name": (0.391, 0.036), "code": (0.391, 0.022), "material": (0.344, 0.055)}
+```
+
+**没有 `scale`。** 而 `name/code/material` 在找不到注记时会走 `InsertNote` 在槽位新建一个；
+`scale` 分支没有这个回退，找不到就直接 `unmatched` + 零写入。所以 0.8.358 放宽全角冒号
+在「比例在表格/块里」的模板上**永远不会有效** —— 那里根本没有可匹配的 INote。
+
+### 改法（三处）
+
+1. `TITLE_SLOTS["scale"] = (0.3591, 0.0304)`（本机 gb_a3 上那格比例的实测坐标）；
+2. 比例文本提前算一次（`1:2` / `2:1`），扫描前就备好；
+3. 扫描不到时**新建注记**写入槽位，记 `via: "created"`，与其它三个字段同一条路。
+
+真机（把已有比例注记改成 `X` 模拟「模板里没有比例注记」）：
+
+```text
+blanked notes: 1
+ok: True
+planned: {'field': 'scale', 'after': '1:2', 'via': 'created', 'note_name': '细节项目256'}
+written: {'field': 'scale', 'ok': True, 'after': '1:2'}
+unmatched: []
+```
+
+正常模板（比例是 INote）走原文本路径，不受影响。
+
+### 同时修掉这次「标注缺陷击穿整条链路」的三个放大器
+
+| 位置 | 问题 | 现在 |
+|---|---|---|
+| `tests/smoke.py::require` | 只认 `verdict:"partial"`，不看 `blocking:false` → 27 条用例直接中止 | `blocking is False` 视为「调用完成、需人工修一处」 |
+| `pipeline._call_status` | `failed_steps` 非空即 `failed`，与自家 hint 矛盾 | `error=="delivery_incomplete"` 且未崩 → `incomplete` |
+| `tests/smoke.py` bump_version 用例 | 无 `.git` 的 zipball 必 FAIL | 无 git 时只跑 tarball 半段，detail 写明「git half NOT RUN」 |
+
+真机：`create_drawing(scale=0.5)` → `ok:true`、`title_scale_synced{..., 'verified_by': 'written[].ok'}`；
+`produce_drawing` → `call_status: incomplete`（此前 `failed`）、`failed_steps: []`、`blockers: []`。
+
+### 全量 smoke（本机，75 条）
+
+```text
+72 passed, 3 FAILED / 75 run
+export_bom + csv                 mass incomplete: document_not_loaded (P01–P03)
+batch_export step                step file too small
+revolved part section verdict    verdict None (forced-uncut section)
+```
+
+后两条与本轮改动无关：`revolved part section verdict` 在**已提交的 v0.8.372 上同样 FAIL**
+（用 stash 把今天的改动收起来复跑验证过），属于 0.8.364–0.8.372 之间的既有问题或环境偶发，
+未在本轮处理，已记档。
+
+### 教训
+
+**「放宽匹配」只能修「匹配到了但判错」的缺陷；对「根本没有可匹配对象」的模板无效。**
+这次的修法不是放宽，而是补上一个和兄弟字段早就该有的回退：找不到，就在槽位建一个。

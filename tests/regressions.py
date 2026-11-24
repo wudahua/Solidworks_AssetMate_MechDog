@@ -5618,6 +5618,11 @@ def assert_auto_fit_updates_the_title_block():
         title_scale_synced: {'from': 1.0, 'to': 0.5, 'text': '1:2'}
         set_title_block -> written [{'field': 'scale', 'before': '1:1', 'after': '1:2',
                                      'ok': True}]
+
+    Scope of that quote (report 2026-11-24 §3): it holds on a template whose ratio IS an
+    INote. On a GB template that keeps the ratio in a table/block there is no note to
+    rewrite, and until 0.8.373 the same call written `written: []` + `title_block_not_written`
+    — the numbers above were never universal, they were this machine's.
     """
     src = _read("tools/drawing.py")
     body = ast.get_source_segment(src, _function_node(ast.parse(src),
@@ -11566,8 +11571,14 @@ def assert_section_line_residue_is_measured_not_asserted():
     assert "_sketch_segment_count" in body, "the parent-sketch count is gone"
     assert '"section_line_remains": True' not in body, (
         "the residue is hard-coded again instead of measured")
-    assert "parent_segments_before" in body and "parent_segments_now" in body, (
-        "the receipt no longer shows the counts the verdict came from")
+    # 0.8.373: the counts live around `delete_view` (the only place the claim was ever about).
+    # Reading the parent sketch BEFORE the cut perturbed the section itself — measured
+    # 2026-11-24, `verdict` dropped to None — so the mid-function measurement was removed
+    # and the diag says why.
+    assert "parent_segments_before" in body and "parent_segments_after" in body, (
+        "the delete path no longer shows the counts the verdict came from")
+    assert "section_line_remains_reason" in body, (
+        "the diag no longer explains why the residue is not measured before the cut")
     helper = ast.get_source_segment(src, _function_node(ast.parse(src),
                                                        "_sketch_segment_count")) or ""
     assert "GetSketchSegments" in helper, "the counter does not read the sketch"
@@ -12572,7 +12583,55 @@ def assert_the_verdict_reuses_receipts_it_is_handed():
     return "the verdict reuses ledger/reconcile/audit/annotations when they describe the same file"
 
 
+def assert_a_built_drawing_is_never_reported_as_failed():
+    """0.8.373 (report 2026-11-24 §2) — the receipt contradicted its own hint.
+
+    `produce_drawing` returned `error:"delivery_incomplete"`, `call_status:"failed"`,
+    `failed_steps:['hole_callouts']`, `execution_ok:true` — while the module's own rule says
+    `delivery_incomplete` means "the drawing EXISTS; a human must fix something". A step that
+    merely could not be CHECKED (`hole_callouts` with include_faces=False) was pushing a
+    usable drawing into "nothing usable was produced, retry or roll back".
+
+    BEHAVIOURAL: calls the pure state machine.
+    """
+    from solidworks_assetmate_mechdog.tools import pipeline as _p
+
+    assert _p._call_status(False, True, ["hole_callouts"], "delivery_incomplete", []) == "incomplete"
+    assert _p._call_status(False, True, [], "delivery_incomplete", []) == "incomplete"
+    # a real crash still means failed, and so does any other error code
+    assert _p._call_status(False, False, [], "delivery_incomplete", []) == "failed"
+    assert _p._call_status(False, True, ["x"], "some_other_error", []) == "failed"
+    return "delivery_incomplete is incomplete even when a step could not be checked"
+
+
+def assert_the_scale_cell_has_a_slot_to_be_created_in():
+    """0.8.373 (report 2026-11-24 §1.2) — `TITLE_SLOTS` had no `scale` key.
+
+    `name` / `code` / `material` all fall back to `InsertNote` at their slot when the template
+    carries no matching text. The scale branch had no slot and no fallback, so on a GB
+    template whose ratio lives in a table/block the ONLY possible outcome was
+    `unmatched` + zero writes — which is what the reporter measured on 82 notes.
+
+    BEHAVIOURAL: reads the real table and the branch.
+    """
+    from solidworks_assetmate_mechdog.tools import drawing as _d
+
+    slot = _d.TITLE_SLOTS.get("scale")
+    assert isinstance(slot, (tuple, list)) and len(slot) == 2, (
+        "TITLE_SLOTS has no scale slot: %r" % (slot,))
+    assert all(isinstance(v, float) for v in slot)
+
+    src = _read("tools/drawing.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src),
+                                                     "set_title_block")) or ""
+    assert 'TITLE_SLOTS.get("scale")' in body, "the scale branch does not use the slot"
+    assert '"via": "created"' in body, "the scale branch lost its created fallback"
+    return "scale has a slot and a created fallback, like name/code/material"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.373 built drawing is not failed", assert_a_built_drawing_is_never_reported_as_failed),
+    ("0.8.373 scale has a slot", assert_the_scale_cell_has_a_slot_to_be_created_in),
     ("0.8.370 verdict reuses receipts", assert_the_verdict_reuses_receipts_it_is_handed),
     ("0.8.365 weld symbols are type 8", assert_weld_symbols_are_not_labelled_as_datum_tags),
     ("0.8.363 nothing-to-mark is a warning", assert_nothing_to_mark_is_not_a_delivery_defect),

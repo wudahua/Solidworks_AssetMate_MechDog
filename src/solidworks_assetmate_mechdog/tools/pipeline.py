@@ -155,6 +155,14 @@ def _call_status(ok, execution_ok, failed_steps, error, blockers):
     try:
         if execution_ok is False:
             return "failed"
+        # 0.8.373 (report 2026-11-24 §2): `delivery_incomplete` means "the drawing EXISTS,
+        # something non-critical did not finish" — the module's own rule says so. But a step
+        # that merely could not be CHECKED (hole_callouts with include_faces=False) landed in
+        # `failed_steps`, and the rule below turned that into `failed`, i.e. "nothing usable
+        # was produced, retry or roll back" — contradicting the `hint` in the same receipt.
+        # Incomplete wins over failed_steps whenever the run itself did not crash.
+        if error == "delivery_incomplete" and execution_ok is not False:
+            return "incomplete"
         if failed_steps:
             return "failed"
         if ok:
