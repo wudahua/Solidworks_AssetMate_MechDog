@@ -1,0 +1,1832 @@
+diff --git a/README.md b/README.md
+index 0a50037..5f0fe16 100644
+--- a/README.md
++++ b/README.md
+@@ -56,7 +56,7 @@ Windows + SolidWorks 2020+，纯 Python + COM，不需要编译 C# 插件。MCP
+ > 右下角明细栏是**原生 BOM**（`BomFeature` 可取，会随装配更新），不是画线拼的表格。
+ > 件号 ① ② 与明细栏行号对应。
+ >
+-> **注意**：这两个气泡是**界面手工添加**的——`InsertBOMBalloon2` 需要 9 个必填参数、`InsertBalloon` 在 SW2024/SW2026 下都是 `DISP_E_UNKNOWNNAME`，所以没有对应的 MCP 工具，`check_capabilities` 里 `balloon` 标的是 `unsupported`。明细栏行号本身是正确的，手插时照抄即可。
++> 截图中的两个气泡由 SolidWorks 界面添加。ZJZL 提供原生 BOM 气泡工具，使用条件见 [ZJZL 使用与验收](docs/zjzl-capabilities.md)。
+ 
+ ### 箱体零件图
+ 
+@@ -222,15 +222,16 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
+ | 装配与零件 | `get_assembly_tree`、`export_bom`、`recolor_assembly`、`build_feature_ledger` |
+ | 导出 | `export_drawing`（PDF/DWG/DXF）、`render_drawing`（PNG 目视）、`batch_export`（STEP） |
+ 
+-全部 74 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
++全部 80 个工具按能力域展开。运行时可通过 `list_tool_profiles` 与 `check_capabilities` 查询。
+ 
+ ## 三个能力域
+ 
+-### 一、装配与零件（14）
++### 一、装配与零件（15）
+ 
+ | 工具 | 作用 |
+ |---|---|
+ | `get_assembly_tree` | 组件树：零件名、路径、颜色、子装配递归 |
++| `zjzl_inspect_mates` | 读取装配体活动配置的配合和关联组件 |
+ | `export_bom` | BOM：按零件聚合，数量/材料/单重/总重，可写 CSV |
+ | `get_mass_properties` | 整机质量/体积/表面积/质心 |
+ | `recolor_assembly` | 按零件类型批量上色（黄金比例配色，同零件同色） |
+@@ -245,12 +246,17 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
+ | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
+ | `export_sketch_geometry` | **草图逐点几何**（0.8.309 新增）：每段线/弧的长度、直线端点由 `LineParams`+`GetLength` 精确算出、圆弧给圆心/轴/半径/包角并从点集反解端点；`plane_frame` 恒 null（本 binding 读不到基准面），坐标是**草图局部坐标** |
+ 
+-### 二、工程图（44）
++### 二、工程图（49）
+ 
+ | 工具 | 作用 |
+ |---|---|
+ | `produce_drawing` | **一条命令出图**：台账→规划→建图→标注→自检→判定，按类别套默认值 |
+ | `create_drawing` | 建图：A0–A4、多视图、逐视图比例、`view_positions` 显式摆位、模板安全区实测 |
++| `zjzl_create_orthographic_views` | 从已有父视图创建原生对齐投影，按该页的第一角法或第三角法布局 |
++| `zjzl_create_custom_view` | 按模型空间的观察方向和向上方向创建原生任意方向视图 |
++| `zjzl_probe_geometry` | 读取视图可见直线、圆弧、圆和顶点，返回可用于后续标注的持久引用 |
++| `zjzl_add_reference_dimension` | 用几何引用创建带括号的原生参考尺寸，回读关联与数值 |
++| `zjzl_add_bom_balloon` | 按可见装配实例边添加原生 BOM 件号气泡，核对实际 BOM 行 |
+ | `set_view` | 移动/缩放单个视图（`DISPATCH_PROPERTYPUT` + VARIANT，直接赋值会静默写错） |
+ | `place_views` | 批量摆视图：`[{view, x, y, scale}]` |
+ | `add_section_view` | 剖视图（自动画剖切线）；支持**模型坐标剖切面** `cut_plane_normal`/`cut_plane_origin`；`cut_line_ratio`（默认 0.55）按**短边**钳制剖切线长度。错误码：`section_empty` / `section_suspicious` / **`hatch_missing`（剖切面无剖面线，0.8.56 起不再 ok:true）** |
+@@ -311,7 +317,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
+ | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
+ | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案；回显**运行中的版本 + 源码路径 + 解释器** |
+ | `ping` | **最轻的存活探针**（约 18 ms，不碰 ActiveDoc）：SW 版本、往返延迟、上一个工具、自愈计数 |
+-| `list_tool_profiles` | 74 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
++| `list_tool_profiles` | 80 个工具的建议分组（standard / drawing / expert / full）。`ungrouped` 列出未归类工具 |
+ | `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
+ | `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
+ 
+@@ -497,7 +503,7 @@ A3 / 1:2、带标注的情况下实测：
+ | **尺寸跨视图去重需外部传值** | 图纸尺寸是投影长度，同一条边不同视图值不同 | 去重只能靠调用方给 `known_values` |
+ | **`produce_drawing` 会多标尺寸** | 默认 `prune_to_plan=true` 已按规划删除多余尺寸；`dimension_filter` 全不匹配时一条不删 | 看 `dimension_gap.pruned_to_plan` 与 `filter_aborted` |
+ | **图面利用率低** | 布局只保证不越界，不保证填满 | 视图偏小、留白多，需人工放大 |
+-| **件号圆圈（BOM balloon）** | `InsertBOMBalloon2` 需 9 个必填参数；`InsertBalloon` 在 SW2024/SW2026 均 `DISP_E_UNKNOWNNAME` | 用 `add_note` 写数字，引线可用 `add_sheet_line`（**需 `AddToDB`，见工具表**），或界面手插 |
++| **ZJZL 原生 BOM 件号气泡** | 需要关联已加载装配的唯一原生 BOM，以及可选的组件边 | 先用 `zjzl_probe_geometry` 取得该视图中的组件边引用，再调用 `zjzl_add_bom_balloon` |
+ | **展开计算与校验（flat_pattern_calc）** | 工具不读 K 因子，展开由 SolidWorks 自己算 | 用 `flat_pattern_report` 声明依据，不要拿它做展开验证 |
+ | **把驱动尺寸补插到第二个视图** | `InsertModelAnnotations3` 是文档级幂等，参数改不出来 | 用 `list_drawing_edges` + `add_drawing_dimension(view_name=...)` 在该视图重新标注 |
+ | **建模 / 特征创建（geometry_creation）** | 本工具只处理已有模型的出图，不做 CAD 建模 | 用 SolidWorks 或 solidpilot 类工具建模 |
+@@ -685,7 +691,7 @@ python tests/smoke.py
+ ```
+ 
+ **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
+-里 74 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
++里 80 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+ 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
+ 
+ ```bash
+diff --git a/docs/zjzl-capabilities.md b/docs/zjzl-capabilities.md
+new file mode 100644
+index 0000000..a0d9618
+--- /dev/null
++++ b/docs/zjzl-capabilities.md
+@@ -0,0 +1,34 @@
++# ZJZL 工程图与装配工具
++
++ZJZL 使用 AssetMate 现有的 MCP 服务和 SolidWorks 会话。通过 `list_tool_profiles` 查看工具，通过 `check_capabilities(operation=工具名)` 查询各项适用条件。
++
++## 工程图操作
++
++| MCP 工具 | 使用方式 |
++| --- | --- |
++| `zjzl_create_orthographic_views` | 给出现有父视图名称和 `top`、`bottom`、`left`、`right` 中的任意组合。第一角法把上视放在下方、右视放在左侧，第三角法方向相反。用 `offset_m` 指定中心距。工具核对原生父子关系、方向、配置、比例与轮廓。 |
++| `zjzl_create_custom_view` | 传入零件或装配的绝对路径、观察法向 `normal`、向上提示 `up` 和图纸坐标 `position_m`。例如 `normal=[0.6,0,0.8]`、`up=[0,1,0]`。可指定模型配置。工具恢复模型视口并删除临时方向名，源模型不执行保存。 |
++| `zjzl_probe_geometry` | 在指定图纸视图读取直线边、圆弧、圆、其他可读曲线及可见顶点。模型与纸面坐标都用米。装配可用 `component` 检索一个实例。输出 `issues` 记录轮廓、曲线或顶点中无法完整读取的内容。 |
++| `zjzl_add_reference_dimension` | 将探测得到的 `reference` 对象完整传入 `references`。线性尺寸用两点或一条直边，角度用两条直边，半径和直径用一个正对视图的圆或圆弧。尺寸以带括号的原生从动标注保存。回执含尺寸持久 ID、关联和实际值；可传 `expected_value` 和 `tolerance` 核对，长度用毫米、角度用度。 |
++| `zjzl_inspect_mates` | 传入 `.SLDASM` 绝对路径。读取活动配置下当前装配层级的配合名称、原生类型、对齐、抑制及引用，距离和角度配合有可读取时返回数值。对子装配文件可单独调用。 |
++| `zjzl_add_bom_balloon` | 先插入原生 BOM，再探测装配视图的可见组件边。传入一个该边的 `reference` 与气泡位置。工具优先使用视图明确关联的 BOM，否则查找同页唯一匹配表。用配置和实例身份核对唯一可见行，可用 `expected_item` 核对件号。 |
++
++工程图参数使用绝对路径与准确的视图名称。省略 `sheet` 时使用活动页。写入工具默认 `save=false`，成功后可先在 SolidWorks 检查内存结果。传 `save=true` 时保存整份工程图，包括其中其他尚未保存的编辑。请用样件副本做验收。
++
++同一视图的引用可以在保存重开后尝试解析。引用仍受图纸路径、页、视图、装配实例和可见性约束。复制或改名图纸、切换配置、重建引起拓扑变化后，重新探测目标几何。轮廓线、卸载模型以及部分剪裁视图可能无法提供可选实体。投影布局校验使用视图包围轮廓，标题栏及其他图纸注记需要目视验收。BOM 分割表或其他无法解析为唯一表和行的布局会被拒绝。轻化、抑制或损坏的 Mate 引用可能只返回部分字段。
++
++## 验收
++
++在 AssetMate 仓库执行离线检查。真机测试需 Windows、运行中的 SolidWorks、可用许可证和对应的本机图纸及 BOM 模板。使用第一角法 A3 模板；测试零件为正视图有直边和 Ø5 圆孔的 60 × 40 mm 板件。装配样件使用同一零件的两个实例，带一个 20 mm 距离配合，按顶层 BOM 合为一个件号。测试复制文件并重绑装配引用，仅向新建的测试目录保存。可分开提供零件和装配参数。
++
++```powershell
++& .\.venv\Scripts\python.exe -X utf8 -B tests\check_all.py
++& .\.venv\Scripts\python.exe -X utf8 -B tests\zjzl_live.py `
++  --part 'C:\CAD\Plate.SLDPRT' `
++  --assembly 'C:\CAD\GapAssembly.SLDASM' `
++  --component-part 'C:\CAD\MatePlate.SLDPRT' `
++  --drawing-template 'C:\CAD\gb_a3.drwdot' `
++  --bom-template 'C:\CAD\bom-standard.sldbomtbt'
++```
++
++零件验收检查第一角法上视和右视、重叠撤回、任意方向与模型哈希、跨视图引用拦截、水平尺寸与孔径。装配验收检查距离配合和实例身份、缺 BOM 或件号不符时的拒绝，以及原生件号气泡的保存重开。跨页 BOM、第三角法、其他尺寸类型及 SolidWorks 其他版本应使用相应样件扩展验收。
+diff --git a/src/solidworks_assetmate_mechdog/server.py b/src/solidworks_assetmate_mechdog/server.py
+index 981c742..9c22957 100644
+--- a/src/solidworks_assetmate_mechdog/server.py
++++ b/src/solidworks_assetmate_mechdog/server.py
+@@ -22,7 +22,7 @@ try:
+ except Exception:  # a read-only cwd must not stop the server from starting
+     faulthandler.enable(all_threads=True)
+ 
+-from typing import Annotated
++from typing import Annotated, Literal
+ 
+ from pydantic import BaseModel, Field
+ from mcp.server.fastmcp import FastMCP
+@@ -31,7 +31,8 @@ from . import SERVER_NAME, __version__
+ from . import sw_session
+ from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
+                     layout, ledger, material as material_tools, pipeline, planner, recolor,
+-                    rename, sheet_metal, survey)
++                    rename, sheet_metal, survey, zjzl_balloon, zjzl_custom_view, zjzl_geometry,
++                    zjzl_mates, zjzl_orthographic, zjzl_reference_dimension)
+ 
+ mcp = FastMCP(SERVER_NAME)
+ # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
+@@ -208,12 +209,15 @@ _TOOL_PROFILES = {
+         "move_annotation", "delete_annotation", "delete_dimensions",
+         "prune_orphan_dimensions", "verify_dimension_attachments",
+         "list_drawing_edges", "list_circular_edges",
++        "zjzl_create_orthographic_views", "zjzl_create_custom_view", "zjzl_probe_geometry",
++        "zjzl_add_reference_dimension", "zjzl_add_bom_balloon",
+         "export_drawing", "render_drawing", "flat_pattern_report", "sheet_metal_qc",
+     ],
+     "expert": [
+         "recolor_assembly", "recolor_bodies", "rename_components",
+         "assign_materials", "set_part_material",
+         "export_bom", "batch_export",
++        "zjzl_inspect_mates",
+     ],
+     # `full` is deliberately ABSENT from the static table. It is not a hand-maintained
+     # subset — it is the live registry, injected in `list_tool_profiles()`. Keeping a
+@@ -2013,6 +2017,90 @@ def get_mass_properties(assembly_path: Annotated[str, Field(description="Assembl
+     return _json(assembly.mass_properties(assembly_path))
+ 
+ 
++@mcp.tool()
++@_reject_unknown_arguments
++def zjzl_create_orthographic_views(
++    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
++    base_view: Annotated[str, Field(description="Exact name of the existing parent drawing view.")],
++    directions: Annotated[list[Literal["top", "bottom", "left", "right"]], Field(description="Unique model-relative sides to project.", min_length=1, max_length=4)],
++    offset_m: Annotated[float, Field(description="Positive distance in sheet metres between parent and child view centres.")] = 0.09,
++    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
++    save: Annotated[bool, Field(description="Save the verified drawing in place. False leaves changes in memory.")] = False,
++) -> str:
++    """ZJZL native aligned projections, based on the sheet's first- or third-angle convention."""
++    return _json(zjzl_orthographic.create_orthographic_views(drawing_path, base_view, directions, offset_m, sheet, save))
++
++
++@mcp.tool()
++@_reject_unknown_arguments
++def zjzl_create_custom_view(
++    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
++    model_path: Annotated[str, Field(description="Absolute path to the referenced .SLDPRT or .SLDASM.")],
++    normal: Annotated[tuple[float, float, float], Field(description="Model-space vector pointing toward the viewer.")],
++    up: Annotated[tuple[float, float, float], Field(description="Model-space up hint. It must not be parallel to normal.")],
++    position_m: Annotated[tuple[float, float], Field(description="View centre in sheet metres.")],
++    configuration: Annotated[str | None, Field(description="Model configuration name. Null uses the native default.")] = None,
++    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
++    save: Annotated[bool, Field(description="Save the verified drawing in place. False leaves changes in memory.")] = False,
++) -> str:
++    """ZJZL arbitrary-orientation drawing view with verified native rotation and placement."""
++    return _json(zjzl_custom_view.create_custom_view(drawing_path, model_path, normal, up, position_m, configuration, sheet, save))
++
++
++@mcp.tool()
++@_reject_unknown_arguments
++def zjzl_probe_geometry(
++    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
++    view_name: Annotated[str, Field(description="Exact name of a loaded part or assembly view.")],
++    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
++    component: Annotated[str | None, Field(description="Optional assembly occurrence name. Null reads the entire view.")] = None,
++) -> str:
++    """ZJZL visible edge and vertex geometry with scoped persistent references for selection."""
++    return _json(zjzl_geometry.probe_geometry(drawing_path, view_name, sheet, component))
++
++
++@mcp.tool()
++@_reject_unknown_arguments
++def zjzl_add_reference_dimension(
++    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
++    view_name: Annotated[str, Field(description="Exact target view name.")],
++    kind: Annotated[Literal["aligned", "horizontal", "vertical", "angular", "diameter", "radius"], Field(description="Native dimension type.")],
++    references: Annotated[list[zjzl_geometry.GeometryReference], Field(description="One or two reference objects returned by zjzl_probe_geometry.", min_length=1, max_length=2)],
++    position_m: Annotated[tuple[float, float], Field(description="Dimension placement point in sheet metres.")],
++    expected_value: Annotated[float | None, Field(description="Optional measured value to verify, in mm or degrees.")] = None,
++    tolerance: Annotated[float, Field(description="Allowed absolute difference from expected_value, in mm or degrees.")] = 0.01,
++    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
++    save: Annotated[bool, Field(description="Save the verified drawing in place. False leaves changes in memory.")] = False,
++) -> str:
++    """ZJZL driven reference dimension on exact visible geometry, with native attachment and value readback."""
++    return _json(zjzl_reference_dimension.add_reference_dimension(
++        drawing_path, view_name, kind, references, position_m, expected_value, tolerance, sheet, save))
++
++
++@mcp.tool()
++@_reject_unknown_arguments
++def zjzl_inspect_mates(
++    assembly_path: Annotated[str, Field(description="Absolute path to an assembly .SLDASM.")],
++) -> str:
++    """ZJZL read-only inspection of the active configuration's assembly-level Mate features."""
++    return _json(zjzl_mates.inspect_mates(assembly_path))
++
++
++@mcp.tool()
++@_reject_unknown_arguments
++def zjzl_add_bom_balloon(
++    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
++    view_name: Annotated[str, Field(description="Exact assembly view name. Requires one linked native BOM or one matching same-sheet BOM.")],
++    reference: Annotated[zjzl_geometry.GeometryReference, Field(description="Assembly occurrence edge reference returned by zjzl_probe_geometry.")],
++    position_m: Annotated[tuple[float, float], Field(description="Balloon text position in sheet metres.")],
++    expected_item: Annotated[str | None, Field(description="Optional expected BOM item text. Null uses the verified native row item.")] = None,
++    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
++    save: Annotated[bool, Field(description="Save the verified drawing in place. False leaves changes in memory.")] = False,
++) -> str:
++    """ZJZL native BOM balloon linked to the exact visible component edge and verified BOM item."""
++    return _json(zjzl_balloon.add_bom_balloon(drawing_path, view_name, reference, position_m, expected_item, sheet, save))
++
++
+ @mcp.tool()
+ @_reject_unknown_arguments
+ def export_preview(
+diff --git a/src/solidworks_assetmate_mechdog/tools/capabilities.py b/src/solidworks_assetmate_mechdog/tools/capabilities.py
+index 737aba1..3c0e78f 100644
+--- a/src/solidworks_assetmate_mechdog/tools/capabilities.py
++++ b/src/solidworks_assetmate_mechdog/tools/capabilities.py
+@@ -11,6 +11,42 @@ it silently ignores is exactly how the 400-second wait happened.
+ 
+ # status: "supported" | "partial" | "unsupported"
+ CAPABILITIES = [
++    {
++        "id": "zjzl_orthographic",
++        "status": "partial",
++        "summary": "ZJZL 原生正投影视图",
++        "tools": ["zjzl_create_orthographic_views"],
++        "why": "从已有父视图建立原生对齐投影，并按图纸投影法校验方向。",
++        "workaround": "根据视图大小调整 offset_m；轮廓重叠或出界时整批撤回。",
++        "evidence": "SolidWorks 2025 33.0.0 样件：第一角法上视、右视，父视图保存重开，重叠撤回。",
++    },
++    {
++        "id": "zjzl_custom_view",
++        "status": "partial",
++        "summary": "ZJZL 任意方向视图",
++        "tools": ["zjzl_create_custom_view"],
++        "why": "用模型坐标的观察方向和向上方向创建原生工程图视图，回读旋转和位置。",
++        "workaround": "提供两个非平行向量和可容纳视图的纸面位置。",
++        "evidence": "SolidWorks 2025 33.0.0 零件样件：任意方向保存重开，源模型文件哈希一致。",
++    },
++    {
++        "id": "zjzl_reference_geometry",
++        "status": "partial",
++        "summary": "ZJZL 几何探测与参考尺寸",
++        "tools": ["zjzl_probe_geometry", "zjzl_add_reference_dimension"],
++        "why": "读取可见直线、圆弧、圆和顶点，并提供图纸、图页、视图和组件范围内的持久引用。",
++        "workaround": "使用有引用的几何；视图剪裁、轮廓边或拓扑变化后重新探测。",
++        "evidence": "SolidWorks 2025 33.0.0 样件：60 mm 水平尺寸、Ø5 mm 及关联保存重开，错误期望值撤回。",
++    },
++    {
++        "id": "zjzl_mates",
++        "status": "partial",
++        "summary": "ZJZL 装配配合读取",
++        "tools": ["zjzl_inspect_mates"],
++        "why": "读取装配体当前配置的配合组、约束类型、对齐、抑制及关联实体。",
++        "workaround": "对子装配文件分别调用；遇到无法读取的实体时检查抑制和轻化状态。",
++        "evidence": "SolidWorks 2025 33.0.0 样件：20 mm 距离配合和两处组件实例引用。",
++    },
+     {
+         "id": "view_layout",
+         "status": "partial",
+@@ -73,24 +109,12 @@ CAPABILITIES = [
+     },
+     {
+         "id": "balloon",
+-        "status": "unsupported",
+-        "summary": "件号圆圈（BOM balloon）",
+-        "why": ("`add_balloon` 的两条路径都不成立。在 SW2024 SP4 实测："
+-                "`InsertBOMBalloon2` 全部参数都是必需的（DISP_E_PARAMNOTOPTIONAL，"
+-                "传 3/4/5 参都不够，完整签名需要 9 参含 Style/Size/上标/下标/引线样式）；"
+-                "`InsertBOMBalloon` 参数数目无效；`InsertBalloon` **名字解析不到**"
+-                "（DISP_E_UNKNOWNNAME，GetIDsOfNames 直接 False）。"
+-                "用户反馈在 SW2026 上 `InsertBalloon` 同样是 UNKNOWNNAME，与本地一致。"),
+-        # Report 2026-11-07 (C7): this said "do not pair it with add_sheet_line, that tool
+-        # renders 0 pixels" — while `sheet_sketch_space` in the SAME table says `verified`
+-        # with 571 changed pixels. The capability table must not contradict itself; the
+-        # leader can be drawn, only the balloon object itself is unavailable.
+-        "workaround": ("件号用 add_note 写数字 + `add_sheet_line` 画引线"
+-                       "（`AddToDB` 已修，实测 571 像素可见）；"
+-                       "或界面手工插（明细栏行号本身已经正确）"),
+-        "evidence": ("2026-10-29 实测 SW2024 SP4：InsertBOMBalloon2 → 非选择性的参数；"
+-                     "InsertBOMBalloon → 无效的参数数目；InsertBalloon → 未知名称。"
+-                     "用户反馈 SW2026 同款失败。"),
++        "status": "partial",
++        "summary": "ZJZL 原生 BOM 件号气泡",
++        "tools": ["zjzl_add_bom_balloon"],
++        "why": "使用 IModelDocExtension.InsertBOMBalloon2 和原生气泡选项创建，核对 BOM 行与组件边。",
++        "workaround": "先建立原生 BOM，再探测目标装配视图的可见组件边。需要唯一 BOM 表及唯一可见行。",
++        "evidence": "SolidWorks 2025 33.0.0 装配样件验收范围见 docs/zjzl-capabilities.md。",
+     },
+     {
+         "id": "delete_annotation",
+@@ -134,9 +158,9 @@ CAPABILITIES = [
+         "why": ("`add_note` 可用；`add_sheet_line` 也**可用**（0.8.173 起：先设 "
+                 "`AddToDB = True` 再 `CreateLine`，草图线就会渲染——实测 571 像素可见）；"
+                 "图纸草图单位是**米**不是毫米。"
+-                "件号请单独看 `balloon` 条目——它是 unsupported，不要在这里当成可用"),
++                "件号气泡见 `balloon` 条目。"),
+         "workaround": "传毫米会得到满屏放射斜线（坐标被当模型空间并乘视图比例）",
+-        "evidence": "2026-10-28 实测 add_note / add_sheet_line 均 ok；add_balloon 见 balloon 条目",
++        "evidence": "2026-10-28 实测 add_note / add_sheet_line 均 ok",
+     },
+     {
+         "id": "bom_table",
+@@ -682,7 +706,8 @@ def check_capabilities(operation=None):
+     if operation:
+         key = str(operation).strip().lower()
+         entries = [c for c in CAPABILITIES
+-                   if key in c["id"].lower() or key in c["summary"]]
++                   if key in c["id"].lower() or key in c["summary"].lower()
++                   or any(key in tool for tool in c.get("tools", ()))]
+         if not entries:
+             return error("unknown_operation",
+                          "no capability entry matches %r" % operation,
+diff --git a/src/solidworks_assetmate_mechdog/tools/zjzl_balloon.py b/src/solidworks_assetmate_mechdog/tools/zjzl_balloon.py
+new file mode 100644
+index 0000000..452ad94
+--- /dev/null
++++ b/src/solidworks_assetmate_mechdog/tools/zjzl_balloon.py
+@@ -0,0 +1,136 @@
++"""Insert a native BOM-linked balloon onto an exact visible occurrence edge."""
++from __future__ import annotations
++
++import math
++
++from ..sw_session import call_method
++from .zjzl_geometry import resolve_visible, visible_components
++from .zjzl_native import (
++    Native, ZJZLError, activate_sheet, drawing_scope, execute, named_view, path_key,
++    rollback_annotation, save_drawing, sheet_point, source_path,
++)
++from .zjzl_reference_dimension import attachments_match
++
++
++def _row_for_component(native, drawing, sheet_name, view, component):
++    configuration = view.ReferencedConfiguration
++    linked_name = view.GetKeepLinkedToBOMName() if view.GetKeepLinkedToBOM() else None
++    model_path = path_key(view.GetReferencedModelName())
++    tables = []
++    for views in drawing.GetViews() or ():
++        if not views:
++            continue
++        surface = native.cast(views[0], "IView")
++        bom_sheet = surface.GetName2()
++        if linked_name is None and bom_sheet != sheet_name:
++            continue
++        for raw in surface.GetTableAnnotations() or ():
++            table = native.cast(raw, "ITableAnnotation")
++            if table.Type != 2:  # swTableAnnotation_BillOfMaterials
++                continue
++            bom = native.cast(raw, "IBomTableAnnotation")
++            bom_feature = native.cast(bom.BomFeature, "IBomFeature")
++            feature = native.cast(bom_feature.GetFeature(), "IFeature")
++            if linked_name is not None and feature.Name != linked_name:
++                continue
++            if path_key(bom_feature.GetReferencedModelName()) == model_path:
++                tables.append((table, bom, feature.Name, bom_sheet))
++    if len(tables) != 1:
++        raise ZJZLError("bom_scope_unavailable", "Expected one linked BOM table or one same-sheet BOM for the referenced assembly")
++    table, bom, feature_name, bom_sheet = tables[0]
++    rows = []
++    for index in range(table.RowCount):
++        components = [native.cast(raw, "IComponent2") for raw in bom.GetComponents2(index, configuration) or ()]
++        if not any(native.app.IsSame(owner, component) == 1 for owner in components):
++            continue
++        count, item_number, _ = bom.GetComponentsCount2(index, configuration)
++        if count != len(components) or not item_number or table.RowHidden(index):
++            raise ZJZLError("bom_row_invalid", "Could not verify a visible BOM row and its item number")
++        rows.append((index, item_number.strip()))
++    if len(rows) != 1:
++        raise ZJZLError("bom_row_not_unique", "The exact occurrence must appear in one visible BOM row")
++    row, item = rows[0]
++    return row, item, feature_name, bom_sheet
++
++
++def _existing_balloon(native, view, occurrence):
++    raw = view.GetFirstAnnotation3()
++    while raw is not None:
++        annotation = native.cast(raw, "IAnnotation")
++        if annotation.GetType() == 6:  # swNote
++            note = native.cast(annotation.GetSpecificAnnotation(), "INote")
++            if note is not None and note.IsBomBalloon():
++                attached = annotation.GetAttachedEntities3() or ()
++                if len(attached) == 1:
++                    entity = native.cast(attached[0], "IEntity")
++                    component = entity.GetComponent()
++                    if component is not None and native.app.IsSame(component, occurrence) == 1:
++                        return True
++        raw = annotation.GetNext3()
++    return False
++
++
++def _add(drawing_path, view_name, reference, position_m, expected_item, sheet_name, save):
++    if reference.kind != "edge" or reference.component is None:
++        raise ZJZLError("bad_input", "Select a scoped edge reference from an assembly occurrence")
++    path = source_path(drawing_path, (".slddrw",))
++    native = Native()
++    doc, drawing, sheet, extension = drawing_scope(native, path, sheet_name)
++    view = named_view(native, sheet, view_name)
++    sheet_name = sheet.GetName()
++    point = sheet_point(sheet, position_m)
++    components = visible_components(native, view)
++    entity = resolve_visible(native, extension, view, components, reference, path, sheet_name, view_name)
++    occurrence, owner = components[reference.component]
++    row, item, bom_feature, bom_sheet = _row_for_component(native, drawing, sheet_name, view, owner)
++    if expected_item is not None and expected_item.strip() != item:
++        raise ZJZLError("bom_item_mismatch", f"Native BOM item is {item!r}, expected {expected_item!r}")
++    if _existing_balloon(native, view, occurrence):
++        raise ZJZLError("balloon_exists", "A native BOM balloon already points to this occurrence in the view")
++    options = native.cast(extension.CreateBalloonOptions(), "IBalloonOptions")
++    if options is None:
++        raise ZJZLError("balloon_options_unavailable", "SolidWorks did not provide native BOM balloon options")
++    options.Style = 1  # swBS_Circular
++    options.UpperTextContent = 1  # swBalloonTextItemNumber
++
++    activate_sheet(native, drawing, sheet)
++    doc.ClearSelection2(True)
++    annotation = None
++    try:
++        if not drawing.ActivateView(view_name) or not view.SelectEntity(entity, False):
++            raise ZJZLError("entity_selection_failed", "Could not select the occurrence edge in the target view")
++        raw = extension.InsertBOMBalloon2(options)
++        if raw is None:
++            raise ZJZLError("balloon_creation_failed", "SolidWorks did not create a native BOM balloon")
++        note = native.cast(raw, "INote")
++        annotation = native.cast(call_method(note, "GetAnnotation"), "IAnnotation")
++        if not call_method(annotation, "SetPosition2", *point):
++            raise ZJZLError("balloon_position_failed", "SolidWorks did not place the balloon")
++        actual_position = list(annotation.GetPosition()[:2])
++        native_item = note.GetText().strip()
++        checks = {"native_bom_balloon": note.IsBomBalloon(),
++                  # INote uses swDetailingNoteTextContent_e, unlike IBalloonOptions.
++                  "linked_item_text": note.GetBomBalloonTextStyle(True) == 2,
++                  "item_number": native_item == item, "not_dangling": not annotation.IsDangling(),
++                  "visible": annotation.Visible == 1, "edge_attachment": attachments_match(native, annotation, [entity]),
++                  "position": math.dist(actual_position, point[:2]) <= 0.001}
++        failed = [key for key, passed in checks.items() if not passed]
++        if failed:
++            raise ZJZLError("balloon_verification_failed", f"BOM item {item!r} failed native readback: {', '.join(failed)}")
++        record = {"drawing_path": path, "sheet": sheet_name, "view": view_name,
++                  "component": reference.component, "bom_row": row, "bom_feature": bom_feature,
++                  "bom_sheet": bom_sheet, "item_number": native_item,
++                  "annotation_name": annotation.GetName(), "position_m": actual_position,
++                  "native_bom_balloon": True, "readback_verified": True}
++        warnings = save_drawing(doc) if save else None
++        return {**record, "saved": save, "save_warnings": warnings}
++    except Exception as exc:
++        if annotation is not None:
++            rollback_annotation(doc, extension, annotation, exc)
++        raise
++    finally:
++        doc.ClearSelection2(True)
++
++
++def add_bom_balloon(drawing_path, view_name, reference, position_m, expected_item, sheet, save):
++    return execute(_add, drawing_path, view_name, reference, position_m, expected_item, sheet, save)
+diff --git a/src/solidworks_assetmate_mechdog/tools/zjzl_custom_view.py b/src/solidworks_assetmate_mechdog/tools/zjzl_custom_view.py
+new file mode 100644
+index 0000000..559a78f
+--- /dev/null
++++ b/src/solidworks_assetmate_mechdog/tools/zjzl_custom_view.py
+@@ -0,0 +1,104 @@
++"""Create a drawing view from model-space normal and up vectors."""
++from __future__ import annotations
++
++import math
++from uuid import uuid4
++
++from ..sw_session import double_array
++from .zjzl_native import Native, ZJZLError, activate_sheet, drawing_scope, execute, path_key, save_drawing, sheet_point, source_path
++from .zjzl_orthographic import check_layout, transform, view_changes, view_record
++
++
++def _unit(vector):
++    if len(vector) != 3 or not all(math.isfinite(value) for value in vector):
++        raise ZJZLError("bad_input", "Orientation vectors must have three finite components")
++    largest = max(abs(value) for value in vector)
++    if not largest:
++        raise ZJZLError("bad_input", "Orientation vectors cannot be zero")
++    scaled = [value / largest for value in vector]
++    length = math.hypot(*scaled)
++    return tuple(value / length for value in scaled)
++
++
++def _cross(a, b):
++    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
++
++
++def rotation(normal, up):
++    normal = _unit(normal)
++    right = _cross(_unit(up), normal)
++    if math.hypot(*right) < 1e-8:
++        raise ZJZLError("bad_input", "Normal and up must not be parallel")
++    right = _unit(right)
++    up = _cross(normal, right)
++    return tuple(value for row in zip(right, up, normal) for value in row)
++
++
++def _create(drawing_path, model_path, normal, up, position_m, configuration, sheet_name, save):
++    matrix = rotation(normal, up)
++    path = source_path(drawing_path, (".slddrw",))
++    model_path = source_path(model_path, (".sldprt", ".sldasm"))
++    kind = 1 if model_path.lower().endswith(".sldprt") else 2
++    native = Native()
++    doc, drawing, sheet, extension = drawing_scope(native, path, sheet_name)
++    point = sheet_point(sheet, position_m)
++    model = native.document(model_path, kind)
++    if configuration is not None and configuration not in (model.GetConfigurationNames() or ()):
++        native.document(path, 3)
++        raise ZJZLError("configuration_not_found", f"Model has no configuration {configuration!r}")
++
++    viewport = native.cast(model.ActiveView, "IModelView")
++    original = native.cast(viewport.Orientation3, "IMathTransform")
++    original_data = tuple(original.ArrayData)
++    math_utility = native.cast(native.app.GetMathUtility(), "IMathUtility")
++    requested = math_utility.CreateTransform(double_array((*matrix, *original_data[9:])))
++    name = f"ZJZL_{uuid4().hex}"
++    with view_changes(native, path, doc, drawing, sheet, extension) as created:
++        try:
++            try:
++                viewport.Orientation3 = requested
++                current = native.cast(viewport.Orientation3, "IMathTransform")
++                if math.dist(current.ArrayData[:9], matrix) > 1e-6:
++                    raise ZJZLError("orientation_failed", "The model viewport rejected the requested orientation")
++                model.NameView(name)
++                if name not in (model.GetModelViewNames() or ()):
++                    raise ZJZLError("orientation_failed", "SolidWorks did not register the temporary ZJZL view")
++            finally:
++                viewport.Orientation3 = original
++                current = native.cast(viewport.Orientation3, "IMathTransform")
++                if math.dist(current.ArrayData, original_data) > 1e-6:
++                    raise ZJZLError("viewport_restore_failed", "Could not restore the original model viewport")
++            native.document(path, 3)
++            activate_sheet(native, drawing, sheet)
++            raw = drawing.CreateDrawViewFromModelView3(model_path, name, *point)
++            if raw is None:
++                raise ZJZLError("custom_view_failed", "SolidWorks did not create a drawing view")
++            created.append(raw)
++            view = native.cast(raw, "IView")
++            if configuration is not None:
++                view.ReferencedConfiguration = configuration
++            view.Position = double_array(point[:2])
++        finally:
++            try:
++                model = native.document(model_path, kind)
++                if name in (model.GetModelViewNames() or ()):
++                    if not model.DeleteNamedView(name) or name in (model.GetModelViewNames() or ()):
++                        raise ZJZLError("orientation_cleanup_failed", f"Could not remove temporary model view {name}")
++            finally:
++                native.document(path, 3)
++
++        doc.EditRebuild3()
++        actual = transform(native, view)
++        if (math.dist(actual[:9], matrix) > 1e-6 or math.dist(view.Position[:2], point[:2]) > 0.001
++                or path_key(view.GetReferencedModelName()) != path_key(model_path)
++                or configuration is not None and view.ReferencedConfiguration != configuration):
++            raise ZJZLError("custom_view_verification_failed", "The drawing view readback differs from the requested orientation or placement")
++        check_layout(native, sheet, view)
++        record = view_record(view)
++        warnings = save_drawing(doc) if save else None
++    return {"drawing_path": path, "sheet": sheet.GetName(), "view": record,
++            "rotation": list(actual[:9]), "saved": save, "save_warnings": warnings, "readback_verified": True}
++
++
++def create_custom_view(drawing_path, model_path, normal, up, position_m, configuration, sheet, save):
++    return execute(_create, drawing_path, model_path, normal, up, position_m, configuration, sheet, save)
+diff --git a/src/solidworks_assetmate_mechdog/tools/zjzl_geometry.py b/src/solidworks_assetmate_mechdog/tools/zjzl_geometry.py
+new file mode 100644
+index 0000000..2fb1a03
+--- /dev/null
++++ b/src/solidworks_assetmate_mechdog/tools/zjzl_geometry.py
+@@ -0,0 +1,204 @@
++"""Read selectable native drawing geometry and verify scoped references."""
++from __future__ import annotations
++
++from collections import defaultdict
++from typing import Literal
++import math
++
++from pydantic import BaseModel, Field
++
++from .zjzl_native import Native, ZJZLError, drawing_scope, execute, named_view, optional, path_key, persist, read_reference, source_path
++from .zjzl_orthographic import axis_vector, transform
++
++
++class GeometryReference(BaseModel, extra="forbid"):
++    drawing_path: str
++    sheet: str
++    view: str
++    kind: Literal["edge", "vertex"]
++    component: str | None = None
++    id: str = Field(min_length=1, max_length=65536)
++
++
++def point_through(matrix, point):
++    return [sum(value * basis for value, basis in zip(point, axis_vector(matrix, axis))) * matrix[12]
++            + matrix[9 + axis] for axis in range(3)]
++
++
++def visible_components(native, view):
++    model = native.cast(view.ReferencedDocument, "IModelDoc2")
++    if model is None or not view.IsModelLoaded():
++        raise ZJZLError("model_unavailable", "The view must reference a loaded model")
++    if model.GetType() == 1:
++        return {None: (None, None)}
++    if model.GetType() != 2:
++        raise ZJZLError("model_unavailable", "Expected a part or assembly view")
++    assembly = native.cast(model, "IAssemblyDoc")
++    owners = {owner.Name2: owner for owner in (
++        native.cast(obj, "IComponent2") for obj in assembly.GetComponents(False) or ())}
++    components = {}
++    for raw in view.GetVisibleComponents() or ():
++        component = native.cast(raw, "IComponent2")
++        name = component.Name2
++        # Drawing occurrences can include the root assembly prefix.
++        matching = [owners[key] for key in {name, name.partition("/")[2]} & owners.keys()
++                    if path_key(owners[key].GetPathName()) == path_key(component.GetPathName())]
++        if len(matching) != 1:
++            raise ZJZLError("component_scope_unavailable", f"Could not uniquely map drawing occurrence {name!r}")
++        owner = matching[0]
++        if owner.Name2 in components:
++            raise ZJZLError("component_scope_unavailable", f"Duplicate drawing occurrence for {owner.Name2!r}")
++        components[owner.Name2] = (component, owner)
++    return components
++
++
++def visible_entities(view, component, kind):
++    return view.GetVisibleEntities2(component, 1 if kind == "edge" else 2) or ()
++
++
++def component_transform(native, owner):
++    if owner is None:
++        return None
++    matrix = native.cast(owner.Transform2, "IMathTransform")
++    if matrix is None:
++        raise ZJZLError("component_transform_unavailable", f"Could not read transform for {owner.Name2!r}")
++    return tuple(matrix.ArrayData)
++
++
++def _edge_data(native, raw, component_matrix, view_matrix):
++    edge = native.cast(raw, "IEdge")
++    params = native.cast(edge.GetCurveParams3(), "ICurveParamData")
++    curve = native.cast(edge.GetCurve(), "ICurve")
++    if params is None or curve is None:
++        return None, ()
++    start, end = params.StartPoint, params.EndPoint
++    if not params.Sense:
++        start, end = end, start
++    owner_points = (start, end)
++    model_points = [point_through(component_matrix, p) for p in owner_points] if component_matrix else owner_points
++    row = {
++        "curve": "other",
++        "curve_type": params.CurveType,
++        "endpoints_model_m": [list(p) for p in model_points],
++        "endpoints_sheet_m": [point_through(view_matrix, p)[:2] for p in model_points],
++    }
++    if curve.IsLine():
++        row.update(curve="line", length_m=math.dist(*model_points))
++    elif curve.IsCircle():
++        cx, cy, cz, nx, ny, nz, radius = curve.CircleParams
++        center = (cx, cy, cz)
++        normal = (nx, ny, nz)
++        if component_matrix:
++            center = point_through(component_matrix, center)
++            normal = [sum(value * basis for value, basis in zip(normal, axis_vector(component_matrix, axis)))
++                      for axis in range(3)]
++            radius *= component_matrix[12]
++        sweep = abs(params.UMaxValue - params.UMinValue)
++        ratio = abs(sum(a * b for a, b in zip(normal, axis_vector(view_matrix, 2))))
++        row.update(curve="circle" if math.isclose(sweep, math.tau, abs_tol=1e-7) else "arc",
++                   center_model_m=list(center), center_sheet_m=point_through(view_matrix, center)[:2],
++                   radius_m=radius, sweep_rad=sweep, projected_axis_ratio=min(ratio, 1.0))
++    vertices = tuple(zip((edge.GetStartVertex(), edge.GetEndVertex()), model_points))
++    return row, vertices
++
++
++def _reference(path, sheet, view_name, kind, component, identifier):
++    if identifier is None:
++        return None
++    return GeometryReference(drawing_path=path, sheet=sheet, view=view_name,
++                             kind=kind, component=component, id=identifier).model_dump()
++
++
++def _probe(drawing_path, view_name, sheet_name, component_name):
++    path = source_path(drawing_path, (".slddrw",))
++    native = Native()
++    _, _, sheet, extension = drawing_scope(native, path, sheet_name)
++    view = named_view(native, sheet, view_name)
++    sheet_name = sheet.GetName()
++    view_matrix = transform(native, view)
++    components = visible_components(native, view)
++    if component_name is not None:
++        if component_name not in components:
++            raise ZJZLError("component_not_visible", f"Component {component_name!r} is not visible in {view_name!r}")
++        components = {component_name: components[component_name]}
++    edges, vertices, issue_counts = [], [], defaultdict(int)
++    for name, (component, owner) in components.items():
++        try:
++            component_data = component_transform(native, owner)
++        except ZJZLError as exc:
++            issue_counts[exc.code] += 1
++            continue
++        endpoints = defaultdict(list)
++        for raw in visible_entities(view, component, "edge"):
++            identifier = persist(extension, raw)
++            result = optional(lambda: _edge_data(native, raw, component_data, view_matrix))
++            row, candidates = result if result else (None, ())
++            if row is None:
++                issue_counts["unreadable_curve"] += 1
++                row = {"curve": "unavailable"}
++            ref = _reference(path, sheet_name, view_name, "edge", name, identifier)
++            issue_counts["unavailable_reference"] += ref is None
++            edges.append({"component": name, "reference": ref, **row})
++            for vertex, point in candidates:
++                vertex_id = persist(extension, vertex) if vertex is not None else None
++                if vertex_id:
++                    endpoints[vertex_id].append(point)
++        for raw in visible_entities(view, component, "vertex"):
++            identifier = persist(extension, raw)
++            ref = _reference(path, sheet_name, view_name, "vertex", name, identifier)
++            points = endpoints.get(identifier, ())
++            point = points[0] if points and all(math.dist(p, points[0]) < 1e-8 for p in points) else None
++            issue_counts["unavailable_reference"] += ref is None
++            issue_counts["unverified_vertex_position"] += point is None
++            vertices.append({"component": name, "reference": ref,
++                             "point_model_m": list(point) if point is not None else None,
++                             "point_sheet_m": point_through(view_matrix, point)[:2] if point is not None else None})
++        silhouettes = optional(lambda: view.GetVisibleEntityCount2(component, 4))
++        if silhouettes:
++            issue_counts["silhouette_entities_excluded"] += silhouettes
++    issues = {key: count for key, count in issue_counts.items() if count}
++    return {"drawing_path": path, "sheet": sheet_name, "view": view_name,
++            "configuration": view.ReferencedConfiguration, "edges": edges, "vertices": vertices,
++            "status": "partial" if issues else "complete", "issues": issues}
++
++
++def projected_span(native, view, components, references, entities, axis):
++    view_matrix = transform(native, view)
++    if references[0].kind == "edge":
++        owner = components[references[0].component][1]
++        info, _ = _edge_data(native, entities[0], component_transform(native, owner), view_matrix)
++        points = info["endpoints_sheet_m"]
++    else:
++        points = []
++        for reference, entity in zip(references, entities):
++            component, owner = components[reference.component]
++            owner_matrix = component_transform(native, owner)
++            candidates = []
++            for raw in visible_entities(view, component, "edge"):
++                result = optional(lambda: _edge_data(native, raw, owner_matrix, view_matrix))
++                if result:
++                    candidates.extend(point for vertex, point in result[1]
++                                      if vertex is not None and native.app.IsSame(entity, vertex) == 1)
++            if not candidates or any(math.dist(p, candidates[0]) > 1e-8 for p in candidates):
++                raise ZJZLError("dimension_verification_failed", "Could not verify the projected vertex endpoints")
++            points.append(point_through(view_matrix, candidates[0])[:2])
++    span = math.dist(*points) if axis is None else abs(points[0][axis] - points[1][axis])
++    return span / view_matrix[12] * 1000
++
++
++def resolve_visible(native, extension, view, components, reference, path, sheet_name, view_name):
++    if (path_key(reference.drawing_path) != path_key(path) or reference.sheet != sheet_name
++            or reference.view != view_name or reference.component not in components):
++        raise ZJZLError("reference_scope_mismatch", "The reference belongs to a different drawing, sheet, view or occurrence")
++    raw, state = extension.GetObjectByPersistReference3(read_reference(reference.id))
++    if raw is None or state != 0:
++        raise ZJZLError("stale_reference", f"SolidWorks could not resolve the reference (state {state})")
++    component = components[reference.component][0]
++    for entity in visible_entities(view, component, reference.kind):
++        if native.app.IsSame(raw, entity) == 1:
++            return entity
++    raise ZJZLError("stale_reference", "The referenced entity is no longer visible in the requested view")
++
++
++def probe_geometry(drawing_path, view_name, sheet, component):
++    return execute(_probe, drawing_path, view_name, sheet, component)
+diff --git a/src/solidworks_assetmate_mechdog/tools/zjzl_mates.py b/src/solidworks_assetmate_mechdog/tools/zjzl_mates.py
+new file mode 100644
+index 0000000..24406ef
+--- /dev/null
++++ b/src/solidworks_assetmate_mechdog/tools/zjzl_mates.py
+@@ -0,0 +1,89 @@
++"""Read the active configuration's assembly-level Mate features."""
++from __future__ import annotations
++
++import math
++
++from ..sw_session import call_method
++from .zjzl_native import Native, execute, optional, persist, source_path
++
++
++def _cast_optional(native, read, interface):
++    return optional(lambda: native.cast(read(), interface))
++
++
++def _mate_record(native, feature, extension):
++    kind = feature.GetTypeName2()
++    suppressed = optional(feature.IsSuppressed)
++    feature_error = optional(feature.GetErrorCode2)
++    record = {"name": feature.Name, "feature_type": kind, "suppressed": suppressed,
++              "feature_code": feature_error[0] if feature_error is not None else None,
++              "feature_warning": feature_error[1] if feature_error is not None else None,
++              "mate_type": None, "alignment": None, "flipped": None, "value": None,
++              "unit": None, "entities": [], "issues": []}
++    issues = record["issues"]
++    mate = _cast_optional(native, feature.GetSpecificFeature2, "IMate2")
++    if mate is None:
++        issues.append("mate_details_unavailable")
++        return record
++    record.update(mate_type=optional(lambda: mate.Type), alignment=optional(lambda: mate.Alignment),
++                  flipped=optional(lambda: mate.Flipped))
++    count = optional(mate.GetMateEntityCount)
++    if count is None or count == 0:
++        issues.append("mate_entities_unavailable")
++    for index in range(count or 0):
++        entity = _cast_optional(native, lambda: mate.MateEntity(index), "IMateEntity2")
++        if entity is None:
++            issues.append(f"entity_{index}_unavailable")
++            record["entities"].append({"index": index, "status": "unavailable"})
++            continue
++        component = _cast_optional(native, lambda: entity.ReferenceComponent, "IComponent2")
++        reference = optional(lambda: entity.Reference)
++        record["entities"].append({
++            "index": index, "entity_type": optional(lambda: entity.ReferenceType2),
++            "component": optional(lambda: component.Name2) if component is not None else None,
++            "component_path": optional(component.GetPathName) if component is not None else None,
++            "persistent_id": persist(extension, reference) if reference is not None else None,
++            "status": "read" if reference is not None else "unavailable",
++        })
++        if reference is None:
++            issues.append(f"entity_{index}_reference_unavailable")
++    # Other mate types can carry multiple parameters. Avoid treating one as their value.
++    if kind in ("MateDistanceDim", "MateAngleDim"):
++        display = _cast_optional(native, lambda: mate.DisplayDimension, "IDisplayDimension")
++        dimension = _cast_optional(native, lambda: display.GetDimension2(0), "IDimension") if display is not None else None
++        value = optional(lambda: dimension.SystemValue) if dimension is not None else None
++        if value is None or not math.isfinite(value):
++            issues.append("value_unavailable")
++        elif kind == "MateDistanceDim":
++            record.update(value=value * 1000, unit="mm")
++        else:
++            record.update(value=math.degrees(value), unit="deg")
++    return record
++
++
++def _inspect(assembly_path):
++    path = source_path(assembly_path, (".sldasm",))
++    native = Native()
++    doc = native.document(path, 2)
++    manager = native.cast(doc.ConfigurationManager, "IConfigurationManager")
++    configuration = native.cast(manager.ActiveConfiguration, "IConfiguration")
++    extension = native.cast(doc.Extension, "IModelDocExtension")
++    groups, mates = [], []
++    raw = call_method(doc, "FirstFeature")
++    while raw is not None:
++        feature = native.cast(raw, "IFeature")
++        if feature.GetTypeName2() == "MateGroup":
++            groups.append(feature.Name)
++            current = feature.GetFirstSubFeature()
++            while current is not None:
++                child = native.cast(current, "IFeature")
++                if child.GetTypeName2().startswith("Mate"):
++                    mates.append(_mate_record(native, child, extension))
++                current = child.GetNextSubFeature()
++        raw = call_method(feature, "GetNextFeature")
++    return {"assembly_path": path, "configuration": configuration.Name, "mate_groups": groups,
++            "mates": mates, "status": "partial" if any(row["issues"] for row in mates) else "complete"}
++
++
++def inspect_mates(assembly_path):
++    return execute(_inspect, assembly_path)
+diff --git a/src/solidworks_assetmate_mechdog/tools/zjzl_native.py b/src/solidworks_assetmate_mechdog/tools/zjzl_native.py
+new file mode 100644
+index 0000000..477f2c6
+--- /dev/null
++++ b/src/solidworks_assetmate_mechdog/tools/zjzl_native.py
+@@ -0,0 +1,173 @@
++"""Typed SolidWorks calls on AssetMate's existing COM session."""
++from __future__ import annotations
++
++import base64
++import math
++import os
++
++from .. import sw_session
++from .drawing import _activate
++
++
++class ZJZLError(RuntimeError):
++    def __init__(self, code, message):
++        super().__init__(message)
++        self.code = code
++
++
++def path_key(path):
++    return os.path.normcase(os.path.realpath(path)) if path else None
++
++
++def source_path(path, extensions):
++    if not os.path.isabs(path) or os.path.splitext(path)[1].lower() not in extensions:
++        raise ZJZLError("bad_input", f"Expected an absolute path to {', '.join(extensions)}")
++    return os.path.realpath(path)
++
++
++class Native:
++    def __init__(self):
++        from win32com.client import gencache
++
++        self.dynamic = sw_session.get_sw()
++        revision = sw_session.sw_version(self.dynamic)
++        if not revision:
++            raise ZJZLError("com_unavailable", "SolidWorks did not report a revision")
++        self.library = gencache.EnsureModule(
++            "{83A33D31-27C5-11CE-BFD4-00400513BB57}", 0, int(revision.split(".")[0]), 0
++        )
++        self.app = self.cast(self.dynamic, "ISldWorks")
++
++    def cast(self, obj, interface):
++        import pythoncom
++
++        if obj is None:
++            return None
++        cls = getattr(self.library, interface)
++        if isinstance(obj, cls):
++            return obj
++        dispatch = getattr(obj, "_oleobj_", obj)
++        return cls(dispatch.QueryInterface(cls.CLSID, pythoncom.IID_IDispatch))
++
++    def active(self, path, kind):
++        active = self.cast(self.app.ActiveDoc, "IModelDoc2")
++        if active is None or active.GetType() != kind or path_key(active.GetPathName()) != path_key(path):
++            return None
++        return active
++
++    def document(self, path, kind):
++        current = self.active(path, kind)
++        if current is not None:
++            return current
++        opened = self.cast(self.app.GetOpenDocumentByName(path), "IModelDoc2")
++        if opened is None:
++            opened = self.cast(sw_session.open_document(path, kind), "IModelDoc2")
++        if path_key(opened.GetPathName()) != path_key(path) or opened.GetType() != kind:
++            raise ZJZLError("document_mismatch", f"SolidWorks opened a different document for {path}")
++        for key in (path, opened.GetTitle()):
++            if self.active(path, kind) is not None:
++                break
++            _activate(self.dynamic, key)
++        current = self.active(path, kind)
++        if current is None:
++            raise ZJZLError("document_mismatch", f"Could not activate the exact document {path}")
++        return current
++
++
++def optional(call):
++    import pythoncom
++
++    try:
++        return call()
++    except (pythoncom.com_error, AttributeError, TypeError) as exc:
++        if sw_session.is_bridge_lost_error(exc) or sw_session.is_transient_com_error(exc):
++            raise
++        return None
++
++
++def execute(operation, *args):
++    try:
++        return sw_session.ok(**operation(*args))
++    except ZJZLError as exc:
++        return sw_session.error(exc.code, str(exc))
++    except Exception as exc:
++        if sw_session.is_bridge_lost_error(exc):
++            try:
++                sw_session.reconnect(reason="ZJZL COM bridge lost")
++            except Exception:
++                pass  # The next tool call can reconnect again.
++            return sw_session.error("com_bridge_lost", str(exc), "Reopen and inspect the drawing before retrying a write.")
++        return sw_session.error("zjzl_operation_failed", str(exc))
++
++
++def drawing_scope(native, path, sheet_name):
++    doc = native.document(path, sw_session.SW_DOC_DRAWING)
++    drawing = native.cast(doc, "IDrawingDoc")
++    if sheet_name is None:
++        sheet = native.cast(drawing.GetCurrentSheet(), "ISheet")
++    else:
++        if sheet_name not in (drawing.GetSheetNames() or ()):
++            raise ZJZLError("sheet_not_found", f"Drawing has no sheet named {sheet_name!r}")
++        sheet = native.cast(drawing.Sheet(sheet_name), "ISheet")
++    extension = native.cast(doc.Extension, "IModelDocExtension")
++    return doc, drawing, sheet, extension
++
++
++def model_views(native, sheet):
++    views = (native.cast(raw, "IView") for raw in (sheet.GetViews() or ()))
++    return [view for view in views if view.Type != 1]
++
++
++def named_view(native, sheet, name):
++    matches = [view for view in model_views(native, sheet) if view.GetName2() == name]
++    if len(matches) != 1:
++        raise ZJZLError("view_not_found", f"Expected one model view named {name!r} on {sheet.GetName()!r}")
++    return matches[0]
++
++
++def activate_sheet(native, drawing, sheet):
++    name = sheet.GetName()
++    current = native.cast(drawing.GetCurrentSheet(), "ISheet")
++    if current.GetName() != name and not drawing.ActivateSheet(name):
++        raise ZJZLError("sheet_activation_failed", f"Could not activate sheet {name!r}")
++
++
++def sheet_point(sheet, point):
++    properties = sheet.GetProperties2()
++    if len(point) != 2 or not all(math.isfinite(value) for value in point):
++        raise ZJZLError("bad_input", "Expected two finite sheet coordinates in metres")
++    if not (0 < point[0] < properties[5] and 0 < point[1] < properties[6]):
++        raise ZJZLError("outside_sheet", f"Position {list(point)} lies outside {sheet.GetName()!r}")
++    return (*point, 0.0)
++
++
++def save_drawing(doc):
++    saved, errors, warnings = doc.Save3(1, 0, 0)  # swSaveAsOptions_Silent
++    if not saved or errors:
++        raise ZJZLError("save_failed", f"SolidWorks Save3 returned errors={errors}, warnings={warnings}")
++    return int(warnings)
++
++
++def persist(extension, entity):
++    data = optional(lambda: extension.GetPersistReference3(entity))
++    return base64.urlsafe_b64encode(bytes(data)).decode("ascii") if data else None
++
++
++def read_reference(identifier):
++    if not identifier or len(identifier) > 65536:
++        raise ZJZLError("bad_reference", "Expected a ZJZL persistent entity identifier")
++    try:
++        return base64.b64decode(identifier, altchars=b"-_", validate=True)
++    except (ValueError, TypeError) as exc:
++        raise ZJZLError("bad_reference", "Invalid ZJZL persistent entity identifier") from exc
++
++
++def rollback_annotation(doc, extension, annotation, cause):
++    doc.ClearSelection2(True)
++    try:
++        if not annotation.Select(False) or not extension.DeleteSelection2(0):
++            doc.ClearSelection2(True)
++            if not sw_session.call_method(annotation, "Select3", False, None) or not extension.DeleteSelection2(0):
++                raise RuntimeError("SolidWorks did not delete the annotation")
++    except Exception as exc:
++        raise ZJZLError("rollback_failed", f"{cause}. Annotation cleanup failed: {exc}") from exc
+diff --git a/src/solidworks_assetmate_mechdog/tools/zjzl_orthographic.py b/src/solidworks_assetmate_mechdog/tools/zjzl_orthographic.py
+new file mode 100644
+index 0000000..668c55a
+--- /dev/null
++++ b/src/solidworks_assetmate_mechdog/tools/zjzl_orthographic.py
+@@ -0,0 +1,147 @@
++"""Create native, aligned projections from an existing drawing view."""
++from __future__ import annotations
++
++from contextlib import contextmanager
++import math
++
++from .zjzl_native import (
++    Native, ZJZLError, activate_sheet, drawing_scope, execute, model_views, named_view,
++    path_key, save_drawing, sheet_point, source_path,
++)
++
++
++# Axis of the view normal in the base view, looking from that side of the object.
++SIDES = {"right": (0, 1), "left": (0, -1), "top": (1, 1), "bottom": (1, -1)}
++
++
++def projection_positions(origin, directions, offset, first_angle):
++    if not directions or len(directions) != len(set(directions)) or set(directions) - SIDES.keys():
++        raise ZJZLError("bad_input", "Directions must be unique and chosen from top, bottom, left, right")
++    if not math.isfinite(offset) or offset <= 0:
++        raise ZJZLError("bad_input", "Projection offset must be positive and finite")
++    positions = {}
++    for direction in directions:
++        axis, sign = SIDES[direction]
++        position = list(origin[:2])
++        position[axis] += offset * sign * (-1 if first_angle else 1)
++        positions[direction] = position
++    return positions
++
++
++def transform(native, view):
++    matrix = native.cast(view.ModelToViewTransform, "IMathTransform")
++    data = tuple(matrix.ArrayData) if matrix is not None else ()
++    if len(data) < 13 or not all(math.isfinite(value) for value in data) or data[12] <= 0:
++        raise ZJZLError("view_transform_unavailable", f"Could not read transform for {view.GetName2()!r}")
++    return data
++
++
++def axis_vector(matrix, index):
++    return matrix[index:9:3]
++
++
++def select_view(extension, name):
++    return extension.SelectByID2(name, "DRAWINGVIEW", 0.0, 0.0, 0.0, False, 0, None, 0)
++
++
++def view_record(view):
++    return {"name": view.GetName2(), "position_m": list(view.Position[:2]),
++            "outline_m": list(view.GetOutline()), "configuration": view.ReferencedConfiguration}
++
++
++def check_layout(native, sheet, view):
++    name = view.GetName2()
++    left, bottom, right, top = view.GetOutline()
++    width, height = sheet.GetProperties2()[5:7]
++    if not (0 <= left < right <= width and 0 <= bottom < top <= height):
++        raise ZJZLError("view_outside_sheet", f"Outline for {name!r} does not fit on the sheet")
++    for other in model_views(native, sheet):
++        if other.GetName2() == name:
++            continue
++        x1, y1, x2, y2 = other.GetOutline()
++        if max(left, x1) < min(right, x2) and max(bottom, y1) < min(top, y2):
++            raise ZJZLError("view_overlap", f"View {name!r} overlaps {other.GetName2()!r}")
++
++
++@contextmanager
++def view_changes(native, path, doc, drawing, sheet, extension):
++    created = []
++    try:
++        yield created
++    except Exception as cause:
++        if created:
++            try:
++                native.document(path, 3)
++                activate_sheet(native, drawing, sheet)
++                for raw in reversed(created):
++                    name = native.cast(raw, "IView").GetName2()
++                    doc.ClearSelection2(True)
++                    if not select_view(extension, name) or not extension.DeleteSelection2(0):
++                        raise RuntimeError(f"SolidWorks did not delete {name!r}")
++                    if any(view.GetName2() == name for view in model_views(native, sheet)):
++                        raise RuntimeError(f"View {name!r} remains on the sheet")
++            except Exception as exc:
++                raise ZJZLError("rollback_failed", f"{cause}. View cleanup failed: {exc}") from exc
++        raise
++    finally:
++        doc.ClearSelection2(True)
++
++
++def _create(drawing_path, base_view, directions, offset_m, sheet_name, save):
++    path = source_path(drawing_path, (".slddrw",))
++    native = Native()
++    doc, drawing, sheet, extension = drawing_scope(native, path, sheet_name)
++    parent = named_view(native, sheet, base_view)
++    parent_matrix = transform(native, parent)
++    model_path = path_key(parent.GetReferencedModelName())
++    configuration = parent.ReferencedConfiguration
++    first_angle = bool(sheet.GetProperties2()[4])
++    positions = projection_positions(parent.Position, directions, offset_m, first_angle)
++    expected = {direction: tuple(SIDES[direction][1] * value for value in axis_vector(
++        parent_matrix, SIDES[direction][0])) for direction in positions}
++    for point in positions.values():
++        sheet_point(sheet, point)
++
++    existing = {}
++    for view in model_views(native, sheet):
++        if view.Type != 4:  # swDrawingProjectedView
++            continue
++        base = native.cast(view.GetBaseView(), "IView")
++        if base is None or base.GetName2() != base_view:
++            continue
++        normal = axis_vector(transform(native, view), 2)
++        for direction, target in expected.items():
++            if math.dist(normal, target) < 1e-6:
++                raise ZJZLError("projection_exists", f"{direction!r} projection already exists as {view.GetName2()!r}")
++
++    activate_sheet(native, drawing, sheet)
++    with view_changes(native, path, doc, drawing, sheet, extension) as created:
++        for direction, point in positions.items():
++            doc.ClearSelection2(True)
++            if not drawing.ActivateView(base_view) or not select_view(extension, base_view):
++                raise ZJZLError("view_selection_failed", f"Could not select projection parent {base_view!r}")
++            raw = drawing.CreateUnfoldedViewAt3(*point, 0.0, False)
++            if raw is None:
++                raise ZJZLError("projection_failed", f"SolidWorks did not create the {direction!r} projection")
++            created.append(raw)
++            view = native.cast(raw, "IView")
++            doc.EditRebuild3()
++            matrix = transform(native, view)
++            actual_base = native.cast(view.GetBaseView(), "IView")
++            if (view.Type != 4 or actual_base is None or actual_base.GetName2() != base_view
++                    or path_key(view.GetReferencedModelName()) != model_path
++                    or view.ReferencedConfiguration != configuration
++                    or math.dist(axis_vector(matrix, 2), expected[direction]) > 1e-6
++                    or not math.isclose(matrix[12], parent_matrix[12], rel_tol=1e-6)
++                    or math.dist(view.Position[:2], point) > 0.001):
++                raise ZJZLError("projection_verification_failed", f"Native {direction!r} view readback differs from the request")
++            check_layout(native, sheet, view)
++            existing[direction] = {**view_record(view), "normal_model": list(axis_vector(matrix, 2))}
++        warnings = save_drawing(doc) if save else None
++    return {"drawing_path": path, "sheet": sheet.GetName(), "base_view": base_view,
++            "projection": "first" if first_angle else "third", "views": existing, "saved": save,
++            "save_warnings": warnings, "readback_verified": True}
++
++
++def create_orthographic_views(drawing_path, base_view, directions, offset_m, sheet, save):
++    return execute(_create, drawing_path, base_view, directions, offset_m, sheet, save)
+diff --git a/src/solidworks_assetmate_mechdog/tools/zjzl_reference_dimension.py b/src/solidworks_assetmate_mechdog/tools/zjzl_reference_dimension.py
+new file mode 100644
+index 0000000..d146379
+--- /dev/null
++++ b/src/solidworks_assetmate_mechdog/tools/zjzl_reference_dimension.py
+@@ -0,0 +1,147 @@
++"""Create driven drawing dimensions from verified native geometry references."""
++from __future__ import annotations
++
++import math
++
++from ..sw_session import call_method
++from .zjzl_geometry import component_transform, projected_span, resolve_visible, visible_components
++from .zjzl_native import (
++    Native, ZJZLError, activate_sheet, drawing_scope, execute, named_view, persist,
++    rollback_annotation, save_drawing, sheet_point, source_path,
++)
++from .zjzl_orthographic import axis_vector, transform
++
++
++# IDimension::GetType reports the unit family, IDisplayDimension::Type2 the style.
++OPERATIONS = {
++    "aligned": ("AddDimension2", {2, 9, 11, 12}),
++    "horizontal": ("AddHorizontalDimension2", {2, 11}),
++    "vertical": ("AddVerticalDimension2", {2, 12}),
++    "angular": ("AddDimension2", {3, 16}),
++    "diameter": ("AddDiameterDimension2", {6, 15}),
++    "radius": ("AddRadialDimension2", {5, 14}),
++}
++
++
++def _displays(native, view):
++    raw = view.GetFirstDisplayDimension5()
++    while raw is not None:
++        display = native.cast(raw, "IDisplayDimension")
++        yield display
++        raw = display.GetNext5()
++
++
++def attachments_match(native, annotation, entities):
++    attached = annotation.GetAttachedEntities3() or ()
++    return len(entities) == len(attached) and all(
++        any(native.app.IsSame(actual, entity) == 1 for actual in attached) for entity in entities
++    )
++
++
++def _validate_selection(native, kind, refs, entities, view, components):
++    if kind in ("diameter", "radius"):
++        if len(refs) != 1 or refs[0].kind != "edge":
++            raise ZJZLError("bad_input", "A radial dimension requires one circular edge")
++        edge = native.cast(entities[0], "IEdge")
++        curve = native.cast(edge.GetCurve(), "ICurve")
++        if curve is None or not curve.IsCircle():
++            raise ZJZLError("bad_input", "A radial dimension requires a circular edge")
++        normal = curve.CircleParams[3:6]
++        owner = components[refs[0].component][1]
++        matrix = component_transform(native, owner)
++        if matrix is not None:
++            normal = [sum(a * b for a, b in zip(normal, axis_vector(matrix, i))) for i in range(3)]
++        view_normal = axis_vector(transform(native, view), 2)
++        if not math.isclose(abs(sum(a * b for a, b in zip(normal, view_normal))), 1.0, abs_tol=1e-6):
++            raise ZJZLError("bad_input", "A radial dimension requires a face-on circular edge")
++        return
++    if kind != "angular" and len(refs) == 2 and all(ref.kind == "vertex" for ref in refs):
++        return
++    count = 2 if kind == "angular" else 1
++    if len(refs) == count and all(ref.kind == "edge" for ref in refs):
++        edges = [native.cast(entity, "IEdge") for entity in entities]
++        curves = [native.cast(edge.GetCurve(), "ICurve") for edge in edges]
++        if all(curve is not None and curve.IsLine() for curve in curves):
++            return
++    raise ZJZLError("bad_input", "Use two straight edges for angular dimensions, or one straight edge or two vertices for linear dimensions")
++
++
++def _add(drawing_path, view_name, kind, references, position_m, expected_value, tolerance, sheet_name, save):
++    if kind not in OPERATIONS or not 1 <= len(references) <= 2:
++        raise ZJZLError("bad_input", "Choose a supported dimension kind and one or two references")
++    if (not math.isfinite(tolerance) or tolerance < 0
++            or expected_value is not None and (not math.isfinite(expected_value) or expected_value < 0)):
++        raise ZJZLError("bad_input", "Expected value and tolerance must be finite and nonnegative")
++    path = source_path(drawing_path, (".slddrw",))
++    native = Native()
++    doc, drawing, sheet, extension = drawing_scope(native, path, sheet_name)
++    view = named_view(native, sheet, view_name)
++    sheet_name = sheet.GetName()
++    point = sheet_point(sheet, position_m)
++    components = visible_components(native, view)
++    entities = [resolve_visible(native, extension, view, components, ref, path, sheet_name, view_name)
++                for ref in references]
++    if len(entities) == 2 and native.app.IsSame(*entities) == 1:
++        raise ZJZLError("bad_input", "Do not use the same entity twice")
++    _validate_selection(native, kind, references, entities, view, components)
++    operation, styles = OPERATIONS[kind]
++    span = None
++    axes = {"horizontal": 0, "vertical": 1, "aligned": None}
++    if kind in axes:
++        span = projected_span(native, view, components, references, entities, axes[kind])
++        if span <= 1e-6:
++            raise ZJZLError("bad_input", "The references have zero projected separation for the requested kind")
++    for existing in _displays(native, view):
++        if (existing.Type2 in styles
++                and attachments_match(native, native.cast(call_method(existing, "GetAnnotation"), "IAnnotation"), entities)):
++            previous = native.cast(existing.GetDimension2(0), "IDimension")
++            if span is None or math.isclose(previous.SystemValue * 1000, span, abs_tol=0.01):
++                raise ZJZLError("dimension_exists", "A dimension of this type already references this geometry")
++
++    activate_sheet(native, drawing, sheet)
++    doc.ClearSelection2(True)
++    annotation = None
++    try:
++        if not drawing.ActivateView(view_name):
++            raise ZJZLError("view_selection_failed", f"Could not activate {view_name!r}")
++        for index, entity in enumerate(entities):
++            if not view.SelectEntity(entity, index > 0):
++                raise ZJZLError("entity_selection_failed", "Could not select the exact geometry in its view")
++        raw = getattr(doc, operation)(*point)
++        if raw is None:
++            raise ZJZLError("dimension_creation_failed", "SolidWorks did not create the dimension")
++        display = native.cast(raw, "IDisplayDimension")
++        annotation = native.cast(call_method(display, "GetAnnotation"), "IAnnotation")
++        dimension = native.cast(display.GetDimension2(0), "IDimension")
++        display.ShowParenthesis = True
++        unit = "deg" if kind == "angular" else "mm"
++        value = math.degrees(dimension.SystemValue) if unit == "deg" else dimension.SystemValue * 1000
++        identifier = persist(extension, display)
++        display_type, parameter_type, driven_state = display.Type2, dimension.GetType(), dimension.DrivenState
++        if display_type not in styles or parameter_type != (1 if unit == "deg" else 0) or driven_state != 1:
++            raise ZJZLError("dimension_verification_failed",
++                            f"Unexpected native dimension type={display_type}, parameter_type={parameter_type}, driven_state={driven_state}")
++        if (not display.ShowParenthesis or annotation.IsDangling() or annotation.Visible != 1 or not identifier
++                or not attachments_match(native, annotation, entities)
++                or not any(native.app.IsSame(display, d) == 1 for d in _displays(native, view))):
++            raise ZJZLError("dimension_verification_failed", "Could not verify the native dimension visibility, persistence or view attachments")
++        if not math.isfinite(value) or span is not None and not math.isclose(value, span, abs_tol=0.01):
++            raise ZJZLError("dimension_verification_failed", f"Read {value:g} {unit}, projected separation is {span} {unit}")
++        if expected_value is not None and abs(value - expected_value) > tolerance:
++            raise ZJZLError("dimension_value_mismatch", f"Read {value:g} {unit}, expected {expected_value} ± {tolerance:g}")
++        record = {"drawing_path": path, "sheet": sheet_name, "view": view_name, "dimension_id": identifier,
++                  "name": dimension.FullName, "kind": kind, "reference": True, "value": value, "unit": unit,
++                  "position_m": list(annotation.GetPosition()[:2]),
++                  "attachments": [ref.model_dump() for ref in references], "readback_verified": True}
++        warnings = save_drawing(doc) if save else None
++        return {**record, "saved": save, "save_warnings": warnings}
++    except Exception as exc:
++        if annotation is not None:
++            rollback_annotation(doc, extension, annotation, exc)
++        raise
++    finally:
++        doc.ClearSelection2(True)
++
++
++def add_reference_dimension(drawing_path, view_name, kind, references, position_m, expected_value, tolerance, sheet, save):
++    return execute(_add, drawing_path, view_name, kind, references, position_m, expected_value, tolerance, sheet, save)
+diff --git a/tests/check_all.py b/tests/check_all.py
+index 3c4978d..ad94b27 100644
+--- a/tests/check_all.py
++++ b/tests/check_all.py
+@@ -35,6 +35,7 @@ STEPS = [
+     # assertions it did not execute — including the one that drove a real MCP failure. It
+     # needs no SolidWorks, only the `mcp` package, so it belongs here.
+     ("stdio_contract", [sys.executable, os.path.join(HERE, "stdio_contract.py")]),
++    ("zjzl", [sys.executable, os.path.join(HERE, "test_zjzl.py")]),
+ ]
+ 
+ 
+diff --git a/tests/regressions.py b/tests/regressions.py
+index f37244c..9af0b19 100644
+--- a/tests/regressions.py
++++ b/tests/regressions.py
+@@ -310,7 +310,7 @@ COVERAGE_EXEMPT = {
+ 
+ 
+ def assert_every_tool_has_smoke_coverage():
+-    """Every registered tool must appear in smoke.py, or be explicitly exempted.
++    """Every registered tool must be exercised in a live suite or explicitly exempted.
+ 
+     This is the check that would have caught today's real problem: six new tools
+     (delete_view / delete_annotation / move_annotation / layout_dimensions / health_check /
+@@ -332,14 +332,21 @@ def assert_every_tool_has_smoke_coverage():
+             tools.append(node.name)
+ 
+     smoke_src = open(os.path.join(ROOT, "tests", "smoke.py"), encoding="utf-8").read()
++    zjzl_src = open(os.path.join(ROOT, "tests", "zjzl_live.py"), encoding="utf-8").read()
++    zjzl_calls = {
++        node.args[0].value for node in ast.walk(ast.parse(zjzl_src))
++        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
++        and node.func.id == "run_tool" and node.args and isinstance(node.args[0], ast.Constant)
++    }
+     missing = [t for t in tools
+                if t not in COVERAGE_EXEMPT
++               and t not in zjzl_calls
+                and ("%s(" % t) not in smoke_src
+                and ("%s " % t) not in smoke_src
+                and ('"%s"' % t) not in smoke_src]
+     covered = len(tools) - len(missing) - len([t for t in tools if t in COVERAGE_EXEMPT])
+     assert not missing, (
+-        "%d of %d tools are never called by smoke.py: %s"
++        "%d of %d tools are never called by the live suites: %s"
+         % (len(missing), len(tools), ", ".join(missing[:12])))
+     return "%d/%d tools covered (%d exempt)" % (covered, len(tools), len(COVERAGE_EXEMPT))
+ 
+@@ -4432,10 +4439,8 @@ def assert_docs_numbers_match_the_code():
+                 target = dec.func if isinstance(dec, ast.Call) else dec
+                 if isinstance(target, ast.Attribute) and target.attr == "tool":
+                     registered += 1
+-    # 71 since v0.8.284 (`list_tool_profiles`). Bump this line IN THE SAME COMMIT that adds
+-    # a tool — the check exists so a new tool cannot slip in without anyone noticing.
+-    assert registered == 74, (
+-        "expected 74 registered tools, AST found %d — update this expectation "
++    assert registered == 80, (
++        "expected 80 registered tools, AST found %d — update this expectation "
+         "deliberately when a tool is added" % registered)
+ 
+     # Whitespace-tolerant because README wraps the sentence; `assert m` because not
+diff --git a/tests/test_zjzl.py b/tests/test_zjzl.py
+new file mode 100644
+index 0000000..1854035
+--- /dev/null
++++ b/tests/test_zjzl.py
+@@ -0,0 +1,150 @@
++"""ZJZL offline tests. Run with python tests/test_zjzl.py."""
++import asyncio
++import math
++import os
++import unittest
++from unittest.mock import Mock, patch
++
++from solidworks_assetmate_mechdog import server
++from solidworks_assetmate_mechdog.tools import (
++    capabilities, zjzl_balloon, zjzl_custom_view, zjzl_geometry, zjzl_mates, zjzl_orthographic,
++)
++from solidworks_assetmate_mechdog.tools.zjzl_native import ZJZLError, read_reference
++
++
++class ZJZLTests(unittest.TestCase):
++    def test_projection_positions_follow_sheet_convention(self):
++        sides = ("top", "right", "bottom", "left")
++        first = zjzl_orthographic.projection_positions((0.20, 0.15), sides, 0.05, True)
++        third = zjzl_orthographic.projection_positions((0.20, 0.15), sides, 0.05, False)
++        self.assertAlmostEqual(first["top"][1], 0.10)
++        self.assertAlmostEqual(first["right"][0], 0.15)
++        self.assertAlmostEqual(third["top"][1], 0.20)
++        self.assertAlmostEqual(third["right"][0], 0.25)
++        self.assertEqual(first["top"], third["bottom"])
++        self.assertEqual(first["right"], third["left"])
++
++    def test_projection_rejects_repeated_sides_or_nonfinite_offsets(self):
++        for sides, offset in [(("top", "top"), 0.05), (("rear",), 0.05), ((), 0.05), (("top",), math.nan)]:
++            with self.subTest(sides=sides, offset=offset), self.assertRaises(ZJZLError):
++                zjzl_orthographic.projection_positions((0.20, 0.15), sides, offset, True)
++
++    def test_view_batch_rolls_back_in_reverse_creation_order(self):
++        native, doc, drawing, sheet, ext = (Mock() for _ in range(5))
++        native.cast.side_effect = lambda entity, _: entity
++        first, second = Mock(), Mock()
++        first.GetName2.return_value, second.GetName2.return_value = "First", "Second"
++        ext.DeleteSelection2.return_value = True
++        with patch.object(zjzl_orthographic, "activate_sheet"), patch.object(
++            zjzl_orthographic, "select_view", return_value=True
++        ) as select, patch.object(zjzl_orthographic, "model_views", return_value=[]):
++            with self.assertRaisesRegex(ValueError, "failed"):
++                with zjzl_orthographic.view_changes(native, "drawing", doc, drawing, sheet, ext) as created:
++                    created.extend([first, second])
++                    raise ValueError("failed")
++        self.assertEqual([call.args[1] for call in select.call_args_list], ["Second", "First"])
++        self.assertEqual(ext.DeleteSelection2.call_count, 2)
++
++    def test_rotation_orthogonalizes_up_and_keeps_handedness(self):
++        matrix = zjzl_custom_view.rotation((3, 0, 4), (0, 1, 0.5))
++        axes = [zjzl_orthographic.axis_vector(matrix, axis) for axis in range(3)]
++        self.assertEqual(axes[2], (0.6, 0.0, 0.8))
++        for axis in axes:
++            self.assertAlmostEqual(math.hypot(*axis), 1)
++        self.assertAlmostEqual(sum(a * b for a, b in zip(axes[1], axes[2])), 0)
++        for actual, expected in zip(zjzl_custom_view._cross(*axes[:2]), axes[2]):
++            self.assertAlmostEqual(actual, expected)
++
++    def test_orientation_rejects_degenerate_vectors(self):
++        for normal, up in [((0, 0, 0), (0, 1, 0)), ((0, 0, 1), (0, 0, 2)), ((0, 1), (0, 0, 1)),
++                           ((math.inf, 0, 1), (0, 1, 0))]:
++            with self.subTest(normal=normal, up=up), self.assertRaises(ZJZLError):
++                zjzl_custom_view.rotation(normal, up)
++
++    def test_geometry_resolves_only_in_exact_view_scope(self):
++        path = os.path.abspath("test.SLDDRW")
++        reference = zjzl_geometry.GeometryReference(drawing_path=path, sheet="S", view="V", kind="edge", id="AQI=")
++        visible, raw = object(), object()
++        native, ext, view = Mock(), Mock(), Mock()
++        ext.GetObjectByPersistReference3.return_value = raw, 0
++        native.app.IsSame.return_value = 1
++        view.GetVisibleEntities2.return_value = [visible]
++        components = {None: (None, None)}
++        with self.assertRaisesRegex(ZJZLError, "different drawing"):
++            zjzl_geometry.resolve_visible(native, ext, view, components, reference, path, "Wrong", "V")
++        ext.GetObjectByPersistReference3.assert_not_called()
++        self.assertIs(zjzl_geometry.resolve_visible(native, ext, view, components, reference, path, "S", "V"), visible)
++        ext.GetObjectByPersistReference3.assert_called_once_with(bytes([1, 2]))
++        native.app.IsSame.return_value = 0
++        with self.assertRaisesRegex(ZJZLError, "no longer visible"):
++            zjzl_geometry.resolve_visible(native, ext, view, components, reference, path, "S", "V")
++        ext.GetObjectByPersistReference3.return_value = None, 3
++        with self.assertRaisesRegex(ZJZLError, "state 3"):
++            zjzl_geometry.resolve_visible(native, ext, view, components, reference, path, "S", "V")
++
++    def test_reference_decoder_rejects_invalid_data(self):
++        for identifier in ("", "A!!=", "x" * 65_537):
++            with self.subTest(size=len(identifier)), self.assertRaises(ZJZLError):
++                read_reference(identifier)
++
++    def test_projected_geometry_uses_native_scale_and_translation(self):
++        matrix = (0, -1, 0, 1, 0, 0, 0, 0, 1, .1, .2, 0, 2)
++        actual = zjzl_geometry.point_through(matrix, (.01, .02, .03))
++        for point, expected in zip(actual, (.14, .18, .06)):
++            self.assertAlmostEqual(point, expected)
++
++    def test_suppressed_mate_is_reported_when_native_details_are_unavailable(self):
++        feature = Mock(Name="SuppressedMate")
++        feature.GetTypeName2.return_value = "MateDistanceDim"
++        feature.IsSuppressed.return_value = True
++        feature.GetErrorCode2.return_value = (0, False)
++        feature.GetSpecificFeature2.return_value = None
++        native = Mock()
++        native.cast.side_effect = lambda entity, _: entity
++        with patch.object(zjzl_mates, "optional", side_effect=lambda call: call()):
++            mate = zjzl_mates._mate_record(native, feature, Mock())
++        self.assertTrue(mate["suppressed"])
++        self.assertIsNone(mate["value"])
++        self.assertEqual(mate["issues"], ["mate_details_unavailable"])
++
++    def test_bom_resolves_exact_occurrence_and_refuses_hidden_row(self):
++        native, drawing, view, surface, raw, table, bom, feature = (Mock() for _ in range(8))
++        first, other = object(), object()
++        model_path = os.path.abspath("test.SLDASM")
++        native.app.IsSame.side_effect = lambda a, b: int(a is b)
++        conversions = {"IView": surface, "ITableAnnotation": table,
++                       "IBomTableAnnotation": bom, "IBomFeature": feature, "IFeature": feature}
++        native.cast.side_effect = lambda value, kind: conversions.get(kind, value)
++        drawing.GetViews.return_value = [(surface, view)]
++        view.GetKeepLinkedToBOM.return_value = False
++        view.GetReferencedModelName.return_value = model_path
++        view.ReferencedConfiguration = "Default"
++        surface.GetName2.return_value = "S"
++        surface.GetTableAnnotations.return_value = [raw]
++        table.Type, table.RowCount = 2, 2
++        table.RowHidden.return_value = False
++        bom.GetComponents2.side_effect = lambda row, _: (other,) if row == 0 else (first,)
++        bom.GetComponentsCount2.return_value = (1, "2", "part number")
++        feature.GetReferencedModelName.return_value = model_path
++        feature.Name = "BOM"
++        self.assertEqual(zjzl_balloon._row_for_component(native, drawing, "S", view, first), (1, "2", "BOM", "S"))
++        table.RowHidden.return_value = True
++        with self.assertRaisesRegex(ZJZLError, "visible BOM row"):
++            zjzl_balloon._row_for_component(native, drawing, "S", view, first)
++
++    def test_all_tools_are_registered_and_capability_discoverable(self):
++        tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
++        names = {"zjzl_create_orthographic_views", "zjzl_create_custom_view", "zjzl_probe_geometry",
++                 "zjzl_add_reference_dimension", "zjzl_inspect_mates", "zjzl_add_bom_balloon"}
++        self.assertEqual({name for name in tools if name.startswith("zjzl_")}, names)
++        with patch("solidworks_assetmate_mechdog.sw_session.sw_version", return_value=None):
++            for name in names:
++                self.assertEqual(capabilities.check_capabilities(name)["checked"], 1)
++                schema = tools[name].inputSchema
++                self.assertFalse(schema["additionalProperties"])
++                if "save" in schema["properties"]:
++                    self.assertFalse(schema["properties"]["save"]["default"])
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/tests/zjzl_live.py b/tests/zjzl_live.py
+new file mode 100644
+index 0000000..24ac1b3
+--- /dev/null
++++ b/tests/zjzl_live.py
+@@ -0,0 +1,219 @@
++"""Live ZJZL acceptance on disposable fixture copies. See docs/zjzl-capabilities.md."""
++import argparse
++from pathlib import Path
++import hashlib
++import json
++import math
++import shutil
++import sys
++import tempfile
++from uuid import uuid4
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
++
++from solidworks_assetmate_mechdog import server
++from solidworks_assetmate_mechdog.tools.drawing import VIEW_ALIASES, _new_document
++from solidworks_assetmate_mechdog.tools.zjzl_native import Native, model_views, path_key, read_reference, save_drawing
++from solidworks_assetmate_mechdog.tools.zjzl_orthographic import transform
++
++parser = argparse.ArgumentParser(description=__doc__)
++parser.add_argument("--part", type=Path, help="60 × 40 mm plate with a visible Ø5 mm hole in the front view")
++parser.add_argument("--assembly", type=Path, help="Assembly with a 20 mm distance mate between two instances of one part")
++parser.add_argument("--component-part", type=Path, help="The assembly's sole referenced part file")
++parser.add_argument("--drawing-template", type=Path, required=True, help="A3 first-angle drawing template")
++parser.add_argument("--bom-template", type=Path, help="Standard native BOM template")
++parser.add_argument("--base-assembly-drawing", type=Path, help="Optional fallback drawing with one front view, no BOM or balloons")
++parser.add_argument("--output-dir", type=Path, default=Path(tempfile.gettempdir()), help="Parent folder for the new test directory")
++args = parser.parse_args()
++if not (args.part or args.assembly):
++    parser.error("Provide --part or --assembly")
++if args.assembly and (args.component_part is None or args.bom_template is None):
++    parser.error("--assembly requires --component-part and --bom-template")
++for value in (args.part, args.assembly, args.component_part, args.drawing_template, args.bom_template, args.base_assembly_drawing):
++    if value is not None and not value.is_file():
++        parser.error(f"File missing: {value}")
++ROOT = args.output_dir.resolve() / f"zjzl-live-{uuid4().hex[:8]}"
++ROOT.mkdir(parents=True)
++
++n = Native()
++original = n.cast(n.app.ActiveDoc, "IModelDoc2")
++original_path = original.GetPathName() if original is not None else ""
++original_kind = original.GetType() if original is not None else 0
++print("SolidWorks", n.dynamic.RevisionNumber, "fixture", ROOT, flush=True)
++
++
++def run_tool(tool, expected=None, **kwargs):
++    value = json.loads(getattr(server, tool)(**kwargs))
++    if not value["ok"]:
++        print(tool, value, flush=True)
++    if expected is None:
++        assert value["ok"], value
++    else:
++        assert value.get("error") == expected, value
++    return value
++
++
++def drawing(path, model_path, centre, fallback=None):
++    raw = _new_document(n.dynamic, str(args.drawing_template.resolve()))
++    if raw is None and fallback is not None:
++        shutil.copyfile(fallback, path)
++        deps = n.app.GetDocumentDependencies2(str(path), False, False, False)
++        assert len(deps) == 2 and n.app.ReplaceReferencedDocument(str(path), deps[1], str(model_path))
++        doc = n.document(str(path), 3)
++        dim = n.cast(doc, "IDrawingDoc")
++        sheet = n.cast(dim.GetCurrentSheet(), "ISheet")
++        view, = model_views(n, sheet)
++        return doc, dim, sheet, view
++    assert raw is not None, "SolidWorks did not create a drawing from the supplied template"
++    doc = n.cast(raw, "IModelDoc2")
++    dim = n.cast(doc, "IDrawingDoc")
++    ext = n.cast(doc.Extension, "IModelDocExtension")
++    assert ext.SaveAs(str(path), 0, 1, None, 0, 0) == (True, 0, 0)
++    model = n.cast(n.app.GetOpenDocumentByName(str(model_path)), "IModelDoc2")
++    front = next(name for name in VIEW_ALIASES["front"] if name in model.GetModelViewNames())
++    view = n.cast(dim.CreateDrawViewFromModelView3(str(model_path), front, *centre, 0), "IView")
++    assert view is not None
++    sheet = n.cast(dim.GetCurrentSheet(), "ISheet")
++    doc.EditRebuild3()
++    save_drawing(doc)
++    return doc, dim, sheet, view
++
++
++def part_case():
++    path = ROOT / f"ZJZL_Plate_{ROOT.name}.SLDPRT"
++    drw = path.with_suffix(".SLDDRW")
++    shutil.copyfile(args.part, path)
++    source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
++    part = n.document(str(path), 1)
++    existing_names = part.GetModelViewNames()
++    doc, draw, sheet, view = drawing(drw, path, (.14, .17))
++    name = view.GetName2()
++    scope = {"drawing_path": str(drw), "sheet": sheet.GetName()}
++    run_tool("zjzl_create_orthographic_views", expected="view_overlap", **scope, base_view=name,
++           directions=["right"], offset_m=.02)
++    assert len(model_views(n, sheet)) == 1
++    projections = run_tool("zjzl_create_orthographic_views", **scope, base_view=name,
++                         directions=["top", "right"], offset_m=.09, save=True)
++    assert projections["projection"] == "first"
++    assert projections["views"]["top"]["position_m"][1] < .17
++    assert projections["views"]["right"]["position_m"][0] < .14
++    run_tool("zjzl_create_orthographic_views", expected="projection_exists", **scope, base_view=name,
++           directions=["top"])
++    custom = run_tool("zjzl_create_custom_view", **scope, model_path=str(path), normal=(.6, 0, .8),
++                    up=(0, 1, 0), position_m=(.30, .23), save=True)
++    assert math.dist(custom["rotation"], [.8, 0, .6, 0, 1, 0, -.6, 0, .8]) < 1e-6
++    assert part.GetModelViewNames() == existing_names
++    scope["view_name"] = name
++    geometry = run_tool("zjzl_probe_geometry", **scope)
++    print("edges", len(geometry["edges"]), "vertices", len(geometry["vertices"]), geometry["issues"], flush=True)
++    straight = [e for e in geometry["edges"] if e["curve"] == "line" and e["reference"]]
++    circle = min((e for e in geometry["edges"] if e["curve"] == "circle" and e["reference"]
++                  and e["projected_axis_ratio"] > .99), key=lambda edge: edge["radius_m"])
++    horizontal = max((e for e in straight if math.isclose(e["endpoints_sheet_m"][0][1],
++                                                          e["endpoints_sheet_m"][1][1], abs_tol=1e-8)),
++                     key=lambda edge: edge["length_m"])
++    vertices = [v for v in geometry["vertices"] if v["reference"] and v["point_model_m"] is not None]
++    at_ends = [min(vertices, key=lambda v: math.dist(v["point_model_m"], p))
++               for p in horizontal["endpoints_model_m"]]
++    reference_model = server.zjzl_geometry.GeometryReference
++    vertex_refs = [reference_model(**v["reference"]) for v in at_ends]
++    circular_ref = reference_model(**circle["reference"])
++    run_tool("zjzl_add_reference_dimension", expected="dimension_value_mismatch", **scope, kind="diameter",
++           references=[circular_ref], position_m=(.20, .22), expected_value=999)
++    assert view.GetFirstDisplayDimension5() is None
++    horizontal_record = run_tool("zjzl_add_reference_dimension", **scope, kind="horizontal", references=vertex_refs,
++                               position_m=(.14, .236), expected_value=horizontal["length_m"] * 1000, save=True)
++    diameter = run_tool("zjzl_add_reference_dimension", **scope, kind="diameter", references=[circular_ref],
++                      position_m=(.20, .22), expected_value=circle["radius_m"] * 2000, save=True)
++    run_tool("zjzl_add_reference_dimension", expected="dimension_exists", **scope, kind="diameter", references=[circular_ref],
++           position_m=(.20, .22))
++    run_tool("zjzl_add_reference_dimension", expected="reference_scope_mismatch", **scope, kind="diameter",
++           references=[circular_ref.model_copy(update={"view": custom["view"]["name"]})], position_m=(.20, .22))
++    n.app.CloseDoc(doc.GetTitle())
++    doc = n.document(str(drw), 3)
++    draw = n.cast(doc, "IDrawingDoc")
++    sheet = n.cast(draw.GetCurrentSheet(), "ISheet")
++    views = {item.GetName2(): item for item in model_views(n, sheet)}
++    for item in projections["views"].values():
++        assert n.cast(views[item["name"]].GetBaseView(), "IView").GetName2() == name
++    c = views[custom["view"]["name"]]
++    assert math.dist(transform(n, c)[:9], custom["rotation"]) < 1e-6
++    ext = n.cast(doc.Extension, "IModelDocExtension")
++    for receipt in (horizontal_record, diameter):
++        raw, status = ext.GetObjectByPersistReference3(read_reference(receipt["dimension_id"]))
++        assert status == 0 and raw is not None
++        display = n.cast(raw, "IDisplayDimension")
++        dimension = n.cast(display.GetDimension2(0), "IDimension")
++        annotation = n.cast(display.GetAnnotation(), "IAnnotation")
++        assert dimension.DrivenState == 1 and display.ShowParenthesis and not annotation.IsDangling()
++        assert math.isclose(dimension.SystemValue * 1000, receipt["value"], abs_tol=1e-6)
++        assert len(annotation.GetAttachedEntities3()) == len(receipt["attachments"])
++    assert hashlib.sha256(path.read_bytes()).hexdigest() == source_hash
++    print("PASS part projections, negative rollback, orientation, references and dimensions",
++          horizontal_record["value"], diameter["value"], flush=True)
++
++
++def assembly_case():
++    path = ROOT / f"ZJZL_Gap_{ROOT.name}.SLDASM"
++    drw = path.with_suffix(".SLDDRW")
++    part_path = ROOT / f"ZJZL_MatePlate_{ROOT.name}.SLDPRT"
++    shutil.copyfile(args.assembly, path)
++    shutil.copyfile(args.component_part, part_path)
++    dependencies = n.app.GetDocumentDependencies2(str(path), False, False, False)
++    assert dependencies and len(dependencies) == 2, dependencies
++    assert n.app.ReplaceReferencedDocument(str(path), dependencies[1], str(part_path))
++    assembly_doc = n.document(str(path), 2)
++    assembly = n.cast(assembly_doc, "IAssemblyDoc")
++    for raw in assembly.GetComponents(False):
++        component = n.cast(raw, "IComponent2")
++        assert path_key(component.GetPathName()) == path_key(str(part_path)), component.GetPathName()
++    mates = run_tool("zjzl_inspect_mates", assembly_path=str(path))
++    print("mates", [{key: row[key] for key in ("name", "value", "unit", "issues")} for row in mates["mates"]], flush=True)
++    assert any(row["feature_type"] == "MateDistanceDim" and row["unit"] == "mm" and len(row["entities"]) == 2
++               and math.isclose(row["value"], 20.0, abs_tol=.001) for row in mates["mates"]), mates
++    doc, draw, sheet, view = drawing(drw, path, (.155, .16), args.base_assembly_drawing)
++    scope = dict(drawing_path=str(drw), view_name=view.GetName2(), sheet=sheet.GetName())
++    geo = run_tool("zjzl_probe_geometry", **scope)
++    reference = server.zjzl_geometry.GeometryReference(**next(e["reference"] for e in geo["edges"] if e["reference"]))
++    run_tool("zjzl_add_bom_balloon", expected="bom_scope_unavailable", **scope, reference=reference, position_m=(.23, .20))
++    assert view.InsertBomTable4(False, .29, .235, 1, 1, view.ReferencedConfiguration,
++                                str(args.bom_template.resolve()), False, 0, False) is not None
++    run_tool("zjzl_add_bom_balloon", expected="bom_item_mismatch", **scope, reference=reference, position_m=(.23, .20), expected_item="999")
++    balloon = run_tool("zjzl_add_bom_balloon", **scope, reference=reference, position_m=(.23, .20),
++                     expected_item="1", save=True)
++    run_tool("zjzl_add_bom_balloon", expected="balloon_exists", **scope, reference=reference, position_m=(.23, .20))
++    n.app.CloseDoc(doc.GetTitle())
++    doc = n.document(str(drw), 3)
++    draw = n.cast(doc, "IDrawingDoc")
++    sheet = n.cast(draw.GetCurrentSheet(), "ISheet")
++    view = next(v for v in model_views(n, sheet) if v.GetName2() == scope["view_name"])
++    raw = view.GetFirstAnnotation3()
++    while raw is not None:
++        annotation = n.cast(raw, "IAnnotation")
++        if annotation.GetName() == balloon["annotation_name"]:
++            note = n.cast(annotation.GetSpecificAnnotation(), "INote")
++            assert note.IsBomBalloon() and note.GetBomBalloonTextStyle(True) == 2
++            assert note.GetText().strip() == "1" and not annotation.IsDangling()
++            assert len(annotation.GetAttachedEntities3()) == 1
++            break
++        raw = annotation.GetNext3()
++    else:
++        raise AssertionError("Persisted BOM balloon missing")
++    print("PASS assembly mates, duplicate/missing/mismatched BOM and persisted linked balloon", flush=True)
++
++
++try:
++    if args.part is not None:
++        part_case()
++    if args.assembly is not None:
++        assembly_case()
++finally:
++    docs = [n.cast(raw, "IModelDoc2") for raw in (n.app.GetDocuments() or ())]
++    opened = [(doc.GetType(), doc.GetPathName()) for doc in docs]
++    for _, path in sorted(opened, reverse=True):
++        if path and Path(path).is_relative_to(ROOT):
++            doc = n.cast(n.app.GetOpenDocumentByName(path), "IModelDoc2")
++            if doc is not None:
++                n.app.CloseDoc(doc.GetTitle())
++    if original_path and n.app.GetOpenDocumentByName(original_path) is not None:
++        n.document(original_path, original_kind)

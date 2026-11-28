@@ -67,6 +67,55 @@ def point_line_distance(point, line_point, line_dir):
     return math.sqrt(_dot(_sub(point, closest), _sub(point, closest)))
 
 
+def axis_vector(matrix, index):
+    """One basis vector out of a `ModelToViewTransform.ArrayData` blob. PURE.
+
+    `ArrayData` is 16 doubles: `[0..8]` a row-major 3x3 rotation, `[9..11]` the sheet
+    translation in metres, `[12]` the view scale. `matrix[index:9:3]` therefore yields row
+    `index` of the rotation — that is the layout the ZJZL pack uses and it was verified on
+    this build on 2026-11-28 (see `docs/2026-11-28-zjzl-adoption-plan.md` §3.1).
+    """
+    return tuple(matrix[index:9:3])
+
+
+def point_through(matrix, point):
+    """Model point -> sheet point (metres), using the same transform. PURE.
+
+    `p_sheet = R · p_model · scale + translation`. Verified on 2026-11-28: a Ø6 hole centre
+    at model (0.0825, -0.0700, 0.006) mapped to sheet (0.2766, 0.1440) with radius
+    0.0015 m — inside the view outline, scale 0.5 read back from `ArrayData[12]`.
+    """
+    return [sum(value * basis for value, basis in zip(point, axis_vector(matrix, axis)))
+            * matrix[12] + matrix[9 + axis]
+            for axis in range(3)]
+
+
+def view_frame(view):
+    """The model->sheet frame of a drawing view, or None when it cannot be read.
+
+    Returns `{"rotation": 3 rows, "translation_m": [x, y, z], "scale": s, "raw": 16 doubles}`.
+
+    This toolkit previously recorded "there is no model->view API" — that conclusion was
+    wrong (measured 2026-11-28). It matters because the fallback was guessing: view overlap
+    was judged on an outline inflated by a constant 11.9 mm, and a drawing circle could not
+    be traced back to the model face that produced it.
+    """
+    import math as _math
+
+    import win32com.client as win
+
+    try:
+        matrix = win.Dispatch(view.ModelToViewTransform)
+        data = tuple(float(v) for v in matrix.ArrayData)
+    except Exception:
+        return None
+    if len(data) < 13 or not all(_math.isfinite(v) for v in data) or data[12] <= 0:
+        return None
+    return {"rotation": [axis_vector(data, index) for index in range(3)],
+            "translation_m": [data[9], data[10], data[11]],
+            "scale": data[12], "raw": list(data)}
+
+
 def extract_cylinders(body, call_method, include_face=False):
     """Return every cylindrical face on a body as (point, axis, radius_mm).
 

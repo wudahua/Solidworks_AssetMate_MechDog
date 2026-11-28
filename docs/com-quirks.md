@@ -7536,3 +7536,44 @@ revolved part section verdict    verdict None (forced-uncut section)
 
 **「放宽匹配」只能修「匹配到了但判错」的缺陷；对「根本没有可匹配对象」的模板无效。**
 这次的修法不是放宽，而是补上一个和兄弟字段早就该有的回退：找不到，就在槽位建一个。
+
+---
+
+## 2026-11-28（v0.8.374）ZJZL 批 1：typed 接口解开了「找不到成员」，模型↔图纸映射也能用
+
+### 三件被推翻的旧结论
+
+| 旧结论（写进 com-quirks / capabilities 的） | 2026-11-28 实测 |
+|---|---|
+| 「模型坐标→视图坐标没有可用 API，`ModelToViewTransform` 不是行主序 4×4」 | **可用**：`ArrayData` 16 个数 = 旋转 `[0..8]` + 平移 `[9..11]` + 比例 `[12]` |
+| 「`GetCurveParams3` 这个 binding 上没有 / 找不到成员」 | late-bound 确实「找不到成员」；**typed `IEdge` 下 12/12 条边成功** |
+| 「`GetOutline` 宽高各虚胖 0.0119」 | 是**总**虚胖 0.0119（y 维精确：0.1075 + 0.0119 = 0.1194），不是每边 |
+
+### 实测数字（door.SLDPRT，A3，scale 0.5）
+
+```text
+ArrayData = [1,0,0, 0,1,0, 0,0,1, 0.2354, 0.179, -0.002, 0.5, 0,0,0]
+孔心模型 (0.0825, -0.0700, 0.006) -> 纸面 (0.2766, 0.1440)，半径 x0.5 = 0.0015
+51 条边的端点：模型跨度 0.1600 m -> 纸面 0.0800 m（比例 0.500）
+视图中心误差 dx -0.0008 / dy 0.0000
+GetProperties2 = 8 值，[7] = 1.0 -> GB A3 判第一角法
+```
+
+### 新增基础设施（不新增 MCP 工具，工具数仍 80）
+
+- `tools/native_com.py`：`Native`（typed cast / 文档定位 / 事务回滚）、`value_of`（属性 or 方法）、
+  `execute`（错误码映射）、`drawing_scope`、`sheet_properties`、`persist`/`read_reference`、
+  `rollback_annotation`。来源：ZJZL 增量包（基线 0.8.351），错误码已改为本仓库口径。
+- `tools/geometry.py`：`view_frame` / `axis_vector` / `point_through`。
+
+### 为什么 `value_of` 值得单独存在
+
+`ISheet.GetProperties2` 是**属性**，`IDrawingDoc.GetCurrentSheet` 是**方法**。
+调错形态报 `'function' object has no attribute ...` —— 与「没有这个 API」在回执里长得一样。
+本仓库此前在 `InsertBOMBalloon2` / `InsertWeldSymbol3` / `InsertModelAnnotations4` 上各踩过一次同类。
+
+### 教训
+
+**「不支持的 API」有时只是「问错了形态」。** 本轮同时推翻了三条被写进能力表和 quirks 的结论，
+它们都不是能力缺失，而是**调用方式**问题：接口绑错、属性/方法调错、数组布局猜错。
+下次写「这个 build 不支持」之前，先把这三层各试一遍 —— 这次是第四次了。

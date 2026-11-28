@@ -7109,6 +7109,9 @@ def _view_axis_map(view):
       - `IView.GetViewPlaneNormal` does not exist (property and method both fail);
       - `IView.ModelToViewTransform` returns 16 doubles that are NOT a plain row-major 4x4,
         and `IMathPoint.MultiplyTransform` does not exist either.
+        **SECOND CORRECTION 2026-11-28**: the 16 doubles ARE usable — rotation `[0..8]`,
+        translation `[9..11]`, scale `[12]` (verified: a Ø6 hole centre mapped to the sheet
+        inside the view outline, scale read back as 0.5). See `geometry.view_frame()`.
 
     **CORRECTION 2026-11-07**: the paragraph above is wrong. `IView.GetOrientationName`
     exists and answers exactly this question:

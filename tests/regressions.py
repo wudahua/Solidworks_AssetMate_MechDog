@@ -12629,7 +12629,75 @@ def assert_the_scale_cell_has_a_slot_to_be_created_in():
     return "scale has a slot and a created fallback, like name/code/material"
 
 
+def assert_the_view_frame_maps_model_points_to_the_sheet():
+    """0.8.374 (ZJZL adoption batch 1) — the "no model->view API" conclusion was wrong.
+
+    `IView.ModelToViewTransform.ArrayData` is 16 doubles: `[0..8]` a row-major rotation,
+    `[9..11]` the sheet translation in metres, `[12]` the scale. Measured 2026-11-28 on this
+    build (SW 32.4, A3 GB, scale 0.5):
+
+        ArrayData = [1,0,0, 0,1,0, 0,0,1, 0.2354, 0.179, -0.002, 0.5, 0,0,0]
+        circle centre model (0.0825, -0.0700, 0.006) -> sheet (0.2766, 0.1440)
+        endpoints of 51 edges -> mapped width 0.0800 for a 0.1600 model span (scale 0.500)
+
+    This toolkit recorded "there is no usable model->view API" and fell back to inflating
+    outlines by a constant. That fallback is why view overlap was judged on a phantom margin.
+
+    BEHAVIOURAL: pure maths on the real matrix; no COM.
+    """
+    from solidworks_assetmate_mechdog.tools import geometry as _g
+
+    matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+              0.2354, 0.179, -0.002, 0.5, 0.0, 0.0, 0.0]
+    assert _g.axis_vector(matrix, 0) == (1.0, 0.0, 0.0)
+    assert _g.axis_vector(matrix, 2) == (0.0, 0.0, 1.0)
+    mapped = _g.point_through(matrix, (0.0825, -0.0700, 0.006))
+    assert abs(mapped[0] - 0.2766) < 2e-4 and abs(mapped[1] - 0.1440) < 2e-4, mapped
+    # scale must come from [12], not from an assumption
+    scaled = _g.point_through(matrix, (0.1000, 0.0, 0.0))
+    assert abs((scaled[0] - 0.2354) - 0.0500) < 1e-9, scaled
+    frame = {"rotation": [1, 0, 0], "translation_m": [0, 0, 0], "scale": 1.0}
+    assert frame["scale"] == 1.0
+    return "model->sheet uses [0..8]/[9..11]/[12] and reproduces the measured 0.2766/0.1440"
+
+
+def assert_property_or_method_reads_the_same_value():
+    """0.8.374 — `GetProperties2` is a property, `GetCurrentSheet` is a method.
+
+    Calling one as the other raises `'function' object has no attribute ...`, which reads
+    like a missing API. Three earlier rounds lost time to exactly that confusion, so the
+    typed helpers read both forms through one entry point.
+
+    BEHAVIOURAL: fake objects, no COM.
+    """
+    from solidworks_assetmate_mechdog.tools import native_com as _n
+
+    class AsProperty:
+        GetProperties2 = (8.0, 12.0, 1.0, 2.0, 1.0, 0.42, 0.297, 1.0)
+
+    class AsMethod:
+        def GetProperties2(self):
+            return (8.0, 12.0, 1.0, 2.0, 1.0, 0.42, 0.297, 1.0)
+
+    for obj in (AsProperty(), AsMethod()):
+        values = _n.value_of(obj, "GetProperties2")
+        assert list(values)[5:7] == [0.42, 0.297], values
+        parsed = _n.sheet_properties(obj)
+        assert abs(parsed["width_m"] - 0.42) < 1e-9 and abs(parsed["height_m"] - 0.297) < 1e-9
+        assert parsed["first_angle"] is True, (
+            "the trailing property is the first/third-angle flag on a GB sheet")
+
+    class SevenValues:
+        GetProperties2 = (8.0, 12.0, 1.0, 2.0, 1.0, 0.42, 0.297)
+
+    parsed = _n.sheet_properties(SevenValues())
+    assert parsed["width_m"] == 0.42 and parsed["first_angle"] is True
+    return "property and method forms parse to the same sheet geometry"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.374 view frame maps model->sheet", assert_the_view_frame_maps_model_points_to_the_sheet),
+    ("0.8.374 property-or-method reads", assert_property_or_method_reads_the_same_value),
     ("0.8.373 built drawing is not failed", assert_a_built_drawing_is_never_reported_as_failed),
     ("0.8.373 scale has a slot", assert_the_scale_cell_has_a_slot_to_be_created_in),
     ("0.8.370 verdict reuses receipts", assert_the_verdict_reuses_receipts_it_is_handed),
