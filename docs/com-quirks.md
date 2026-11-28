@@ -7648,3 +7648,31 @@ pywin32 的 CDispatch 定义 `__call__`，`callable()` 为真。调用它等于�
 
 **「可调用」不等于「应该调用」。** 这已经是同一类错误的第五次（接口绑错、参数个数、掩码、
 类型表、可调用性）：每次都是「对方看起来不支持」，实际是调用形态不对。
+
+---
+
+## 2026-11-28（v0.8.377）ZJZL 批 4：装配配合读得到，BOM 气泡的件号来自 BOM 行
+
+### 实测
+
+| 项 | 结果 |
+|---|---|
+| `inspect_mates` | GGD 配电柜装配：**9 配合 / 1 组 / complete** |
+| monitor 支架 rebuild 夹具 | 有「配合」组但**0 个配合** —— 空组不等于有配合，验收不能拿它 |
+| `add_bom_balloon` | 20 行 BOM、165 条组件边 → `item_number='10'`、`bom_row=10`、`readback_verified:true` |
+| 无 BOM 时 | `bom_scope_unavailable`（绝不写 `?`） |
+
+### 两个坑
+
+1. **`GetErrorCode2` 是方法不是属性**：`optional(lambda: feature.GetErrorCode2)` 拿到 bound method，
+   随后 `error[0]` 抛 `'method' object is not subscriptable`。
+   这条异常把「装配打开失败」的真实原因盖住了 —— 六个柜体装配全被误判成打不开，
+   实际只是读 `GetErrorCode2` 的方式错。改用 `value_of` 并检查返回形状。
+2. **BOM 插入会挂住会话**：在 20 件装配上 `add_bom_table` 两次把 smoke 卡死（20 分钟无输出），
+   只能杀进程。`add_bom_balloon` 因此从 smoke 豁免，正路径证据留在计划文档里，
+   smoke 只测 `inspect_mates`。这是本轮唯一「有证据但没进 CI」的能力。
+
+### 教训
+
+**一个报错信息里的错误，会掩盖它后面真正的错误。** 六个装配的 `ok=False` 看着像「夹具全坏了」，
+其实全是同一个读取方式问题；修掉之后立刻读到 9 个配合。

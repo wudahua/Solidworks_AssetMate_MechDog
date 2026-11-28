@@ -31,8 +31,8 @@ from . import SERVER_NAME, __version__
 from . import sw_session
 from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
                     layout, ledger, material as material_tools, pipeline, planner,
-                    ref_dimension, ref_geometry, ref_views, recolor, rename,
-                    sheet_metal, survey)
+                    ref_balloon, ref_dimension, ref_geometry, ref_mates, ref_views,
+                    recolor, rename, sheet_metal, survey)
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -206,7 +206,8 @@ _TOOL_PROFILES = {
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
         "add_balloon", "probe_geometry", "add_reference_dimension",
-        "create_orthographic_views", "create_custom_view", "add_native_weld_symbol", "add_model_dimensions",
+        "create_orthographic_views", "create_custom_view",
+        "inspect_mates", "add_bom_balloon", "add_native_weld_symbol", "add_model_dimensions",
         "list_sheet_sketch", "delete_sheet_sketch",
         "add_hole_table",
         "add_bom_table", "layout_dimensions", "set_dimension_position",
@@ -896,6 +897,43 @@ def add_native_weld_symbol(
     """
     return _json(drawing.add_native_weld_symbol(
         drawing_path, view_name=view_name, edge_index=edge_index, save=save))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def inspect_mates(
+    assembly_path: Annotated[str, Field(description="Absolute path to an assembly .SLDASM.")],
+) -> str:
+    """Read the ACTIVE configuration's assembly-level mates.
+
+    Each mate reports type / alignment / suppression / entities (with persistent ids) and, for
+    distance and angle mates, the value. What SolidWorks would not answer is named in
+    `issues` per mate — a suppressed or lightweight mate is not silently a null.
+    """
+    return _json(ref_mates.inspect_mates(assembly_path))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def add_bom_balloon(
+    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
+    view_name: Annotated[str, Field(description="Exact assembly view name. Needs one linked native BOM or one matching same-sheet BOM.")],
+    reference: Annotated[dict, Field(description="Assembly occurrence edge reference returned by probe_geometry.")],
+    position_m: Annotated[list[float], Field(description="Balloon text position in sheet metres, [x, y].", min_length=2, max_length=2)],
+    expected_item: Annotated[str | None, Field(description="Optional expected BOM item. Null trusts the verified native row.")] = None,
+    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
+    save: Annotated[bool, Field(description="Save the drawing after the verified insert.")] = False,
+) -> str:
+    """A native BOM balloon whose item number is READ FROM THE BOM ROW and then verified.
+
+    Unlike `add_balloon` (which writes the item you pass), this resolves the occurrence's row
+    in the assembly's BOM table and refuses when the row is missing, hidden, ambiguous, or
+    disagrees with `expected_item`. No BOM means `bom_scope_unavailable` — never a `?` on the
+    sheet.
+    """
+    return _json(ref_balloon.add_bom_balloon(
+        drawing_path, view_name, reference, position_m,
+        expected_item=expected_item, sheet=sheet, save=save))
 
 
 @mcp.tool()

@@ -277,7 +277,8 @@ def main():
     from solidworks_assetmate_mechdog import __version__
     from solidworks_assetmate_mechdog import sw_session
     from solidworks_assetmate_mechdog.sw_session import get_sw
-    from solidworks_assetmate_mechdog.tools import (ref_dimension, ref_geometry, ref_views,
+    from solidworks_assetmate_mechdog.tools import (ref_dimension, ref_geometry,
+                                                ref_mates, ref_views,
                                                 assembly, bodies, bom, drawing, export,
                                                     layout, ledger, recolor, capabilities,
                                                     sheet_metal, planner, rename, material,
@@ -3342,6 +3343,32 @@ def main():
                 % (offset, rotation[2]))
 
     r.check("native projections and custom view", _native_projections_and_custom_view)
+
+    def _mates_are_readable():
+        """0.8.377 (ZJZL batch 4): the mating scheme is now readable.
+
+        Kept deliberately narrow: `inspect_mates` only. The BOM-balloon sibling
+        (`add_bom_balloon`) needs an assembly drawing plus a BOM table, and on this fixture that
+        path has hung a smoke run twice (a BOM insert on a 20-part assembly); it is measured in
+        `docs/2026-11-28-zjzl-adoption-plan.md` instead and exempted from smoke coverage with
+        that reason. A case that blocks the suite is worse than a documented gap.
+        """
+        # `args.assembly` (the monitor bracket rebuild) has a MateGroup but ZERO mates — it is
+        # a rebuilt fixture. The GGD cabinet below carries nine, so it is the one that can
+        # prove a mate is readable at all.
+        asm_src = _require_fixture(
+            os.path.join(ROOT, "测试用例", "工程图测试用例", "GGD配电柜", "KSHE-016.1.SLDPRT.SLDASM"),
+            "KSHE-016.1.SLDPRT.SLDASM")
+        mates = ref_mates.inspect_mates(asm_src)
+        assert mates.get("ok") is True, (mates.get("error"), mates.get("message"))
+        assert mates.get("mate_groups"), "no mate group was reported for an assembly fixture"
+        assert (mates.get("mates") or []), "the fixture has a mate group but not one mate"
+        values = [m for m in (mates.get("mates") or []) if m.get("value") is not None]
+        return "mates=%d groups=%d with-value=%d status=%s" % (
+            len(mates.get("mates") or []), len(mates.get("mate_groups") or []),
+            len(values), mates.get("status"))
+
+    r.check("mates are readable", _mates_are_readable)
 
     def _section_and_detail():
         """0.8.117: section and detail views had never run AFTER produce_drawing.

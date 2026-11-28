@@ -219,6 +219,17 @@ GetCurveParams3  FAIL (-2147352573, '找不到成员。')
 | **新发现** | `IModelDoc2.ActiveView` 可用，但 `IActiveView` 是只写属性；`value_of` 不能把「属性返回的 CDispatch」当方法调用（否则报「找不到成员」） |
 | 未强制触发 | 投影建到一半失败时的整批撤回（代码有，未造失败用例） |
 
+### 批 4 · 装配 — 已完成（v0.8.377）
+
+| 项 | 结果 |
+|---|---|
+| `inspect_mates` | GGD 配电柜装配：**9 个配合 / 1 组 / `complete`**；monitor 支架 rebuild 夹具只有**空配合组（0 配合）**，不能用来验收 |
+| `add_bom_balloon` | 真机：20 行 BOM，165 条组件边，`item_number='10'`、`bom_row=10`、`readback_verified:true`；无 BOM 时 `bom_scope_unavailable` |
+| 新工具 | 2 个（84 → 86） |
+| **发现** | `GetErrorCode2` 在本 build 是**方法**，直接读属性得到 bound method，`error[0]` 报 `'method' object is not subscriptable` —— 这条错误掩盖了「装配其实能打开」 |
+| **未进 smoke** | `add_bom_balloon`：在 20 件装配上插 BOM 会挂住会话（两次），已加豁免并写明原因，正路径留文档证据，批 5 重做 |
+
+
 
 
 ## 5. 吸收方案（5 批）

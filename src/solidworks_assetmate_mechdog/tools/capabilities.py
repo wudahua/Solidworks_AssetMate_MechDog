@@ -72,10 +72,29 @@ CAPABILITIES = [
                      "removed 15 / failed 0；0.8.19 full-name dedupe + 单尺寸移动 smoke 覆盖"),
     },
     {
+        "id": "assembly_mates",
+        "status": "partial",
+        "summary": "装配配合读取（`inspect_mates`，ZJZL 批 4）",
+        "tools": ["inspect_mates"],
+        "why": ("2026-11-28 真机（KSHE-016.1.SLDPRT.SLDASM）：读到 **9 个配合 / 1 个配合组**，"
+                "`status: complete`，每个配合带类型、对齐、抑制、实体与持久引用。\n\n"
+                "**未验到数值**：本机所有有配合的夹具都不是距离/角度配合，`value` 全为 null —— "
+                "`MateDistanceDim`/`MateAngleDim` 的数值路径只有对方 SW2025 的证据（20 mm），"
+                "本机没有可复现的样件。\n\n"
+                "**踩坑**：`GetErrorCode2` 在本 build 上是**方法**，直接读属性会拿到 bound method，"
+                "再 `error[0]` 就报 `'method' object is not subscriptable` —— "
+                "这条错误掩盖了「装配打不开」的真实原因（其实是能打开的）。"),
+        "workaround": ("先确认装配能打开（引用齐全）；轻化/抑制的实体只会返回部分字段，"
+                       "读 `issues` 而不是把 null 当 0"),
+        "evidence": ("2026-11-28 GGD 配电柜装配：9 配合 / 1 组 / complete；"
+                     "monitor 支架 rebuild 夹具只有空配合组（0 配合），不能用来验收"),
+    },
+    {
         "id": "balloon",
         "status": "verified",
-        "summary": ("件号圆圈（BOM balloon）· 0.8.364 起可用：`InsertBOMBalloon2` 在 "
-                    "`IModelDoc` 上、需先选一条边、6 个参数"),
+        "summary": ("件号圆圈两条路径：`add_balloon`（0.8.364，手工件号）与 "
+                    "`add_bom_balloon`（ZJZL 批 4，件号来自 BOM 行）"),
+        "tools": ["add_balloon", "add_bom_balloon"],
         "why": ("2026-11-22 的报告判「无入口」，2026-10-29 的旧结论也一样。**两处都错在查错对象。**\n\n"
                 "实测 2026-11-23（assembly panel box，SW 32.4）：\n"
                 "1. `InsertBOMBalloon2` 挂在 **`IModelDoc`** 上；在 typed `IDrawingDoc` 上调用会抛 "
