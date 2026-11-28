@@ -175,7 +175,7 @@ def edge_row(native, raw, component_matrix, view_matrix):
     return row, vertices
 
 
-def _probe(drawing_path, view_name, sheet_name, component_name):
+def _probe(drawing_path, view_name, sheet_name, component_name, max_edges, budget_s):
     path = source_path(drawing_path, (".slddrw",))
     native = Native()
     _, _, sheet, extension = drawing_scope(native, path, sheet_name)
@@ -192,9 +192,15 @@ def _probe(drawing_path, view_name, sheet_name, component_name):
             raise ComScopeError("component_not_visible",
                                 "Component %r is not visible in %r" % (component_name, view_name))
         components = {component_name: components[component_name]}
+    import time as _time
+
+    started = _time.time()
     edges, vertices, issues = [], [], defaultdict(int)
     notes = {}
+    truncated = None
     for name, (component, owner) in components.items():
+        if truncated and truncated.startswith("budget_s"):
+            break
         try:
             matrix = component_transform(native, owner)
         except ComScopeError as exc:
@@ -208,6 +214,12 @@ def _probe(drawing_path, view_name, sheet_name, component_name):
         # unambiguous.
         local_points = []
         for raw in visible_entities(view, component, "edge"):
+            if len(edges) >= int(max_edges):
+                truncated = "max_edges=%d reached" % int(max_edges)
+                break
+            if _time.time() - started > float(budget_s):
+                truncated = "budget_s=%.0f exceeded" % float(budget_s)
+                break
             identifier = persist(extension, raw)
             result = optional(lambda: edge_row(native, raw, matrix, view_matrix))
             row, candidates = result if result else (None, ())
@@ -243,6 +255,10 @@ def _probe(drawing_path, view_name, sheet_name, component_name):
                   for a in range(3)]
             origin = [mc[a] - lc[a] for a in range(3)]
         for raw in visible_entities(view, component, "vertex"):
+            if _time.time() - started > float(budget_s):
+                truncated = truncated or ("budget_s=%.0f exceeded during vertices"
+                                          % float(budget_s))
+                break
             identifier = persist(extension, raw)
             ref = _reference(path, sheet_name, view_name, "vertex", name, identifier)
             own = optional(lambda: value_of(raw, "GetPoint"))
@@ -280,14 +296,24 @@ def _probe(drawing_path, view_name, sheet_name, component_name):
                 "scale": frame["scale"],
                 "translation_m": [round(v, 6) for v in frame["translation_m"]]},
             "edges": edges, "vertices": vertices,
-            "status": "partial" if issues else "complete",
+            "truncated": bool(truncated),
+            "truncated_reason": truncated,
+            "status": "partial" if (issues or truncated) else "complete",
             "issues": {key: count for key, count in issues.items() if count},
             "notes": notes}
 
 
-def probe_geometry(drawing_path, view_name, sheet=None, component=None):
-    """Every visible edge/vertex in one view, each with a scoped persistent reference."""
-    return execute(_probe, drawing_path, view_name, sheet, component)
+def probe_geometry(drawing_path, view_name, sheet=None, component=None,
+                   max_edges=400, budget_s=90.0):
+    """Every visible edge/vertex in one view, each with a scoped persistent reference.
+
+    `max_edges` / `budget_s` are not politeness: a `GetPersistReference3` per entity is one
+    COM round trip, and measured 2026-11-28 a cabinet assembly view had not returned after
+    six minutes (the monitor bracket's 165 edges take seconds). Truncation is REPORTED —
+    `truncated: true` plus what stopped it — so a caller never mistakes a partial scan for a
+    small view.
+    """
+    return execute(_probe, drawing_path, view_name, sheet, component, max_edges, budget_s)
 
 
 def reference_from(payload):

@@ -988,6 +988,8 @@ def probe_geometry(
     view_name: Annotated[str, Field(description="Exact name of a loaded part or assembly view.")],
     sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
     component: Annotated[str | None, Field(description="Optional assembly occurrence name. Null reads the whole view.")] = None,
+    max_edges: Annotated[int, Field(description="Stop after this many edges (default 400). Each edge costs one GetPersistReference3 round trip; a big assembly view can otherwise run for minutes.")] = 400,
+    budget_s: Annotated[float, Field(description="Wall-clock budget for the scan, in seconds (default 90). Exceeding it truncates the result and says so.")] = 90.0,
 ) -> str:
     """Visible edge/vertex geometry with scoped persistent references.
 
@@ -997,7 +999,8 @@ def probe_geometry(
     `point_model_m` (raw model), and `point_sheet_m` for both. Measured 2026-11-28: these
     three are NOT the same frame, and mixing them costs a view-offset error.
     """
-    return _json(ref_geometry.probe_geometry(drawing_path, view_name, sheet, component))
+    return _json(ref_geometry.probe_geometry(drawing_path, view_name, sheet, component,
+                                            max_edges=max_edges, budget_s=budget_s))
 
 
 @mcp.tool()

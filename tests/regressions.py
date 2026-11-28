@@ -12756,7 +12756,105 @@ def assert_reference_dimensions_use_per_type_entry_points():
     return "each kind has its own entry point and a whitelist of acceptable Type2 styles"
 
 
+def assert_projection_layout_follows_the_sheet_angle():
+    """0.8.378 (ZJZL batch 5) — first vs third angle is a formula, and it is testable.
+
+    First angle: the view seen from the TOP goes BELOW the base view, and from the RIGHT goes
+    to its LEFT. Third angle is the mirror of that. Measured reference: a GB A3 template
+    reports `first_angle=True` and SolidWorks places 上视 below the front view.
+
+    BEHAVIOURAL: pure function, no COM.
+    """
+    from solidworks_assetmate_mechdog.tools import ref_views as _rv
+
+    origin = (0.2, 0.15)
+    first = _rv.projection_positions(origin, ["top", "right"], 0.09, True)
+    assert first["top"] == [0.2, 0.06], first
+    assert abs(first["right"][0] - 0.11) < 1e-9 and first["right"][1] == 0.15, first
+    third = _rv.projection_positions(origin, ["top", "right"], 0.09, False)
+    assert third["top"] == [0.2, 0.24], third
+    assert abs(third["right"][0] - 0.29) < 1e-9, third
+
+    for bad in ([], ["top", "top"], ["side"], ["top", "bottom", "left", "right", "top"]):
+        try:
+            _rv.projection_positions(origin, bad, 0.09, True)
+        except _rv.ComScopeError as exc:
+            assert exc.code == "bad_input", exc.code
+        else:
+            raise AssertionError("accepted an invalid direction list: %r" % (bad,))
+    for offset in (0.0, -0.1, float("inf")):
+        try:
+            _rv.projection_positions(origin, ["top"], offset, True)
+        except _rv.ComScopeError:
+            pass
+        else:
+            raise AssertionError("accepted offset %r" % (offset,))
+    return "first angle puts top below / right left; third angle mirrors it"
+
+
+def assert_the_custom_view_rotation_is_orthonormal():
+    """0.8.378 — an orientation matrix that is not orthonormal silently skews the view.
+
+    `rotation(normal, up)` must return a proper right-handed basis: unit rows, mutually
+    perpendicular, determinant +1. The measured case (normal 0.6/0/0.8, up 0/1/0) came back
+    as [0.8,0,0.6, 0,1,0, -0.6,0,0.8] on the real drawing.
+
+    BEHAVIOURAL: pure function.
+    """
+    from solidworks_assetmate_mechdog.tools import ref_views as _rv
+
+    matrix = _rv.rotation([0.6, 0.0, 0.8], [0.0, 1.0, 0.0])
+    rows = [matrix[0:3], matrix[3:6], matrix[6:9]]
+    for row in rows:
+        assert abs(sum(v * v for v in row) - 1.0) < 1e-9, row
+    for i in range(3):
+        for j in range(i + 1, 3):
+            assert abs(sum(a * b for a, b in zip(rows[i], rows[j]))) < 1e-9, (i, j)
+    det = (rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
+           - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
+           + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0]))
+    assert abs(det - 1.0) < 1e-9, det
+    for bad in (([0, 0, 1], [0, 0, 1]), ([0, 0, 0], [0, 1, 0])):
+        try:
+            _rv.rotation(*bad)
+        except _rv.ComScopeError:
+            pass
+        else:
+            raise AssertionError("accepted a degenerate orientation: %r" % (bad,))
+    return "rotation is orthonormal, right-handed, and refuses parallel vectors"
+
+
+def assert_persisted_ids_round_trip_and_reject_garbage():
+    """0.8.378 — a reference id is opaque bytes; it must survive encode/decode and refuse junk.
+
+    `persist` base64url-encodes `GetPersistReference3`; `read_reference` decodes it and is the
+    first thing a stale or foreign id hits. Measured 2026-11-28: a saved dimension id resolved
+    after closing and reopening the drawing (`state=0`, same object, value 1.000 mm,
+    `ShowParenthesis=True`, `DrivenState=1`).
+
+    BEHAVIOURAL: encode/decode only, no COM.
+    """
+    import base64
+
+    from solidworks_assetmate_mechdog.tools import native_com as _n
+
+    payload = b"\x00\x01opaque-id\xff"
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii")
+    assert _n.read_reference(encoded) == payload
+    for bad in ("", "!!!not-base64!!!", "a" * 70000):
+        try:
+            _n.read_reference(bad)
+        except _n.ComScopeError as exc:
+            assert exc.code == "bad_reference", exc.code
+        else:
+            raise AssertionError("accepted an invalid reference id")
+    return "ids round-trip through base64url and length/format are validated"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.378 projection layout angle", assert_projection_layout_follows_the_sheet_angle),
+    ("0.8.378 rotation is orthonormal", assert_the_custom_view_rotation_is_orthonormal),
+    ("0.8.378 reference ids round-trip", assert_persisted_ids_round_trip_and_reject_garbage),
     ("0.8.375 geometry references are scoped", assert_geometry_references_are_scoped_and_typed),
     ("0.8.375 per-type dimension entry points", assert_reference_dimensions_use_per_type_entry_points),
     ("0.8.374 view frame maps model->sheet", assert_the_view_frame_maps_model_points_to_the_sheet),

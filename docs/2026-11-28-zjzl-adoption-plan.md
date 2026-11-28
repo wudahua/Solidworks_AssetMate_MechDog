@@ -229,6 +229,17 @@ GetCurveParams3  FAIL (-2147352573, '找不到成员。')
 | **发现** | `GetErrorCode2` 在本 build 是**方法**，直接读属性得到 bound method，`error[0]` 报 `'method' object is not subscriptable` —— 这条错误掩盖了「装配其实能打开」 |
 | **未进 smoke** | `add_bom_balloon`：在 20 件装配上插 BOM 会挂住会话（两次），已加豁免并写明原因，正路径留文档证据，批 5 重做 |
 
+### 批 5 · 测试收口 — 已完成（v0.8.378）
+
+| 项 | 结果 |
+|---|---|
+| **保存重开后引用** | ✅ 建 Ø/水平参考尺寸 → 保存 → 关图 → 重开 → `GetObjectByPersistReference3` 返回 `state=0`，与视图内 display dimension `IsSame` 一致，值 1.000 mm、`ShowParenthesis=True`、`DrivenState=1` |
+| 单测移植 | 3 条 behavioural：投影摆位（第一/三角法 + 非法输入）、旋转正交性（含行列式 +1）、引用 id 编解码与拒绝非法数据 |
+| `probe_geometry` 预算 | 新增 `max_edges`（默认 400）与 `budget_s`（默认 90），命中即截断并写 `truncated_reason` |
+| **BOM 气泡仍不进 CI** | 小装配（3 行 BOM）能建图与建表，但 `probe_geometry` 在**第一条边**上卡了 **285 s**（40 s 预算只能在下一次循环前生效，拦不住单次 COM 阻塞）。夹具问题，非工具逻辑，豁免保留 |
+| 断言总数 | 359（40 behavioural） |
+
+
 
 
 

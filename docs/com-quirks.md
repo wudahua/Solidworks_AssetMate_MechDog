@@ -7676,3 +7676,42 @@ pywin32 的 CDispatch 定义 `__call__`，`callable()` 为真。调用它等于�
 
 **一个报错信息里的错误，会掩盖它后面真正的错误。** 六个装配的 `ok=False` 看着像「夹具全坏了」，
 其实全是同一个读取方式问题；修掉之后立刻读到 9 个配合。
+
+---
+
+## 2026-11-28（v0.8.378）ZJZL 批 5：引用跨保存有效；但预算拦不住「单次 COM 阻塞」
+
+### 好消息：持久引用是真的持久
+
+```text
+建参考尺寸（水平 1.000 mm）-> save -> 关图 -> 重开
+GetObjectByPersistReference3 -> state=0，对象与视图内 display dimension IsSame 一致
+回读：value=1.000 mm、ShowParenthesis=True、DrivenState=1
+```
+
+这是 ZJZL 包里最值钱的一件事：**标注可以事后被复核**，不再只能「相信当时写进去了」。
+
+### 坏消息：`budget_s` 只能在下一次循环前生效
+
+给 `probe_geometry` 加了 `max_edges=400` / `budget_s=90` 之后，在柜体装配上实测：
+
+```text
+budget_s=40，实际耗时 285 s，返回 edges=0，truncated_reason="budget_s=40 exceeded"
+```
+
+也就是说**第一条边就没走完**：`GetPersistReference3`（或 `GetCurveParams3`）在这个装配上
+单次阻塞了几分钟。循环内的预算检查只能拦住「慢但会返回」的调用，拦不住单次阻塞。
+
+结论要写清楚：**预算是给「边很多」准备的，不是给「单次卡死」准备的。**
+后者只能靠外部超时（`timeout` / 杀进程），或者在调用前先判断模型规模。
+
+### 夹具结论（避免下次再试）
+
+| 夹具 | probe_geometry |
+|---|---|
+| door（零件，51 边） | 秒级 |
+| monitor 支架（20 件装配，165 边） | 数十秒，可用 |
+| GGD 柜体 KSHE-016.3（3 行 BOM） | **首条边 285 s 未返回** —— 不可用 |
+
+`add_bom_balloon` 因此继续留在 smoke 豁免里，理由从「BOM 会挂」更新为
+「该装配的几何探测本身不可用」。正路径证据（item='10'、bom_row=10）仍来自 monitor 支架那次实测。
