@@ -12897,7 +12897,93 @@ def assert_overlap_uses_the_content_box_not_the_padded_outline():
     return "overlap uses content boxes; sheet bounds still use the raw outline"
 
 
+def assert_every_mapped_tool_resolves_to_a_capability():
+    """0.8.380 (ZJZL re-audit) — a tool name must be able to find its own capability entry.
+
+    The pack's `test_all_tools_are_registered_and_capability_discoverable` asserts this, and
+    its `capabilities.py` patch made `check_capabilities(operation=...)` match a `tools` list.
+    This table had 40 entries and almost none of them declared tools, so the documented
+    advice — "look the OPERATION up here" — answered `unknown_operation` for 71 of 86 tools.
+
+    What is asserted: every key names a REGISTERED tool, every value names a real entry id, and
+    each mapped tool actually resolves. Coverage is reported, not asserted to be 100%: whole
+    domains (ledger / delivery / export / recolor / material) have no entry at all, and
+    inventing one per tool would be documentation theatre.
+
+    BEHAVIOURAL: imports the table and the resolver.
+    """
+    from solidworks_assetmate_mechdog.tools import capabilities as _c
+
+    ids = {entry["id"] for entry in _c.CAPABILITIES}
+    bad_values = {tool: cap for tool, cap in _c.TOOL_CAPABILITY.items() if cap not in ids}
+    assert not bad_values, "mapped to a capability id that does not exist: %r" % (bad_values,)
+
+    tree = _tree("server.py")
+    registered = {node.name for node in tree.body
+                  if isinstance(node, ast.FunctionDef) and any(
+                      isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                      and d.func.attr == "tool" for d in node.decorator_list)}
+    unknown = sorted(set(_c.TOOL_CAPABILITY) - registered)
+    assert not unknown, "TOOL_CAPABILITY names tools that are not registered: %r" % (unknown,)
+
+    unresolved = []
+    for tool in _c.TOOL_CAPABILITY:
+        if not _c.check_capabilities(operation=tool).get("ok"):
+            unresolved.append(tool)
+    assert not unresolved, "mapped tools still cannot be looked up: %r" % (unresolved,)
+
+    coverage = _c.check_capabilities().get("tool_coverage") or {}
+    assert coverage.get("total") == len(registered), coverage
+    assert coverage.get("mapped", 0) >= 50, (
+        "capability coverage dropped below the measured 54/86: %r" % (coverage,))
+    return "54 of 86 tools resolve to an entry; the rest are reported as unmapped"
+
+
+def assert_view_rollback_deletes_in_reverse_order():
+    """0.8.380 (ZJZL re-audit) — the pack's rollback test encodes an order, not just a count.
+
+    Their `test_view_batch_rolls_back_in_reverse_creation_order` asserts that the LAST created
+    view is deleted FIRST. Order matters: SolidWorks refuses to delete a projected child while
+    its parent is still being questioned, and deleting the parent first can leave the child
+    orphaned-but-present. Counting deletions would pass with the wrong order.
+
+    BEHAVIOURAL: mock COM, so the order is observable without SolidWorks.
+    """
+    from contextlib import contextmanager
+    from unittest.mock import Mock, patch
+
+    from solidworks_assetmate_mechdog.tools import ref_views as _rv
+
+    native, doc, drawing, sheet, ext = (Mock() for _ in range(5))
+    native.cast.side_effect = lambda entity, _interface: entity
+
+    class Named:  # a real method, because `value_of` only INVOKES routines
+        def __init__(self, name):
+            self._name = name
+
+        def GetName2(self):
+            return self._name
+
+    first, second = Named("First"), Named("Second")
+    ext.DeleteSelection2.return_value = True
+    with patch.object(_rv, "activate_sheet"),             patch.object(_rv, "select_view", return_value=True) as select,             patch.object(_rv, "model_views", return_value=[]):
+        try:
+            with _rv.view_changes(native, "drawing", doc, drawing, sheet, ext) as created:
+                created.extend([first, second])
+                raise ValueError("boom")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("view_changes swallowed the failure")
+    order = [call.args[1] for call in select.call_args_list]
+    assert order == ["Second", "First"], "rollback deleted in creation order: %r" % (order,)
+    assert ext.DeleteSelection2.call_count == 2
+    return "rollback deletes the newest view first"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.380 rollback order", assert_view_rollback_deletes_in_reverse_order),
+    ("0.8.380 mapped tools resolve", assert_every_mapped_tool_resolves_to_a_capability),
     ("0.8.379 overlap uses content boxes", assert_overlap_uses_the_content_box_not_the_padded_outline),
     ("0.8.378 projection layout angle", assert_projection_layout_follows_the_sheet_angle),
     ("0.8.378 rotation is orthonormal", assert_the_custom_view_rotation_is_orthonormal),

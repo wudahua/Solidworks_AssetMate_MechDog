@@ -7744,3 +7744,47 @@ L/B/T 三次测量完全一致 = 0.0059（即总量 0.0119 的一半）；**R �
 这一轮 smoke 三条用例分别跑了 108 / 274 / 568 s（平时 16 / 25 / 77 s），但全部 PASS。
 原因是会话已连跑一整天、建过上百张图纸，**不是**本次改动。所以：
 **通过/不通过的结论可以采信，耗时不可比** —— 要比较耗时，必须重启会话再测。
+
+---
+
+## 2026-11-28（v0.8.380）ZJZL 复审：最后一个还没吸收的东西是「按工具名查能力」
+
+### 复审方法
+
+不是再读一遍文件，而是把对方**测试**里断言的性质逐条对照我们的代码：
+
+| 对方测试 | 我们的状态 |
+|---|---|
+| `test_all_tools_are_registered_and_capability_discoverable` | ❌ **不成立**：86 个工具里只有 15 个能被 `check_capabilities(operation=工具名)` 找到 |
+| `test_view_batch_rolls_back_in_reverse_creation_order` | ❌ 未断言（代码里是 `reversed(created)`，但没有测试盯住顺序） |
+| `test_rotation_orthogonalizes_up_and_keeps_handedness` | ✅ 已有（含行列式 +1） |
+| `test_orientation_rejects_degenerate_vectors` | ✅ 已有 |
+| `test_projected_geometry_uses_native_scale_and_translation` | ✅ 已有（`point_through` 用实测矩阵断言） |
+| `test_geometry_resolves_only_in_exact_view_scope` | ✅ 已有（`reference_scope_mismatch`） |
+| `test_bom_resolves_exact_occurrence_and_refuses_hidden_row` | ⚠️ 代码有 `RowHidden` 判断，无测试 |
+
+### 修掉的那个真缺陷
+
+工具文档写着「用 `check_capabilities(operation=工具名)` 查适用条件」，而实现只匹配 `id` 和
+`summary` —— `check_capabilities("probe_geometry")` 直接返回 `unknown_operation`。
+
+改法：新增 **`TOOL_CAPABILITY`**（工具名 → 能力 id 的唯一映射表，54 条），查询按它解析；
+回执新增 `tool_coverage`：
+
+```text
+tool_coverage = {mapped: 54, total: 86, unmapped: [build_feature_ledger, delivery_check, ...]}
+```
+
+**没有假装全覆盖**：ledger / delivery / export / recolor / material 这些域本来就没有能力条目，
+把它们列成 `unmapped` 比给每个工具造一条「能力」诚实。
+
+### 移植回来的顺序断言
+
+`view_changes` 的失败回滚必须**倒序**删除（先删最后创建的）：SolidWorks 在父视图还被引用时
+拒绝删子视图，先删父会留下孤儿。原来的断言只数删除次数，顺序错了照样通过。
+
+### 还发现一个没动的技巧
+
+对方的 live 脚本用 **`ISldWorks.ReplaceReferencedDocument`** 把复制出来的装配体重新指向本地零件副本，
+这样测试不会碰到原始文件。我们的 smoke 只复制 `.SLDASM`，引用仍指向原零件 ——
+目前只读所以没事，但任何「写回装配」的用例都可能改到真件。记在案，未动 smoke 的复制逻辑。

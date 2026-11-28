@@ -904,6 +904,124 @@ STATUS_LABEL = {"supported": "可做", "verified": "已验证",
                 "unsupported": "做不了"}
 
 
+# tool name -> capability id. ZJZL adoption, 2026-11-28 (re-audit).
+#
+# The pack's own test asserts that every registered tool is discoverable through
+# `check_capabilities(operation=<tool>)`. Its `capabilities.py` patch did that by adding a
+# `tools` list to each entry, but this table has 40 entries covering domains the pack never
+# touched (ledger, delivery, export, recolor), so the relation is kept in ONE place instead of
+# being spread across entries: a mis-mapping is then a single line to audit.
+#
+# Deliberately NOT exhaustive. Tools whose domain has no capability entry (ledger / delivery /
+# audit / export / recolor / material / rename) are left out; `check_capabilities` reports how
+# many are unmapped rather than pretending the mapping is complete.
+TOOL_CAPABILITY = {
+    # drawings: layout and scale
+    "create_drawing": "view_layout",
+    "place_views": "view_layout",
+    "add_view_to_sheet": "view_layout",
+    "set_view": "view_layout",
+    "set_view_scale": "view_layout",
+    "move_view": "view_layout",
+    "delete_view": "view_layout",
+    "measure_layout": "view_layout",
+    # sheets
+    "list_sheets": "multi_sheet",
+    "add_sheet": "multi_sheet",
+    "activate_sheet": "multi_sheet",
+    # dimensions
+    "delete_dimensions": "dimension_edit",
+    "prune_orphan_dimensions": "dimension_edit",
+    "set_dimension_position": "dimension_edit",
+    "layout_dimensions": "dimension_edit",
+    "plan_dimension_gaps": "dimension_edit",
+    "verify_dimension_attachments": "dimension_edit",
+    "add_drawing_dimension": "dimension_display_text",
+    "add_distance_dimension": "dimension_display_text",
+    "add_angular_dimension": "dimension_display_text",
+    "add_dimension_tolerance": "dimension_display_text",
+    "auto_dimension": "dimension_display_text",
+    "add_model_dimensions": "duplicate_dimension_to_view",
+    # annotations
+    "delete_annotation": "delete_annotation",
+    "move_annotation": "delete_annotation",
+    "add_note": "annotation_write",
+    "add_sheet_line": "annotation_write",
+    "add_technical_requirements": "annotation_write",
+    "add_geometric_tolerance": "geometric_tolerance",
+    "add_surface_finish": "surface_finish",
+    "add_datum_feature": "datum_feature_symbol",
+    "add_center_marks": "center_marks",
+    "add_weld_symbol": "weld_symbol",
+    "add_native_weld_symbol": "weld_symbol",
+    "add_balloon": "balloon",
+    "add_bom_balloon": "balloon",
+    "set_title_block": "title_block_scale",
+    # BOM / tables
+    "add_bom_table": "bom_table",
+    "export_bom": "bom_table",
+    "add_hole_table": "hole_table",
+    # views of special kinds
+    "add_section_view": "section_view",
+    "add_detail_view": "detail_view_scale",
+    "add_flat_pattern_view": "flat_pattern_calc",
+    "create_orthographic_views": "native_projection",
+    "create_custom_view": "custom_view",
+    # geometry probing and reference dimensions
+    "probe_geometry": "reference_geometry",
+    "add_reference_dimension": "reference_geometry",
+    # hole callouts
+    "add_hole_callout": "hole_callout",
+    "add_hole_callouts": "hole_callout_batch",
+    # drawing sketches
+    "list_sheet_sketch": "sheet_sketch_delete",
+    "delete_sheet_sketch": "sheet_sketch_delete",
+    # inspection
+    "sheet_metal_qc": "sheet_metal_qc",
+    "survey_dimensions_by_view": "dimension_per_view",
+    "inspect_mates": "assembly_mates",
+}
+
+
+def tool_names(entry):
+    """Every tool name this entry covers: declared `tools` plus the reverse mapping."""
+    declared = [str(t) for t in (entry.get("tools") or ())]
+    owned = [tool for tool, cap in TOOL_CAPABILITY.items() if cap == entry.get("id")]
+    return sorted(set(declared) | set(owned))
+
+
+def tool_coverage(registered):
+    """How much of the tool registry the capability table can answer for.
+
+    Reported instead of assumed: the domains without an entry (ledger, delivery, export,
+    recolor...) are listed, so a caller can see the gap rather than read a bare "ok".
+    """
+    mapped = [t for t in registered if t in TOOL_CAPABILITY
+              or any(t in tool_names(entry) for entry in CAPABILITIES)]
+    return {"mapped": len(mapped), "total": len(registered),
+            "unmapped": sorted(set(registered) - set(mapped))}
+
+
+def _tool_coverage_payload():
+    """Registered tools vs tools this table can answer for. Import-free (reads server.py)."""
+    import ast as _ast
+    import io as _io
+    import os as _os
+
+    path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                         "server.py")
+    try:
+        tree = _ast.parse(_io.open(path, encoding="utf-8").read())
+    except Exception:
+        return {"mapped": None, "total": None, "unmapped": None,
+                "reason": "server.py not readable"}
+    registered = [node.name for node in tree.body
+                  if isinstance(node, _ast.FunctionDef) and any(
+                      isinstance(d, _ast.Call) and isinstance(d.func, _ast.Attribute)
+                      and d.func.attr == "tool" for d in node.decorator_list)]
+    return tool_coverage(registered)
+
+
 def check_capabilities(operation=None):
     """Return what this toolkit can and cannot do, optionally filtered to one operation.
 
@@ -915,8 +1033,18 @@ def check_capabilities(operation=None):
     entries = CAPABILITIES
     if operation:
         key = str(operation).strip().lower()
+        # ZJZL adoption (2026-11-28, re-audit): callers are told to look a TOOL up here, but
+        # the filter only matched `id` and `summary` — so `check_capabilities("probe_geometry")`
+        # answered `unknown_operation` for a tool that exists. Match the declared `tools` list
+        # too, and match in the other direction as well (a tool name can contain the key).
+        # A tool name resolves to its entry through TOOL_CAPABILITY (one auditable table),
+        # and an entry is also findable by any tool it declares or owns.
+        owner = TOOL_CAPABILITY.get(key)
         entries = [c for c in CAPABILITIES
-                   if key in c["id"].lower() or key in c["summary"]]
+                   if c["id"] == owner
+                   or key in c["id"].lower() or key in c["summary"].lower()
+                   or any(str(tool).lower() == key for tool in c.get("tools") or ())
+                   or key in tool_names(c)]
         if not entries:
             return error("unknown_operation",
                          "no capability entry matches %r" % operation,
@@ -964,6 +1092,10 @@ def check_capabilities(operation=None):
         pilot=[c["id"] for c in pilot],
         needs_attention=[c["id"] for c in needs_attention],
         usable_as_declared=[c["id"] for c in verified],
+        # ZJZL adoption (2026-11-28 re-audit): the pack's test asserts every tool is
+        # discoverable here. That is only true for the domains this table covers, so the
+        # coverage is REPORTED (mapped / total + the unmapped names) instead of claimed.
+        tool_coverage=_tool_coverage_payload(),
         capabilities=payload,
         # Report 2026-11-10 (S-4): `status:"partial"` + `status_label:"有限支持"` used to
         # ship next to `advice:"全部可做。"` — two rounds of feedback called it out. A
