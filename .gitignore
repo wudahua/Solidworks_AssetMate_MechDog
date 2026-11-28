@@ -57,3 +57,6 @@ _probe_*.py
 
 # Performance baselines are local measurements, not source
 logs/perf*.jsonl
+
+# 第三方增量包（本地资料，不发布；机制见 docs/2026-11-28-zjzl-adoption-plan.md）
+他人代码/
