@@ -337,6 +337,27 @@ CAPABILITIES = [
                      "`hatch_missing`，父视图草图 0 → 0，`section_line_remains: false`"),
     },
     {
+        "id": "reference_geometry",
+        "status": "partial",
+        "summary": ("可见几何持久引用 + 括号从动参考尺寸（`probe_geometry` / "
+                    "`add_reference_dimension`，ZJZL 批 2）"),
+        "tools": ["probe_geometry", "add_reference_dimension"],
+        "why": ("2026-11-28 真机（door.SLDPRT，A3，scale 0.5）：`probe_geometry` 读到 51 条边 / 44 个顶点，"
+                "每条带 `GetPersistReference3` 引用；`add_reference_dimension` 建成 Ø15 参考尺寸"
+                "（`reference:true`、`readback_verified:true`），水平尺寸 1.0 mm、P05 上 1.325 mm，"
+                "同一几何重复调用返回 `dimension_exists`。\n\n"
+                "**坐标空间是三个不是两个**（本机实测）：`ICurveParamData.StartPoint/EndPoint` 给的是"
+                "**视图局部坐标**（door 上跨度 0.160 × 0.215 m，原点在视图中心），"
+                "`IVertex.GetPoint` 给的是**模型坐标**，`ModelToViewTransform` 的平移对应视图中心。"
+                "第一版把端点当模型坐标，于是 44 个顶点全部「位置不可验证」；现已分字段输出三套坐标，"
+                "并用包围盒中心反推视图原点。\n\n"
+                "**未验证**：保存重开后 `dimension_id` 是否仍能解析（下一轮）。"),
+        "workaround": ("线性尺寸传**一条**直边（或两个顶点做 aligned），角度传两条直边，"
+                       "直径/半径传一条正对视图的圆边；参考在保存重开前一直有效"),
+        "evidence": ("2026-11-28 door / P05：probe 51 边 + 44 顶点；Ø15 与 1.0/1.325 mm 参考尺寸；"
+                     "重复调用 `dimension_exists`；smoke `reference geometry + driven dimension` PASS 27.8s"),
+    },
+    {
         "id": "batch_throughput",
         "status": "partial",
         "summary": ("单件出图 ~86 s（接槽），**没有单一热点**：12 个计时段分布在 1–17 s，"

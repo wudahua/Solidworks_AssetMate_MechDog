@@ -199,6 +199,17 @@ GetCurveParams3  FAIL (-2147352573, '找不到成员。')
 
 批 1 结论：**地基可用，无需降级实现。** 下一批（几何探测 + 参考尺寸）按原计划推进。
 
+### 批 2 · 几何探测 + 参考尺寸 — 已完成（v0.8.375）
+
+| 项 | 结果 |
+|---|---|
+| `ref_geometry.py` | `probe_geometry`：51 条边 / 44 个顶点，每条带 `GetPersistReference3` 引用 |
+| `ref_dimension.py` | `add_reference_dimension`：Ø15 参考尺寸 `reference:true` / `readback_verified:true`；水平 1.0 mm（door）、1.325 mm（P05）；重复调用 `dimension_exists` |
+| 新工具 | 2 个（80 → 82），`stdio_contract` 10/10 |
+| **新发现：坐标是三个空间** | `ICurveParamData` = **视图局部**（door 跨度 0.160×0.215 m 居中）、`IVertex.GetPoint` = **模型**、`ModelToViewTransform` 平移 = **视图中心**。第一版把端点当模型坐标 → 44 个顶点全部「位置不可验证」；现分三字段输出，并按包围盒中心反推视图原点 |
+| 未验证 | 保存重开后 `dimension_id` 能否解析（列入批 5） |
+
+
 ## 5. 吸收方案（5 批）
 
 ### 批 1 · 地基（0.5 天）— 决定后面三批是否成立

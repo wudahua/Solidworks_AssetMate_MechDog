@@ -229,6 +229,17 @@ def drawing_scope(native, path, sheet_name):
     return doc, drawing, sheet, extension
 
 
+def activate_sheet(native, drawing, sheet):
+    """Make `sheet` active; a failed activation is an error, not something to write through."""
+    name = sheet.GetName()
+    current = native.cast(value_of(drawing, "GetCurrentSheet"), "ISheet")
+    if current is not None and current.GetName() == name:
+        return
+    if not value_of(drawing, "ActivateSheet", name):
+        raise ComScopeError("sheet_activation_failed",
+                            "Could not activate sheet %r" % name)
+
+
 def model_views(native, sheet):
     """Every non-sheet view on the sheet, as typed IView."""
     views = (native.cast(raw, "IView") for raw in (value_of(sheet, "GetViews") or ()))

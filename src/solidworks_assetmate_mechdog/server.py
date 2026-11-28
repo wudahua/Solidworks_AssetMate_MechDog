@@ -22,7 +22,7 @@ try:
 except Exception:  # a read-only cwd must not stop the server from starting
     faulthandler.enable(all_threads=True)
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
@@ -30,8 +30,8 @@ from mcp.server.fastmcp import FastMCP
 from . import SERVER_NAME, __version__
 from . import sw_session
 from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
-                    layout, ledger, material as material_tools, pipeline, planner, recolor,
-                    rename, sheet_metal, survey)
+                    layout, ledger, material as material_tools, pipeline, planner,
+                    ref_dimension, ref_geometry, recolor, rename, sheet_metal, survey)
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -204,7 +204,7 @@ _TOOL_PROFILES = {
         "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
-        "add_balloon", "add_native_weld_symbol", "add_model_dimensions",
+        "add_balloon", "probe_geometry", "add_reference_dimension", "add_native_weld_symbol", "add_model_dimensions",
         "list_sheet_sketch", "delete_sheet_sketch",
         "add_hole_table",
         "add_bom_table", "layout_dimensions", "set_dimension_position",
@@ -894,6 +894,49 @@ def add_native_weld_symbol(
     """
     return _json(drawing.add_native_weld_symbol(
         drawing_path, view_name=view_name, edge_index=edge_index, save=save))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def probe_geometry(
+    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
+    view_name: Annotated[str, Field(description="Exact name of a loaded part or assembly view.")],
+    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
+    component: Annotated[str | None, Field(description="Optional assembly occurrence name. Null reads the whole view.")] = None,
+) -> str:
+    """Visible edge/vertex geometry with scoped persistent references.
+
+    Each `reference` can be handed to `add_reference_dimension` later, including after a
+    save/reopen: the id is `GetPersistReference3`, not a per-session index. Coordinates are
+    reported per space — `endpoints_local_m` (the view frame `ModelToViewTransform` uses),
+    `point_model_m` (raw model), and `point_sheet_m` for both. Measured 2026-11-28: these
+    three are NOT the same frame, and mixing them costs a view-offset error.
+    """
+    return _json(ref_geometry.probe_geometry(drawing_path, view_name, sheet, component))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def add_reference_dimension(
+    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
+    view_name: Annotated[str, Field(description="Exact target view name.")],
+    kind: Annotated[Literal["aligned", "horizontal", "vertical", "angular", "diameter", "radius"], Field(description="Native dimension type. Each maps to its own Add*Dimension2 entry point, so a wrong style fails instead of silently becoming another type.")],
+    references: Annotated[list[dict], Field(description="One or two reference objects returned by probe_geometry. Linear kinds take ONE straight edge (or two vertices for aligned); angular takes two straight edges; diameter/radius take one face-on circular edge.", min_length=1, max_length=2)],
+    position_m: Annotated[list[float], Field(description="Dimension placement point in sheet metres, [x, y].", min_length=2, max_length=2)],
+    expected_value: Annotated[float | None, Field(description="Optional value to verify, in mm or degrees.")] = None,
+    tolerance: Annotated[float, Field(description="Allowed absolute difference from expected_value.")] = 0.01,
+    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
+    save: Annotated[bool, Field(description="Save the drawing after the verified insert. False leaves it in memory.")] = False,
+) -> str:
+    """A bracketed, driven (reference) dimension on exact visible geometry.
+
+    The value is read back and compared against the projected separation of the same
+    geometry; the attachments are compared by `IsSame`, not by position. A dimension that
+    fails verification is deleted before the error is returned.
+    """
+    return _json(ref_dimension.add_reference_dimension(
+        drawing_path, view_name, kind, references, position_m,
+        expected_value=expected_value, tolerance=tolerance, sheet=sheet, save=save))
 
 
 @mcp.tool()

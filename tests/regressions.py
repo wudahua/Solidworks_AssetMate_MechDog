@@ -4440,8 +4440,8 @@ def assert_docs_numbers_match_the_code():
                     registered += 1
     # 71 since v0.8.284 (`list_tool_profiles`). Bump this line IN THE SAME COMMIT that adds
     # a tool — the check exists so a new tool cannot slip in without anyone noticing.
-    assert registered == 80, (
-        "expected 80 registered tools, AST found %d — update this expectation "
+    assert registered == 82, (
+        "expected 82 registered tools, AST found %d — update this expectation "
         "deliberately when a tool is added" % registered)
 
     # Whitespace-tolerant because README wraps the sentence; `assert m` because not
@@ -12695,7 +12695,67 @@ def assert_property_or_method_reads_the_same_value():
     return "property and method forms parse to the same sheet geometry"
 
 
+def assert_geometry_references_are_scoped_and_typed():
+    """0.8.375 (ZJZL adoption batch 2) — a reference must not resolve outside its scope.
+
+    `probe_geometry` returns ids from `GetPersistReference3`, which SolidWorks will happily
+    resolve from ANY drawing that happens to hold the same entity. Without an explicit scope
+    check the wrong view's edge would be dimensioned, and the receipt would look clean.
+
+    BEHAVIOURAL: pydantic model validation and the guard order; no COM.
+    """
+    from solidworks_assetmate_mechdog.tools import ref_geometry as _rg
+
+    good = {"drawing_path": "C:/a.SLDDRW", "sheet": "图纸1", "view": "工程图视图1",
+            "kind": "edge", "component": None, "id": "abc"}
+    reference = _rg.reference_from(good)
+    assert reference.view == "工程图视图1" and reference.kind == "edge"
+    for bad in ({"kind": "face"}, {"kind": "edge", "id": ""}):
+        payload = dict(good, **bad)
+        try:
+            _rg.reference_from(payload)
+        except _rg.ComScopeError as exc:
+            assert exc.code == "bad_reference", exc.code
+        else:
+            raise AssertionError("an invalid reference was accepted: %r" % (payload,))
+
+    src = _read("tools/ref_geometry.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "resolve_visible")) or ""
+    for token in ("reference_scope_mismatch", "stale_reference",
+                  "GetObjectByPersistReference3", "IsSame"):
+        assert token in body, "resolve_visible lost %s" % token
+    return "references are validated by schema and by scope before any entity is returned"
+
+
+def assert_reference_dimensions_use_per_type_entry_points():
+    """0.8.375 — `AddDimension2` cannot promise a dimension TYPE; the per-type APIs can.
+
+    This toolkit recorded that it had to delete and rebuild a dimension whose type came back
+    wrong. The table below is the fix: every kind names its own entry point AND the
+    `IDisplayDimension.Type2` values it is allowed to return, so a mismatch aborts the call.
+
+    BEHAVIOURAL: reads the real table.
+    """
+    from solidworks_assetmate_mechdog.tools import ref_dimension as _rd
+
+    assert set(_rd.OPERATIONS) == {"aligned", "horizontal", "vertical", "angular",
+                                   "diameter", "radius"}, sorted(_rd.OPERATIONS)
+    assert _rd.OPERATIONS["horizontal"][0] == "AddHorizontalDimension2"
+    assert _rd.OPERATIONS["diameter"][0] == "AddDiameterDimension2"
+    assert _rd.OPERATIONS["radius"][0] == "AddRadialDimension2"
+    assert _rd.AXES == {"horizontal": 0, "vertical": 1, "aligned": None}
+
+    src = _read("tools/ref_dimension.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "_add")) or ""
+    for token in ("ShowParenthesis", "DrivenState", "attachments_match",
+                  "rollback_annotation", "dimension_value_mismatch"):
+        assert token in body, "_add no longer verifies %s" % token
+    return "each kind has its own entry point and a whitelist of acceptable Type2 styles"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.375 geometry references are scoped", assert_geometry_references_are_scoped_and_typed),
+    ("0.8.375 per-type dimension entry points", assert_reference_dimensions_use_per_type_entry_points),
     ("0.8.374 view frame maps model->sheet", assert_the_view_frame_maps_model_points_to_the_sheet),
     ("0.8.374 property-or-method reads", assert_property_or_method_reads_the_same_value),
     ("0.8.373 built drawing is not failed", assert_a_built_drawing_is_never_reported_as_failed),

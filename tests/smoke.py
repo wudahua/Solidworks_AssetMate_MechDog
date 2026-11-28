@@ -277,7 +277,8 @@ def main():
     from solidworks_assetmate_mechdog import __version__
     from solidworks_assetmate_mechdog import sw_session
     from solidworks_assetmate_mechdog.sw_session import get_sw
-    from solidworks_assetmate_mechdog.tools import (assembly, bodies, bom, drawing, export,
+    from solidworks_assetmate_mechdog.tools import (ref_dimension, ref_geometry,
+                                                assembly, bodies, bom, drawing, export,
                                                     layout, ledger, recolor, capabilities,
                                                     sheet_metal, planner, rename, material,
                                                     pipeline, manifest)
@@ -3236,6 +3237,50 @@ def main():
             got.get("added"), len(filled))
 
     r.check("model dimensions reach every view", _model_dimensions_reach_every_view)
+
+    def _reference_geometry_and_dimension():
+        """0.8.375 (ZJZL batch 2): persistent geometry refs + a bracketed driven dimension.
+
+        Two things this proves that the existing dimension checks do not:
+        `probe_geometry` hands out ids from `GetPersistReference3` (not per-session indexes),
+        and `add_reference_dimension` reads the value back, compares it to the projected
+        separation and refuses a second identical dimension.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_refdim.SLDPRT")
+        drw = os.path.join(workdir, "smoke_refdim.SLDDRW")
+        shutil.copy2(src, part)
+        built = drawing.create_drawing(part, drw, views=["front"], paper="A3")
+        if not built.get("ok"):
+            raise FixtureMissing("a part whose drawing can be created")
+        view = (built.get("views") or [{}])[0].get("name")
+
+        probe = ref_geometry.probe_geometry(drw, view)
+        assert probe.get("ok") is True, (probe.get("error"), probe.get("message"))
+        edges = [e for e in (probe.get("edges") or []) if e.get("reference")]
+        assert edges, "probe_geometry returned no selectable edges"
+        lines = [e for e in edges if e.get("curve") == "line"]
+        if not lines:
+            raise FixtureMissing("a part drawing with at least one straight edge")
+        target = lines[0]
+        got = ref_dimension.add_reference_dimension(
+            drw, view, "horizontal", [target["reference"]], [0.30, 0.14], save=False)
+        assert got.get("ok") is True, (got.get("error"), got.get("message"))
+        assert got.get("reference") is True and got.get("readback_verified") is True, got
+        assert got.get("value") is not None and got.get("dimension_id"), got
+        again = ref_dimension.add_reference_dimension(
+            drw, view, "horizontal", [target["reference"]], [0.30, 0.12], save=False)
+        assert again.get("error") == "dimension_exists", (
+            "a duplicate reference dimension was accepted: %r" % (again.get("error"),))
+        try:
+            drawing.close_document(drw)
+        except Exception:
+            pass
+        return "edges=%d value=%.3fmm duplicate refused" % (len(edges), float(got["value"]))
+
+    r.check("reference geometry + driven dimension", _reference_geometry_and_dimension)
 
     def _section_and_detail():
         """0.8.117: section and detail views had never run AFTER produce_drawing.
