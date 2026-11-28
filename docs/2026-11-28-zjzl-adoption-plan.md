@@ -239,6 +239,20 @@ GetCurveParams3  FAIL (-2147352573, '找不到成员。')
 | **BOM 气泡仍不进 CI** | 小装配（3 行 BOM）能建图与建表，但 `probe_geometry` 在**第一条边**上卡了 **285 s**（40 s 预算只能在下一次循环前生效，拦不住单次 COM 阻塞）。夹具问题，非工具逻辑，豁免保留 |
 | 断言总数 | 359（40 behavioural） |
 
+### 补做 · 项 C：重叠判定改用内容框 — 已完成（v0.8.379）
+
+| 项 | 结果 |
+|---|---|
+| 实测留白 | `GetOutline` 每边 **0.0059 m**（1:1 与 1:2 都是 L=B=T 精确；R 因右侧是圆弧切线而偏大） |
+| 改法 | `content_box()` 去掉已知留白；重叠按内容框 + 0.2 mm 容差判；**页内边界仍用原始 outline** |
+| 正向 | `native projections and custom view` PASS（含"太近必须拒绝"的负向断言） |
+| 回归 | `views, dimensions, title block` PASS、`paper scaling keeps views inside` PASS |
+| 断言 | 360（41 behavioural） |
+
+> 注意：这一轮 smoke 的三条用例耗时异常（108 s / 274 s / 568 s，平时 16 / 25 / 77 s）。
+> 会话已连续跑了一整天、建过上百张图纸，判断为**会话退化**而非本次改动；结论按"通过/不通过"采信，不采信耗时。
+
+
 
 
 

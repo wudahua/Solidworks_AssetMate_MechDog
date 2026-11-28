@@ -12851,7 +12851,54 @@ def assert_persisted_ids_round_trip_and_reject_garbage():
     return "ids round-trip through base64url and length/format are validated"
 
 
+def assert_overlap_uses_the_content_box_not_the_padded_outline():
+    """0.8.379 (plan item C, from report 2026-11-28 batch 3) — the overlap test's box.
+
+    `IView.GetOutline` pads the content. Measured 2026-11-28 on door.SLDPRT at 1:1 and 1:2:
+    padding is **0.0059 m on every side** (L=B=T exactly; R reads larger because the right
+    extreme is an arc whose tangent the endpoint sample cannot reach). Judging overlap on the
+    padded box therefore costs ~12 mm of phantom clearance per axis — two views 10 mm apart
+    were refused as "overlapping" while their geometry did not touch.
+
+    The fix removes the known padding and keeps a 0.2 mm tolerance so boxes that merely touch
+    are not a collision. Sheet BOUNDS still use the raw outline: a view bleeding past the
+    border is a defect even when its content would fit.
+
+    BEHAVIOURAL: pure arithmetic on the measured constant.
+    """
+    from solidworks_assetmate_mechdog.tools import ref_views as _rv
+
+    assert abs(_rv.OUTLINE_PADDING_PER_SIDE_M - 0.0059) < 1e-12, (
+        "the measured padding constant changed without a new measurement")
+    assert _rv.OVERLAP_TOLERANCE_M < _rv.OUTLINE_PADDING_PER_SIDE_M
+
+    class FakeView:
+        def __init__(self, box):
+            self.box = box
+
+        def GetName2(self):
+            return "v"
+
+        def GetOutline(self):
+            return self.box
+
+    box = _rv.content_box(FakeView([0.10, 0.10, 0.20, 0.20]))
+    assert box[0] > 0.10 and box[1] > 0.10 and box[2] < 0.20 and box[3] < 0.20, box
+    assert abs((box[0] - 0.10) - 0.0059) < 1e-12 and abs((0.20 - box[2]) - 0.0059) < 1e-12
+
+    degenerate = _rv.content_box(FakeView([0.10, 0.10, 0.101, 0.101]))
+    assert degenerate[2] >= degenerate[0] and degenerate[3] >= degenerate[1], degenerate
+
+    src = _read("tools/ref_views.py")
+    body = ast.get_source_segment(src, _function_node(ast.parse(src), "check_layout")) or ""
+    assert "content_box" in body, "check_layout went back to comparing padded outlines"
+    assert "raw" in body and "view_outside_sheet" in body, (
+        "sheet bounds must still use the RAW outline")
+    return "overlap uses content boxes; sheet bounds still use the raw outline"
+
+
 BEHAVIOURAL_REGRESSIONS = [
+    ("0.8.379 overlap uses content boxes", assert_overlap_uses_the_content_box_not_the_padded_outline),
     ("0.8.378 projection layout angle", assert_projection_layout_follows_the_sheet_angle),
     ("0.8.378 rotation is orthonormal", assert_the_custom_view_rotation_is_orthonormal),
     ("0.8.378 reference ids round-trip", assert_persisted_ids_round_trip_and_reject_garbage),

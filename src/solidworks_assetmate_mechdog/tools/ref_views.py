@@ -79,21 +79,57 @@ def view_record(view):
             "configuration": view.ReferencedConfiguration}
 
 
+# `IView.GetOutline` pads the CONTENT by this much on every side. Measured 2026-11-28 on
+# door.SLDPRT at 1:1 and 1:2: L=B=T=0.0059 m exactly (0.0119 total, which is the constant the
+# rest of the toolkit already uses); R came out slightly larger because the right-hand extreme
+# is an arc and the endpoint sample cannot reach its tangent. So deflating by 0.0059 yields a
+# box that is never SMALLER than the content — the safe direction for an overlap test.
+OUTLINE_PADDING_PER_SIDE_M = 0.0059
+# Boxes that merely touch are not an overlap; 0.2 mm is below any meaningful layout gap.
+OVERLAP_TOLERANCE_M = 0.0002
+
+
+def content_box(view):
+    """The view's content box: `GetOutline` with its known padding removed."""
+    left, bottom, right, top = [float(v) for v in value_of(view, "GetOutline")]
+    left += OUTLINE_PADDING_PER_SIDE_M
+    bottom += OUTLINE_PADDING_PER_SIDE_M
+    right -= OUTLINE_PADDING_PER_SIDE_M
+    top -= OUTLINE_PADDING_PER_SIDE_M
+    if right <= left:
+        middle = (left + right) / 2
+        left, right = middle, middle
+    if top <= bottom:
+        middle = (bottom + top) / 2
+        bottom, top = middle, middle
+    return [left, bottom, right, top]
+
+
 def check_layout(native, sheet, view):
-    """The new view must be on the sheet and must not overlap any other view."""
+    """The new view must be on the sheet and must not overlap any other view.
+
+    Sheet bounds use the RAW outline (a view that bleeds past the border is a defect even if
+    its content would fit). Overlap uses `content_box`, so a 12 mm phantom gap between
+    padded outlines no longer counts as a collision — measured cause: the padding is 5.9 mm
+    per side and two views placed 10 mm apart looked "overlapping" while their geometry did
+    not touch.
+    """
     name = value_of(view, "GetName2")
-    left, bottom, right, top = value_of(view, "GetOutline")
+    raw = [float(v) for v in value_of(view, "GetOutline")]
     props = sheet_properties(sheet)
-    if not (0 <= left < right <= props["width_m"] and 0 <= bottom < top <= props["height_m"]):
+    if not (0 <= raw[0] < raw[2] <= props["width_m"]
+            and 0 <= raw[1] < raw[3] <= props["height_m"]):
         raise ComScopeError("view_outside_sheet",
                             "Outline for %r does not fit on the sheet" % name)
+    left, bottom, right, top = content_box(view)
     for other in model_views(native, sheet):
         if value_of(other, "GetName2") == name:
             continue
-        x1, y1, x2, y2 = value_of(other, "GetOutline")
-        if max(left, x1) < min(right, x2) and max(bottom, y1) < min(top, y2):
+        x1, y1, x2, y2 = content_box(other)
+        if (min(right, x2) - max(left, x1) > OVERLAP_TOLERANCE_M
+                and min(top, y2) - max(bottom, y1) > OVERLAP_TOLERANCE_M):
             raise ComScopeError("view_overlap",
-                                "View %r overlaps %r"
+                                "View %r overlaps %r (content boxes, not padded outlines)"
                                 % (name, value_of(other, "GetName2")))
 
 

@@ -3320,6 +3320,12 @@ def main():
         again = ref_views.create_orthographic_views(drw, base, ["top"], offset_m=offset)
         assert again.get("error") == "projection_exists", (
             "a duplicate projection was accepted: %r" % (again.get("error"),))
+        # The content box must still REFUSE a genuine collision: half the offset puts the
+        # child on top of the parent. (The padding is only removed, never assumed away.)
+        too_close = ref_views.create_orthographic_views(drw, base, ["left"],
+                                                        offset_m=max(0.02, offset * 0.25))
+        assert too_close.get("error") in ("view_overlap", "view_outside_sheet"), (
+            "an overlapping projection was accepted: %r" % (too_close.get("error"),))
 
         drw2 = os.path.join(workdir, "smoke_views3_custom.SLDDRW")
         built2 = drawing.create_drawing(part, drw2, views=["front"], paper="A2")
