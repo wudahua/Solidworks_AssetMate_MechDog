@@ -209,6 +209,17 @@ GetCurveParams3  FAIL (-2147352573, '找不到成员。')
 | **新发现：坐标是三个空间** | `ICurveParamData` = **视图局部**（door 跨度 0.160×0.215 m 居中）、`IVertex.GetPoint` = **模型**、`ModelToViewTransform` 平移 = **视图中心**。第一版把端点当模型坐标 → 44 个顶点全部「位置不可验证」；现分三字段输出，并按包围盒中心反推视图原点 |
 | 未验证 | 保存重开后 `dimension_id` 能否解析（列入批 5） |
 
+### 批 3 · 视图 — 已完成（v0.8.376）
+
+| 项 | 结果 |
+|---|---|
+| `create_orthographic_views` | 原生上视/右视：法向 (0,1,0)/(1,0,0)，`projection: first`（GB A3 `[7]=1`），重复请求 `projection_exists` |
+| `create_custom_view` | `normal=[0.6,0,0.8]` → `rotation` 回读一致；模型 MD5 未变；无 `ZJZL_` 命名视图残留 |
+| 新工具 | 2 个（82 → 84） |
+| **新发现** | `IModelDoc2.ActiveView` 可用，但 `IActiveView` 是只写属性；`value_of` 不能把「属性返回的 CDispatch」当方法调用（否则报「找不到成员」） |
+| 未强制触发 | 投影建到一半失败时的整批撤回（代码有，未造失败用例） |
+
+
 
 ## 5. 吸收方案（5 批）
 

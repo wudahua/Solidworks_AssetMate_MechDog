@@ -222,7 +222,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | 装配与零件 | `get_assembly_tree`、`export_bom`、`recolor_assembly`、`build_feature_ledger` |
 | 导出 | `export_drawing`（PDF/DWG/DXF）、`render_drawing`（PNG 目视）、`batch_export`（STEP） |
 
-全部 82 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
+全部 84 个工具按能力域展开见下；运行时以 `list_tool_profiles` 与 `check_capabilities` 为准。
 
 ## 三个能力域
 
@@ -245,7 +245,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `build_feature_ledger` | **特征台账**：特征/驱动尺寸/孔候选/模型疑点/零件类别 |
 | `export_sketch_geometry` | **草图逐点几何**（0.8.309 新增）：每段线/弧的长度、直线端点由 `LineParams`+`GetLength` 精确算出、圆弧给圆心/轴/半径/包角并从点集反解端点；`plane_frame` 恒 null（本 binding 读不到基准面），坐标是**草图局部坐标** |
 
-### 二、工程图（52）
+### 二、工程图（54）
 
 | 工具 | 作用 |
 |---|---|
@@ -283,7 +283,9 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `set_dimension_position` | **移动单个尺寸**到图纸坐标（米），校验目标是尺寸并回读数值与位置 |
 | `add_hole_table` | **原生孔表**（0.8.354 新增）：以视图顶点为基准插入 `.sldholtbt` 表；`holes_listed` = 行数−1，只列**孔向导/孔系列**孔，普通拉伸切除的孔不进表 → 那时返回 `ok:false` + `hole_table_empty`，不留空表当成功 |
 | `add_native_weld_symbol` | **原生焊接符号**（0.8.365 新增）：`InsertWeldSymbol3()` 在选中边后创建注解类型 8 的真符号（此前 `list_drawing_annotations` 把类型 8 标成 `datum_tag`，所以没人发现它可用）；符号种类/尺寸/尾部文字暂未开放 |
-| `add_model_dimensions` | **模型尺寸带入所有视图**（0.8.366 新增）：`InsertModelAnnotations4` 在 `IDrawingDoc` 上；`types` 必须是 **65535**（0 或窄掩码会一条都不插，看起来像「第二视图插不进去」）|\n| `probe_geometry` | **可见几何 + 持久引用**（ZJZL 批 2）：每条边/顶点带 `GetPersistReference3` 引用，保存重开仍可解析；坐标分三套（`endpoints_local_m` 视图局部 / `point_model_m` 模型 / `point_sheet_m` 纸面）|
+| `add_model_dimensions` | **模型尺寸带入所有视图**（0.8.366 新增）：`InsertModelAnnotations4` 在 `IDrawingDoc` 上；`types` 必须是 **65535**（0 或窄掩码会一条都不插，看起来像「第二视图插不进去」）|\n| `create_orthographic_views` | **原生对齐正投影**（ZJZL 批 3）：`CreateUnfoldedViewAt3` 建原生子视图，按图页第一/三角法摆位；校验父视图/模型/配置/法向/比例/位置，失败整批撤回 |
+| `create_custom_view` | **任意方向视图**（ZJZL 批 3）：临时改模型视口 → `NameView` → 建视图 → 恢复视口并删临时名；回读旋转矩阵与位置，源模型不保存 |
+| `probe_geometry` | **可见几何 + 持久引用**（ZJZL 批 2）：每条边/顶点带 `GetPersistReference3` 引用，保存重开仍可解析；坐标分三套（`endpoints_local_m` 视图局部 / `point_model_m` 模型 / `point_sheet_m` 纸面）|
 | `add_reference_dimension` | **括号从动参考尺寸**（ZJZL 批 2）：按类型走 `Add*Dimension2`，`ShowParenthesis` + `DrivenState==1` + `GetAttachedEntities3` 逐项校验，失败自动删掉 |
 | `add_balloon` | **原生件号圆圈**（0.8.364 新增）：`InsertBOMBalloon2` 在 `IModelDoc` 上，需先选中一条**边**；无 BOM 表时文字读 `?`，传 `item` 写入自己的件号 |
 | `add_bom_table` | **原生 BOM 明细栏**（Indented→TopLevelOnly 两步，10 行 4 列含数量） |
@@ -318,7 +320,7 @@ dry-run 确认零件与匹配数无误后，再 `apply=true`。
 | `plan_drawing` | 出图前规划：保留哪些尺寸、几张图、怎么拆（不建图） |
 | `check_capabilities` | 动手前声明：哪些做不了、证据、替代方案；回显**运行中的版本 + 源码路径 + 解释器** |
 | `ping` | **最轻的存活探针**（约 18 ms，不碰 ActiveDoc）：SW 版本、往返延迟、上一个工具、自愈计数 |
-| `list_tool_profiles` | 82 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
+| `list_tool_profiles` | 84 个工具的**建议分组**（standard / drawing / expert / full）。**只是清单，不过滤任何工具**；`ungrouped` 非空说明有工具忘了归类 |
 | `health_check` | **桥接与 SolidWorks 是否都活着**（可分辨"桥死了"与"SW 不响应"） |
 | `recent_failures` | **读回当日失败日志**（工具名/参数/错误/SW 版本/健康快照） |
 
@@ -704,7 +706,7 @@ python tests/smoke.py
 ```
 
 **第一项是静态检查**（`tests/static_check.py`，0.0 s，不需要 SolidWorks）：扫描 `server.py`
-里 82 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
+里 84 个工具函数，确认每个 `name.attribute` 的 `name` 都有 import 或定义、每个 wrapper
 转发的参数都在签名里。0.4.6 那种"调用即崩"的 `NameError` 会在这里被挡住，而不是等 COM 跑完。
 
 ```bash

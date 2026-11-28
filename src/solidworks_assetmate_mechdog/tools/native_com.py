@@ -204,8 +204,13 @@ def value_of(obj, name, *args):
     like a missing API. This is the same confusion that cost three rounds before (see the
     module docstring), so it is handled once, here.
     """
+    import inspect
+
     attr = getattr(obj, name)
-    if callable(attr) and not isinstance(attr, type):
+    # `callable()` is too broad here: a pywin32 CDispatch (a property that RETURNS an object,
+    # e.g. `IModelDoc2.ActiveView`) is callable too, and calling it raises "找不到成员".
+    # Only real methods are invoked; anything else is returned as-is.
+    if inspect.isroutine(attr):
         return attr(*args)
     return attr
 

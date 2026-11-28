@@ -7610,3 +7610,41 @@ GetProperties2 = 8 值，[7] = 1.0 -> GB A3 判第一角法
 - `IEdge.GetStartVertex` 对**直线边**返回 None，对**圆边**返回对象 —— 两个来源都要能处理；
 - `GetVisibleEntityCount2(component, 4)` 的轮廓边是**设计事实**不是缺陷，已从 `issues` 移到 `notes`，
   否则每个普通视图都会报 `status: partial`。
+
+---
+
+## 2026-11-28（v0.8.376）ZJZL 批 3：`value_of` 不能把「返回的对象」当方法调
+
+### 现象
+
+自定义视图第一版报 `com_operation_failed: 找不到成员`，但逐步探针里 `model.ActiveView`
+直接读却成功。差别就在中间的 `value_of(model, "ActiveView")`：
+
+```python
+attr = getattr(obj, name)
+if callable(attr):        # ← CDispatch 也是 callable
+    return attr(*args)    # ← 于是把一个「模型视图对象」当函数调用了
+```
+
+pywin32 的 CDispatch 定义 `__call__`，`callable()` 为真。调用它等于调用该对象的默认成员，
+于是报「找不到成员」—— 与「没有这个 API」再次长得一模一样。
+
+改法：只用 `inspect.isroutine(attr)` 判断是否真的方法；属性返回的对象原样返回。
+
+### 批 3 实测（door.SLDPRT）
+
+| 能力 | 结果 |
+|---|---|
+| 原生正投影 | 上视/右视建成，法向 (0,1,0)/(1,0,0)，`projection: first`，重复请求 `projection_exists` |
+| 任意方向 | `normal=[0.6,0,0.8]` → rotation 回读 `[0.8,0,0.6, 0,1,0, -0.6,0,0.8]`，模型 MD5 未变，命名视图无残留 |
+| `IActiveView` | 只写属性，读它报「无法读只写属性」；用 `ActiveView` |
+
+### 两条操作约束（已写进能力表）
+
+1. `offset_m` 必须大于父视图高度的一半 —— P05 上 0.085 m 会重叠，实测需要 0.259 m；
+2. `position_m` 要留空间：重叠的视图被**拒绝**而不是被挪开，这是刻意的。
+
+### 教训
+
+**「可调用」不等于「应该调用」。** 这已经是同一类错误的第五次（接口绑错、参数个数、掩码、
+类型表、可调用性）：每次都是「对方看起来不支持」，实际是调用形态不对。

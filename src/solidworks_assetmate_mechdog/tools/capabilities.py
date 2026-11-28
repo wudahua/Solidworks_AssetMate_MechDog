@@ -337,6 +337,38 @@ CAPABILITIES = [
                      "`hatch_missing`，父视图草图 0 → 0，`section_line_remains: false`"),
     },
     {
+        "id": "native_projection",
+        "status": "partial",
+        "summary": ("原生对齐正投影（`create_orthographic_views`，ZJZL 批 3）："
+                    "`CreateUnfoldedViewAt3` + 图页第一/三角法"),
+        "tools": ["create_orthographic_views"],
+        "why": ("2026-11-28 真机（door.SLDPRT，A3）：建上视/右视成功，法向读出 (0,1,0) 与 (1,0,0)，"
+                "`projection: first`（GB A3 的 `GetProperties2[7]=1`）；重复请求同一方向返回 "
+                "`projection_exists`。回执校验父子关系、模型路径、配置、法向、比例、位置。\n\n"
+                "**未强制触发**：建到一半失败时的整批撤回（代码用上下文管理器逆序删除并回读确认，"
+                "但本轮没有造出失败用例）。"),
+        "workaround": ("`offset_m` 必须大于父视图高度的一半，否则 `check_layout` 判重叠而整批撤回 —— "
+                       "先读 `GetOutline` 再算偏移，比写死 0.09 可靠"),
+        "evidence": ("2026-11-28 door：top/right 两条原生投影 + `projection_exists`；"
+                     "smoke `native projections and custom view` PASS 25.0s（offset 0.259 m）"),
+    },
+    {
+        "id": "custom_view",
+        "status": "verified",
+        "summary": ("任意方向视图（`create_custom_view`，ZJZL 批 3）："
+                    "临时改模型视口 → 命名 → 建视图 → 恢复并删除"),
+        "tools": ["create_custom_view"],
+        "why": ("2026-11-28 真机（door.SLDPRT，A2，删掉基准视图后）：normal=[0.6,0,0.8]、up=[0,1,0]，"
+                "`rotation` 回读 [0.8,0,0.6, 0,1,0, -0.6,0,0.8] 与请求一致；"
+                "`readback_verified: true`；源模型 MD5 未变；`GetModelViewNames` 中无 `ZJZL_` 残留 —— "
+                "视口与命名视图都已恢复。"),
+        "workaround": ("`position_m` 要留出空间：重叠的视图会被拒绝而不是被挪开；"
+                       "被图纸引用的零件同样能取到 `ActiveView`（本机实测），"
+                       "但 `IModelDoc2.IActiveView` 是只写属性，读它会报「无法读只写属性」"),
+        "evidence": ("2026-11-28 door：rotation 回读一致、模型哈希不变、无残留命名视图；"
+                     "smoke `native projections and custom view` 同一用例内验证"),
+    },
+    {
         "id": "reference_geometry",
         "status": "partial",
         "summary": ("可见几何持久引用 + 括号从动参考尺寸（`probe_geometry` / "

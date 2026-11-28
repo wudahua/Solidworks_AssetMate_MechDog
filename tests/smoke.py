@@ -277,7 +277,7 @@ def main():
     from solidworks_assetmate_mechdog import __version__
     from solidworks_assetmate_mechdog import sw_session
     from solidworks_assetmate_mechdog.sw_session import get_sw
-    from solidworks_assetmate_mechdog.tools import (ref_dimension, ref_geometry,
+    from solidworks_assetmate_mechdog.tools import (ref_dimension, ref_geometry, ref_views,
                                                 assembly, bodies, bom, drawing, export,
                                                     layout, ledger, recolor, capabilities,
                                                     sheet_metal, planner, rename, material,
@@ -3281,6 +3281,67 @@ def main():
         return "edges=%d value=%.3fmm duplicate refused" % (len(edges), float(got["value"]))
 
     r.check("reference geometry + driven dimension", _reference_geometry_and_dimension)
+
+    def _native_projections_and_custom_view():
+        """0.8.376 (ZJZL batch 3): aligned native projections + an arbitrary direction.
+
+        Asserted here, not in the offline suite: the value of this pair is that the views are
+        NATIVE — a real `GetBaseView` parent, the parent's scale and configuration, and an
+        orientation readback. Offline asserts can only see that the calls exist.
+        """
+        src = args.part
+        if not src or not os.path.exists(src):
+            raise FixtureMissing("--part (any part that can produce a drawing)")
+        part = os.path.join(workdir, "smoke_views3.SLDPRT")
+        drw = os.path.join(workdir, "smoke_views3.SLDDRW")
+        shutil.copy2(src, part)
+        # A1: the projection must have room, and `check_layout` refuses an overlapping child
+        # instead of nudging it (that refusal is the point of the check, not an obstacle).
+        built = drawing.create_drawing(part, drw, views=["front"], paper="A1")
+        if not built.get("ok"):
+            raise FixtureMissing("a part whose drawing can be created")
+        base = (built.get("views") or [{}])[0].get("name")
+
+        # Offset from the base view's own height: the fixture can be 300 mm wide, and a
+        # hard-coded 85 mm overlaps it (which `check_layout` correctly refuses).
+        _doc = drawing._open_drawing(drw)
+        _view = next(v for v in drawing._iter_views(_doc) if getattr(v, "Type", None) != 1)
+        _l, _b, _r, _t = [float(v) for v in _view.GetOutline]
+        offset = (_t - _b) + 0.03
+        drawing.close_document(drw)
+
+        made = ref_views.create_orthographic_views(drw, base, ["top"], offset_m=offset)
+        assert made.get("ok") is True, (made.get("error"), made.get("message"))
+        row = (made.get("views") or {}).get("top") or {}
+        normal = row.get("normal_model") or []
+        assert len(normal) == 3 and abs(abs(normal[1]) - 1.0) < 1e-6, (
+            "the top projection does not look along the model Y axis: %r" % (normal,))
+        again = ref_views.create_orthographic_views(drw, base, ["top"], offset_m=offset)
+        assert again.get("error") == "projection_exists", (
+            "a duplicate projection was accepted: %r" % (again.get("error"),))
+
+        drw2 = os.path.join(workdir, "smoke_views3_custom.SLDDRW")
+        built2 = drawing.create_drawing(part, drw2, views=["front"], paper="A2")
+        if not built2.get("ok"):
+            raise FixtureMissing("a second drawing for the custom view")
+        base2 = (built2.get("views") or [{}])[0].get("name")
+        layout.delete_view(drw2, base2, save=True)
+        custom = ref_views.create_custom_view(drw2, part, [0.6, 0.0, 0.8], [0.0, 1.0, 0.0],
+                                              [0.29, 0.21], save=False)
+        assert custom.get("ok") is True, (custom.get("error"), custom.get("message"))
+        rotation = custom.get("rotation") or []
+        assert len(rotation) == 9 and abs(rotation[2] - 0.6) < 1e-6, (
+            "the custom view does not look along the requested normal: %r" % (rotation,))
+        assert custom.get("readback_verified") is True
+        for path in (drw, drw2):
+            try:
+                drawing.close_document(path)
+            except Exception:
+                pass
+        return ("top projection (offset %.3f m) + custom view rotation[2]=%.3f"
+                % (offset, rotation[2]))
+
+    r.check("native projections and custom view", _native_projections_and_custom_view)
 
     def _section_and_detail():
         """0.8.117: section and detail views had never run AFTER produce_drawing.

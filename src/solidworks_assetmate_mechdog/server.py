@@ -31,7 +31,8 @@ from . import SERVER_NAME, __version__
 from . import sw_session
 from .tools import (assembly, bodies, bom, capabilities, drawing, export as export_tools,
                     layout, ledger, material as material_tools, pipeline, planner,
-                    ref_dimension, ref_geometry, recolor, rename, sheet_metal, survey)
+                    ref_dimension, ref_geometry, ref_views, recolor, rename,
+                    sheet_metal, survey)
 
 mcp = FastMCP(SERVER_NAME)
 # FastMCP (mcp 1.x) has no `version` argument: the low-level server falls back to
@@ -204,7 +205,8 @@ _TOOL_PROFILES = {
         "add_hole_callout", "add_hole_callouts", "add_geometric_tolerance",
         "add_datum_feature", "add_surface_finish", "add_center_marks", "add_note",
         "add_technical_requirements", "add_weld_symbol", "add_dimension_tolerance",
-        "add_balloon", "probe_geometry", "add_reference_dimension", "add_native_weld_symbol", "add_model_dimensions",
+        "add_balloon", "probe_geometry", "add_reference_dimension",
+        "create_orthographic_views", "create_custom_view", "add_native_weld_symbol", "add_model_dimensions",
         "list_sheet_sketch", "delete_sheet_sketch",
         "add_hole_table",
         "add_bom_table", "layout_dimensions", "set_dimension_position",
@@ -894,6 +896,51 @@ def add_native_weld_symbol(
     """
     return _json(drawing.add_native_weld_symbol(
         drawing_path, view_name=view_name, edge_index=edge_index, save=save))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def create_orthographic_views(
+    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
+    base_view: Annotated[str, Field(description="Exact name of the existing parent drawing view.")],
+    directions: Annotated[list[Literal["top", "bottom", "left", "right"]], Field(description="Unique model-relative sides to project.", min_length=1, max_length=4)],
+    offset_m: Annotated[float, Field(description="Positive distance in sheet metres between parent and child view centres.")] = 0.09,
+    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
+    save: Annotated[bool, Field(description="Save the verified drawing in place.")] = False,
+) -> str:
+    """NATIVE aligned projections, laid out by the sheet's own first/third-angle setting.
+
+    The child is created with `CreateUnfoldedViewAt3`, so it inherits the parent's model,
+    configuration and scale, and reports a real `GetBaseView` relation. Verification covers
+    parent, model path, configuration, normal direction, scale and placement; a batch that
+    fails part-way deletes everything it created.
+    """
+    return _json(ref_views.create_orthographic_views(
+        drawing_path, base_view, directions, offset_m=offset_m, sheet=sheet, save=save))
+
+
+@mcp.tool()
+@_reject_unknown_arguments
+def create_custom_view(
+    drawing_path: Annotated[str, Field(description="Absolute path to an existing .SLDDRW.")],
+    model_path: Annotated[str, Field(description="Absolute path to the referenced .SLDPRT or .SLDASM.")],
+    normal: Annotated[list[float], Field(description="Model-space vector pointing toward the viewer.", min_length=3, max_length=3)],
+    up: Annotated[list[float], Field(description="Model-space up hint; must not be parallel to normal.", min_length=3, max_length=3)],
+    position_m: Annotated[list[float], Field(description="View centre in sheet metres, [x, y].", min_length=2, max_length=2)],
+    configuration: Annotated[str | None, Field(description="Model configuration name. Null uses the native default.")] = None,
+    sheet: Annotated[str | None, Field(description="Exact sheet name. Null uses the active sheet.")] = None,
+    save: Annotated[bool, Field(description="Save the verified drawing in place.")] = False,
+) -> str:
+    """A drawing view along an ARBITRARY model direction, with the model viewport restored.
+
+    Works by orienting the model viewport temporarily, naming that orientation, creating the
+    drawing view from it, then restoring the original orientation and deleting the temporary
+    name. The receipt proves the restore and the rotation readback; the source model is not
+    saved. Pick a `position_m` with room: an overlapping view is refused, not nudged.
+    """
+    return _json(ref_views.create_custom_view(
+        drawing_path, model_path, normal, up, position_m,
+        configuration=configuration, sheet=sheet, save=save))
 
 
 @mcp.tool()
